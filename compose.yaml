@@ -1,0 +1,165 @@
+# MarkETH stack (SPEC §9, A.10): nginx in front of web and api, Postgres as the only
+# source of truth, Redis and ScyllaDB as optional speed-ups, Mailpit for magic links.
+#
+# This file alone is the production-like stack: built images, no source mounts, and only
+# nginx and the Mailpit inbox published.
+#
+#   docker compose -f compose.yaml up --build     production-like
+#   docker compose up --build                     development: compose.override.yaml is
+#                                                 merged in and adds hot reload and ports
+#
+# Every value comes from .env (copy .example.env). Compose reads it to fill the ${...}
+# below, and the Python services receive the whole file through env_file. A variable
+# that is missing stops Compose instead of falling back to a default.
+
+name: marketh
+
+# api, relay and migrate run the same image with a different command. Inside the stack
+# the stores are reached by service name on their standard ports, whatever .env
+# publishes them as on the host.
+x-backend: &backend
+  build:
+    context: ./backend
+    target: prod
+  init: true
+  env_file: .env
+  environment:
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: "5432"
+    REDIS_HOST: redis
+    REDIS_PORT: "6379"
+    SCYLLA_HOSTS: scylla
+    SCYLLA_PORT: "9042"
+    SMTP_HOST: mailpit
+    SMTP_PORT: "1025"
+
+# The schema must be in place; Redis and ScyllaDB are deliberately absent, because the
+# API and the relay start and keep working without them (SPEC §9).
+x-needs-schema: &needs-schema
+  postgres:
+    condition: service_healthy
+  migrate:
+    condition: service_completed_successfully
+
+services:
+  nginx:
+    image: nginx:1.30-alpine
+    restart: unless-stopped
+    environment:
+      # Limits the image's template rendering to the NGINX_* placeholders, so nginx's
+      # own $variables survive it.
+      NGINX_ENVSUBST_FILTER: ^NGINX_
+      NGINX_CLIENT_MAX_BODY_SIZE: ${NGINX_CLIENT_MAX_BODY_SIZE:?}
+      NGINX_RATE_LIMIT: ${NGINX_RATE_LIMIT:?}
+      NGINX_RATE_LIMIT_BURST: ${NGINX_RATE_LIMIT_BURST:?}
+      NGINX_SSE_READ_TIMEOUT: ${NGINX_SSE_READ_TIMEOUT:?}
+      NGINX_CONTENT_SECURITY_POLICY: ${NGINX_CONTENT_SECURITY_POLICY:?}
+    volumes:
+      - ./infra/nginx:/etc/nginx/templates:ro
+    ports:
+      - "${NGINX_HTTP_PORT:?}:80"
+
+  web:
+    build:
+      context: ./frontend
+      target: prod
+    init: true
+    restart: unless-stopped
+
+  api:
+    <<: *backend
+    restart: unless-stopped
+    depends_on: *needs-schema
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/api/health", timeout=3)'
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  relay:
+    <<: *backend
+    command: ["python", "-m", "app.relay"]
+    restart: unless-stopped
+    depends_on: *needs-schema
+
+  # One-shot: applies the migrations as the owner role, then exits.
+  migrate:
+    <<: *backend
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: ${POSTGRES_DB:?}
+    volumes:
+      # Since Postgres 18 the image keeps its data in a per-major subdirectory
+      # (/var/lib/postgresql/18/docker), so the volume is mounted one level up.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      # Over TCP on purpose: while the image initialises a new database it runs a
+      # temporary server on the Unix socket only, which must not count as ready.
+      test: ["CMD-SHELL", "pg_isready --host 127.0.0.1 --username \"$$POSTGRES_USER\" --dbname \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Limits, caches and pub/sub only (SPEC §9), so nothing is persisted.
+  redis:
+    image: redis:8.8-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    environment:
+      # Read by `make redis-cli` to open the database the app uses.
+      REDIS_DB: ${REDIS_DB:?}
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 2026.1 is ScyllaDB's long-term-support line; the image is built for arm64 and amd64.
+  scylla:
+    image: scylladb/scylla:2026.1
+    restart: unless-stopped
+    command:
+      - --smp
+      - ${SCYLLA_SMP:?}
+      - --memory
+      - ${SCYLLA_MEMORY:?}
+      - --overprovisioned
+      - "1"
+      - --developer-mode
+      - "1"
+    volumes:
+      - scylla-data:/var/lib/scylla
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'SELECT now() FROM system.local' > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 120s
+
+  # Catches every mail the API sends. The inbox holds working magic links, so it is
+  # published on the loopback interface only.
+  mailpit:
+    image: axllent/mailpit:v1.31
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MAILPIT_UI_PORT:?}:8025"
+
+volumes:
+  postgres-data:
+  scylla-data:

@@ -1,0 +1,144 @@
+[project]
+name = "marketh-backend"
+version = "0.1.0"
+description = "MarkETH API and outbox relay"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.143",
+    "uvicorn[standard]>=0.54",
+    "sqlalchemy[asyncio]>=2.1",
+    "asyncpg>=0.32",
+    "alembic>=1.20",
+    "pydantic>=2.14",
+    "pydantic-settings>=2.15",
+    "redis>=8.1",
+    "scylla-driver>=3.29",
+    "aiosmtplib>=5.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1",
+    "pytest-asyncio>=1.4",
+    "hypothesis>=6.168",
+    "testcontainers[postgres,redis]>=4.15",
+    "httpx>=0.28",
+    "ruff>=0.16",
+    "mypy>=2.4",
+    "import-linter>=2.3",
+]
+
+[tool.uv]
+package = false
+
+# --- Lint and format ---------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["."]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "ASYNC", "DTZ", "PT", "RUF"]
+ignore = [
+    "B008", # FastAPI's Depends()/Query() in argument defaults is the framework idiom
+]
+
+[tool.ruff.lint.per-file-ignores]
+"migrations/versions/*.py" = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "scripts", "tests"]
+
+# --- Types -------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.14"
+strict = true
+plugins = ["pydantic.mypy"]
+files = ["app", "scripts", "tests", "migrations"]
+
+[[tool.mypy.overrides]]
+module = ["cassandra.*", "testcontainers.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_decorators = false
+
+# --- Tests -------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+addopts = "-ra --strict-markers --import-mode=importlib -m 'not scylla'"
+markers = [
+    "integration: needs Docker (Postgres and Redis via Testcontainers)",
+    "scylla: needs a ScyllaDB container; slow to start, deselected by default",
+]
+
+# --- Architecture rules (see backend/CLAUDE.md) -------------------------------
+[tool.importlinter]
+root_package = "app"
+# The forbidden contracts below name third-party packages (fastapi, sqlalchemy, ...).
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Layers only import downwards"
+type = "layers"
+layers = [
+    "app.main : app.relay",
+    "app.api",
+    "app.container",
+    "app.services",
+    "app.repositories | app.integrations",
+    "app.models",
+    "app.db",
+    "app.core",
+]
+
+[[tool.importlinter.contracts]]
+name = "Schemas are the API contract and know nothing about storage"
+type = "forbidden"
+source_modules = ["app.schemas"]
+forbidden_modules = [
+    "app.models",
+    "app.repositories",
+    "app.services",
+    "app.integrations",
+    "app.db",
+    "app.api",
+    "app.container",
+]
+
+[[tool.importlinter.contracts]]
+name = "Pricing is pure: no I/O, no framework, no storage"
+type = "forbidden"
+source_modules = ["app.pricing"]
+forbidden_modules = [
+    "app.models",
+    "app.repositories",
+    "app.services",
+    "app.integrations",
+    "app.db",
+    "app.api",
+    "app.schemas",
+    "app.container",
+    "sqlalchemy",
+    "fastapi",
+    "redis",
+    "cassandra",
+]
+
+[[tool.importlinter.contracts]]
+name = "Storage layers never import the API contract"
+type = "forbidden"
+source_modules = ["app.repositories", "app.models", "app.db", "app.integrations"]
+forbidden_modules = ["app.schemas", "app.api", "fastapi"]
+
+[[tool.importlinter.contracts]]
+name = "Services never import the web framework"
+type = "forbidden"
+source_modules = ["app.services"]
+forbidden_modules = ["app.api", "fastapi", "starlette"]

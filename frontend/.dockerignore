@@ -1,0 +1,17 @@
+# Keeps the build context to the app's source. Dependencies and build output are
+# produced inside the image for its own OS.
+
+node_modules/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*
+
+# Not needed to build or run
+*.md
+*.env
+.env*
+Dockerfile
+.dockerignore

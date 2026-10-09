@@ -1,0 +1,4623 @@
+{
+  "components": {
+    "schemas": {
+      "AlertItem": {
+        "properties": {
+          "acked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acked At"
+          },
+          "context": {
+            "additionalProperties": true,
+            "title": "Context",
+            "type": "object"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/AlertSeverity"
+          }
+        },
+        "required": [
+          "id",
+          "severity",
+          "message",
+          "context",
+          "created_at",
+          "acked_at"
+        ],
+        "title": "AlertItem",
+        "type": "object"
+      },
+      "AlertSeverity": {
+        "enum": [
+          "INFO",
+          "WARNING",
+          "CRITICAL"
+        ],
+        "title": "AlertSeverity",
+        "type": "string"
+      },
+      "ApproveMarketRequest": {
+        "additionalProperties": false,
+        "description": "`POST /admin/markets/{id}/approve`: pick the tier, optionally reword, and open.\n\nA field left out (or null) keeps what the proposal says.",
+        "properties": {
+          "budget_cr": {
+            "anyOf": [
+              {
+                "examples": [
+                  "0.25"
+                ],
+                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The loss budget of a CUSTOM market; b is derived from it (A.5). Required for\nCUSTOM, not accepted for a fixed tier.",
+            "title": "Budget Cr"
+          },
+          "close_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Close At"
+          },
+          "no_definition": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "No Definition"
+          },
+          "question": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 10,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Question"
+          },
+          "resolution_criteria": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Criteria"
+          },
+          "resolution_source": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolution Source"
+          },
+          "resolve_by": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolve By"
+          },
+          "tier": {
+            "$ref": "#/components/schemas/MarketTier"
+          },
+          "yes_definition": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yes Definition"
+          }
+        },
+        "required": [
+          "tier"
+        ],
+        "title": "ApproveMarketRequest",
+        "type": "object"
+      },
+      "CloseMarketRequest": {
+        "additionalProperties": false,
+        "description": "`POST /admin/markets/{id}/close`: stop trading for good, before the deadline or after.",
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional remark for the audit log.",
+            "title": "Note"
+          }
+        },
+        "title": "CloseMarketRequest",
+        "type": "object"
+      },
+      "CodeBatchCreatedResponse": {
+        "description": "The new batch and, this once, its plain codes. The server keeps only hashes.",
+        "properties": {
+          "batch": {
+            "$ref": "#/components/schemas/CodeBatchItem"
+          },
+          "codes": {
+            "items": {
+              "$ref": "#/components/schemas/CreatedCode"
+            },
+            "title": "Codes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "batch",
+          "codes"
+        ],
+        "title": "CodeBatchCreatedResponse",
+        "type": "object"
+      },
+      "CodeBatchItem": {
+        "description": "A batch and what became of its codes.",
+        "properties": {
+          "active_count": {
+            "title": "Active Count",
+            "type": "integer"
+          },
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expired": {
+            "title": "Expired",
+            "type": "boolean"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "one_per_user": {
+            "title": "One Per User",
+            "type": "boolean"
+          },
+          "redeemed_count": {
+            "title": "Redeemed Count",
+            "type": "integer"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set when the whole batch was revoked.",
+            "title": "Revoked At"
+          },
+          "revoked_count": {
+            "title": "Revoked Count",
+            "type": "integer"
+          },
+          "total_value_cr": {
+            "description": "`count` times `value_cr`.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Total Value Cr",
+            "type": "string"
+          },
+          "value_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Value Cr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "value_cr",
+          "count",
+          "total_value_cr",
+          "expires_at",
+          "expired",
+          "one_per_user",
+          "created_at",
+          "revoked_at",
+          "active_count",
+          "redeemed_count",
+          "revoked_count"
+        ],
+        "title": "CodeBatchItem",
+        "type": "object"
+      },
+      "CodeBatchListResponse": {
+        "description": "`GET /admin/code-batches`, newest first.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CodeBatchItem"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CodeBatchListResponse",
+        "type": "object"
+      },
+      "CoffeeTicketIssuedResponse": {
+        "description": "`POST /coffee-tickets`: the new ticket and, this once, its code.",
+        "properties": {
+          "balance_cr": {
+            "description": "The user's balance after the ticket was paid for.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Balance Cr",
+            "type": "string"
+          },
+          "code": {
+            "description": "Shown in groups of four (`XXXX-XXXX`). It is also the content of the ticket's QR.\nThe server keeps only its hash and cannot show it again.",
+            "title": "Code",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "redeemed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redeemed At"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CoffeeTicketStatus",
+            "description": "The effective status: an ACTIVE ticket past `expires_at` is reported EXPIRED,\nwhether or not its refund has been booked yet."
+          },
+          "value_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Value Cr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "value_cr",
+          "created_at",
+          "expires_at",
+          "redeemed_at",
+          "code",
+          "balance_cr"
+        ],
+        "title": "CoffeeTicketIssuedResponse",
+        "type": "object"
+      },
+      "CoffeeTicketItem": {
+        "description": "A ticket in the wallet. It never contains the code.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "redeemed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redeemed At"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CoffeeTicketStatus",
+            "description": "The effective status: an ACTIVE ticket past `expires_at` is reported EXPIRED,\nwhether or not its refund has been booked yet."
+          },
+          "value_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Value Cr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "value_cr",
+          "created_at",
+          "expires_at",
+          "redeemed_at"
+        ],
+        "title": "CoffeeTicketItem",
+        "type": "object"
+      },
+      "CoffeeTicketListResponse": {
+        "description": "`GET /me/coffee-tickets`, newest first.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CoffeeTicketItem"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "CoffeeTicketListResponse",
+        "type": "object"
+      },
+      "CoffeeTicketRedeemResponse": {
+        "description": "`POST /barista/coffee-tickets/{code}/redeem`: the ticket is now used up.",
+        "properties": {
+          "redeemed_at": {
+            "format": "date-time",
+            "title": "Redeemed At",
+            "type": "string"
+          },
+          "ticket_id": {
+            "format": "uuid",
+            "title": "Ticket Id",
+            "type": "string"
+          },
+          "value_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Value Cr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticket_id",
+          "value_cr",
+          "redeemed_at"
+        ],
+        "title": "CoffeeTicketRedeemResponse",
+        "type": "object"
+      },
+      "CoffeeTicketStatus": {
+        "enum": [
+          "ACTIVE",
+          "REDEEMED",
+          "EXPIRED"
+        ],
+        "title": "CoffeeTicketStatus",
+        "type": "string"
+      },
+      "CreateCodeBatchRequest": {
+        "additionalProperties": false,
+        "description": "`POST /admin/code-batches`.",
+        "properties": {
+          "count": {
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "one_per_user": {
+            "description": "Whether a user may redeem only one code of this batch.",
+            "title": "One Per User",
+            "type": "boolean"
+          },
+          "value_cr": {
+            "anyOf": [
+              {
+                "examples": [
+                  "0.25"
+                ],
+                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Value of each code. Left out, it is `VOUCHER_CODE_DEFAULT_VALUE_CR`.",
+            "title": "Value Cr"
+          }
+        },
+        "required": [
+          "label",
+          "count",
+          "expires_at",
+          "one_per_user"
+        ],
+        "title": "CreateCodeBatchRequest",
+        "type": "object"
+      },
+      "CreatedCode": {
+        "properties": {
+          "code": {
+            "description": "As printed on the card: `XXXX-XXXX-XXXX`.",
+            "title": "Code",
+            "type": "string"
+          },
+          "redeem_url": {
+            "description": "The card's QR payload: `{PUBLIC_BASE_URL}/wallet#code=XXXX-XXXX-XXXX` (A.6).",
+            "title": "Redeem Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "redeem_url"
+        ],
+        "title": "CreatedCode",
+        "type": "object"
+      },
+      "DependencyStatus": {
+        "enum": [
+          "up",
+          "down"
+        ],
+        "title": "DependencyStatus",
+        "type": "string"
+      },
+      "ErrorCode": {
+        "enum": [
+          "INSUFFICIENT_BALANCE",
+          "QUOTE_STALE",
+          "MARKET_NOT_OPEN",
+          "LIMIT_EXCEEDED",
+          "TRADE_TOO_SMALL",
+          "CODE_INVALID",
+          "RATE_LIMITED",
+          "INSUFFICIENT_SHARES",
+          "LOGIN_LINK_INVALID",
+          "IDEMPOTENCY_KEY_REUSED",
+          "VALIDATION_ERROR",
+          "UNAUTHENTICATED",
+          "FORBIDDEN",
+          "NOT_FOUND",
+          "CONFLICT",
+          "SERVICE_UNAVAILABLE",
+          "INTERNAL_ERROR"
+        ],
+        "title": "ErrorCode",
+        "type": "string"
+      },
+      "ErrorResponse": {
+        "description": "The body of every non-2xx response (SPEC §10, Appendix A.2).",
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "details": {
+            "additionalProperties": true,
+            "title": "Details",
+            "type": "object"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "details"
+        ],
+        "title": "ErrorResponse",
+        "type": "object"
+      },
+      "HaltMarketRequest": {
+        "additionalProperties": false,
+        "description": "`POST /admin/markets/{id}/halt`. The reason goes to the audit log.",
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "HaltMarketRequest",
+        "type": "object"
+      },
+      "HealthResponse": {
+        "description": "Answered with 200 whenever Postgres is up.\n\nWith Postgres down the endpoint answers 503 `SERVICE_UNAVAILABLE` instead, and\n`details` carries the three `postgres`, `redis` and `scylla` values.",
+        "properties": {
+          "postgres": {
+            "$ref": "#/components/schemas/DependencyStatus"
+          },
+          "redis": {
+            "$ref": "#/components/schemas/DependencyStatus"
+          },
+          "scylla": {
+            "$ref": "#/components/schemas/DependencyStatus"
+          },
+          "status": {
+            "$ref": "#/components/schemas/HealthStatus"
+          }
+        },
+        "required": [
+          "status",
+          "postgres",
+          "redis",
+          "scylla"
+        ],
+        "title": "HealthResponse",
+        "type": "object"
+      },
+      "HealthStatus": {
+        "enum": [
+          "ok",
+          "degraded"
+        ],
+        "title": "HealthStatus",
+        "type": "string"
+      },
+      "HistoryPoint": {
+        "description": "The price right after one trade. Version 0 is the 50% a market opens at.",
+        "properties": {
+          "p_yes": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "P Yes",
+            "type": "number"
+          },
+          "t": {
+            "format": "date-time",
+            "title": "T",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "t",
+          "p_yes",
+          "version"
+        ],
+        "title": "HistoryPoint",
+        "type": "object"
+      },
+      "HistoryResponse": {
+        "description": "`GET /markets/{id}/history`: points in ascending `version` order.",
+        "properties": {
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/HistoryPoint"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "source": {
+            "$ref": "#/components/schemas/HistorySource"
+          }
+        },
+        "required": [
+          "points",
+          "source"
+        ],
+        "title": "HistoryResponse",
+        "type": "object"
+      },
+      "HistorySource": {
+        "description": "Where the points of a chart came from (SPEC §9).",
+        "enum": [
+          "scylla",
+          "postgres"
+        ],
+        "title": "HistorySource",
+        "type": "string"
+      },
+      "Holding": {
+        "description": "What a user holds of one outcome of a market.",
+        "properties": {
+          "outcome": {
+            "$ref": "#/components/schemas/Outcome"
+          },
+          "shares": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Shares",
+            "type": "string"
+          },
+          "value_cr": {
+            "description": "Shares at the current price of the outcome, rounded down. In a RESOLVED market:\n1 CR per share of the winning outcome, 0 for the other.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Value Cr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "shares",
+          "value_cr"
+        ],
+        "title": "Holding",
+        "type": "object"
+      },
+      "JournalKind": {
+        "description": "Why a journal entry exists. One value per way credits can move.",
+        "enum": [
+          "SIGNUP_GRANT",
+          "MONTHLY_GRANT",
+          "CODE_REDEMPTION",
+          "TRADE_BUY",
+          "TRADE_SELL",
+          "MARKET_RESOLUTION",
+          "MARKET_VOID",
+          "COFFEE_TICKET_ISSUE",
+          "COFFEE_TICKET_REDEEM",
+          "COFFEE_TICKET_REFUND"
+        ],
+        "title": "JournalKind",
+        "type": "string"
+      },
+      "LedgerItem": {
+        "description": "One movement on the user's balance (SPEC §11, Wallet).",
+        "properties": {
+          "amount_cr": {
+            "description": "Positive when the balance grew, negative when it shrank.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^-?[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Amount Cr",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "description": {
+            "description": "A short English label for the line, e.g. \"Monthly voucher\".",
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/JournalKind"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "amount_cr",
+          "description",
+          "created_at"
+        ],
+        "title": "LedgerItem",
+        "type": "object"
+      },
+      "LedgerListResponse": {
+        "description": "`GET /me/ledger`, newest first.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LedgerItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "LedgerListResponse",
+        "type": "object"
+      },
+      "LoginLinkRequest": {
+        "additionalProperties": false,
+        "description": "`POST /auth/request-link`. The address is normalised and checked by the service.",
+        "properties": {
+          "email": {
+            "maxLength": 320,
+            "minLength": 3,
+            "title": "Email",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "title": "LoginLinkRequest",
+        "type": "object"
+      },
+      "LoginLinkResponse": {
+        "description": "Always the same answer for an allowlisted address, whether an account exists or not.",
+        "properties": {
+          "link_ttl_minutes": {
+            "description": "How long the link in the mail stays valid.",
+            "title": "Link Ttl Minutes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "link_ttl_minutes"
+        ],
+        "title": "LoginLinkResponse",
+        "type": "object"
+      },
+      "MarketDetailResponse": {
+        "description": "`GET /markets/{id}`, and what proposing or an admin action returns.",
+        "properties": {
+          "b_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "B Cr",
+            "type": "string"
+          },
+          "close_at": {
+            "format": "date-time",
+            "title": "Close At",
+            "type": "string"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "max_loss_cr": {
+            "description": "The market's loss budget (`markets.budget_micro`). Both are 0 until approval.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Max Loss Cr",
+            "type": "string"
+          },
+          "no_definition": {
+            "title": "No Definition",
+            "type": "string"
+          },
+          "opened_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Opened At"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolutionOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "YES or NO once RESOLVED, VOID once VOID, otherwise null."
+          },
+          "p_no": {
+            "description": "Always `1 - p_yes`, from the rounded value. A market never opened shows 0.5.",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "P No",
+            "type": "number"
+          },
+          "p_yes": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "P Yes",
+            "type": "number"
+          },
+          "proposer_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who proposed the market. Sent to admins only, null for everyone else.",
+            "title": "Proposer Email"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "rejection_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejection Reason"
+          },
+          "requested_tier": {
+            "$ref": "#/components/schemas/MarketTier"
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MarketResolution"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resolution_criteria": {
+            "title": "Resolution Criteria",
+            "type": "string"
+          },
+          "resolution_source": {
+            "title": "Resolution Source",
+            "type": "string"
+          },
+          "resolve_by": {
+            "format": "date-time",
+            "title": "Resolve By",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MarketStatus",
+            "description": "The effective status (A.4): an OPEN market past `close_at` is reported CLOSED."
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MarketTier"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null until VIS approves the market."
+          },
+          "trading_open": {
+            "description": "True exactly when `status` is OPEN.",
+            "title": "Trading Open",
+            "type": "boolean"
+          },
+          "version": {
+            "description": "Grows by one per trade. A live event with a lower version is out of date.",
+            "title": "Version",
+            "type": "integer"
+          },
+          "viewer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MarketViewer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null without a session."
+          },
+          "void_rule": {
+            "description": "What happens to stakes if the market is voided, shown before anyone trades.",
+            "title": "Void Rule",
+            "type": "string"
+          },
+          "volume_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Volume Cr",
+            "type": "string"
+          },
+          "yes_definition": {
+            "title": "Yes Definition",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "question",
+          "status",
+          "trading_open",
+          "p_yes",
+          "p_no",
+          "volume_cr",
+          "close_at",
+          "resolve_by",
+          "version",
+          "outcome",
+          "yes_definition",
+          "no_definition",
+          "resolution_criteria",
+          "resolution_source",
+          "requested_tier",
+          "tier",
+          "b_cr",
+          "max_loss_cr",
+          "void_rule",
+          "created_at",
+          "opened_at",
+          "closed_at",
+          "rejection_reason",
+          "resolution",
+          "proposer_email",
+          "viewer"
+        ],
+        "title": "MarketDetailResponse",
+        "type": "object"
+      },
+      "MarketListResponse": {
+        "description": "`GET /markets`: soonest `close_at` first.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MarketSummary"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "MarketListResponse",
+        "type": "object"
+      },
+      "MarketResolution": {
+        "description": "How a market ended. For VOID, `evidence` is the reason VIS gave.",
+        "properties": {
+          "evidence": {
+            "title": "Evidence",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/ResolutionOutcome"
+          },
+          "resolved_at": {
+            "format": "date-time",
+            "title": "Resolved At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "evidence",
+          "resolved_at"
+        ],
+        "title": "MarketResolution",
+        "type": "object"
+      },
+      "MarketStatus": {
+        "description": "The seven market states of SPEC §6.",
+        "enum": [
+          "PROPOSED",
+          "REJECTED",
+          "OPEN",
+          "HALTED",
+          "CLOSED",
+          "RESOLVED",
+          "VOID"
+        ],
+        "title": "MarketStatus",
+        "type": "string"
+      },
+      "MarketSummary": {
+        "description": "A market as a card: what the list, the portfolio and the detail header show.",
+        "properties": {
+          "close_at": {
+            "format": "date-time",
+            "title": "Close At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolutionOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "YES or NO once RESOLVED, VOID once VOID, otherwise null."
+          },
+          "p_no": {
+            "description": "Always `1 - p_yes`, from the rounded value. A market never opened shows 0.5.",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "P No",
+            "type": "number"
+          },
+          "p_yes": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "P Yes",
+            "type": "number"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "resolve_by": {
+            "format": "date-time",
+            "title": "Resolve By",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MarketStatus",
+            "description": "The effective status (A.4): an OPEN market past `close_at` is reported CLOSED."
+          },
+          "trading_open": {
+            "description": "True exactly when `status` is OPEN.",
+            "title": "Trading Open",
+            "type": "boolean"
+          },
+          "version": {
+            "description": "Grows by one per trade. A live event with a lower version is out of date.",
+            "title": "Version",
+            "type": "integer"
+          },
+          "volume_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Volume Cr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "question",
+          "status",
+          "trading_open",
+          "p_yes",
+          "p_no",
+          "volume_cr",
+          "close_at",
+          "resolve_by",
+          "version",
+          "outcome"
+        ],
+        "title": "MarketSummary",
+        "type": "object"
+      },
+      "MarketTier": {
+        "description": "Liquidity tiers of SPEC §4. CUSTOM derives b from an explicit budget.",
+        "enum": [
+          "TIGHT",
+          "DEFAULT",
+          "MEDIUM",
+          "CUSTOM"
+        ],
+        "title": "MarketTier",
+        "type": "string"
+      },
+      "MarketViewer": {
+        "description": "The signed-in user's side of a market (SPEC §4, A.4).",
+        "properties": {
+          "balance_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Balance Cr",
+            "type": "string"
+          },
+          "can_trade": {
+            "title": "Can Trade",
+            "type": "boolean"
+          },
+          "cannot_trade_reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradeBlockReason"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null exactly when `can_trade` is true."
+          },
+          "cost_cr": {
+            "description": "Everything the viewer paid for buys in this market.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Cost Cr",
+            "type": "string"
+          },
+          "holdings": {
+            "description": "Always two entries, YES then NO, with zero shares where nothing is held.",
+            "items": {
+              "$ref": "#/components/schemas/Holding"
+            },
+            "title": "Holdings",
+            "type": "array"
+          },
+          "net_stake_cr": {
+            "description": "max(0, cost - proceeds): what a VOID would refund.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Net Stake Cr",
+            "type": "string"
+          },
+          "proceeds_cr": {
+            "description": "Everything the viewer received for sells in this market.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Proceeds Cr",
+            "type": "string"
+          },
+          "stake_left_cr": {
+            "description": "`stake_limit_cr - net_stake_cr`, never below zero.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Stake Left Cr",
+            "type": "string"
+          },
+          "stake_limit_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Stake Limit Cr",
+            "type": "string"
+          },
+          "stake_presets": {
+            "items": {
+              "$ref": "#/components/schemas/StakePreset"
+            },
+            "title": "Stake Presets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "balance_cr",
+          "holdings",
+          "cost_cr",
+          "proceeds_cr",
+          "net_stake_cr",
+          "stake_limit_cr",
+          "stake_left_cr",
+          "stake_presets",
+          "can_trade",
+          "cannot_trade_reason"
+        ],
+        "title": "MarketViewer",
+        "type": "object"
+      },
+      "MeResponse": {
+        "description": "`GET /me`: profile, balance and the next monthly grant.",
+        "properties": {
+          "balance_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Balance Cr",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "monthly_grant_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Monthly Grant Cr",
+            "type": "string"
+          },
+          "next_monthly_grant_on": {
+            "description": "First day of the next calendar month in the app's timezone (SPEC §2).",
+            "format": "date",
+            "title": "Next Monthly Grant On",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/UserRole"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "role",
+          "created_at",
+          "balance_cr",
+          "monthly_grant_cr",
+          "next_monthly_grant_on"
+        ],
+        "title": "MeResponse",
+        "type": "object"
+      },
+      "MonthlyGrantRunResponse": {
+        "description": "`POST /admin/grants/monthly`. Running it again right away books nothing.",
+        "properties": {
+          "grants_booked": {
+            "description": "Monthly grants this run booked, over all users and months.",
+            "title": "Grants Booked",
+            "type": "integer"
+          },
+          "total_cr": {
+            "description": "Credits this run issued.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Total Cr",
+            "type": "string"
+          },
+          "users_checked": {
+            "title": "Users Checked",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "users_checked",
+          "grants_booked",
+          "total_cr"
+        ],
+        "title": "MonthlyGrantRunResponse",
+        "type": "object"
+      },
+      "Obligations": {
+        "description": "Outstanding obligations: the most coffee VIS could owe right now (SPEC §5).",
+        "properties": {
+          "above_threshold": {
+            "description": "True when `total_cr` exceeds `alert_threshold_cr`.",
+            "title": "Above Threshold",
+            "type": "boolean"
+          },
+          "alert_threshold_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Alert Threshold Cr",
+            "type": "string"
+          },
+          "market_exposure_cr": {
+            "description": "Over every market not yet settled: max(q_yes, q_no) minus its account balance.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^-?[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Market Exposure Cr",
+            "type": "string"
+          },
+          "pending_coffee_tickets_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Pending Coffee Tickets Cr",
+            "type": "string"
+          },
+          "total_cr": {
+            "description": "The sum of the three components.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^-?[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Total Cr",
+            "type": "string"
+          },
+          "user_balances_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "User Balances Cr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_balances_cr",
+          "pending_coffee_tickets_cr",
+          "market_exposure_cr",
+          "total_cr",
+          "alert_threshold_cr",
+          "above_threshold"
+        ],
+        "title": "Obligations",
+        "type": "object"
+      },
+      "Outcome": {
+        "enum": [
+          "YES",
+          "NO"
+        ],
+        "title": "Outcome",
+        "type": "string"
+      },
+      "PortfolioEntry": {
+        "description": "A user's position in one market (SPEC §11, Portfolio).",
+        "properties": {
+          "cost_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Cost Cr",
+            "type": "string"
+          },
+          "holdings": {
+            "description": "Always two entries, YES then NO.",
+            "items": {
+              "$ref": "#/components/schemas/Holding"
+            },
+            "title": "Holdings",
+            "type": "array"
+          },
+          "market": {
+            "$ref": "#/components/schemas/MarketSummary"
+          },
+          "net_stake_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Net Stake Cr",
+            "type": "string"
+          },
+          "payout_cr": {
+            "anyOf": [
+              {
+                "examples": [
+                  "0.25"
+                ],
+                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the market paid this user when it was RESOLVED; null in any other status.",
+            "title": "Payout Cr"
+          },
+          "proceeds_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Proceeds Cr",
+            "type": "string"
+          },
+          "refund_cr": {
+            "anyOf": [
+              {
+                "examples": [
+                  "0.25"
+                ],
+                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the user got back when the market was VOID; null in any other status.",
+            "title": "Refund Cr"
+          },
+          "value_cr": {
+            "description": "Sum of the holdings' values.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Value Cr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "market",
+          "holdings",
+          "value_cr",
+          "cost_cr",
+          "proceeds_cr",
+          "net_stake_cr",
+          "payout_cr",
+          "refund_cr"
+        ],
+        "title": "PortfolioEntry",
+        "type": "object"
+      },
+      "PortfolioResponse": {
+        "description": "`GET /me/positions`: unsettled markets first (soonest `close_at` first), then\nsettled ones (latest `close_at` first).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PortfolioEntry"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "total_value_cr": {
+            "description": "Sum of `value_cr` over the markets that are not yet RESOLVED or VOID.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Total Value Cr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "items",
+          "total_value_cr"
+        ],
+        "title": "PortfolioResponse",
+        "type": "object"
+      },
+      "ProposalItem": {
+        "description": "A market the user proposed, in whatever status it is now.",
+        "properties": {
+          "close_at": {
+            "format": "date-time",
+            "title": "Close At",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "no_definition": {
+            "title": "No Definition",
+            "type": "string"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "rejection_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejection Reason"
+          },
+          "requested_tier": {
+            "$ref": "#/components/schemas/MarketTier"
+          },
+          "resolution_criteria": {
+            "title": "Resolution Criteria",
+            "type": "string"
+          },
+          "resolution_source": {
+            "title": "Resolution Source",
+            "type": "string"
+          },
+          "resolve_by": {
+            "format": "date-time",
+            "title": "Resolve By",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MarketStatus",
+            "description": "The effective status, as in `MarketSummary`."
+          },
+          "yes_definition": {
+            "title": "Yes Definition",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "question",
+          "yes_definition",
+          "no_definition",
+          "resolution_criteria",
+          "resolution_source",
+          "status",
+          "requested_tier",
+          "close_at",
+          "resolve_by",
+          "created_at",
+          "rejection_reason"
+        ],
+        "title": "ProposalItem",
+        "type": "object"
+      },
+      "ProposalListResponse": {
+        "description": "`GET /me/proposals`, newest first.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ProposalItem"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ProposalListResponse",
+        "type": "object"
+      },
+      "ProposeMarketRequest": {
+        "additionalProperties": false,
+        "description": "`POST /markets`: what a proposal must state (SPEC §6).\n\nThe time rules that depend on the clock are the service's: `close_at` in the future\nand within `MAX_MARKET_LIFETIME`, `resolve_by` within `MAX_RESOLUTION_DELAY_DAYS`\nof `close_at`.",
+        "properties": {
+          "close_at": {
+            "format": "date-time",
+            "title": "Close At",
+            "type": "string"
+          },
+          "no_definition": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "No Definition",
+            "type": "string"
+          },
+          "question": {
+            "maxLength": 200,
+            "minLength": 10,
+            "title": "Question",
+            "type": "string"
+          },
+          "requested_tier": {
+            "$ref": "#/components/schemas/MarketTier"
+          },
+          "resolution_criteria": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Resolution Criteria",
+            "type": "string"
+          },
+          "resolution_source": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Resolution Source",
+            "type": "string"
+          },
+          "resolve_by": {
+            "format": "date-time",
+            "title": "Resolve By",
+            "type": "string"
+          },
+          "yes_definition": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Yes Definition",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question",
+          "yes_definition",
+          "no_definition",
+          "resolution_criteria",
+          "resolution_source",
+          "close_at",
+          "resolve_by",
+          "requested_tier"
+        ],
+        "title": "ProposeMarketRequest",
+        "type": "object"
+      },
+      "PublicConfigResponse": {
+        "properties": {
+          "allowed_email_domains": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Email Domains",
+            "type": "array"
+          },
+          "coffee_ticket_code_length": {
+            "title": "Coffee Ticket Code Length",
+            "type": "integer"
+          },
+          "coffee_ticket_expiry_days": {
+            "title": "Coffee Ticket Expiry Days",
+            "type": "integer"
+          },
+          "coffee_ticket_value_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Coffee Ticket Value Cr",
+            "type": "string"
+          },
+          "live_poll_fallback_seconds": {
+            "title": "Live Poll Fallback Seconds",
+            "type": "integer"
+          },
+          "login_link_ttl_minutes": {
+            "title": "Login Link Ttl Minutes",
+            "type": "integer"
+          },
+          "max_code_issuance_per_month_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Max Code Issuance Per Month Cr",
+            "type": "string"
+          },
+          "max_market_budget_cr": {
+            "description": "Upper bound of the budget an admin may give a CUSTOM market.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Max Market Budget Cr",
+            "type": "string"
+          },
+          "max_market_lifetime_days": {
+            "title": "Max Market Lifetime Days",
+            "type": "integer"
+          },
+          "max_proposals_per_day": {
+            "title": "Max Proposals Per Day",
+            "type": "integer"
+          },
+          "max_resolution_delay_days": {
+            "title": "Max Resolution Delay Days",
+            "type": "integer"
+          },
+          "max_stake_per_market_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Max Stake Per Market Cr",
+            "type": "string"
+          },
+          "min_trade_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Min Trade Cr",
+            "type": "string"
+          },
+          "min_trade_shares": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Min Trade Shares",
+            "type": "string"
+          },
+          "monthly_grant_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Monthly Grant Cr",
+            "type": "string"
+          },
+          "price_display_decimals": {
+            "description": "Decimals of a displayed percentage: 1 means 54.8%.",
+            "title": "Price Display Decimals",
+            "type": "integer"
+          },
+          "quote_debounce_ms": {
+            "title": "Quote Debounce Ms",
+            "type": "integer"
+          },
+          "signup_grant_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Signup Grant Cr",
+            "type": "string"
+          },
+          "stake_presets_cr": {
+            "items": {
+              "examples": [
+                "0.25"
+              ],
+              "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+              "type": "string"
+            },
+            "title": "Stake Presets Cr",
+            "type": "array"
+          },
+          "tiers": {
+            "items": {
+              "$ref": "#/components/schemas/TierConfig"
+            },
+            "title": "Tiers",
+            "type": "array"
+          },
+          "timezone": {
+            "description": "IANA name of the calendar behind monthly grants and daily limits.",
+            "title": "Timezone",
+            "type": "string"
+          },
+          "voucher_code_default_value_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Voucher Code Default Value Cr",
+            "type": "string"
+          },
+          "voucher_code_length": {
+            "title": "Voucher Code Length",
+            "type": "integer"
+          },
+          "voucher_code_max_value_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Voucher Code Max Value Cr",
+            "type": "string"
+          },
+          "voucher_code_min_value_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Voucher Code Min Value Cr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timezone",
+          "allowed_email_domains",
+          "login_link_ttl_minutes",
+          "signup_grant_cr",
+          "monthly_grant_cr",
+          "max_stake_per_market_cr",
+          "stake_presets_cr",
+          "min_trade_cr",
+          "min_trade_shares",
+          "price_display_decimals",
+          "quote_debounce_ms",
+          "live_poll_fallback_seconds",
+          "tiers",
+          "max_market_budget_cr",
+          "max_market_lifetime_days",
+          "max_resolution_delay_days",
+          "max_proposals_per_day",
+          "voucher_code_length",
+          "voucher_code_min_value_cr",
+          "voucher_code_max_value_cr",
+          "voucher_code_default_value_cr",
+          "max_code_issuance_per_month_cr",
+          "coffee_ticket_value_cr",
+          "coffee_ticket_code_length",
+          "coffee_ticket_expiry_days"
+        ],
+        "title": "PublicConfigResponse",
+        "type": "object"
+      },
+      "QuoteEvent": {
+        "description": "`event: quote`. The market's price after a trade, or its current state at connect.",
+        "properties": {
+          "market_id": {
+            "format": "uuid",
+            "title": "Market Id",
+            "type": "string"
+          },
+          "p_no": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "P No",
+            "type": "number"
+          },
+          "p_yes": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "P Yes",
+            "type": "number"
+          },
+          "ts": {
+            "format": "date-time",
+            "title": "Ts",
+            "type": "string"
+          },
+          "type": {
+            "const": "quote",
+            "title": "Type",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "volume_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Volume Cr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "market_id",
+          "version",
+          "p_yes",
+          "p_no",
+          "volume_cr",
+          "ts"
+        ],
+        "title": "QuoteEvent",
+        "type": "object"
+      },
+      "QuoteResponse": {
+        "description": "What a trade would do right now. Also sent as `details.quote` of `QUOTE_STALE`.",
+        "properties": {
+          "amount_cr": {
+            "description": "The cost of a buy (rounded up) or the proceeds of a sell (rounded down).",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Amount Cr",
+            "type": "string"
+          },
+          "average_price": {
+            "description": "`amount_cr / shares`: credits per share, rounded like a probability.",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Average Price",
+            "type": "number"
+          },
+          "market_id": {
+            "format": "uuid",
+            "title": "Market Id",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/Outcome"
+          },
+          "p_no_after": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "P No After",
+            "type": "number"
+          },
+          "p_no_before": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "P No Before",
+            "type": "number"
+          },
+          "p_yes_after": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "P Yes After",
+            "type": "number"
+          },
+          "p_yes_before": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "P Yes Before",
+            "type": "number"
+          },
+          "quote_version": {
+            "description": "The market's `version` this quote was computed from.",
+            "title": "Quote Version",
+            "type": "integer"
+          },
+          "shares": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Shares",
+            "type": "string"
+          },
+          "side": {
+            "$ref": "#/components/schemas/TradeSide"
+          }
+        },
+        "required": [
+          "market_id",
+          "side",
+          "outcome",
+          "shares",
+          "amount_cr",
+          "average_price",
+          "p_yes_before",
+          "p_no_before",
+          "p_yes_after",
+          "p_no_after",
+          "quote_version"
+        ],
+        "title": "QuoteResponse",
+        "type": "object"
+      },
+      "RedeemCodeRequest": {
+        "additionalProperties": false,
+        "description": "`POST /vouchers/redeem-code`: the code as typed or scanned.",
+        "properties": {
+          "code": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "RedeemCodeRequest",
+        "type": "object"
+      },
+      "RedeemCodeResponse": {
+        "properties": {
+          "balance_cr": {
+            "description": "The user's balance after the redemption.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Balance Cr",
+            "type": "string"
+          },
+          "value_cr": {
+            "description": "What the code was worth.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Value Cr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value_cr",
+          "balance_cr"
+        ],
+        "title": "RedeemCodeResponse",
+        "type": "object"
+      },
+      "RejectMarketRequest": {
+        "additionalProperties": false,
+        "description": "`POST /admin/markets/{id}/reject`. The proposer sees the reason.",
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "RejectMarketRequest",
+        "type": "object"
+      },
+      "ResolutionOutcome": {
+        "enum": [
+          "YES",
+          "NO",
+          "VOID"
+        ],
+        "title": "ResolutionOutcome",
+        "type": "string"
+      },
+      "ResolveMarketRequest": {
+        "additionalProperties": false,
+        "description": "`POST /admin/markets/{id}/resolve`: the outcome and what proves it.",
+        "properties": {
+          "evidence": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Evidence",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/Outcome"
+          }
+        },
+        "required": [
+          "outcome",
+          "evidence"
+        ],
+        "title": "ResolveMarketRequest",
+        "type": "object"
+      },
+      "ResumeMarketRequest": {
+        "additionalProperties": false,
+        "description": "`POST /admin/markets/{id}/resume`.",
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional remark for the audit log.",
+            "title": "Note"
+          }
+        },
+        "title": "ResumeMarketRequest",
+        "type": "object"
+      },
+      "RevokeCodesRequest": {
+        "additionalProperties": false,
+        "description": "`POST /admin/code-batches/{id}/revoke` (A.6).",
+        "properties": {
+          "codes": {
+            "anyOf": [
+              {
+                "items": {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 10000,
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Plain codes of this batch to revoke. Left out (or null), every unredeemed code\nof the batch is revoked.",
+            "title": "Codes"
+          }
+        },
+        "title": "RevokeCodesRequest",
+        "type": "object"
+      },
+      "RevokeCodesResponse": {
+        "properties": {
+          "batch": {
+            "$ref": "#/components/schemas/CodeBatchItem"
+          },
+          "revoked_count": {
+            "description": "Codes this call revoked. Redeemed codes are never affected.",
+            "title": "Revoked Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "batch",
+          "revoked_count"
+        ],
+        "title": "RevokeCodesResponse",
+        "type": "object"
+      },
+      "RiskMarketRow": {
+        "description": "One market that is not yet settled.",
+        "properties": {
+          "account_balance_cr": {
+            "description": "What traders paid in, net. It may go down to minus the budget.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^-?[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Account Balance Cr",
+            "type": "string"
+          },
+          "b_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "B Cr",
+            "type": "string"
+          },
+          "budget_cr": {
+            "description": "The market's loss budget, b · ln 2 rounded up.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Budget Cr",
+            "type": "string"
+          },
+          "close_at": {
+            "format": "date-time",
+            "title": "Close At",
+            "type": "string"
+          },
+          "exposure_cr": {
+            "description": "max(q_yes, q_no) minus the account balance: what VIS would have to add.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^-?[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Exposure Cr",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "p_yes": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "P Yes",
+            "type": "number"
+          },
+          "q_no": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Q No",
+            "type": "string"
+          },
+          "q_yes": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Q Yes",
+            "type": "string"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MarketStatus",
+            "description": "The effective status."
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MarketTier"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "volume_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Volume Cr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "question",
+          "status",
+          "tier",
+          "b_cr",
+          "budget_cr",
+          "p_yes",
+          "q_yes",
+          "q_no",
+          "account_balance_cr",
+          "exposure_cr",
+          "volume_cr",
+          "close_at"
+        ],
+        "title": "RiskMarketRow",
+        "type": "object"
+      },
+      "RiskResponse": {
+        "description": "`GET /admin/risk`.",
+        "properties": {
+          "alerts": {
+            "description": "Alerts nobody acknowledged yet, newest first.",
+            "items": {
+              "$ref": "#/components/schemas/AlertItem"
+            },
+            "title": "Alerts",
+            "type": "array"
+          },
+          "code_issuance_this_month_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Code Issuance This Month Cr",
+            "type": "string"
+          },
+          "loss_budget_cr": {
+            "description": "Sum of the loss budgets of those markets.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Loss Budget Cr",
+            "type": "string"
+          },
+          "markets": {
+            "description": "Soonest `close_at` first.",
+            "items": {
+              "$ref": "#/components/schemas/RiskMarketRow"
+            },
+            "title": "Markets",
+            "type": "array"
+          },
+          "max_code_issuance_per_month_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Max Code Issuance Per Month Cr",
+            "type": "string"
+          },
+          "max_loss_budget_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Max Loss Budget Cr",
+            "type": "string"
+          },
+          "max_open_markets": {
+            "title": "Max Open Markets",
+            "type": "integer"
+          },
+          "obligations": {
+            "$ref": "#/components/schemas/Obligations"
+          },
+          "open_markets": {
+            "description": "Markets whose stored status is OPEN or HALTED.",
+            "title": "Open Markets",
+            "type": "integer"
+          },
+          "unredeemed_code_value_cr": {
+            "description": "Value of the codes that could still be redeemed: active and not expired (A.6).",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Unredeemed Code Value Cr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "open_markets",
+          "max_open_markets",
+          "loss_budget_cr",
+          "max_loss_budget_cr",
+          "obligations",
+          "unredeemed_code_value_cr",
+          "code_issuance_this_month_cr",
+          "max_code_issuance_per_month_cr",
+          "markets",
+          "alerts"
+        ],
+        "title": "RiskResponse",
+        "type": "object"
+      },
+      "StakePreset": {
+        "description": "One buy button of the trade sheet (A.11).",
+        "properties": {
+          "allowed": {
+            "description": "Whether a buy for this budget would pass right now: the viewer may trade, has\nthe balance and stays within the stake limit.",
+            "title": "Allowed",
+            "type": "boolean"
+          },
+          "amount_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Amount Cr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount_cr",
+          "allowed"
+        ],
+        "title": "StakePreset",
+        "type": "object"
+      },
+      "StatusEvent": {
+        "description": "`event: status`. An admin action changed the market; refetch its detail.",
+        "properties": {
+          "market_id": {
+            "format": "uuid",
+            "title": "Market Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MarketStatus",
+            "description": "The effective status at the time of the event."
+          },
+          "trading_open": {
+            "title": "Trading Open",
+            "type": "boolean"
+          },
+          "ts": {
+            "format": "date-time",
+            "title": "Ts",
+            "type": "string"
+          },
+          "type": {
+            "const": "status",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "market_id",
+          "status",
+          "trading_open",
+          "ts"
+        ],
+        "title": "StatusEvent",
+        "type": "object"
+      },
+      "TierConfig": {
+        "description": "A fixed liquidity tier of SPEC §4. CUSTOM is not listed: it has no fixed b.",
+        "properties": {
+          "b_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "B Cr",
+            "type": "string"
+          },
+          "max_loss_cr": {
+            "description": "What VIS can lose at most in a market of this tier: b · ln 2, rounded up.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Max Loss Cr",
+            "type": "string"
+          },
+          "tier": {
+            "$ref": "#/components/schemas/MarketTier"
+          }
+        },
+        "required": [
+          "tier",
+          "b_cr",
+          "max_loss_cr"
+        ],
+        "title": "TierConfig",
+        "type": "object"
+      },
+      "TradeBlockReason": {
+        "description": "Why `MarketViewer.can_trade` is false.",
+        "enum": [
+          "MARKET_NOT_OPEN",
+          "OWN_MARKET",
+          "ACCOUNT_SUSPENDED"
+        ],
+        "title": "TradeBlockReason",
+        "type": "string"
+      },
+      "TradeItem": {
+        "description": "One of the user's trades.",
+        "properties": {
+          "amount_cr": {
+            "description": "The cost of a buy or the proceeds of a sell.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Amount Cr",
+            "type": "string"
+          },
+          "average_price": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Average Price",
+            "type": "number"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "market_id": {
+            "format": "uuid",
+            "title": "Market Id",
+            "type": "string"
+          },
+          "market_question": {
+            "title": "Market Question",
+            "type": "string"
+          },
+          "market_version": {
+            "title": "Market Version",
+            "type": "integer"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/Outcome"
+          },
+          "p_yes_after": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "P Yes After",
+            "type": "number"
+          },
+          "p_yes_before": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "P Yes Before",
+            "type": "number"
+          },
+          "shares": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Shares",
+            "type": "string"
+          },
+          "side": {
+            "$ref": "#/components/schemas/TradeSide"
+          }
+        },
+        "required": [
+          "id",
+          "market_id",
+          "market_question",
+          "side",
+          "outcome",
+          "shares",
+          "amount_cr",
+          "average_price",
+          "p_yes_before",
+          "p_yes_after",
+          "market_version",
+          "created_at"
+        ],
+        "title": "TradeItem",
+        "type": "object"
+      },
+      "TradeListResponse": {
+        "description": "`GET /me/trades`, newest first.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TradeItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "TradeListResponse",
+        "type": "object"
+      },
+      "TradeRequest": {
+        "additionalProperties": false,
+        "description": "Body of `POST /markets/{id}/trades`. Guards are optional (A.4).",
+        "properties": {
+          "amount_cr": {
+            "anyOf": [
+              {
+                "examples": [
+                  "0.25"
+                ],
+                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A budget for a buy. The trader pays what the shares cost, never more.",
+            "title": "Amount Cr"
+          },
+          "max_cost_cr": {
+            "anyOf": [
+              {
+                "examples": [
+                  "0.25"
+                ],
+                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Cost Cr"
+          },
+          "min_proceeds_cr": {
+            "anyOf": [
+              {
+                "examples": [
+                  "0.25"
+                ],
+                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Proceeds Cr"
+          },
+          "min_shares": {
+            "anyOf": [
+              {
+                "examples": [
+                  "0.25"
+                ],
+                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Shares"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/Outcome"
+          },
+          "quote_version": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`quote_version` of the quote the user saw. Informational: the guards decide.",
+            "title": "Quote Version"
+          },
+          "shares": {
+            "anyOf": [
+              {
+                "examples": [
+                  "0.25"
+                ],
+                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shares"
+          },
+          "side": {
+            "$ref": "#/components/schemas/TradeSide"
+          }
+        },
+        "required": [
+          "side",
+          "outcome"
+        ],
+        "title": "TradeRequest",
+        "type": "object"
+      },
+      "TradeResponse": {
+        "description": "An executed trade. Sending the same Idempotency-Key again returns it unchanged.",
+        "properties": {
+          "amount_cr": {
+            "description": "What was paid for a buy or received for a sell.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Amount Cr",
+            "type": "string"
+          },
+          "average_price": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Average Price",
+            "type": "number"
+          },
+          "balance_cr": {
+            "description": "The trader's balance after this trade.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Balance Cr",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "market_id": {
+            "format": "uuid",
+            "title": "Market Id",
+            "type": "string"
+          },
+          "market_version": {
+            "description": "The market's `version` after this trade.",
+            "title": "Market Version",
+            "type": "integer"
+          },
+          "net_stake_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Net Stake Cr",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/Outcome"
+          },
+          "p_no_after": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "P No After",
+            "type": "number"
+          },
+          "p_no_before": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "P No Before",
+            "type": "number"
+          },
+          "p_yes_after": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "P Yes After",
+            "type": "number"
+          },
+          "p_yes_before": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "P Yes Before",
+            "type": "number"
+          },
+          "shares": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Shares",
+            "type": "string"
+          },
+          "side": {
+            "$ref": "#/components/schemas/TradeSide"
+          },
+          "stake_left_cr": {
+            "description": "What the trader may still put at stake in this market.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Stake Left Cr",
+            "type": "string"
+          },
+          "trade_id": {
+            "format": "uuid",
+            "title": "Trade Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trade_id",
+          "market_id",
+          "side",
+          "outcome",
+          "shares",
+          "amount_cr",
+          "average_price",
+          "p_yes_before",
+          "p_no_before",
+          "p_yes_after",
+          "p_no_after",
+          "market_version",
+          "balance_cr",
+          "net_stake_cr",
+          "stake_left_cr",
+          "created_at"
+        ],
+        "title": "TradeResponse",
+        "type": "object"
+      },
+      "TradeSide": {
+        "enum": [
+          "BUY",
+          "SELL"
+        ],
+        "title": "TradeSide",
+        "type": "string"
+      },
+      "UserRole": {
+        "enum": [
+          "USER",
+          "ADMIN",
+          "BARISTA"
+        ],
+        "title": "UserRole",
+        "type": "string"
+      },
+      "VerifyLoginRequest": {
+        "additionalProperties": false,
+        "description": "`POST /auth/verify`: the token from the link's fragment (A.3).",
+        "properties": {
+          "token": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "title": "VerifyLoginRequest",
+        "type": "object"
+      },
+      "VerifyLoginResponse": {
+        "description": "The signed-in user. The session itself travels in the cookie, never in the body.",
+        "properties": {
+          "balance_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Balance Cr",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "monthly_grant_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Monthly Grant Cr",
+            "type": "string"
+          },
+          "next_monthly_grant_on": {
+            "description": "First day of the next calendar month in the app's timezone (SPEC §2).",
+            "format": "date",
+            "title": "Next Monthly Grant On",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/UserRole"
+          },
+          "signup_granted": {
+            "description": "True when this sign-in created the account and booked its signup grant.",
+            "title": "Signup Granted",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "role",
+          "created_at",
+          "balance_cr",
+          "monthly_grant_cr",
+          "next_monthly_grant_on",
+          "signup_granted"
+        ],
+        "title": "VerifyLoginResponse",
+        "type": "object"
+      },
+      "VoidMarketRequest": {
+        "additionalProperties": false,
+        "description": "`POST /admin/markets/{id}/void`: refund every net stake. The reason is published\nas the market's resolution.",
+        "properties": {
+          "reason": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "VoidMarketRequest",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "MarkETH API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/admin/alerts/{alert_id}/ack": {
+      "post": {
+        "operationId": "acknowledge_alert",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "alert_id",
+            "required": true,
+            "schema": {
+              "maximum": 9223372036854775807,
+              "minimum": 1,
+              "title": "Alert Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertItem"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Acknowledge an alert",
+        "tags": [
+          "admin-risk"
+        ]
+      }
+    },
+    "/api/admin/code-batches": {
+      "get": {
+        "operationId": "list_code_batches",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodeBatchListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Batches with their redeemed and revoked counts",
+        "tags": [
+          "admin-code-batches"
+        ]
+      },
+      "post": {
+        "operationId": "create_code_batch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCodeBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodeBatchCreatedResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Create a batch; the plain codes are returned this once",
+        "tags": [
+          "admin-code-batches"
+        ]
+      }
+    },
+    "/api/admin/code-batches/{batch_id}/revoke": {
+      "post": {
+        "operationId": "revoke_codes",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "batch_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Batch Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevokeCodesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevokeCodesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Revoke unredeemed codes of a batch",
+        "tags": [
+          "admin-code-batches"
+        ]
+      }
+    },
+    "/api/admin/grants/monthly": {
+      "post": {
+        "operationId": "run_monthly_grants",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MonthlyGrantRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Grant all owed monthly vouchers to every user",
+        "tags": [
+          "admin-grants"
+        ]
+      }
+    },
+    "/api/admin/markets/{market_id}/approve": {
+      "post": {
+        "operationId": "approve_market",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "market_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Market Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApproveMarketRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Approve a proposal and open the market",
+        "tags": [
+          "admin-markets"
+        ]
+      }
+    },
+    "/api/admin/markets/{market_id}/close": {
+      "post": {
+        "operationId": "close_market",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "market_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Market Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CloseMarketRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Close a market to trading for good",
+        "tags": [
+          "admin-markets"
+        ]
+      }
+    },
+    "/api/admin/markets/{market_id}/halt": {
+      "post": {
+        "operationId": "halt_market",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "market_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Market Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HaltMarketRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Suspend trading in an open market",
+        "tags": [
+          "admin-markets"
+        ]
+      }
+    },
+    "/api/admin/markets/{market_id}/reject": {
+      "post": {
+        "operationId": "reject_market",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "market_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Market Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RejectMarketRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Reject a proposal",
+        "tags": [
+          "admin-markets"
+        ]
+      }
+    },
+    "/api/admin/markets/{market_id}/resolve": {
+      "post": {
+        "operationId": "resolve_market",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "market_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Market Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveMarketRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Resolve a closed market to YES or NO",
+        "tags": [
+          "admin-markets"
+        ]
+      }
+    },
+    "/api/admin/markets/{market_id}/resume": {
+      "post": {
+        "operationId": "resume_market",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "market_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Market Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResumeMarketRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Resume trading in a halted market",
+        "tags": [
+          "admin-markets"
+        ]
+      }
+    },
+    "/api/admin/markets/{market_id}/void": {
+      "post": {
+        "operationId": "void_market",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "market_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Market Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoidMarketRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Void a market and refund every net stake",
+        "tags": [
+          "admin-markets"
+        ]
+      }
+    },
+    "/api/admin/risk": {
+      "get": {
+        "operationId": "get_risk",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RiskResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Open markets, loss budgets, outstanding obligations and alerts",
+        "tags": [
+          "admin-risk"
+        ]
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "operationId": "logout",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "End the session and clear its cookie",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/request-link": {
+      "post": {
+        "operationId": "request_login_link",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginLinkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginLinkResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Mail a sign-in link to an ETH address",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/verify": {
+      "post": {
+        "operationId": "verify_login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyLoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerifyLoginResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Confirm a sign-in link and open a session",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/barista/coffee-tickets/{code}/redeem": {
+      "post": {
+        "operationId": "redeem_coffee_ticket",
+        "parameters": [
+          {
+            "description": "The ticket's code as scanned or typed; dashes and case do not matter.",
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "description": "The ticket's code as scanned or typed; dashes and case do not matter.",
+              "maxLength": 64,
+              "minLength": 1,
+              "title": "Code",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoffeeTicketRedeemResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Mark a scanned coffee ticket as used",
+        "tags": [
+          "barista"
+        ]
+      }
+    },
+    "/api/coffee-tickets": {
+      "post": {
+        "operationId": "issue_coffee_ticket",
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoffeeTicketIssuedResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Turn one voucher into a coffee ticket",
+        "tags": [
+          "coffee-tickets"
+        ]
+      }
+    },
+    "/api/config": {
+      "get": {
+        "operationId": "get_config",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicConfigResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Public tunables the UI needs",
+        "tags": [
+          "config"
+        ]
+      }
+    },
+    "/api/health": {
+      "get": {
+        "operationId": "get_health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Report Postgres, Redis and ScyllaDB separately",
+        "tags": [
+          "health"
+        ]
+      }
+    },
+    "/api/markets": {
+      "get": {
+        "operationId": "list_markets",
+        "parameters": [
+          {
+            "description": "Effective status to list. Left out: every public status. PROPOSED and REJECTED are for admins only.",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/MarketStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Effective status to list. Left out: every public status. PROPOSED and REJECTED are for admins only.",
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "List markets by effective status",
+        "tags": [
+          "markets"
+        ]
+      },
+      "post": {
+        "operationId": "propose_market",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProposeMarketRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Propose a market",
+        "tags": [
+          "markets"
+        ]
+      }
+    },
+    "/api/markets/{market_id}": {
+      "get": {
+        "operationId": "get_market",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "market_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Market Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Details, rules and price; with a session, the viewer's stake",
+        "tags": [
+          "markets"
+        ]
+      }
+    },
+    "/api/markets/{market_id}/history": {
+      "get": {
+        "operationId": "get_market_history",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "market_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Market Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Chart data: the price after every trade",
+        "tags": [
+          "live"
+        ]
+      }
+    },
+    "/api/markets/{market_id}/quote": {
+      "get": {
+        "operationId": "get_quote",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "market_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Market Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "side",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/TradeSide"
+            }
+          },
+          {
+            "in": "query",
+            "name": "outcome",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Outcome"
+            }
+          },
+          {
+            "description": "A budget for a buy. The trader pays what the shares cost, never more.",
+            "in": "query",
+            "name": "amount_cr",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "examples": [
+                    "0.25"
+                  ],
+                  "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A budget for a buy. The trader pays what the shares cost, never more.",
+              "title": "Amount Cr"
+            }
+          },
+          {
+            "in": "query",
+            "name": "shares",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "examples": [
+                    "0.25"
+                  ],
+                  "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Shares"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuoteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Price a trade without executing it",
+        "tags": [
+          "trading"
+        ]
+      }
+    },
+    "/api/markets/{market_id}/stream": {
+      "get": {
+        "operationId": "stream_market",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "market_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Market Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "itemSchema": {
+                  "properties": {
+                    "data": {
+                      "type": "string"
+                    },
+                    "event": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "retry": {
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "type": "object"
+                },
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/QuoteEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/StatusEvent"
+                    }
+                  ],
+                  "title": "Response 200 Stream Market"
+                }
+              }
+            },
+            "description": "An event stream. `event: quote` carries a QuoteEvent and `event: status` a StatusEvent as JSON in `data:`; comment lines keep the stream alive."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Live quote and status events (server-sent events)",
+        "tags": [
+          "live"
+        ]
+      }
+    },
+    "/api/markets/{market_id}/trades": {
+      "post": {
+        "operationId": "create_trade",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "market_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Market Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "A UUID the client makes up per trade and repeats on every retry of it. The same key returns the same trade; it never executes twice.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "A UUID the client makes up per trade and repeats on every retry of it. The same key returns the same trade; it never executes twice.",
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TradeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TradeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Buy or sell shares, idempotently",
+        "tags": [
+          "trading"
+        ]
+      }
+    },
+    "/api/me": {
+      "get": {
+        "operationId": "get_me",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Profile, balance and next monthly grant",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/coffee-tickets": {
+      "get": {
+        "operationId": "list_my_coffee_tickets",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoffeeTicketListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Own coffee tickets, pending and past",
+        "tags": [
+          "coffee-tickets"
+        ]
+      }
+    },
+    "/api/me/ledger": {
+      "get": {
+        "operationId": "list_my_ledger",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "`next_cursor` of the previous page; omit it for the first page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`next_cursor` of the previous page; omit it for the first page.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Every movement on the balance, newest first",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/positions": {
+      "get": {
+        "operationId": "list_my_positions",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortfolioResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Portfolio: positions per market with their value",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/proposals": {
+      "get": {
+        "operationId": "list_my_proposals",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Markets the user proposed and their status",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/trades": {
+      "get": {
+        "operationId": "list_my_trades",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "`next_cursor` of the previous page; omit it for the first page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`next_cursor` of the previous page; omit it for the first page.",
+              "title": "Cursor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TradeListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Own trades, newest first",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/vouchers/redeem-code": {
+      "post": {
+        "operationId": "redeem_code",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RedeemCodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RedeemCodeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "summary": "Redeem a voucher code for its value",
+        "tags": [
+          "vouchers"
+        ]
+      }
+    }
+  }
+}

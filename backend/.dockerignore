@@ -1,0 +1,24 @@
+# Keeps the build context to what the image runs: app/, migrations/, scripts/, alembic.ini
+# and the two files uv installs from.
+
+# Environments and caches
+.venv/
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.import_linter_cache/
+.coverage
+htmlcov/
+
+# Tests need Docker (Testcontainers) and run on the host, never in the image
+tests/
+
+# Not needed at runtime
+*.md
+*.env
+.python-version
+Dockerfile
+.dockerignore

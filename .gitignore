@@ -1,3 +1,32 @@
+# IDE and OS
 .idea
+.vscode
+.DS_Store
+
+# Environment (only the template is committed)
 *.env
 !.example.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.import_linter_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*
+
+# Local artefacts
+*.log
+/tmp/

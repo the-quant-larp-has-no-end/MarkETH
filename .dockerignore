@@ -1,0 +1,21 @@
+# The images are built from ./backend and ./frontend, each with its own .dockerignore.
+# Nothing builds from the repository root; this file keeps secrets and bulk out of the
+# context if something ever does.
+
+.git/
+.github/
+.idea/
+.vscode/
+
+# .env holds credentials; only the template may travel
+*.env
+!.example.env
+
+**/.venv/
+**/node_modules/
+**/.next/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.hypothesis/

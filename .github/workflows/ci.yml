@@ -1,0 +1,102 @@
+# The checks behind "finish with `make lint` and `make test` green" (CLAUDE.md), run on
+# every pull request and on main. The ScyllaDB tests are slow and stay deselected, as
+# they are in a plain `uv run pytest`.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Install exactly what uv.lock says and never rewrite it.
+  UV_FROZEN: "1"
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.12.x"
+          working-directory: backend
+      # Settings has no defaults (CLAUDE.md, rule 7); the template is a complete
+      # development environment.
+      - name: Create .env from the template
+        run: cp .example.env .env
+        working-directory: .
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+      - run: uv run lint-imports
+      # The integration tests start Postgres and Redis through Testcontainers, on the
+      # runner's Docker.
+      - run: uv run pytest
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  # backend/openapi.json and the frontend's generated types are committed. This job
+  # regenerates both and fails when the commit does not already contain the result.
+  contract:
+    name: API contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: "0.12.x"
+          working-directory: backend
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Create .env from the template
+        run: cp .example.env .env
+      - run: uv sync --frozen
+        working-directory: backend
+      - run: npm ci
+        working-directory: frontend
+      - name: Export the OpenAPI schema and regenerate the frontend types
+        run: make api-client
+      - name: Fail if the committed contract is stale
+        run: |
+          git add --all
+          if ! git diff --cached --exit-code; then
+            echo "::error::The API contract changed. Run 'make api-client' and commit the result."
+            exit 1
+          fi

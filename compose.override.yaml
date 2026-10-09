@@ -1,0 +1,83 @@
+# Development overlay (A.10). A plain `docker compose up` merges this file over
+# compose.yaml: dev images, the source mounted into the containers with hot reload, and
+# every service published on the host at the port .env names, so a process started on
+# the host (pytest, alembic, uvicorn, next dev) reaches the stores with the same .env.
+#
+# The extra ports are bound to the loopback interface: they are for this machine, and
+# the passwords in .env are development ones.
+#
+# The dev images get their own names (Compose's default plus "-dev"), so switching
+# between the two stacks never starts one with the other's image.
+
+x-backend-dev: &backend-dev
+  build:
+    target: dev
+  volumes:
+    - ./backend:/app
+
+services:
+  web:
+    build:
+      target: dev
+    image: ${COMPOSE_PROJECT_NAME}-web-dev
+    volumes:
+      - ./frontend:/app
+      # The mounted source would otherwise bring the host's node_modules and build
+      # output, which belong to another OS. The image's entrypoint keeps this volume
+      # in step with package-lock.json.
+      - web-node-modules:/app/node_modules
+      - web-next:/app/.next
+    ports:
+      - "127.0.0.1:${WEB_HOST_PORT:?}:3000"
+
+  api:
+    <<: *backend-dev
+    image: ${COMPOSE_PROJECT_NAME}-api-dev
+    command:
+      - uvicorn
+      - app.main:create_app
+      - --factory
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - "*"
+      - --reload
+      - --reload-dir
+      - app
+      # An open event stream would otherwise hold every reload until the browser lets go.
+      - --timeout-graceful-shutdown
+      - "2"
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:?}:8000"
+
+  # No reloader of its own: `docker compose restart relay` picks up a change.
+  relay:
+    <<: *backend-dev
+    image: ${COMPOSE_PROJECT_NAME}-relay-dev
+
+  migrate:
+    <<: *backend-dev
+    image: ${COMPOSE_PROJECT_NAME}-migrate-dev
+
+  postgres:
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:?}:5432"
+
+  redis:
+    ports:
+      - "127.0.0.1:${REDIS_PORT:?}:6379"
+
+  scylla:
+    ports:
+      - "127.0.0.1:${SCYLLA_PORT:?}:9042"
+
+  mailpit:
+    ports:
+      - "127.0.0.1:${SMTP_PORT:?}:1025"
+
+volumes:
+  web-node-modules:
+  web-next:
