@@ -528,7 +528,8 @@ A buy for a budget that affords no whole micro-share returns `shares_micro == 0`
 
 ### A.11 Frontend
 
-- Polymarket's layout in ETH Zurich's palette; the full system is in `frontend/DESIGN.md`. Light theme only. No ETH logo; the wordmark is "MarkETH". Headings and numbers use Barlow, body text Inter, because ETH's DIN Next is licensed.
+- Polymarket's layout in a dark navy palette (navy `#1E2749` and `#273469`, white `#FAFAFF` as the accent, green `#06A77D` for YES, red `#EF3E36` for NO); the full system is in `frontend/DESIGN.md`. Dark theme only. No ETH logo; the product is written "MarkETH" in text, and its own logo (with the name set as "markETH" inside the image) sits at the top left. Headings and numbers use Barlow, body text Inter, because ETH's DIN Next is licensed.
+- On screen the unit is called a "token" and is shown with a coffee-bean icon; "credit", "CR" and `*_cr` remain its names in the API, the database and this spec. The logo (a cup with a rising arrow, alone and with the name) and the token icon are PNGs in `frontend/public/brand/`, derived from the originals in `frontend/design/`.
 - The frontend reads no environment variables. Tunables come from `GET /api/config`.
 - Stake presets come from the market detail response with an `allowed` flag each, so the UI never compares amounts itself.
 
