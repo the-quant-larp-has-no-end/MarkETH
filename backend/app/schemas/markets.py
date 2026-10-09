@@ -2,7 +2,8 @@
 
 The frontend computes nothing (golden rule 6), so a market carries every number its
 screens show: display probabilities, the effective status, and for a signed-in viewer
-their holdings, their stake and which stake buttons would be accepted.
+their holdings, their stake, which buy buttons would be accepted and how many shares
+each sell button stands for.
 """
 
 from datetime import datetime
@@ -123,6 +124,29 @@ class StakePreset(ResponseModel):
     the balance and stays within the stake limit."""
 
 
+class SellPortion(StrEnum):
+    """How much of a holding a sell button of the trade sheet stands for."""
+
+    HALF = "HALF"
+    """Half the shares held, rounded down to a millionth of a share."""
+
+    ALL = "ALL"
+
+
+class SellPreset(ResponseModel):
+    """One sell button of the trade sheet (A.11): a number of shares the server worked
+    out, so the client halves and compares nothing."""
+
+    outcome: Outcome
+    portion: SellPortion
+    shares: ShareAmount
+    """Send this as `shares` of a SELL of `outcome`, and as `shares` of its quote."""
+
+    allowed: bool
+    """Whether that sell would pass right now: the viewer may trade and `shares` is at
+    least the minimum trade size."""
+
+
 class TradeBlockReason(StrEnum):
     """Why `MarketViewer.can_trade` is false."""
 
@@ -154,6 +178,9 @@ class MarketViewer(ResponseModel):
     """`stake_limit_cr - net_stake_cr`, never below zero."""
 
     stake_presets: list[StakePreset]
+    sell_presets: list[SellPreset]
+    """Always four entries: YES half, YES all, NO half, NO all."""
+
     can_trade: bool
     cannot_trade_reason: TradeBlockReason | None
     """Null exactly when `can_trade` is true."""

@@ -35,7 +35,8 @@ class TradeSize(RequestModel):
     side: TradeSide
     outcome: Outcome
     amount_cr: PositiveCreditAmount | None = None
-    """A budget for a buy. The trader pays what the shares cost, never more."""
+    """A budget for a buy. It buys as many shares as it pays for, rounded down, and
+    the trader is charged exactly this amount."""
 
     shares: PositiveShareAmount | None = None
 
@@ -83,7 +84,8 @@ class QuoteResponse(ResponseModel):
     outcome: Outcome
     shares: ShareAmount
     amount_cr: CreditAmount
-    """The cost of a buy (rounded up) or the proceeds of a sell (rounded down)."""
+    """The cost of a buy (rounded up) or the proceeds of a sell (rounded down). The
+    proceeds of a sell can be 0 when the shares are all but worthless."""
 
     average_price: Probability
     """`amount_cr / shares`: credits per share, rounded like a probability."""

@@ -11,10 +11,16 @@ Committing here, and nowhere else, is what makes an operation atomic: a trade's 
 entry, position, market quantities, outbox row and idempotency response exist together
 or not at all (SPEC §8).
 
-A database error inside the block (a violated constraint, a lost connection) ends the
-transaction on the spot. Let it leave the block and translate it outside; nothing else
-can run on that unit of work. The deferred ledger check runs at COMMIT, so it surfaces
-from the end of the block as `IntegrityError`.
+A database error inside the block ends the transaction on the spot; nothing else can
+run on that unit of work, so let it leave the block.
+
+* A violated constraint (`IntegrityError`) that a service expects, such as a second
+  resolution of a market, is translated by that service outside the block. One nobody
+  expected is a bug and becomes a 500. The deferred ledger check runs at COMMIT, so it
+  surfaces from the end of the block.
+* A lost or refused connection is nobody's to translate: it leaves the service as it
+  is, and the API answers it with 503 for every route (`app/api/errors.py`, SPEC §9).
+  The relay and the scripts are not behind the API and catch it themselves.
 """
 
 import asyncio

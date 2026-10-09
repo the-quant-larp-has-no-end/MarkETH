@@ -67,7 +67,7 @@
                 "examples": [
                   "0.25"
                 ],
-                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                "pattern": "^[0-9]{1,9}(\\.[0-9]{1,6})?$",
                 "type": "string"
               },
               {
@@ -543,7 +543,7 @@
                 "examples": [
                   "0.25"
                 ],
-                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                "pattern": "^[0-9]{1,9}(\\.[0-9]{1,6})?$",
                 "type": "string"
               },
               {
@@ -615,15 +615,13 @@
         "type": "string"
       },
       "ErrorResponse": {
-        "description": "The body of every non-2xx response (SPEC §10, Appendix A.2).",
+        "description": "The body of every non-2xx response (SPEC §10, Appendix A.2).\n\n`message` is written for the user and can be shown as it is. `details` is an\nobject, empty unless the code is one of these:\n\n* `VALIDATION_ERROR`. A request that does not match its schema: `errors`, a list\n  of `{loc, msg, type}`, one per field. A rule a service checks: `field`, the name\n  of the offending field. An email address that is not allowed: `allowed_domains`,\n  a list.\n* `RATE_LIMITED`: `retry_after_seconds`, an integer, also sent as the\n  `Retry-After` header.\n* `QUOTE_STALE`: `quote`, a fresh `QuoteResponse` for the same trade.\n* `LIMIT_EXCEEDED`: `limit`, which names the limit: `MAX_STAKE_PER_USER_MARKET`,\n  `MAX_PROPOSALS_PER_USER_PER_DAY`, `MAX_OPEN_MARKETS`, `MAX_MARKET_BUDGET`,\n  `MAX_AGGREGATE_LOSS_BUDGET`, `MAX_CODE_ISSUANCE_PER_MONTH` or\n  `ONE_CODE_PER_USER`. With `MAX_STAKE_PER_USER_MARKET` also `stake_limit_cr` and\n  `stake_left_cr`; with `MAX_CODE_ISSUANCE_PER_MONTH` also `issued_cr`,\n  `requested_cr` and `cap_cr`.\n* `INSUFFICIENT_BALANCE`: `balance_cr` and `required_cr`.\n* `SERVICE_UNAVAILABLE`, from `GET /health` only: `postgres`, `redis` and\n  `scylla`, each `up` or `down`.\n\nAmounts in `details` are decimal strings like every `*_cr` field.",
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode"
           },
           "details": {
-            "additionalProperties": true,
-            "title": "Details",
-            "type": "object"
+            "title": "Details"
           },
           "message": {
             "title": "Message",
@@ -1333,6 +1331,14 @@
             "title": "Proceeds Cr",
             "type": "string"
           },
+          "sell_presets": {
+            "description": "Always four entries: YES half, YES all, NO half, NO all.",
+            "items": {
+              "$ref": "#/components/schemas/SellPreset"
+            },
+            "title": "Sell Presets",
+            "type": "array"
+          },
           "stake_left_cr": {
             "description": "`stake_limit_cr - net_stake_cr`, never below zero.",
             "examples": [
@@ -1367,6 +1373,7 @@
           "stake_limit_cr",
           "stake_left_cr",
           "stake_presets",
+          "sell_presets",
           "can_trade",
           "cannot_trade_reason"
         ],
@@ -1383,6 +1390,11 @@
             "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
             "title": "Balance Cr",
             "type": "string"
+          },
+          "can_get_coffee": {
+            "description": "Whether the balance covers a coffee ticket right now (SPEC §2: only whole\nvouchers become tickets). The wallet enables \"Get a coffee\" from this.",
+            "title": "Can Get Coffee",
+            "type": "boolean"
           },
           "created_at": {
             "format": "date-time",
@@ -1422,6 +1434,7 @@
           "role",
           "created_at",
           "balance_cr",
+          "can_get_coffee",
           "monthly_grant_cr",
           "next_monthly_grant_on"
         ],
@@ -1446,12 +1459,19 @@
             "type": "string"
           },
           "users_checked": {
+            "description": "ACTIVE users the run looked at.",
             "title": "Users Checked",
+            "type": "integer"
+          },
+          "users_failed": {
+            "description": "Users whose grants could not be booked this time. Their error is in the server\nlog; every other user was still served, and running again retries them.",
+            "title": "Users Failed",
             "type": "integer"
           }
         },
         "required": [
           "users_checked",
+          "users_failed",
           "grants_booked",
           "total_cr"
         ],
@@ -1459,10 +1479,10 @@
         "type": "object"
       },
       "Obligations": {
-        "description": "Outstanding obligations: the most coffee VIS could owe right now (SPEC §5).",
+        "description": "Outstanding obligations: the most coffee VIS could owe right now (SPEC §5, A.6).",
         "properties": {
           "above_threshold": {
-            "description": "True when `total_cr` exceeds `alert_threshold_cr`.",
+            "description": "True when `total_cr` exceeds `alert_threshold_cr`. This flag is the alert of\nSPEC §5: the page shows a warning from it, and no `alerts` row is written.",
             "title": "Above Threshold",
             "type": "boolean"
           },
@@ -2057,7 +2077,7 @@
         "description": "What a trade would do right now. Also sent as `details.quote` of `QUOTE_STALE`.",
         "properties": {
           "amount_cr": {
-            "description": "The cost of a buy (rounded up) or the proceeds of a sell (rounded down).",
+            "description": "The cost of a buy (rounded up) or the proceeds of a sell (rounded down). The\nproceeds of a sell can be 0 when the shares are all but worthless.",
             "examples": [
               "0.25"
             ],
@@ -2139,9 +2159,10 @@
       },
       "RedeemCodeRequest": {
         "additionalProperties": false,
-        "description": "`POST /vouchers/redeem-code`: the code as typed or scanned.",
+        "description": "`POST /vouchers/redeem-code`: the code alone, as typed or as scanned.\n\nA code card's QR holds a URL, `{PUBLIC_BASE_URL}/wallet#code=XXXX-XXXX-XXXX` (A.6).\nThe client cuts the code out of the fragment, in the wallet page a phone camera\nopens and in the in-app scanner alike, and sends only that. A whole URL is not a\ncode: it is answered with `CODE_INVALID` and counts as an attempt.",
         "properties": {
           "code": {
+            "description": "Dashes, spaces and case do not matter; O is read as 0, I and L as 1.",
             "maxLength": 64,
             "minLength": 1,
             "title": "Code",
@@ -2300,11 +2321,11 @@
         "description": "One market that is not yet settled.",
         "properties": {
           "account_balance_cr": {
-            "description": "What traders paid in, net. It may go down to minus the budget.",
+            "description": "What traders paid in, net of what sells paid out. Never negative: the market's\nloss, at most its budget, shows as `exposure_cr` and is booked at settlement.",
             "examples": [
               "0.25"
             ],
-            "pattern": "^-?[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
             "title": "Account Balance Cr",
             "type": "string"
           },
@@ -2331,7 +2352,7 @@
             "type": "string"
           },
           "exposure_cr": {
-            "description": "max(q_yes, q_no) minus the account balance: what VIS would have to add.",
+            "description": "max(q_yes, q_no) minus the account balance: what VIS would have to add if the\nmore heavily held outcome won. At most `budget_cr`.",
             "examples": [
               "0.25"
             ],
@@ -2498,6 +2519,48 @@
           "alerts"
         ],
         "title": "RiskResponse",
+        "type": "object"
+      },
+      "SellPortion": {
+        "description": "How much of a holding a sell button of the trade sheet stands for.",
+        "enum": [
+          "HALF",
+          "ALL"
+        ],
+        "title": "SellPortion",
+        "type": "string"
+      },
+      "SellPreset": {
+        "description": "One sell button of the trade sheet (A.11): a number of shares the server worked\nout, so the client halves and compares nothing.",
+        "properties": {
+          "allowed": {
+            "description": "Whether that sell would pass right now: the viewer may trade and `shares` is at\nleast the minimum trade size.",
+            "title": "Allowed",
+            "type": "boolean"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/Outcome"
+          },
+          "portion": {
+            "$ref": "#/components/schemas/SellPortion"
+          },
+          "shares": {
+            "description": "Send this as `shares` of a SELL of `outcome`, and as `shares` of its quote.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Shares",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "portion",
+          "shares",
+          "allowed"
+        ],
+        "title": "SellPreset",
         "type": "object"
       },
       "StakePreset": {
@@ -2727,14 +2790,14 @@
                 "examples": [
                   "0.25"
                 ],
-                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                "pattern": "^[0-9]{1,9}(\\.[0-9]{1,6})?$",
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "description": "A budget for a buy. The trader pays what the shares cost, never more.",
+            "description": "A budget for a buy. It buys as many shares as it pays for, rounded down, and\nthe trader is charged exactly this amount.",
             "title": "Amount Cr"
           },
           "max_cost_cr": {
@@ -2743,7 +2806,7 @@
                 "examples": [
                   "0.25"
                 ],
-                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                "pattern": "^[0-9]{1,9}(\\.[0-9]{1,6})?$",
                 "type": "string"
               },
               {
@@ -2773,7 +2836,7 @@
                 "examples": [
                   "0.25"
                 ],
-                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                "pattern": "^[0-9]{1,9}(\\.[0-9]{1,6})?$",
                 "type": "string"
               },
               {
@@ -2804,7 +2867,7 @@
                 "examples": [
                   "0.25"
                 ],
-                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                "pattern": "^[0-9]{1,9}(\\.[0-9]{1,6})?$",
                 "type": "string"
               },
               {
@@ -2993,6 +3056,11 @@
             "title": "Balance Cr",
             "type": "string"
           },
+          "can_get_coffee": {
+            "description": "Whether the balance covers a coffee ticket right now (SPEC §2: only whole\nvouchers become tickets). The wallet enables \"Get a coffee\" from this.",
+            "title": "Can Get Coffee",
+            "type": "boolean"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -3036,6 +3104,7 @@
           "role",
           "created_at",
           "balance_cr",
+          "can_get_coffee",
           "monthly_grant_cr",
           "next_monthly_grant_on",
           "signup_granted"
@@ -3060,9 +3129,18 @@
         "title": "VoidMarketRequest",
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "session": {
+        "description": "The session cookie that `POST /auth/verify` sets: HttpOnly and SameSite=Lax, so the browser sends it by itself and scripts never see it. Its name is the server's SESSION_COOKIE_NAME setting. Where an operation lists a role, the session must belong to a user with that role. A suspended account is refused wherever a session is needed.",
+        "in": "cookie",
+        "name": "marketh_session",
+        "type": "apiKey"
+      }
     }
   },
   "info": {
+    "description": "Everything sits under `/api`, on the same origin as the app.\n\n* Credits (`*_cr`) and shares are decimal strings with at most six places, never JSON numbers. Probabilities are numbers in [0, 1], already rounded for display.\n* Every error has one shape, `ErrorResponse`: switch on `code`, show `message`.\n* Each operation says who may call it, in its description and in `security`.\n* A request with a method other than GET, HEAD or OPTIONS must carry an `Origin` header the server allows, or it is answered with 403 `FORBIDDEN`.",
     "title": "MarkETH API",
     "version": "0.1.0"
   },
@@ -3070,6 +3148,7 @@
   "paths": {
     "/api/admin/alerts/{alert_id}/ack": {
       "post": {
+        "description": "Access: role ADMIN.",
         "operationId": "acknowledge_alert",
         "parameters": [
           {
@@ -3106,6 +3185,13 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": [
+              "ADMIN"
+            ]
+          }
+        ],
         "summary": "Acknowledge an alert",
         "tags": [
           "admin-risk"
@@ -3114,6 +3200,7 @@
     },
     "/api/admin/code-batches": {
       "get": {
+        "description": "Access: role ADMIN.",
         "operationId": "list_code_batches",
         "responses": {
           "200": {
@@ -3137,12 +3224,20 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": [
+              "ADMIN"
+            ]
+          }
+        ],
         "summary": "Batches with their redeemed and revoked counts",
         "tags": [
           "admin-code-batches"
         ]
       },
       "post": {
+        "description": "Access: role ADMIN.",
         "operationId": "create_code_batch",
         "requestBody": {
           "content": {
@@ -3176,6 +3271,13 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": [
+              "ADMIN"
+            ]
+          }
+        ],
         "summary": "Create a batch; the plain codes are returned this once",
         "tags": [
           "admin-code-batches"
@@ -3184,6 +3286,7 @@
     },
     "/api/admin/code-batches/{batch_id}/revoke": {
       "post": {
+        "description": "Access: role ADMIN.",
         "operationId": "revoke_codes",
         "parameters": [
           {
@@ -3229,6 +3332,13 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": [
+              "ADMIN"
+            ]
+          }
+        ],
         "summary": "Revoke unredeemed codes of a batch",
         "tags": [
           "admin-code-batches"
@@ -3237,6 +3347,7 @@
     },
     "/api/admin/grants/monthly": {
       "post": {
+        "description": "Access: role ADMIN.",
         "operationId": "run_monthly_grants",
         "responses": {
           "200": {
@@ -3260,6 +3371,13 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": [
+              "ADMIN"
+            ]
+          }
+        ],
         "summary": "Grant all owed monthly vouchers to every user",
         "tags": [
           "admin-grants"
@@ -3268,6 +3386,7 @@
     },
     "/api/admin/markets/{market_id}/approve": {
       "post": {
+        "description": "Access: role ADMIN.",
         "operationId": "approve_market",
         "parameters": [
           {
@@ -3313,6 +3432,13 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": [
+              "ADMIN"
+            ]
+          }
+        ],
         "summary": "Approve a proposal and open the market",
         "tags": [
           "admin-markets"
@@ -3321,6 +3447,7 @@
     },
     "/api/admin/markets/{market_id}/close": {
       "post": {
+        "description": "Access: role ADMIN.",
         "operationId": "close_market",
         "parameters": [
           {
@@ -3366,6 +3493,13 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": [
+              "ADMIN"
+            ]
+          }
+        ],
         "summary": "Close a market to trading for good",
         "tags": [
           "admin-markets"
@@ -3374,6 +3508,7 @@
     },
     "/api/admin/markets/{market_id}/halt": {
       "post": {
+        "description": "Access: role ADMIN.",
         "operationId": "halt_market",
         "parameters": [
           {
@@ -3419,6 +3554,13 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": [
+              "ADMIN"
+            ]
+          }
+        ],
         "summary": "Suspend trading in an open market",
         "tags": [
           "admin-markets"
@@ -3427,6 +3569,7 @@
     },
     "/api/admin/markets/{market_id}/reject": {
       "post": {
+        "description": "Access: role ADMIN.",
         "operationId": "reject_market",
         "parameters": [
           {
@@ -3472,6 +3615,13 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": [
+              "ADMIN"
+            ]
+          }
+        ],
         "summary": "Reject a proposal",
         "tags": [
           "admin-markets"
@@ -3480,6 +3630,7 @@
     },
     "/api/admin/markets/{market_id}/resolve": {
       "post": {
+        "description": "Access: role ADMIN.",
         "operationId": "resolve_market",
         "parameters": [
           {
@@ -3525,6 +3676,13 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": [
+              "ADMIN"
+            ]
+          }
+        ],
         "summary": "Resolve a closed market to YES or NO",
         "tags": [
           "admin-markets"
@@ -3533,6 +3691,7 @@
     },
     "/api/admin/markets/{market_id}/resume": {
       "post": {
+        "description": "Access: role ADMIN.",
         "operationId": "resume_market",
         "parameters": [
           {
@@ -3578,6 +3737,13 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": [
+              "ADMIN"
+            ]
+          }
+        ],
         "summary": "Resume trading in a halted market",
         "tags": [
           "admin-markets"
@@ -3586,6 +3752,7 @@
     },
     "/api/admin/markets/{market_id}/void": {
       "post": {
+        "description": "Access: role ADMIN.",
         "operationId": "void_market",
         "parameters": [
           {
@@ -3631,6 +3798,13 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": [
+              "ADMIN"
+            ]
+          }
+        ],
         "summary": "Void a market and refund every net stake",
         "tags": [
           "admin-markets"
@@ -3639,6 +3813,7 @@
     },
     "/api/admin/risk": {
       "get": {
+        "description": "Access: role ADMIN.",
         "operationId": "get_risk",
         "responses": {
           "200": {
@@ -3662,6 +3837,13 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": [
+              "ADMIN"
+            ]
+          }
+        ],
         "summary": "Open markets, loss budgets, outstanding obligations and alerts",
         "tags": [
           "admin-risk"
@@ -3670,6 +3852,7 @@
     },
     "/api/auth/logout": {
       "post": {
+        "description": "Access: public. No session is needed or looked at.",
         "operationId": "logout",
         "responses": {
           "204": {
@@ -3694,6 +3877,7 @@
     },
     "/api/auth/request-link": {
       "post": {
+        "description": "Access: public. No session is needed or looked at.",
         "operationId": "request_login_link",
         "requestBody": {
           "content": {
@@ -3735,6 +3919,7 @@
     },
     "/api/auth/verify": {
       "post": {
+        "description": "Access: public. No session is needed or looked at.",
         "operationId": "verify_login",
         "requestBody": {
           "content": {
@@ -3776,6 +3961,7 @@
     },
     "/api/barista/coffee-tickets/{code}/redeem": {
       "post": {
+        "description": "Access: role BARISTA or ADMIN.",
         "operationId": "redeem_coffee_ticket",
         "parameters": [
           {
@@ -3814,6 +4000,18 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": [
+              "BARISTA"
+            ]
+          },
+          {
+            "session": [
+              "ADMIN"
+            ]
+          }
+        ],
         "summary": "Mark a scanned coffee ticket as used",
         "tags": [
           "barista"
@@ -3822,6 +4020,7 @@
     },
     "/api/coffee-tickets": {
       "post": {
+        "description": "Access: any signed-in user whose account is active.",
         "operationId": "issue_coffee_ticket",
         "responses": {
           "201": {
@@ -3845,6 +4044,11 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": []
+          }
+        ],
         "summary": "Turn one voucher into a coffee ticket",
         "tags": [
           "coffee-tickets"
@@ -3853,6 +4057,7 @@
     },
     "/api/config": {
       "get": {
+        "description": "Access: public. No session is needed or looked at.",
         "operationId": "get_config",
         "responses": {
           "200": {
@@ -3884,6 +4089,7 @@
     },
     "/api/health": {
       "get": {
+        "description": "Access: public. No session is needed or looked at.",
         "operationId": "get_health",
         "responses": {
           "200": {
@@ -3915,6 +4121,7 @@
     },
     "/api/markets": {
       "get": {
+        "description": "Access: public. With a session the answer also carries what belongs to the viewer.",
         "operationId": "list_markets",
         "parameters": [
           {
@@ -3958,12 +4165,19 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {},
+          {
+            "session": []
+          }
+        ],
         "summary": "List markets by effective status",
         "tags": [
           "markets"
         ]
       },
       "post": {
+        "description": "Access: any signed-in user whose account is active.",
         "operationId": "propose_market",
         "requestBody": {
           "content": {
@@ -3997,6 +4211,11 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": []
+          }
+        ],
         "summary": "Propose a market",
         "tags": [
           "markets"
@@ -4005,6 +4224,7 @@
     },
     "/api/markets/{market_id}": {
       "get": {
+        "description": "Access: public. With a session the answer also carries what belongs to the viewer.",
         "operationId": "get_market",
         "parameters": [
           {
@@ -4040,6 +4260,12 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {},
+          {
+            "session": []
+          }
+        ],
         "summary": "Details, rules and price; with a session, the viewer's stake",
         "tags": [
           "markets"
@@ -4048,6 +4274,7 @@
     },
     "/api/markets/{market_id}/history": {
       "get": {
+        "description": "Access: public. No session is needed or looked at.",
         "operationId": "get_market_history",
         "parameters": [
           {
@@ -4091,6 +4318,7 @@
     },
     "/api/markets/{market_id}/quote": {
       "get": {
+        "description": "Access: public. No session is needed or looked at.",
         "operationId": "get_quote",
         "parameters": [
           {
@@ -4120,7 +4348,7 @@
             }
           },
           {
-            "description": "A budget for a buy. The trader pays what the shares cost, never more.",
+            "description": "A budget for a buy. It buys as many shares as it pays for, rounded down, and\nthe trader is charged exactly this amount.",
             "in": "query",
             "name": "amount_cr",
             "required": false,
@@ -4130,14 +4358,14 @@
                   "examples": [
                     "0.25"
                   ],
-                  "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                  "pattern": "^[0-9]{1,9}(\\.[0-9]{1,6})?$",
                   "type": "string"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "description": "A budget for a buy. The trader pays what the shares cost, never more.",
+              "description": "A budget for a buy. It buys as many shares as it pays for, rounded down, and\nthe trader is charged exactly this amount.",
               "title": "Amount Cr"
             }
           },
@@ -4151,7 +4379,7 @@
                   "examples": [
                     "0.25"
                   ],
-                  "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                  "pattern": "^[0-9]{1,9}(\\.[0-9]{1,6})?$",
                   "type": "string"
                 },
                 {
@@ -4192,6 +4420,7 @@
     },
     "/api/markets/{market_id}/stream": {
       "get": {
+        "description": "Access: public. No session is needed or looked at.",
         "operationId": "stream_market",
         "parameters": [
           {
@@ -4261,6 +4490,7 @@
     },
     "/api/markets/{market_id}/trades": {
       "post": {
+        "description": "Access: any signed-in user whose account is active.",
         "operationId": "create_trade",
         "parameters": [
           {
@@ -4318,6 +4548,11 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": []
+          }
+        ],
         "summary": "Buy or sell shares, idempotently",
         "tags": [
           "trading"
@@ -4326,6 +4561,7 @@
     },
     "/api/me": {
       "get": {
+        "description": "Access: any signed-in user whose account is active.",
         "operationId": "get_me",
         "responses": {
           "200": {
@@ -4349,6 +4585,11 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": []
+          }
+        ],
         "summary": "Profile, balance and next monthly grant",
         "tags": [
           "me"
@@ -4357,6 +4598,7 @@
     },
     "/api/me/coffee-tickets": {
       "get": {
+        "description": "Access: any signed-in user whose account is active.",
         "operationId": "list_my_coffee_tickets",
         "responses": {
           "200": {
@@ -4380,6 +4622,11 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": []
+          }
+        ],
         "summary": "Own coffee tickets, pending and past",
         "tags": [
           "coffee-tickets"
@@ -4388,6 +4635,7 @@
     },
     "/api/me/ledger": {
       "get": {
+        "description": "Access: any signed-in user whose account is active.",
         "operationId": "list_my_ledger",
         "parameters": [
           {
@@ -4445,6 +4693,11 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": []
+          }
+        ],
         "summary": "Every movement on the balance, newest first",
         "tags": [
           "me"
@@ -4453,6 +4706,7 @@
     },
     "/api/me/positions": {
       "get": {
+        "description": "Access: any signed-in user whose account is active.",
         "operationId": "list_my_positions",
         "responses": {
           "200": {
@@ -4476,6 +4730,11 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": []
+          }
+        ],
         "summary": "Portfolio: positions per market with their value",
         "tags": [
           "me"
@@ -4484,6 +4743,7 @@
     },
     "/api/me/proposals": {
       "get": {
+        "description": "Access: any signed-in user whose account is active.",
         "operationId": "list_my_proposals",
         "responses": {
           "200": {
@@ -4507,6 +4767,11 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": []
+          }
+        ],
         "summary": "Markets the user proposed and their status",
         "tags": [
           "me"
@@ -4515,6 +4780,7 @@
     },
     "/api/me/trades": {
       "get": {
+        "description": "Access: any signed-in user whose account is active.",
         "operationId": "list_my_trades",
         "parameters": [
           {
@@ -4572,6 +4838,11 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": []
+          }
+        ],
         "summary": "Own trades, newest first",
         "tags": [
           "me"
@@ -4580,6 +4851,7 @@
     },
     "/api/vouchers/redeem-code": {
       "post": {
+        "description": "Access: any signed-in user whose account is active.",
         "operationId": "redeem_code",
         "requestBody": {
           "content": {
@@ -4613,6 +4885,11 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "session": []
+          }
+        ],
         "summary": "Redeem a voucher code for its value",
         "tags": [
           "vouchers"

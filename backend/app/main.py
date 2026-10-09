@@ -10,11 +10,12 @@ lifespan. Tests pass their own container instead and manage it themselves.
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Final
+from typing import Any, Final
 
 from fastapi import FastAPI
 from fastapi.routing import APIRoute
 
+from app.api.access import describe_access
 from app.api.errors import install_error_handlers
 from app.api.middleware import OriginCheckMiddleware
 from app.api.router import API_PREFIX, api_router
@@ -24,6 +25,24 @@ from app.core.logging import configure_logging
 
 API_TITLE: Final[str] = "MarkETH API"
 API_VERSION: Final[str] = "0.1.0"
+API_DESCRIPTION: Final[str] = (
+    "Everything sits under `/api`, on the same origin as the app.\n\n"
+    "* Credits (`*_cr`) and shares are decimal strings with at most six places, never "
+    "JSON numbers. Probabilities are numbers in [0, 1], already rounded for display.\n"
+    "* Every error has one shape, `ErrorResponse`: switch on `code`, show `message`.\n"
+    "* Each operation says who may call it, in its description and in `security`.\n"
+    "* A request with a method other than GET, HEAD or OPTIONS must carry an `Origin` "
+    "header the server allows, or it is answered with 403 `FORBIDDEN`."
+)
+
+
+class _Api(FastAPI):
+    """FastAPI whose OpenAPI document also says who may call what (Appendix A.2)."""
+
+    def openapi(self) -> dict[str, Any]:
+        document = super().openapi()
+        describe_access(document)
+        return document
 
 
 def create_app(container: Container | None = None) -> FastAPI:
@@ -45,9 +64,10 @@ def create_app(container: Container | None = None) -> FastAPI:
         finally:
             await own.stop()
 
-    app = FastAPI(
+    app = _Api(
         title=API_TITLE,
         version=API_VERSION,
+        description=API_DESCRIPTION,
         lifespan=lifespan,
         openapi_url=f"{API_PREFIX}/openapi.json",
         docs_url=f"{API_PREFIX}/docs",

@@ -4,15 +4,19 @@ Three kinds of market are generated:
 
 * ordinary: b from 1 CR to the largest b SPEC §4 allows, |q|/b up to 50;
 * lopsided: |q|/b far beyond 50, where one price is 0 or 1 to all 50 digits;
-* extreme: any b and q that a BIGINT column can hold.
+* extreme: any q a BIGINT column can hold, and any b the quote functions accept with
+  the default 50 digits (up to 10^11 µCR, seventy times the largest b of SPEC §4).
 
 Rules about rounding and bounds run on all three. Rules that compare against a reference
 formula run on ordinary markets, where that reference can be computed to the last digit.
+Prices are not rounded to whole micro-units in one direction, so their rules run on any
+b a BIGINT can hold.
 """
 
 from decimal import Decimal, localcontext
 from fractions import Fraction
 
+import pytest
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
@@ -24,6 +28,8 @@ from app.pricing.lmsr import MarketState, TradeQuote
 CR = MICRO
 MAX_B = 1_442_695_040
 """b of the largest market budget, 1,000 CR (SPEC §4 "Choosing b")."""
+LARGEST_B = 10**11
+"""The largest b `lmsr` quotes with its default precision; it refuses a larger one."""
 BIGINT_MAX = 2**63 - 1
 REFERENCE_PRECISION = 150
 
@@ -43,9 +49,13 @@ def markets(draw: st.DrawFn, *, min_b: int, max_ratio: int) -> MarketState:
 ordinary_markets = markets(min_b=CR, max_ratio=50)
 lopsided_markets = markets(min_b=1, max_ratio=100_000)
 extreme_markets = st.builds(
-    MarketState, q_yes=bigints, q_no=bigints, b=st.integers(min_value=1, max_value=BIGINT_MAX)
+    MarketState, q_yes=bigints, q_no=bigints, b=st.integers(min_value=1, max_value=LARGEST_B)
 )
 all_markets = st.one_of(ordinary_markets, lopsided_markets, extreme_markets)
+any_b_markets = st.builds(
+    MarketState, q_yes=bigints, q_no=bigints, b=st.integers(min_value=1, max_value=BIGINT_MAX)
+)
+"""For the price rules only: quotes are refused beyond `LARGEST_B`."""
 
 ordinary_amounts = st.integers(min_value=1, max_value=100 * CR)
 all_amounts = st.one_of(ordinary_amounts, st.integers(min_value=1, max_value=BIGINT_MAX))
@@ -93,7 +103,7 @@ def log1p(x: Decimal) -> Decimal:
 
 
 @checks
-@given(state=all_markets)
+@given(state=st.one_of(all_markets, any_b_markets))
 def test_yes_and_no_prices_sum_to_exactly_one(state: MarketState) -> None:
     p_yes = lmsr.price_yes(state)
     p_no = lmsr.price_yes(mirrored(state))
@@ -220,7 +230,7 @@ def test_proceeds_of_a_sale_follow_the_closed_form_of_spec_section_4(
 
 @checks
 @given(
-    b=st.integers(min_value=1, max_value=BIGINT_MAX),
+    b=st.integers(min_value=1, max_value=LARGEST_B),
     trailing=st.integers(min_value=0, max_value=BIGINT_MAX // 4),
     lead=st.integers(min_value=1, max_value=BIGINT_MAX // 4),
     outcome=outcomes,
@@ -338,18 +348,54 @@ def test_random_trading_never_costs_the_market_maker_more_than_b_ln_2(
 
 @checks
 @given(state=ordinary_markets, outcome=outcomes, amount=ordinary_amounts)
-def test_smallest_allowed_precision_gives_the_same_quotes(
+def test_more_digits_than_the_default_change_no_quote(
     state: MarketState, outcome: Outcome, amount: int
 ) -> None:
+    """Fifty digits already give the exact rounding; thirty more must agree with them."""
     assert lmsr.quote_buy_for_budget(
-        state, outcome, amount, precision=28
+        state, outcome, amount, precision=80
     ) == lmsr.quote_buy_for_budget(state, outcome, amount)
-    assert lmsr.quote_buy_shares(state, outcome, amount, precision=28) == lmsr.quote_buy_shares(
+    assert lmsr.quote_buy_shares(state, outcome, amount, precision=80) == lmsr.quote_buy_shares(
         state, outcome, amount
     )
-    assert lmsr.quote_sell_shares(state, outcome, amount, precision=28) == lmsr.quote_sell_shares(
+    assert lmsr.quote_sell_shares(state, outcome, amount, precision=80) == lmsr.quote_sell_shares(
         state, outcome, amount
     )
+
+
+QUOTE_FUNCTIONS = (lmsr.quote_buy_for_budget, lmsr.quote_buy_shares, lmsr.quote_sell_shares)
+
+
+@pytest.mark.parametrize(
+    ("precision", "largest_b"),
+    [(45, 2_154_434_690), (50, LARGEST_B), (53, 10**12)],
+    ids=["45 digits", "the default", "53 digits"],
+)
+def test_a_b_that_the_digits_cannot_round_reliably_is_refused_not_quoted(
+    precision: int, largest_b: int
+) -> None:
+    """b³ · 10^-precision may be at most 10^-17 (lmsr.py, "How many digits are enough")."""
+    for function in QUOTE_FUNCTIONS:
+        covered = MarketState(q_yes=CR, q_no=0, b=largest_b)
+        beyond = MarketState(q_yes=CR, q_no=0, b=largest_b + 1)
+
+        assert function(covered, Outcome.YES, CR, precision=precision).shares_micro >= CR
+        with pytest.raises(ValueError, match="cannot be quoted"):
+            function(beyond, Outcome.YES, CR, precision=precision)
+
+
+@pytest.mark.parametrize("precision", [28, 32, 44])
+def test_digits_that_do_not_cover_the_largest_b_of_spec_section_4_are_refused(
+    precision: int,
+) -> None:
+    """With 28 to 32 digits a buy at that b was charged below its exact cost, a sale paid
+    above its exact proceeds, and a budget buy tripped its own assertion."""
+    largest_market = MarketState(q_yes=0, q_no=0, b=MAX_B)
+
+    for function in QUOTE_FUNCTIONS:
+        with pytest.raises(ValueError, match="cannot be quoted"):
+            function(largest_market, Outcome.YES, CR, precision=precision)
+        assert function(largest_market, Outcome.YES, CR, precision=45).shares_micro >= CR
 
 
 @checks

@@ -2,7 +2,8 @@
 
 Who may call what is decided here once, per prefix: `/admin/*` needs role ADMIN and
 `/barista/*` role BARISTA or ADMIN. The other routes guard themselves through the type
-of their user parameter (`CurrentUser`, or `OptionalUser` on public routes).
+of their user parameter (`CurrentUser`, or `OptionalUser` on public routes). Whatever
+guard a route ends up with is what the OpenAPI document says of it (`app/api/access.py`).
 
 Every operation declares `ErrorResponse` as its error body. That replaces FastAPI's own
 422 schema in the OpenAPI document, so the generated client knows the one error shape.

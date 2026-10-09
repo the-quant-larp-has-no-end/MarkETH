@@ -17,10 +17,16 @@ class AuthenticatedUser:
     status: UserStatus
 
     @property
+    def is_active(self) -> bool:
+        return self.status is UserStatus.ACTIVE
+
+    @property
     def is_admin(self) -> bool:
-        return self.role is UserRole.ADMIN
+        """An ACTIVE admin. A suspended account keeps its role but none of its rights,
+        also on the public routes, where a suspended user still arrives as the viewer."""
+        return self.is_active and self.role is UserRole.ADMIN
 
     @property
     def is_staff(self) -> bool:
-        """Baristas and admins may redeem coffee tickets."""
-        return self.role in (UserRole.ADMIN, UserRole.BARISTA)
+        """ACTIVE baristas and admins may redeem coffee tickets."""
+        return self.is_active and self.role in (UserRole.ADMIN, UserRole.BARISTA)

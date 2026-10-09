@@ -52,14 +52,20 @@ class QuoteService:
         model, so exactly one of `amount_cr` and `shares` is set and a sell has shares.
 
         * BUY with `amount_cr`: below `MIN_TRADE_CR` raises `TradeTooSmallError` (422).
-          `quote_buy_for_budget(state, outcome, to_micro(amount_cr))`; a quote of zero
-          shares raises `TradeTooSmallError` too (A.9).
+          `quote_buy_for_budget(state, outcome, to_micro(amount_cr))`. The quote costs
+          exactly the budget and holds at least as many µshares as the budget has µCR
+          (A.9), so there is no zero-share quote to reject and no branch for one.
         * BUY with `shares`: below `MIN_TRADE_SHARES` raises `TradeTooSmallError`.
           `quote_buy_shares(...)`.
         * SELL with `shares`: below `MIN_TRADE_SHARES` raises `TradeTooSmallError`.
           More than the market has sold of that outcome (`q_yes_micro` or
           `q_no_micro`) raises `InsufficientSharesError` (409): nobody can hold them,
-          and lmsr must not see a negative quantity. `quote_sell_shares(...)`.
+          and lmsr must not see a negative quantity. `quote_sell_shares(...)`. Its
+          proceeds may be 0; that is a quote like any other (A.4).
+
+        Pass the row's integers and the request's `Outcome` as they are: lmsr raises
+        `TypeError` for anything else and `ValueError` for a b its precision cannot
+        cover, both of which are bugs here, not answers to a user.
 
         Whether this trader holds the shares, has the balance or stays within the
         stake limit is the trading service's check.

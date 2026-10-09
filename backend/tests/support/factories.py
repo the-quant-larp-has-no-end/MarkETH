@@ -1,14 +1,15 @@
 """Test data written straight to the database, with the books kept straight.
 
-`Factory` puts users, markets and positions in place through the repositories and
-`LedgerService`, without going through the services under test. Whatever it writes
+`Factory` puts users, sessions, markets and positions in place through the repositories
+and `LedgerService`, without going through the services under test. Whatever it writes
 leaves every invariant intact: entries balance, all accounts sum to zero, a market's
 quantities equal the sum of its positions, no user balance is negative.
 
     user = await factory.user(balance_micro=5 * MICRO)
     market = await factory.market()                       # OPEN, default tier
     await factory.position(user, market, Outcome.YES, shares_micro=MICRO)
-    as_user(user)
+    as_user(user)                                         # or, through SessionService:
+    client.cookies.set(cookie_name, await factory.session(user))
 
 Rows come back detached and readable. Time is the container's clock.
 """
@@ -32,7 +33,8 @@ from app.core.enums import (
     UserStatus,
 )
 from app.core.identity import AuthenticatedUser
-from app.models import Market, Position, Resolution, Trade, User
+from app.core.security import generate_token, sha256_hex
+from app.models import Market, Position, Resolution, Trade, User, UserSession
 from app.pricing import lmsr
 from app.services.ledger import LedgerRef, PostingLine, signup_grant_key, trade_key
 from app.services.market_view import HIDDEN_STATUSES, SETTLED_STATUSES, UNSETTLED_STATUSES
@@ -116,6 +118,29 @@ class Factory:
 
     def identity(self, user: User) -> AuthenticatedUser:
         return identity_of(user)
+
+    async def session(self, user: User) -> str:
+        """Sign `user` in, as a confirmed magic link would, and return the cookie's token.
+
+        Writes the `sessions` row `SessionService.create` writes: its id is the SHA-256
+        of the token, it was created and last seen now, and it expires after
+        `SESSION_TTL_DAYS`. Nothing is cached. Advance the clock to test the idle and
+        the absolute expiry; send the token in the cookie named `SESSION_COOKIE_NAME`.
+        """
+        auth = self._settings.auth
+        token = generate_token(auth.login_token_bytes)
+        now = self._clock.now()
+        async with self._uow_factory() as uow:
+            await uow.sessions.add(
+                UserSession(
+                    id=sha256_hex(token),
+                    user_id=user.id,
+                    created_at=now,
+                    expires_at=now + auth.session_ttl,
+                    last_seen_at=now,
+                )
+            )
+        return token
 
     async def market(
         self,
@@ -208,8 +233,10 @@ class Factory:
         Books a `TRADE_BUY` entry (user to market account), raises the position, adds
         the trade row and moves the market's quantity, `version` and volume together.
         `cost_micro` defaults to the LMSR cost of the shares; the user needs at least
-        that balance. No rule of the trading service is applied: no stake limit, no
-        self-dealing check, no outbox row.
+        that balance. A test may charge more than that, never less: a market that sold
+        shares below their cost could lose more than its budget, which is the fourth
+        invariant the circuit breaker checks. No rule of the trading service is
+        applied: no stake limit, no self-dealing check, no outbox row.
 
         Returns the position. `market` is brought up to the committed state in place.
         """
@@ -227,8 +254,11 @@ class Factory:
             state = lmsr.MarketState(q_yes=row.q_yes_micro, q_no=row.q_no_micro, b=row.b_micro)
             quote = lmsr.quote_buy_shares(state, outcome, shares_micro, precision=precision)
             paid_micro = quote.amount_micro if cost_micro is None else cost_micro
-            if paid_micro <= 0:
-                raise ValueError("a position must cost something; cost_micro must be positive")
+            if paid_micro < quote.amount_micro:
+                raise ValueError(
+                    f"{shares_micro} µshares cost {quote.amount_micro} µCR here; a position "
+                    f"sold for {paid_micro} µCR would break the market's loss bound"
+                )
 
             trade_id = uuid7()
             await self._ledger.post(

@@ -19,7 +19,7 @@ from sqlalchemy.pool import NullPool
 import app.models  # noqa: F401  (registers every table on Base.metadata)
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
-from app.db.base import Base
+from app.db.base import AwareDateTime, Base
 
 SETTINGS_ATTRIBUTE = "settings"
 
@@ -38,13 +38,18 @@ def _settings() -> Settings:
 def _render_item(
     type_: str, item: object, autogen_context: AutogenContext
 ) -> str | Literal[False] | None:
-    """Leave the CHECK of an enum column to the `sa.Enum(create_constraint=True)` it renders.
+    """How autogenerate writes two things it would otherwise get wrong.
 
-    Alembic means to skip such type-bound constraints itself, but does not recognise them
-    under SQLAlchemy 2.1 and would write each one out twice more. None is its own "skip".
+    The CHECK of an enum column is left to the `sa.Enum(create_constraint=True)` it
+    renders. Alembic means to skip such type-bound constraints itself, but does not
+    recognise them under SQLAlchemy 2.1 and would write each one out twice more. None is
+    its own "skip". A timestamp column is written as the plain SQL type.
     """
     if type_ == "check" and isinstance(item, CheckConstraint) and item._type_bound:
         return None
+    if type_ == "type" and isinstance(item, AwareDateTime):
+        # A revision records the column type, not the Python-side guard around it.
+        return "sa.DateTime(timezone=True)"
     return False
 
 

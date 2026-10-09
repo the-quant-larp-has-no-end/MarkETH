@@ -15,7 +15,7 @@ from app.schemas.common import (
 
 
 class Obligations(ResponseModel):
-    """Outstanding obligations: the most coffee VIS could owe right now (SPEC §5)."""
+    """Outstanding obligations: the most coffee VIS could owe right now (SPEC §5, A.6)."""
 
     user_balances_cr: CreditAmount
     pending_coffee_tickets_cr: CreditAmount
@@ -27,7 +27,8 @@ class Obligations(ResponseModel):
 
     alert_threshold_cr: CreditAmount
     above_threshold: bool
-    """True when `total_cr` exceeds `alert_threshold_cr`."""
+    """True when `total_cr` exceeds `alert_threshold_cr`. This flag is the alert of
+    SPEC §5: the page shows a warning from it, and no `alerts` row is written."""
 
 
 class RiskMarketRow(ResponseModel):
@@ -46,11 +47,13 @@ class RiskMarketRow(ResponseModel):
     p_yes: Probability
     q_yes: ShareAmount
     q_no: ShareAmount
-    account_balance_cr: SignedCreditAmount
-    """What traders paid in, net. It may go down to minus the budget."""
+    account_balance_cr: CreditAmount
+    """What traders paid in, net of what sells paid out. Never negative: the market's
+    loss, at most its budget, shows as `exposure_cr` and is booked at settlement."""
 
     exposure_cr: SignedCreditAmount
-    """max(q_yes, q_no) minus the account balance: what VIS would have to add."""
+    """max(q_yes, q_no) minus the account balance: what VIS would have to add if the
+    more heavily held outcome won. At most `budget_cr`."""
 
     volume_cr: CreditAmount
     close_at: datetime

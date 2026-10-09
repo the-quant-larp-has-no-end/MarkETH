@@ -24,6 +24,11 @@ class MarketRepository(BaseRepository[Market]):
         """Lock the market row: the first lock of every transaction that touches a market."""
         return await self._get(market_id, for_update=True)
 
+    async def get_many(self, market_ids: Collection[UUID]) -> dict[UUID, Market]:
+        """Several markets by id, in one query. An unknown id is missing from the result."""
+        statement = select(Market).where(Market.id.in_(market_ids))
+        return {market.id: market for market in (await self._session.scalars(statement)).all()}
+
     async def list_by_statuses(self, statuses: Collection[MarketStatus]) -> Sequence[Market]:
         """Markets whose stored status is one of `statuses`, soonest `close_at` first."""
         statement = (
@@ -81,3 +86,12 @@ class ResolutionRepository(BaseRepository[Resolution]):
     async def get_by_market(self, market_id: UUID) -> Resolution | None:
         statement = select(Resolution).where(Resolution.market_id == market_id)
         return await self._session.scalar(statement)
+
+    async def get_many_by_market(self, market_ids: Collection[UUID]) -> dict[UUID, Resolution]:
+        """The resolutions of several markets, by market id, in one query.
+
+        A market that is not settled has none and is missing from the result.
+        """
+        statement = select(Resolution).where(Resolution.market_id.in_(market_ids))
+        resolutions = (await self._session.scalars(statement)).all()
+        return {resolution.market_id: resolution for resolution in resolutions}

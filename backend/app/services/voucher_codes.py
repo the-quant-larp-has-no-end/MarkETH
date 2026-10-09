@@ -72,7 +72,8 @@ class VoucherCodeService:
         2. One transaction. `uow.advisory_lock(ISSUANCE_LOCK)`. If
            `codes.issued_value_since(start_of_month(now, APP_TIMEZONE)) + count * value
            > MAX_CODE_ISSUANCE_PER_MONTH`: `LimitExceededError` (409) with
-           `details={"issued_cr", "requested_cr", "cap_cr"}`.
+           `details={"limit": Limit.MAX_CODE_ISSUANCE_PER_MONTH, "issued_cr":
+           to_cr(...), "requested_cr": to_cr(...), "cap_cr": to_cr(...)}`.
         3. Insert the batch (`created_by=actor.id`, `created_at=now`). Generate `count`
            distinct codes with `generate_code(VOUCHER_CODE_LENGTH)` and insert one
            `VoucherCode(batch_id, code_hash=hash_code(code), status=ACTIVE)` each
@@ -112,7 +113,9 @@ class VoucherCodeService:
 
         Audit `CODE_BATCH_REVOKE` with `after = {"revoked_count", "whole_batch"}`.
         Returns how many codes this call revoked and the batch with its counts
-        afterwards. Redeemed codes are never affected (SPEC §2).
+        afterwards (`code_batches.get_with_counts(batch_id)`, read after the
+        revocation in the same transaction). Redeemed codes are never affected
+        (SPEC §2).
         """
         raise NotImplementedError
 
@@ -127,6 +130,8 @@ class VoucherCodeService:
            `RedisUnavailableError` becomes `ServiceUnavailableError` (503).
         2. `normalize_code(code)` (uppercase, no dashes, O as 0, I and L as 1). None,
            or a length other than `VOUCHER_CODE_LENGTH`: `CodeInvalidError` (400).
+           `code` is the code alone. The client cuts it out of a scanned card's URL
+           (`…/wallet#code=…`, A.6); a URL sent whole is not a code and ends here.
         3. One transaction. Lock the code row (`codes.get_by_hash(hash_code(...),
            for_update=True)`), then the user's account; this order is A.6's. Load the
            batch.
@@ -135,7 +140,8 @@ class VoucherCodeService:
            `expires_at <= now`. Codes cannot be probed.
         5. Under the account lock: a `one_per_user` batch of which
            `codes.user_has_redeemed_in_batch(user.id, batch.id)` raises
-           `LimitExceededError` (409, "You already redeemed a code of this batch.").
+           `LimitExceededError` (409, "You already redeemed a code of this batch.")
+           with `details={"limit": Limit.ONE_CODE_PER_USER}`.
         6. Set `status=REDEEMED`, `redeemed_by=user.id` and `redeemed_at=now`
            together. Post `CODE_REDEMPTION`: `vis:issuance` -v, user +v, with v the
            batch's `value_micro`, `LedgerRef.VOUCHER_CODE`, the code row's id and

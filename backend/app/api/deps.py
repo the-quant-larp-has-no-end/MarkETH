@@ -13,12 +13,16 @@ Guards (Appendix A.2):
 
 All four rest on `authenticate_request`. Tests replace that one function with
 `app.dependency_overrides` to act as any user (the `as_user` fixture).
+
+Each guard also depends on a marker of `app/api/access.py`. The marker does nothing at
+request time; it is how the OpenAPI document learns which guard protects an operation.
 """
 
 from typing import Annotated, Final
 
-from fastapi import Depends, Request
+from fastapi import Depends, Request, Security
 
+from app.api import access
 from app.container import Container
 from app.core.config import Settings
 from app.core.enums import UserStatus
@@ -154,7 +158,9 @@ SessionToken = Annotated[str | None, Depends(session_token)]
 
 
 async def authenticate_request(
-    token: SessionToken, container: ContainerDep
+    token: SessionToken,
+    container: ContainerDep,
+    _documented: Annotated[None, Security(access.MAY_HAVE_SESSION)],
 ) -> AuthenticatedUser | None:
     """Who is calling, from the session cookie; None without a valid session."""
     if token is None:
@@ -165,7 +171,9 @@ async def authenticate_request(
 OptionalUser = Annotated[AuthenticatedUser | None, Depends(authenticate_request)]
 
 
-def require_user(user: OptionalUser) -> AuthenticatedUser:
+def require_user(
+    user: OptionalUser, _documented: Annotated[None, Security(access.NEEDS_SESSION)]
+) -> AuthenticatedUser:
     if user is None:
         raise UnauthenticatedError
     if user.status is not UserStatus.ACTIVE:
@@ -176,13 +184,17 @@ def require_user(user: OptionalUser) -> AuthenticatedUser:
 CurrentUser = Annotated[AuthenticatedUser, Depends(require_user)]
 
 
-def require_admin(user: CurrentUser) -> AuthenticatedUser:
+def require_admin(
+    user: CurrentUser, _documented: Annotated[None, Security(access.NEEDS_ADMIN)]
+) -> AuthenticatedUser:
     if not user.is_admin:
         raise ForbiddenError
     return user
 
 
-def require_staff(user: CurrentUser) -> AuthenticatedUser:
+def require_staff(
+    user: CurrentUser, _documented: Annotated[None, Security(access.NEEDS_STAFF)]
+) -> AuthenticatedUser:
     if not user.is_staff:
         raise ForbiddenError
     return user

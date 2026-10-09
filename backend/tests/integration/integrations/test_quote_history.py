@@ -16,8 +16,8 @@ from app.integrations.scylla.client import (
     ScyllaUnavailableError,
 )
 from app.integrations.scylla.quote_history import TABLE, QuoteHistoryStore, QuotePoint
-
-from .conftest import LOOPBACK, SilentServer, SwitchableProxy
+from tests.support.containers import LOOPBACK
+from tests.support.network import SilentServer, SwitchableProxy
 
 pytestmark = [pytest.mark.integration, pytest.mark.scylla]
 

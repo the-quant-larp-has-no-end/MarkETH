@@ -23,6 +23,10 @@ class MeResponse(ResponseModel):
     role: UserRole
     created_at: datetime
     balance_cr: CreditAmount
+    can_get_coffee: bool
+    """Whether the balance covers a coffee ticket right now (SPEC §2: only whole
+    vouchers become tickets). The wallet enables "Get a coffee" from this."""
+
     monthly_grant_cr: CreditAmount
     next_monthly_grant_on: date
     """First day of the next calendar month in the app's timezone (SPEC §2)."""

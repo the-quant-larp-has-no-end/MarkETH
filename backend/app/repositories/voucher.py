@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import ColumnElement, exists, func, select, update
+from sqlalchemy import ColumnElement, Select, exists, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -69,25 +69,40 @@ class VoucherCodeBatchRepository(BaseRepository[VoucherCodeBatch]):
 
     async def list_with_counts(self) -> Sequence[CodeBatchCounts]:
         """Every batch with its code counts, newest first."""
-
-        def count(status: VoucherCodeStatus) -> ColumnElement[int]:
-            return func.count(VoucherCode.id).filter(VoucherCode.status == status)
-
-        statement = (
-            select(
-                VoucherCodeBatch,
-                count(VoucherCodeStatus.ACTIVE),
-                count(VoucherCodeStatus.REDEEMED),
-                count(VoucherCodeStatus.REVOKED),
-            )
-            .outerjoin(VoucherCode, VoucherCode.batch_id == VoucherCodeBatch.id)
-            .group_by(VoucherCodeBatch.id)
-            .order_by(VoucherCodeBatch.created_at.desc(), VoucherCodeBatch.id.desc())
+        statement = _batches_with_counts().order_by(
+            VoucherCodeBatch.created_at.desc(), VoucherCodeBatch.id.desc()
         )
         return [
             CodeBatchCounts(batch=batch, active=active, redeemed=redeemed, revoked=revoked)
             for batch, active, redeemed, revoked in await self._session.execute(statement)
         ]
+
+    async def get_with_counts(self, batch_id: UUID) -> CodeBatchCounts | None:
+        """One batch with its code counts as they are now, or None if there is no such batch."""
+        statement = _batches_with_counts().where(VoucherCodeBatch.id == batch_id)
+        row = (await self._session.execute(statement)).one_or_none()
+        if row is None:
+            return None
+        batch, active, redeemed, revoked = row
+        return CodeBatchCounts(batch=batch, active=active, redeemed=redeemed, revoked=revoked)
+
+
+def _batches_with_counts() -> Select[VoucherCodeBatch, int, int, int]:
+    """Batches with how many of their codes are active, redeemed and revoked."""
+
+    def count(status: VoucherCodeStatus) -> ColumnElement[int]:
+        return func.count(VoucherCode.id).filter(VoucherCode.status == status)
+
+    return (
+        select(
+            VoucherCodeBatch,
+            count(VoucherCodeStatus.ACTIVE),
+            count(VoucherCodeStatus.REDEEMED),
+            count(VoucherCodeStatus.REVOKED),
+        )
+        .outerjoin(VoucherCode, VoucherCode.batch_id == VoucherCodeBatch.id)
+        .group_by(VoucherCodeBatch.id)
+    )
 
 
 class VoucherCodeRepository(BaseRepository[VoucherCode]):

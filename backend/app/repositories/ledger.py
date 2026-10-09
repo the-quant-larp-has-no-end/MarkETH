@@ -1,14 +1,15 @@
 """Queries on `accounts`, `journal_entries` and `postings` (SPEC §5, §7, A.8).
 
 These are the building blocks of `LedgerService`, the only writer of the ledger. No
-method here keeps an entry balanced or a balance in step with its postings; the service
-does, and the database checks it again at commit.
+method here keeps an entry balanced; the service does, and the database checks it again
+at commit. Balances are not written here at all: the database adds every posting to its
+account's `balance_micro` (a trigger), and the app role cannot write that column.
 """
 
 from collections.abc import Collection, Sequence
 from uuid import UUID
 
-from sqlalchemy import exists, select, update
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import SYSTEM_ACCOUNT_KINDS, AccountKind
@@ -59,24 +60,42 @@ class AccountRepository(BaseRepository[Account]):
         statement = select(Account).where(Account.id.in_(account_ids)).order_by(Account.id)
         return (await self._session.scalars(self._locked(statement, True))).all()
 
-    async def add_to_balance(self, account_id: UUID, delta_micro: int) -> int:
-        """Add a signed amount to a balance in the database and return the new balance.
+    async def lock_user_accounts(self, user_ids: Collection[UUID]) -> Sequence[Account]:
+        """Lock the accounts of several users, in ascending account id order.
 
-        The addition happens in SQL on the current row, so it is correct whether or not
-        the caller holds the row lock, and a copy of the account loaded in this unit of
-        work is refreshed from the result. A user balance that would go negative violates
-        `ck_accounts_user_balance_non_negative` and raises `IntegrityError`.
+        For a settlement, which pays many users in one transaction: one query instead
+        of one per user, and the same lock order as `lock_many`. A user without an
+        account is simply missing from the result; `owner_id` says whose each one is.
         """
         statement = (
-            update(Account)
-            .where(Account.id == account_id)
-            .values(balance_micro=Account.balance_micro + delta_micro)
-            .returning(Account)
-            # Take the row as RETURNING reports it. The default would redo the addition
-            # in Python on the loaded copy, which may predate another transaction's commit.
-            .execution_options(synchronize_session=False, populate_existing=True)
+            select(Account)
+            .where(Account.kind == AccountKind.USER, Account.owner_id.in_(user_ids))
+            .order_by(Account.id)
         )
-        return (await self._session.scalars(statement)).one().balance_micro
+        return (await self._session.scalars(self._locked(statement, True))).all()
+
+    async def list_market_accounts(self, market_ids: Collection[UUID]) -> dict[UUID, Account]:
+        """The accounts of several markets, by market id, in one query."""
+        statement = select(Account).where(
+            Account.kind == AccountKind.MARKET, Account.market_id.in_(market_ids)
+        )
+        accounts = (await self._session.scalars(statement)).all()
+        return {account.market_id: account for account in accounts if account.market_id}
+
+    async def reload_many(self, account_ids: Collection[UUID]) -> Sequence[Account]:
+        """Read accounts again and bring the copies this unit of work holds up to date.
+
+        The database moves a balance when a posting is inserted, behind the ORM's back.
+        `LedgerService` calls this after it posts, so an `Account` a service loaded
+        before shows the balance after.
+        """
+        statement = (
+            select(Account)
+            .where(Account.id.in_(account_ids))
+            .order_by(Account.id)
+            .execution_options(populate_existing=True)
+        )
+        return (await self._session.scalars(statement)).all()
 
     async def total_balance(self) -> int:
         """Sum of all balances. Zero, or credit was created or destroyed (SPEC §1)."""
@@ -102,7 +121,9 @@ class JournalRepository(BaseRepository[JournalEntry]):
         return await self.add(entry)
 
     async def add_postings(self, postings: Sequence[Posting]) -> None:
-        """Insert the legs of an entry. Whether they sum to zero is checked at commit."""
+        """Insert the legs of an entry. The database adds each to its account's balance
+        at once; whether they sum to zero is checked at commit. Only the transaction
+        that inserted the entry can do this (the entry is sealed afterwards)."""
         self._session.add_all(postings)
         await self._session.flush()
 
