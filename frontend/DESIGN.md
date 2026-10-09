@@ -10,6 +10,39 @@ The visual and interaction rules for the MarkETH frontend. SPEC §11 says which 
 - Decisions this file takes that the spec left open are marked **Decision**. Changing one means editing this file first.
 - Where this file and `docs/SPEC.md` disagree on behaviour, the spec wins and this file is wrong.
 
+### Direction
+
+**Polymarket, with playful, gamified ETH aspects.** Every design decision is checked against that sentence.
+
+- *Polymarket* gives the structure: a dense, dark, flat trading product where the list of markets is the home page and numbers do the talking.
+- *Playful and gamified* gives the character: pixel art, the coffee-bean token, trophies, a leaderboard, beans that drop when you are paid.
+- *ETH* gives the setting: campus places and student life in the copy and illustrations, one token for one coffee.
+
+The test for any new element has two questions. Would this be at home on Polymarket? If not, is it a pixel-art or campus touch from §3? An element that is neither does not belong.
+
+### What MarkETH must not look like
+
+The default output of a UI kit or an AI tool is a generic startup or SaaS site. MarkETH is a trading game, not a product to be marketed, and none of the following is ever built.
+
+| Never | Do this instead |
+| --- | --- |
+| **Gradients of any kind**: on backgrounds, buttons, text, borders, cards, charts, skeletons or images | Flat fills from §4. The chart's area fill is one flat colour at 12% opacity |
+| A landing page: hero headline with subheading and call-to-action, "how it works" in three steps, feature grid of icon cards, testimonials, logo wall, FAQ, pricing, newsletter, big footer | The first screen is the Markets list, signed in or not, as on Polymarket. Login is a logo, one sentence and one field |
+| Marketing copy: "Unlock", "Seamless", "Supercharge", "Powerful", "Reimagined", "The future of", exclamation marks | Plain statements and dry campus humour (§3) |
+| Glass and glow: translucent blurred panels, `backdrop-filter`, neon outlines, glowing buttons, coloured or soft drop shadows, floating cards | Opaque surfaces separated by tone and 1 px hairlines (§6) |
+| The SaaS palette: purple, indigo, violet, teal-to-blue, "brand gradient" accents, pure white or pure black | The five colours of §4 and their derived tints, nothing else |
+| Decorative blobs, mesh backgrounds, grid or dot patterns, noise textures, abstract 3D shapes, isometric scenes | A plain `--background`. Decoration is pixel art from §3 or nothing |
+| Stock illustration styles (flat vector people, line-art spot illustrations), photographs, emoji used as icons | Pixel art for illustration, lucide for interface icons |
+| Icons in tinted rounded squares or circles heading every card | An icon only where it is a control or a status |
+| Dashboard chrome: a left sidebar, a row of KPI tiles above user content, widgets, greeting headers ("Welcome back, Anna") | Top bar, content, tab bar. Stat tiles exist only on the admin risk page |
+| Everything a pill: fully rounded buttons and inputs, oversized radii, large soft cards with lots of empty padding | The radii of §6. Dense cards, 16 px padding |
+| Centred, airy marketing layout: huge headings, wide margins, one idea per screen height | Left-aligned, compact, several markets visible without scrolling |
+| Generic delight: confetti, count-up number animations, parallax, scroll-triggered reveals, shimmer sweeps, bouncing call-to-actions | The three bean and Polybahn animations of §7, nothing else |
+| Onboarding carousels, product tours, coach marks, cookie-style popups, upsell banners, "Pro" badges | One welcome dialog after the first sign-in |
+| The untouched shadcn/ui look: zinc or slate greys, default radius, default shadows, Inter for headings | shadcn/ui components restyled to these tokens; Barlow for headings and numbers |
+
+If a generated screen shows any item in the left column, it is wrong even if it looks polished.
+
 ### Reference: Polymarket
 
 Polymarket is the model for layout and interaction. When this file is silent, do what Polymarket's mobile site does, in MarkETH's colours.
@@ -20,6 +53,7 @@ Polymarket is the model for layout and interaction. When this file is silent, do
 | Market cards: question, a large "% chance" figure, soft-tinted "Yes" and "No" buttons, volume in the footer | §12 |
 | Market page: question, large chance figure, line chart, then the trade ticket, then rules | §13 |
 | Trade ticket: Buy / Sell tabs, outcome buttons that carry their price, quick-amount chips, one wide action button | §13 |
+| The Markets list as the home page, with no landing page in front of it | §11, §13 |
 | Logo with the name at the top left of every main screen | §3, §11 |
 | Bottom tab bar on phones; a ticket panel beside the chart on desktop | §6, §11 |
 | White percentage figures; green and red kept for the Yes and No controls | §4 |
@@ -28,7 +62,8 @@ Polymarket is the model for layout and interaction. When this file is silent, do
 | --- | --- |
 | No "to win" or profit figure, no cents | The API sends none and the frontend may not compute one (golden rule 6) |
 | No deposit, cash-out or payment screens | Nothing is for sale (golden rule 9) |
-| No comments, categories, search, images or leaderboard | Not in the API (SPEC A.1) |
+| No comments, categories, search or market images | Not in the API (SPEC A.1) |
+| A leaderboard with pixel trophies for the top three | Polymarket's leaderboard, made into a podium (§13). Designed, but not buildable until the API has it |
 | A coffee-bean token in place of the dollar sign | The unit is a token worth one coffee |
 | Pixel-art campus touches and ETH in-jokes (§3) | Polymarket is neutral; MarkETH belongs to one campus |
 | Stake presets only, no free amount when buying | SPEC §4 stake limit; presets come from the server |
@@ -72,6 +107,7 @@ The originals are kept, untouched, in `frontend/design/`. The files the app serv
 | `apple-touch-icon.png` | The same, 180 x 180 px | iOS home-screen icon |
 | `favicon.png` | The same, 48 x 48 px | Browser tab |
 | `token.png` | The token, transparent, 256 x 256 px | The token icon (below) |
+| `trophy-1.png`, `trophy-2.png`, `trophy-3.png` | Gold, silver and bronze pixel trophies, transparent, 256 x 256 px | First, second and third place on the leaderboard (below) |
 
 - The originals are black, which is invisible on navy. The app uses the same shapes in `#FAFAFF`; nothing but the colour is changed.
 - The name in the logo is part of the image. It is not rebuilt from a font, and no text is placed beside the logo with name. The image carries `alt="MarkETH"`.
@@ -87,13 +123,25 @@ The unit of the app is the **token**: one token is one coffee. Its symbol is a p
 - Sizes: 16 px beside `number` and `body-sm` figures, 20 px beside `number-lg`, 32 px beside `display`, 64 px in the welcome dialog and empty wallet. The gap to the figure is a quarter of the icon's size.
 - The icon comes **before** the figure: (bean) 0.25. In tables in this file, "(bean)" stands for the token icon.
 - The icon is decorative (`alt=""`); the accessible text of an amount is always the number and the word "tokens" (§15).
-- The bean's brown is not a design token. No text, border or surface uses it.
+- The bean's brown is not a colour of the interface. No text, border or surface uses it.
+
+### Trophies
+
+Three pixel-art trophies mark the top three places of the leaderboard: gold for first, silver for second, bronze for third.
+
+- The supplied originals are JPEGs on a white background. The served files are the same drawings with the background removed, including the openings of the handles. Never use the JPEGs in the app: a white box on navy is exactly what the cut-outs avoid.
+- A trophy sits directly on `--background` or `--card`, with no disc, tile, ring or shadow behind it.
+- Sizes: 96 px for first place and 72 px for second and third on the podium; 24 px beside a name in a row or on a profile. Never larger than 96 px and never smaller than 24 px.
+- A trophy always comes with the rank as text ("1st", "2nd", "3rd"). Its `alt` text is "First place", "Second place" or "Third place".
+- Trophies mean a rank on the leaderboard and nothing else. They are not used as generic "success" or "win" icons, on market cards, or for a resolved market.
+- Gold, silver and bronze exist only inside these images, like the bean's brown. They are not colours of the interface: no gold text, no silver border, no bronze badge.
+- Ranks from fourth down have no trophy and no medal, only the number.
 
 ### Campus touches
 
 Polymarket's structure, with the humour of one campus. These elements make MarkETH feel like it belongs to ETH without using ETH's logo or typeface.
 
-**Pixel art.** The token is pixel art, so pixel art is the illustration style of the whole product. Spot illustrations are drawn on a 16 x 16 or 24 x 24 grid, shown at whole multiples of that grid with `image-rendering: pixelated`, and coloured only with `#FAFAFF`, `--muted-foreground`, `--raised` and the bean's browns. They live in `frontend/public/brand/pixel/`.
+**Pixel art.** The token is pixel art, so pixel art is the illustration style of the whole product. Spot illustrations are drawn on a 16 x 16 or 24 x 24 grid, shown at whole multiples of that grid with `image-rendering: pixelated`, and coloured only with `#FAFAFF`, `--muted-foreground`, `--raised` and the bean's browns. The token and the trophies are the only pixel art with colours of their own. They live in `frontend/public/brand/pixel/`.
 
 | Illustration | Where |
 | --- | --- |
@@ -105,6 +153,8 @@ Polymarket's structure, with the humour of one campus. These elements make MarkE
 | Alarm clock | Closed market waiting for its result |
 
 These files are not drawn yet. Until one exists, its place is taken by the matching 32 px lucide icon; no screen waits for an illustration.
+
+**Trophies and the leaderboard.** The game layer: a podium for the top three, your own rank always in view (§13).
 
 **Beans in motion.** The bean is the one thing that may move for fun (§7): beans drop into the balance when tokens arrive, and a single bean bounces on a finished trade.
 
@@ -214,7 +264,7 @@ What follows from the numbers:
 - Green and red are **never** used for navigation, links, generic buttons, borders of neutral cards, icons without an outcome meaning, illustrations or the status badges of OPEN, CLOSED, HALTED and VOID markets.
 - **Colour never carries meaning alone.** A YES figure carries the label "YES", an amount carries its sign, an error carries an icon and text.
 - Full-strength `--yes` and `--no` fills are rare: the outcome buttons on Market detail, the selected toggle segment, the Confirm button and the barista result. Lists use the soft tints (`--yes-soft`, `--no-soft`) with the text tints, as on the market card.
-- No gradients, no glows, no coloured shadows.
+- No gradients, no glows, no coloured shadows, anywhere (§1, "What MarkETH must not look like").
 
 ## 5. Typography
 
@@ -313,7 +363,7 @@ Admin screens are the one exception: their tables are designed for 1024 px and s
 - An icon alone is never a control's only label, except the back arrow, the close cross and the tab bar, which all carry an `aria-label` (the tab bar also shows text).
 - Icons are `--foreground` or `--muted-foreground`. An icon is green or red only inside an element that already is.
 - Markets have no images and there is no photography. Illustration is pixel art only, from the short list in §3; empty states use one illustration (or a 32 px icon until it is drawn) and a sentence.
-- The only raster images are the logo, the token icon, the pixel illustrations (§3) and generated QR codes.
+- The only raster images are the logo, the token icon, the trophies, the pixel illustrations (§3) and generated QR codes.
 
 ## 9. Tokens
 
@@ -458,11 +508,12 @@ Rules:
 | --- | --- | --- |
 | Markets | `/` | Everyone |
 | Portfolio | `/portfolio` | Signed-in users |
+| Leaderboard | `/leaderboard` | Everyone, once the API provides it (§13) |
 | Wallet | `/wallet` | Signed-in users |
 | Scan | `/barista` | Role BARISTA |
 | Admin | `/admin` | Role ADMIN |
 
-The role comes from `MeResponse.role`. Admins reach the scanner from the Admin screen. Signed-out visitors see Markets and a "Sign in" tab. The tab bar is hidden on Login, on the Barista scanner while the camera is live, and while the trade sheet is open.
+The role comes from `MeResponse.role`. Admins reach the scanner from the Admin screen. Signed-out visitors see Markets and a "Sign in" tab. There are never more than five tabs. The tab bar is hidden on Login, on the Barista scanner while the camera is live, and while the trade sheet is open.
 
 ### Routes
 
@@ -472,6 +523,7 @@ The role comes from `MeResponse.role`. Admins reach the scanner from the Admin s
 | `/markets/[id]` | Market detail; the trade sheet opens over it | this file |
 | `/portfolio` | Portfolio | this file |
 | `/wallet` | Wallet; `#code=...` prefills the redeem field | SPEC A.6 |
+| `/leaderboard` | Leaderboard (not buildable yet) | this file |
 | `/propose` | Propose market | this file |
 | `/login` | Login, step 1 | this file |
 | `/login/confirm` | Login, confirm step; the token is in the fragment | SPEC A.3 |
@@ -663,14 +715,14 @@ Live: the Price, chart and volume follow the stream (§14). A `status` event ref
 Opened from an outcome button or "Sell". Top to bottom:
 
 1. The question, one line, `body-sm` `--muted-foreground`.
-2. A **Buy / Sell** segmented control. "Sell" is shown only when the user holds shares.
+2. A **Buy / Sell** segmented control. "Sell" is enabled when at least one entry of `viewer.sell_presets` has `allowed: true`.
 3. The outcome toggle. When selling, only held outcomes are offered.
-4. **Buying:** the stake presets and the stake-left line. **Selling:** a shares field with a "Sell all" chip that fills in the `shares` string of the holding exactly as the API sent it.
+4. **Buying:** the stake presets and the stake-left line. **Selling:** two chips, "Half" and "All", from `viewer.sell_presets` for the selected outcome. Each shows its `shares` and is disabled when `allowed` is false. The chosen preset's `shares` string is sent as it arrived.
 5. The quote panel.
 6. A line with the balance: "Balance" and the token icon with `balance_cr`.
 7. The Confirm button, 56 px. Its fill follows the outcome when buying ("Buy YES" on `--yes`, "Buy NO" on `--no`) and is `primary` white when selling ("Sell YES shares").
 
-**Decision (selling):** SPEC §11 describes buying only, yet the acceptance criteria require selling. The API sizes a sale in shares and sends no sell presets, and the frontend may not compute amounts. So the user types a share quantity or taps "Sell all"; there is no "half" or percentage button, since that would be arithmetic on a holding. Every resulting number comes from the quote.
+Selling follows SPEC A.11: the server works out half and all of each holding and says whether each sale is allowed, so the frontend halves and compares nothing. There is no free-entry shares field.
 
 Behaviour:
 
@@ -703,7 +755,27 @@ Flows:
 
 - **Redeem code** opens a sheet with the code field, a "Scan QR" button and "Redeem". Opening `/wallet#code=...` opens this sheet with the field filled in; the user still taps "Redeem". Success closes the sheet with a toast "+{value_cr} tokens" and updates the balance. Every failure shows the same inline message from the API ("This code is not valid."); the screen never hints at why (SPEC §2).
 - **Get a coffee** opens a confirmation sheet: "Turn {coffee_ticket_value_cr} token into a coffee ticket?" (plural by the string) with the expiry from `/config`. Confirming shows the ticket: the QR tile, the code, the expiry and "Show this at the bar". The code is returned once, so it is saved to local storage for "Show QR" later (SPEC A.6); a ticket whose code is no longer stored says so plainly and gives the expiry and refund date.
-- **Decision:** "Get a coffee" is always enabled for a signed-in user. Whether the balance suffices is the server's call; `INSUFFICIENT_BALANCE` is shown inline in the sheet.
+- "Get a coffee" is enabled when `can_get_coffee` in `GET /me` is true (SPEC A.11). When it is false the button is disabled, with a line under it: "You need a whole token for a coffee." The frontend does not look at the balance to decide.
+
+### Leaderboard (`/leaderboard`)
+
+**Not buildable yet.** SPEC A.1 lists the leaderboard as not built and the API has no endpoint for it. This section fixes its design so that it is ready; the screen and its tab ship only when the API returns the ranking. The frontend never ranks, sorts or totals anything itself (golden rule 6).
+
+Modelled on Polymarket's leaderboard, with the top three turned into a podium.
+
+1. Top bar.
+2. Title "Leaderboard" (`h1`) and, if the API offers periods, a segmented control for them.
+3. **Podium:** three columns on one `--card`. First place is in the middle and stands highest, second on the left, third on the right. Each column shows the trophy (96 px for first, 72 px for the others), the rank as text, the display name (`h3`, one line) and the score with the token icon (`number-lg` for first, `number` for the others). The "steps" are flat `--raised` blocks of three heights with square top corners: pixel-art blocks, not rounded cards.
+4. **Ranks from fourth down:** rows of 56 px: the rank number (`number`, `--muted-foreground`, fixed width), the display name, and the score right aligned with the token icon.
+5. **Your row:** the viewer's own row has a `--raised` background and the label "You". If the viewer is outside the visible list, their row is pinned above the tab bar.
+
+Rules:
+
+- Names, ranks and scores are shown exactly as the API sends them. A name is whatever display name the API provides; email addresses are never shown.
+- Ties, ordering and what the score measures are the server's business. The screen states the measure in one `caption` line under the title, using the API's wording.
+- With fewer than three ranked players, the empty podium places show a `--subtle` outline of the step and no trophy.
+- First place may get the bean drop (§7) once, when the viewer opens the screen while holding it. No other animation, no confetti.
+- Empty: "Nobody has traded yet. The podium is yours to take." Loading: skeleton podium and five skeleton rows.
 
 ### Propose market (`/propose`)
 
@@ -752,9 +824,9 @@ The API returns `{code, message, details}`. The `message` is written for the use
 | --- | --- | --- |
 | `QUOTE_STALE` | Trade sheet | New quote from `details.quote`, inline notice, confirm again |
 | `INSUFFICIENT_BALANCE` | Trade sheet, coffee sheet | Inline above the button |
-| `INSUFFICIENT_SHARES` | Trade sheet (sell) | Error on the shares field |
+| `INSUFFICIENT_SHARES` | Trade sheet (sell) | Inline above the button, then refetch the market so the sell presets are current |
 | `LIMIT_EXCEEDED` | Trade sheet, propose form, redeem sheet | Inline; on trades, refresh the stake-left line from `details` |
-| `TRADE_TOO_SMALL` | Trade sheet | Error on the amount or shares field |
+| `TRADE_TOO_SMALL` | Trade sheet | Inline above the button |
 | `MARKET_NOT_OPEN` | Trade sheet | Inline, then refetch the market so the screen shows its real status |
 | `CODE_INVALID` | Redeem sheet, barista | Inline on the field; the rejected screen on the scanner. Always the same wording |
 | `RATE_LIMITED` | Login, redeem, trade | Inline; the action is disabled for `details.retry_after_seconds` with a countdown |
@@ -799,6 +871,7 @@ Every button that posts is disabled from tap until response. Destructive admin a
 
 Do:
 
+- Ask of every new element: is it Polymarket, or is it a pixel-art or campus touch? If neither, leave it out.
 - Use tokens and the listed components; add a component here before adding it in code.
 - Show the API's strings and messages as sent.
 - Give every screen its loading, empty and error state.
@@ -811,7 +884,9 @@ Don't:
 - Hard-code a tunable ("1 token", "5 tokens", "30 days") in copy or logic.
 - Use green or red for anything that is not YES, NO, a gain, a loss, an error or a destructive action.
 - Put white text on a green or red fill, or pure red text on a card.
-- Add a light theme, a gradient, a shadow on a card, or a remote image or font.
+- Add a gradient of any kind, a light theme, a shadow on a card, a blur, or a remote image or font.
+- Build anything from the "must not look like" table in §1: landing sections, marketing copy, glass, blobs, sidebars, pill-shaped everything, confetti.
+- Use a trophy JPEG, or a trophy for anything but a leaderboard rank.
 - Use the ETH logo, or type the name beside the logo with name.
 - Use pure white `#FFFFFF` or pure black `#000000` anywhere on screen.
 - Put a joke in an error, a balance, the trade sheet or the admin area, or more than one playful element on a screen.
