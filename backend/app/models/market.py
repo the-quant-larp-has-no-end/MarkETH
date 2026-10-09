@@ -2,9 +2,13 @@
 
 The market row is the lock every trade takes first (SPEC §8). It carries the LMSR state
 (`b_micro`, `q_yes_micro`, `q_no_micro`) and a `version` that grows by one per trade.
+
+SPEC §5: budget and b are immutable while a market is OPEN. A trigger (in the
+migrations) rejects such an UPDATE; changing them means halting the market first.
 """
 
 from datetime import datetime
+from typing import Final
 from uuid import UUID, uuid7
 
 from sqlalchemy import CheckConstraint, ForeignKey, Index, Text
@@ -12,6 +16,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.enums import MarketStatus, MarketTier, ResolutionOutcome
 from app.db.base import Base, enum_column
+
+LN_2_ROUNDED_DOWN: Final[str] = "0.693147180559945309417232121458"
+"""ln 2 cut off after 30 places, for the CHECK below. Cut off, not rounded, so a budget
+that covers b · ln 2 exactly is never refused."""
 
 
 class Market(Base):
@@ -22,6 +30,10 @@ class Market(Base):
         # A.7: budget and b stay 0 until approval; a market that can trade needs b > 0.
         CheckConstraint(
             "status IN ('PROPOSED', 'REJECTED') OR b_micro > 0", name="b_positive_once_approved"
+        ),
+        # SPEC §5: b · ln 2 <= budget. With the check above, an approved market has a budget.
+        CheckConstraint(
+            f"b_micro * {LN_2_ROUNDED_DOWN} <= budget_micro", name="loss_bound_within_budget"
         ),
         CheckConstraint("q_yes_micro >= 0", name="q_yes_non_negative"),
         CheckConstraint("q_no_micro >= 0", name="q_no_non_negative"),

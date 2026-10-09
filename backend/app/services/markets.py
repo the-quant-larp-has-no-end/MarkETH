@@ -61,7 +61,8 @@ class MarketService:
         2. One transaction. `uow.advisory_lock(f"proposals:{user.id}")`, so two
            proposals of one user cannot both slip under the limit. Then
            `markets.count_created_by_since(user.id, start_of_day(now, APP_TIMEZONE))`:
-           at `MAX_PROPOSALS_PER_USER_PER_DAY` or more, `LimitExceededError` (409).
+           at `MAX_PROPOSALS_PER_USER_PER_DAY` or more, `LimitExceededError` (409)
+           with `details={"limit": Limit.MAX_PROPOSALS_PER_USER_PER_DAY}`.
         3. Insert the market: `status=PROPOSED`, the request's wording and dates,
            `requested_tier`, `tier=None`, `created_by=user.id`, `created_at=now`;
            budget, b, quantities, version and volume stay 0.
@@ -78,7 +79,9 @@ class MarketService:
 
         * `status=None`: every market whose effective status is in `PUBLIC_STATUSES`.
         * PROPOSED or REJECTED: admins only. No viewer raises `UnauthenticatedError`
-          (401), a viewer who is not an admin `ForbiddenError` (403). Never cached.
+          (401), a viewer for whom `viewer.is_admin` is false `ForbiddenError` (403).
+          That includes a suspended admin: this route is public, so the guards of
+          `app/api/deps.py` have not turned a suspended account away. Never cached.
         * Any other status: the markets with that effective status.
 
         The effective status differs from the stored one only for OPEN markets past
@@ -87,8 +90,9 @@ class MarketService:
 
         Caching (public lists only): the key is `MarketCache.list_key(status.value if
         status else None)`. A hit is `MarketListResponse.model_validate_json(text)`. A
-        miss reads Postgres (`markets.list_by_statuses`, plus the `resolutions` row of
-        each RESOLVED or VOID market for `MarketView.summary`) and stores
+        miss reads Postgres (`markets.list_by_statuses`, plus the `resolutions` rows
+        of the RESOLVED and VOID markets for `MarketView.summary`, all of them in one
+        query: `resolutions.get_many_by_market`) and stores
         `response.model_dump_json()`. The list holds nothing about the viewer, so one
         entry serves everybody.
         """
@@ -100,7 +104,8 @@ class MarketService:
         """One market with its rules, and the viewer's side of it (`GET /markets/{id}`).
 
         Visibility: an unknown market raises `NotFoundError` (404). So does a PROPOSED
-        or REJECTED one unless the viewer is an admin or its proposer.
+        or REJECTED one unless `viewer.is_admin` (false for a suspended account) or
+        the viewer is its proposer.
 
         Without a viewer the answer is public and cached under
         `MarketCache.market_key(market_id)` (not for PROPOSED or REJECTED), stored as
@@ -112,8 +117,8 @@ class MarketService:
         `no_def` are `yes_definition` and `no_definition`), `requested_tier`, `tier`,
         `b_cr`, `max_loss_cr = budget_micro`, `void_rule = VOID_RULE`, the timestamps,
         `rejection_reason`, `resolution` from the `resolutions` row (`resolved_at` is
-        its `created_at`), and `proposer_email`: the proposer's `users.email` when the
-        viewer is an admin, else null.
+        its `created_at`), and `proposer_email`: the proposer's `users.email` when
+        `viewer.is_admin`, else null.
 
         `viewer` block (null without a viewer), from the viewer's account and their
         `positions.list_for_user_market`:
@@ -126,5 +131,7 @@ class MarketService:
         * `stake_presets`: one per `TRADE_STAKE_PRESETS_CR`, in that order, `allowed`
           when `can_trade` and the amount is at least `MIN_TRADE_CR`, at most
           `stake_left` and at most the balance.
+        * `sell_presets = MarketView.sell_presets(<the positions>, can_trade)`: half
+          and all of each holding, so the client halves and compares nothing (A.11).
         """
         raise NotImplementedError

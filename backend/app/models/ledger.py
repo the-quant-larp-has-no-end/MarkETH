@@ -1,13 +1,20 @@
 """The double-entry ledger: `accounts`, `journal_entries`, `postings` (SPEC §1, §7, A.8).
 
 Every credit movement is a journal entry whose postings sum to zero. A positive posting
-increases the balance of its account. Entries and postings are append-only: the app role
-has no UPDATE or DELETE on them, and a deferred constraint trigger (created by the
-baseline migration) rejects an entry that does not net to zero at commit.
+increases the balance of its account. What the database itself guarantees, whatever the
+code above it does (the triggers and privileges are in the migrations):
 
-`accounts.balance_micro` is the running sum of an account's postings, kept by
-`LedgerService`. User accounts cannot go negative; `vis:issuance` and `vis:mm_pnl` can,
-and a market account can go down to minus its budget.
+* An entry nets to zero at commit, or the transaction fails.
+* `accounts.balance_micro` is the sum of the account's postings. A trigger adds every
+  posting to its account; the app role can neither write the column nor open an account
+  with a balance, so a balance cannot move without a posting or a posting without it.
+* An entry is sealed by the transaction that created it (`created_xid`): no later
+  transaction can add a posting to it. Entries and postings are append-only; the app
+  role has no UPDATE or DELETE on them.
+
+User accounts cannot go negative, and neither can a market account or the two coffee
+ticket accounts (A.8: a market account only takes in costs and pays out proceeds, and
+its loss is booked to `vis:mm_pnl` when it settles). `vis:issuance` and `vis:mm_pnl` can.
 """
 
 from datetime import datetime
@@ -24,6 +31,9 @@ REF_TYPE_MAX_LENGTH: Final[int] = 32
 JOURNAL_IDEMPOTENCY_KEY_MAX_LENGTH: Final[int] = 128
 """The longest key of A.8, `ticket:{uuid}:redeem`, has 50 characters."""
 
+CURRENT_TRANSACTION_ID: Final[str] = "(pg_current_xact_id())::text::bigint"
+"""SQL for the id of the running top-level transaction, as a BIGINT."""
+
 
 class Account(Base):
     """A ledger account: one per user, one per market, and one per VIS_* kind."""
@@ -31,6 +41,13 @@ class Account(Base):
     __tablename__ = "accounts"
     __table_args__ = (
         CheckConstraint("kind <> 'USER' OR balance_micro >= 0", name="user_balance_non_negative"),
+        CheckConstraint(
+            "kind <> 'MARKET' OR balance_micro >= 0", name="market_balance_non_negative"
+        ),
+        CheckConstraint(
+            "kind NOT IN ('VIS_REDEMPTION_PENDING', 'VIS_REDEEMED') OR balance_micro >= 0",
+            name="redemption_balance_non_negative",
+        ),
         CheckConstraint("(kind = 'USER') = (owner_id IS NOT NULL)", name="owner_iff_user"),
         CheckConstraint("(kind = 'MARKET') = (market_id IS NOT NULL)", name="market_iff_market"),
         Index(
@@ -57,11 +74,16 @@ class Account(Base):
     kind: Mapped[AccountKind] = mapped_column(enum_column(AccountKind, "kind"))
     owner_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
     market_id: Mapped[UUID | None] = mapped_column(ForeignKey("markets.id"))
-    balance_micro: Mapped[int] = mapped_column(default=0)
+    # Written by the database alone: 0 at first, then moved by the postings trigger.
+    balance_micro: Mapped[int] = mapped_column(server_default=text("0"))
 
 
 class JournalEntry(Base):
-    """Why credits moved. `idempotency_key` is deterministic, so a replay cannot book twice."""
+    """Why credits moved. `idempotency_key` is deterministic, so a replay cannot book twice.
+
+    `created_xid` is the transaction that inserted the entry, filled in by the database.
+    Only that transaction may add postings to it.
+    """
 
     __tablename__ = "journal_entries"
 
@@ -73,6 +95,7 @@ class JournalEntry(Base):
         String(JOURNAL_IDEMPOTENCY_KEY_MAX_LENGTH), unique=True
     )
     created_at: Mapped[datetime]
+    created_xid: Mapped[int] = mapped_column(server_default=text(CURRENT_TRANSACTION_ID))
 
 
 class Posting(Base):
@@ -82,9 +105,11 @@ class Posting(Base):
     __table_args__ = (
         CheckConstraint("amount_micro <> 0", name="amount_non_zero"),
         Index(None, "account_id", "id"),
+        # (entry_id, id): the balance check asks for "a later posting of this entry".
+        Index(None, "entry_id", "id"),
     )
 
     id: Mapped[int] = mapped_column(Identity(always=True), primary_key=True)
-    entry_id: Mapped[UUID] = mapped_column(ForeignKey("journal_entries.id"), index=True)
+    entry_id: Mapped[UUID] = mapped_column(ForeignKey("journal_entries.id"))
     account_id: Mapped[UUID] = mapped_column(ForeignKey("accounts.id"))
     amount_micro: Mapped[int]

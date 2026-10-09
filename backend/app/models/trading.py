@@ -8,11 +8,11 @@ from datetime import datetime
 from typing import Any, Final
 from uuid import UUID, uuid7
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, String
+from sqlalchemy import CheckConstraint, ForeignKey, Index, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.enums import Outcome, TradeSide
-from app.db.base import SHA256_HEX_LENGTH, Base, enum_column
+from app.db.base import SHA256_HEX_LENGTH, Base, enum_column, sha256_hex_check
 
 IDEMPOTENCY_KEY_MAX_LENGTH: Final[int] = 64
 """Room for the UUID a client sends as `Idempotency-Key` (SPEC §8), in any text form."""
@@ -35,12 +35,18 @@ class Position(Base):
 
 
 class Trade(Base):
-    """One executed buy or sell. `amount_micro` is the cost of a buy or the proceeds of a sell."""
+    """One executed buy or sell. `amount_micro` is the cost of a buy or the proceeds of a sell.
+
+    The proceeds of a sell can be 0 (A.4), the cost of a buy cannot. `market_version` is
+    the market's version after the trade: every trade of a market has its own, because
+    each one runs under the market lock (SPEC §8) and the chart is keyed by it (SPEC §9).
+    """
 
     __tablename__ = "trades"
     __table_args__ = (
         CheckConstraint("shares_micro > 0", name="shares_positive"),
         CheckConstraint("amount_micro >= 0", name="amount_non_negative"),
+        UniqueConstraint("market_id", "market_version"),
         Index(None, "market_id", "created_at"),
         Index(None, "user_id", "id"),
     )
@@ -59,9 +65,13 @@ class Trade(Base):
 
 
 class IdempotencyKey(Base):
-    """A client's claim on one request. `response_json` is NULL until the request commits."""
+    """A client's claim on one request. `response_json` is NULL until the request commits.
+
+    `request_hash` is the SHA-256 of the request (A.4), never the request itself.
+    """
 
     __tablename__ = "idempotency_keys"
+    __table_args__ = (sha256_hex_check("request_hash"),)
 
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
     key: Mapped[str] = mapped_column(String(IDEMPOTENCY_KEY_MAX_LENGTH), primary_key=True)

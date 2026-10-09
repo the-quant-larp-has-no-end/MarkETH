@@ -1,9 +1,9 @@
 """The only writer of the ledger (SPEC §1, §7, Appendix A.8, golden rule 2).
 
 Every credit movement in MarkETH is one call to `LedgerService.post`: a journal entry
-whose postings sum to zero, inserted together with the matching change of each
-account's balance. Nothing else inserts into `journal_entries` or `postings`, and
-nothing else changes `accounts.balance_micro`.
+whose postings sum to zero. Nothing else inserts into `journal_entries` or `postings`.
+Nobody writes `accounts.balance_micro`: the database adds each posting to its account
+as it is inserted, and refuses the app role any other change of a balance.
 
 This module also fixes the vocabulary every caller shares, so that five services cannot
 spell it five ways: what a journal entry refers to (`LedgerRef`) and its deterministic
@@ -112,13 +112,15 @@ class LedgerService:
            zero are dropped (A.8: zero-amount postings are omitted).
         2. An entry with no posting left, or whose postings do not sum to zero, raises
            `InvalidEntryError` before the database is touched. A caller whose entry can
-           be all zeros (settling a market nobody traded) must not call `post`.
+           be all zeros (settling a market nobody traded, a sell whose proceeds round
+           down to nothing) must not call `post`.
         3. The accounts are locked in ascending id order. An unknown account raises
            `InvalidEntryError`. A user account that would go below zero raises
            `InsufficientBalanceError` (409) with `details.balance_cr` and
            `details.required_cr`; nothing has been written at that point.
-        4. The entry and its postings are inserted, and each balance is updated, again
-           in ascending account id order.
+        4. The entry and its postings are inserted. The database moves each balance
+           with its posting; the accounts are then read again, so an `Account` the
+           caller loaded earlier in this unit of work shows its balance after the entry.
 
         A caller that needs a user's account locks it before it locks anything else of
         that user's and before calling this (lock order: market row, user account, the
@@ -129,7 +131,13 @@ class LedgerService:
         `idempotency_key` is one of this module's `*_key` values. Using one a second
         time violates `uq_journal_entries_idempotency_key`: the INSERT raises
         `IntegrityError`, which ends the caller's transaction (it must leave the
-        `async with` block). `ref_type` is a `LedgerRef`.
+        `async with` block). So does a posting that would take a market account or one
+        of the two coffee ticket accounts below zero: those are bugs of the caller, not
+        answers to a user, and the database is their backstop. `ref_type` is a
+        `LedgerRef`.
+
+        One entry belongs to one transaction: once it has committed, the database
+        accepts no further posting for it.
         """
         deltas = _net_by_account(lines)
         if not deltas:
@@ -169,8 +177,7 @@ class LedgerService:
                 for account_id, delta_micro in deltas.items()
             ]
         )
-        for account_id, delta_micro in deltas.items():
-            await uow.accounts.add_to_balance(account_id, delta_micro)
+        await uow.accounts.reload_many(list(deltas))
         return entry
 
 

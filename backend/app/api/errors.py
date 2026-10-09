@@ -3,6 +3,10 @@
 Services raise `AppError` subclasses; everything else that can go wrong on the way in
 or out (validation, an unknown route, a bug) is translated here into the same shape, so
 a client only ever parses one kind of error.
+
+One translation is a rule of the spec rather than a courtesy: with Postgres down,
+"everything returns 503" (SPEC §9). No service catches a lost connection (it has to
+leave the unit of work anyway); `_database_error` recognises it here, once.
 """
 
 import logging
@@ -14,7 +18,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.core.errors import AppError, ErrorCode
+from app.core.errors import AppError, ErrorCode, ServiceUnavailableError
+from app.db import database
 from app.schemas.common import ErrorResponse
 
 logger = logging.getLogger(__name__)
@@ -58,6 +63,8 @@ def install_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(RequestValidationError, _validation_error)
     app.add_exception_handler(StarletteHTTPException, _http_error)
     app.add_exception_handler(NotImplementedError, _not_implemented)
+    for family in database.ERROR_FAMILIES:
+        app.add_exception_handler(family, _database_error)
     app.add_exception_handler(Exception, _unexpected_error)
 
 
@@ -90,6 +97,22 @@ async def _http_error(request: Request, exc: Exception) -> JSONResponse:
 async def _not_implemented(request: Request, exc: Exception) -> JSONResponse:
     """501 for a service method that is still a skeleton while the build is in progress."""
     return error_response(501, ErrorCode.INTERNAL_ERROR, NOT_IMPLEMENTED_MESSAGE)
+
+
+async def _database_error(request: Request, exc: Exception) -> JSONResponse:
+    """503 when Postgres is unreachable (SPEC §9); every other such error is a bug.
+
+    A bug is raised again, so it takes the same road as any unexpected error: logged
+    with its traceback and answered with 500 by `_unexpected_error`.
+    """
+    if not database.is_unavailable(exc):
+        raise exc
+    logger.warning("Postgres is unavailable in %s %s: %r", request.method, request.url.path, exc)
+    return error_response(
+        ServiceUnavailableError.status_code,
+        ServiceUnavailableError.code,
+        ServiceUnavailableError.default_message,
+    )
 
 
 async def _unexpected_error(request: Request, exc: Exception) -> JSONResponse:

@@ -39,7 +39,8 @@ class CoffeeTicketService:
 
         One transaction:
         1. Lock the user's account. A balance below the ticket value raises
-           `InsufficientBalanceError` (409).
+           `InsufficientBalanceError` (409) with `details={"balance_cr": to_cr(...),
+           "required_cr": to_cr(...)}`.
         2. `code = generate_code(COFFEE_TICKET_CODE_LENGTH)`; insert `CoffeeTicket(
            user_id, code_hash=hash_code(code), status=ACTIVE, value_micro, created_at=
            now, expires_at=now + COFFEE_TICKET_EXPIRY_DAYS)`.

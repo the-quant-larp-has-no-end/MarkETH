@@ -5,7 +5,8 @@ It fixes three things for the whole schema, so no model can get them wrong:
 * Constraint and index names follow one convention. Alembic can then address every
   constraint by name, and an integrity error names the rule that was broken.
 * A Python `int` is always BIGINT (amounts are micro-units, golden rule 1) and a
-  `datetime` is always TIMESTAMP WITH TIME ZONE.
+  `datetime` is always TIMESTAMP WITH TIME ZONE that refuses a value without a timezone
+  (`AwareDateTime`).
 * Enum-like columns are VARCHAR with a named CHECK constraint, built by `enum_column`.
 
 `sha256_hex_check` backs up SPEC §2 and §3: tokens, session IDs and codes are stored as
@@ -16,9 +17,10 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Final
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, Enum, MetaData
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, Dialect, Enum, MetaData
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.types import TypeDecorator
 
 NAMING_CONVENTION: Final[dict[str, str]] = {
     "pk": "pk_%(table_name)s",
@@ -34,11 +36,29 @@ ENUM_LENGTH: Final[int] = 32
 SHA256_HEX_LENGTH: Final[int] = 64
 
 
+class AwareDateTime(TypeDecorator[datetime]):
+    """TIMESTAMP WITH TIME ZONE that only takes an instant, never a wall-clock reading.
+
+    The driver would read a datetime without a timezone as local time of the process,
+    so the same code would store one instant in a container (UTC) and another on a
+    developer's machine. Such a value is refused here, for every column and for every
+    comparison against one; it surfaces as `sqlalchemy.exc.StatementError`.
+    """
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect: Dialect) -> datetime | None:
+        if value is not None and value.utcoffset() is None:
+            raise ValueError(f"a timestamp needs a timezone, got the naive {value!r}")
+        return value
+
+
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
     type_annotation_map = {  # noqa: RUF012  (SQLAlchemy reads this class attribute)
         int: BigInteger,
-        datetime: DateTime(timezone=True),
+        datetime: AwareDateTime(),
         # none_as_null: Python None is SQL NULL, never the JSON literal `null`.
         dict[str, Any]: JSONB(none_as_null=True),
     }

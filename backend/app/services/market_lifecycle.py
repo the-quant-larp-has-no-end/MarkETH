@@ -10,6 +10,9 @@ Shared by all seven methods:
 * One transaction. The market row is locked first (`markets.get_for_update`); an unknown
   market raises `NotFoundError` (404).
 * A move that `ALLOWED_TRANSITIONS` does not list raises `ConflictError` (409).
+* Lock order: the market row, then the user accounts a settlement pays (all at once,
+  `accounts.lock_user_accounts`), then whatever `LedgerService.post` locks. Positions
+  need no lock of their own: every writer of a market's positions holds its row.
 * One `audit_log` row per status change, in the transaction, with `actor_id=actor.id`,
   target `AuditService.target(AuditTarget.MARKET, market.id)`, and `before` and `after`
   holding at least `{"status": ...}` plus what the action changed or was told (tier,
@@ -98,19 +101,24 @@ class MarketLifecycleService:
            `budget = lmsr.max_loss_micro(b)`. CUSTOM: `budget = to_micro(budget_cr)`,
            `b = lmsr.b_from_budget_micro(budget)`. Pass `precision=
            PRICING_DECIMAL_PRECISION` to both. `budget > MAX_MARKET_BUDGET` raises
-           `LimitExceededError` (409).
-        5. Caps, each a `LimitExceededError` whose details name the cap:
-           `markets.count_by_statuses({OPEN, HALTED}) >= MAX_OPEN_MARKETS`;
-           `markets.sum_budget_by_statuses({OPEN, HALTED}) + budget >
-           MAX_AGGREGATE_LOSS_BUDGET`.
+           `LimitExceededError` (409) with `details={"limit":
+           Limit.MAX_MARKET_BUDGET}`.
+        5. Caps, each a `LimitExceededError` whose `details.limit` names the cap:
+           `markets.count_by_statuses({OPEN, HALTED}) >= MAX_OPEN_MARKETS`
+           (`Limit.MAX_OPEN_MARKETS`); `markets.sum_budget_by_statuses({OPEN,
+           HALTED}) + budget > MAX_AGGREGATE_LOSS_BUDGET`
+           (`Limit.MAX_AGGREGATE_LOSS_BUDGET`).
         6. Write: `status=OPEN`, `tier`, `budget_micro`, `b_micro`,
-           `approved_by=actor.id`, `opened_at=now`. Create the market's account
+           `approved_by=actor.id`, `opened_at=now`, all in the one UPDATE that opens
+           the market: once it is OPEN the database refuses to change its budget or b
+           (SPEC §5). Create the market's account
            (`accounts.create_market_account`). Queue the version-0 point of the chart:
            `outbox.add(QUOTE_UPDATED, quote_updated_payload(QuotePoint(market.id, now,
            0, EVEN_ODDS_MICRO, 0, 0, None)), now)`. Audit `MARKET_APPROVE`.
 
-        No credit moves: a market starts at q = 0 with an empty account, and its
-        account may later go down to minus the budget.
+        No credit moves: a market starts at q = 0 with an empty account. That account
+        never goes below zero; what the market maker loses here, at most the budget,
+        is booked to `vis:mm_pnl` when the market settles (A.8).
         """
         raise NotImplementedError
 
@@ -171,10 +179,11 @@ class MarketLifecycleService:
         3. Insert `Resolution(market_id, outcome, evidence, resolved_by=actor.id,
            created_at=now)`. Its unique `market_id` is the backstop against a second
            one.
-        4. Payouts. `positions.list_for_market(market_id, for_update=True)`; every
-           position of the winning outcome with shares pays its `shares_micro` (1 CR
-           per share). Lock the winners' accounts with `accounts.lock_many` (ascending
-           id), then read the market account; B is its balance.
+        4. Payouts. `positions.list_for_market(market_id)`; every position of the
+           winning outcome with shares pays its `shares_micro` (1 CR per share). Lock
+           the winners' accounts in one query, `accounts.lock_user_accounts(<their
+           user ids>)` (ascending account id; `owner_id` maps each back to its user),
+           then read the market account; B is its balance.
         5. Post one `MARKET_RESOLUTION` entry: each winner +shares, market account -B,
            `vis:mm_pnl` +(B - Σ payouts), which may be negative. `LedgerRef.MARKET`,
            the market's id, `resolution_key(market.id)`. If every line is zero (nobody
@@ -190,13 +199,15 @@ class MarketLifecycleService:
         """Cancel a market and refund every net stake (SPEC §6, A.5, A.8).
 
         Steps 1 and 2 are those of `resolve`: an admin who traded the market may not
-        void it either, and the market is brought to CLOSED the same way. Then:
+        void it either (A.4: a void would refund that admin's own stake), and the
+        market is brought to CLOSED the same way. Then:
         3. Insert `Resolution(market_id, outcome=VOID, evidence=request.reason,
            resolved_by=actor.id, created_at=now)`.
-        4. Refunds. `positions.list_for_market(market_id, for_update=True)`, grouped
-           by user; each user's refund is `MarketView`'s net stake, max(0, Σ cost -
-           Σ proceeds) over both outcomes. Lock those users' accounts with
-           `accounts.lock_many`, then read the market account; B is its balance.
+        4. Refunds. `positions.list_for_market(market_id)`, grouped by user; each
+           user's refund is `MarketView`'s net stake, max(0, Σ cost - Σ proceeds) over
+           both outcomes. Lock those users' accounts with
+           `accounts.lock_user_accounts`, then read the market account; B is its
+           balance.
         5. Post one `MARKET_VOID` entry: each user +refund, market account -B,
            `vis:mm_pnl` +(B - Σ refunds). `LedgerRef.MARKET`, the market's id,
            `void_key(market.id)`. If every line is zero, post nothing.

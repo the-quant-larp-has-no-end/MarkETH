@@ -3,7 +3,8 @@
 * The outbox is written in the same transaction as a trade; the relay drains it into
   ScyllaDB. A row with `published_at IS NULL` is still owed.
 * The audit log records every admin action with the state before and after.
-* An alert is what the circuit breaker and the risk page raise for admins.
+* An alert is what the circuit breaker raises for admins. The risk page lists the
+  unacknowledged ones; reading it writes none (A.6).
 """
 
 from datetime import datetime

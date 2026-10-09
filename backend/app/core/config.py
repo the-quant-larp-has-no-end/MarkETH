@@ -281,7 +281,10 @@ class PricingSettings(_Section):
     tier_tight_b_micro: CreditMicro = Field(validation_alias="LMSR_TIER_TIGHT_B")
     tier_default_b_micro: CreditMicro = Field(validation_alias="LMSR_TIER_DEFAULT_B")
     tier_medium_b_micro: CreditMicro = Field(validation_alias="LMSR_TIER_MEDIUM_B")
-    decimal_precision: int = Field(validation_alias="PRICING_DECIMAL_PRECISION", ge=28)
+    # SPEC §4 computes with 50 digits, and this is the lower bound: with 28 to 32
+    # digits, quotes at the largest b the spec allows rounded the wrong way (see
+    # app/pricing/lmsr.py, "How many digits are enough"). More digits are fine.
+    decimal_precision: int = Field(validation_alias="PRICING_DECIMAL_PRECISION", ge=50)
     max_stake_per_user_market_micro: CreditMicro = Field(
         validation_alias="MAX_STAKE_PER_USER_MARKET"
     )

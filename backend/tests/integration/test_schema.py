@@ -190,7 +190,8 @@ async def _insert(uow_factory: UowFactory, rows: Sequence[Base]) -> None:
 
 
 async def _post(uow: UnitOfWork, idempotency_key: str, legs: Mapping[UUID, int]) -> JournalEntry:
-    """Book an entry the way `LedgerService` will: entry, postings, then the balances."""
+    """Book an entry the way `LedgerService` does: the entry, then its postings. The
+    database moves the balances."""
     entry = await uow.journal.add_entry(_entry(idempotency_key))
     await uow.journal.add_postings(
         [
@@ -198,8 +199,6 @@ async def _post(uow: UnitOfWork, idempotency_key: str, legs: Mapping[UUID, int])
             for account_id, amount_micro in legs.items()
         ]
     )
-    for account_id, amount_micro in legs.items():
-        await uow.accounts.add_to_balance(account_id, amount_micro)
     return entry
 
 
@@ -306,6 +305,96 @@ async def test_downgrade_removes_everything_but_the_app_role(
             await autocommit.execute(text(f"DROP DATABASE {scratch_name} WITH (FORCE)"))
 
 
+async def test_ledger_guards_migrate_a_database_that_already_holds_entries(
+    settings: Settings, owner_engine: AsyncEngine
+) -> None:
+    """Revision 0002 on top of a ledger written under 0001: the books carry over, the
+    old entry is sealed, and the way back down works with rows in every table it touches."""
+    scratch_name = "marketh_guards_upgrade_check"
+    scratch = settings.model_copy(
+        update={"postgres": settings.postgres.model_copy(update={"database": scratch_name})}
+    )
+    user_id, account_id, entry_id = uuid7(), uuid7(), uuid7()
+    under_0001 = [
+        "INSERT INTO users (id, canonical_email, email, role, status, created_at)"
+        " VALUES (:user, 'old@ethz.ch', 'old@ethz.ch', 'USER', 'ACTIVE', now())",
+        "INSERT INTO accounts (id, kind, owner_id, balance_micro)"
+        " VALUES (:account, 'USER', :user, 5000000)",
+        "UPDATE accounts SET balance_micro = -5000000 WHERE kind = 'VIS_ISSUANCE'",
+        "INSERT INTO journal_entries (id, kind, ref_type, ref_id, idempotency_key, created_at)"
+        " VALUES (:entry, 'SIGNUP_GRANT', 'voucher_grant', :entry, 'grant:old:SIGNUP', now())",
+        "INSERT INTO postings (entry_id, account_id, amount_micro)"
+        " SELECT :entry, id, -5000000 FROM accounts WHERE kind = 'VIS_ISSUANCE'",
+        "INSERT INTO postings (entry_id, account_id, amount_micro)"
+        " VALUES (:entry, :account, 5000000)",
+    ]
+    ids = {"user": user_id, "account": account_id, "entry": entry_id, "new": uuid7()}
+    add_to_old_entry = text(
+        "INSERT INTO postings (entry_id, account_id, amount_micro)"
+        " VALUES (:entry, :account, -1), (:entry, :account, 1)"
+    )
+    new_entry = [
+        "INSERT INTO journal_entries (id, kind, ref_type, ref_id, idempotency_key, created_at)"
+        " VALUES (:new, 'MONTHLY_GRANT', 'voucher_grant', :new, 'grant:old:2026-11', now())",
+        "INSERT INTO postings (entry_id, account_id, amount_micro)"
+        " SELECT :new, id, -1000000 FROM accounts WHERE kind = 'VIS_ISSUANCE'",
+        "INSERT INTO postings (entry_id, account_id, amount_micro)"
+        " VALUES (:new, :account, 1000000)",
+    ]
+    balances = text("SELECT kind, balance_micro FROM accounts WHERE balance_micro <> 0 ORDER BY 1")
+
+    async with owner_engine.connect() as connection:
+        autocommit = await connection.execution_options(isolation_level="AUTOCOMMIT")
+        await autocommit.execute(text(f"CREATE DATABASE {scratch_name}"))
+    scratch_owner = create_async_engine(scratch.postgres.owner_url, poolclass=NullPool)
+    scratch_app = create_async_engine(scratch.postgres.app_url, poolclass=NullPool)
+    try:
+        await asyncio.to_thread(upgrade_database, scratch, "0001")
+        async with scratch_owner.begin() as connection:
+            for statement in under_0001:
+                await connection.execute(text(statement), ids)
+
+        await asyncio.to_thread(upgrade_database, scratch)
+
+        with pytest.raises(IntegrityError, match="is sealed"):
+            async with scratch_app.begin() as connection:
+                await connection.execute(add_to_old_entry, ids)
+        async with scratch_app.begin() as connection:
+            for statement in new_entry:
+                await connection.execute(text(statement), ids)
+        async with scratch_app.connect() as connection:
+            assert [tuple(row) for row in await connection.execute(balances)] == [
+                ("USER", 6 * CR),
+                ("VIS_ISSUANCE", -6 * CR),
+            ]
+
+        await asyncio.to_thread(downgrade_database, scratch, "0001")
+        async with scratch_owner.connect() as connection:
+            assert [tuple(row) for row in await connection.execute(balances)] == [
+                ("USER", 6 * CR),
+                ("VIS_ISSUANCE", -6 * CR),
+            ]
+            columns = await connection.scalars(
+                text(
+                    "SELECT column_name FROM information_schema.columns"
+                    " WHERE table_name = 'journal_entries'"
+                )
+            )
+            assert "created_xid" not in set(columns)
+        # Under 0001 again, the app role keeps balances itself.
+        async with scratch_app.begin() as connection:
+            await connection.execute(
+                text("UPDATE accounts SET balance_micro = balance_micro WHERE id = :account"), ids
+            )
+        await asyncio.to_thread(upgrade_database, scratch)
+    finally:
+        await scratch_owner.dispose()
+        await scratch_app.dispose()
+        async with owner_engine.connect() as connection:
+            autocommit = await connection.execution_options(isolation_level="AUTOCOMMIT")
+            await autocommit.execute(text(f"DROP DATABASE {scratch_name} WITH (FORCE)"))
+
+
 # --- The ledger ---------------------------------------------------------------------
 
 
@@ -386,22 +475,65 @@ async def test_owner_role_cannot_unbalance_a_committed_entry(
         await run_tamper()
 
 
+async def _move(uow_factory: UowFactory, source: UUID, target: UUID, amount_micro: int) -> None:
+    """One balanced entry that takes `amount_micro` from `source` and gives it to `target`."""
+    async with uow_factory() as uow:
+        await _post(uow, f"move:{uuid7()}", {source: -amount_micro, target: amount_micro})
+
+
+async def _system_account_id(uow_factory: UowFactory, kind: AccountKind) -> UUID:
+    async with uow_factory() as uow:
+        return (await uow.accounts.get_system_account(kind)).id
+
+
 async def test_negative_user_balance_is_rejected(uow_factory: UowFactory, world: World) -> None:
+    issuance = await _system_account_id(uow_factory, AccountKind.VIS_ISSUANCE)
+
     with pytest.raises(IntegrityError, match="ck_accounts_user_balance_non_negative"):
-        async with uow_factory() as uow:
-            await uow.accounts.add_to_balance(world.user_account.id, -1)
+        await _move(uow_factory, world.user_account.id, issuance, 1)
 
     async with uow_factory() as uow:
         assert not await uow.accounts.has_negative_user_balance()
+        assert await uow.accounts.total_balance() == 0
 
 
-async def test_system_and_market_accounts_may_go_negative(
-    uow_factory: UowFactory, world: World
+@pytest.mark.parametrize("kind", [AccountKind.VIS_ISSUANCE, AccountKind.VIS_MM_PNL])
+async def test_issuance_and_market_maker_pnl_may_go_negative(
+    uow_factory: UowFactory, world: World, kind: AccountKind
 ) -> None:
+    """SPEC §7: `vis:issuance` is the source of every credit; `vis:mm_pnl` may lose."""
+    source = await _system_account_id(uow_factory, kind)
+    await _move(uow_factory, source, world.user_account.id, CR)
+
     async with uow_factory() as uow:
-        issuance = await uow.accounts.get_system_account(AccountKind.VIS_ISSUANCE)
-        assert await uow.accounts.add_to_balance(issuance.id, -CR) == -CR
-        assert await uow.accounts.add_to_balance(world.market_account.id, -CR) == -CR
+        assert (await uow.accounts.get_system_account(kind)).balance_micro == -CR
+
+
+@pytest.mark.parametrize(
+    ("kind", "constraint"),
+    [
+        (AccountKind.MARKET, "ck_accounts_market_balance_non_negative"),
+        (AccountKind.VIS_REDEMPTION_PENDING, "ck_accounts_redemption_balance_non_negative"),
+        (AccountKind.VIS_REDEEMED, "ck_accounts_redemption_balance_non_negative"),
+    ],
+)
+async def test_market_and_coffee_ticket_accounts_cannot_go_negative(
+    uow_factory: UowFactory, world: World, kind: AccountKind, constraint: str
+) -> None:
+    """A.8: a market account pays out only what it took in, and a ticket leaves
+    `vis:redemption_pending` once. A balanced entry that overdraws one is a bug."""
+    source = (
+        world.market_account.id
+        if kind is AccountKind.MARKET
+        else await _system_account_id(uow_factory, kind)
+    )
+
+    with pytest.raises(IntegrityError, match=constraint):
+        await _move(uow_factory, source, world.user_account.id, 1)
+
+    async with uow_factory() as uow:
+        assert await uow.accounts.total_balance() == 0
+        assert await uow.accounts.sum_balance_by_kind(AccountKind.USER) == 0
 
 
 @pytest.mark.parametrize(
@@ -568,11 +700,6 @@ REJECTED_ROWS: Final = [
         "ck_accounts_market_iff_market",
         id="user-account-with-market",
     ),
-    pytest.param(
-        lambda w: [Account(kind=AccountKind.USER, owner_id=w.admin.id, balance_micro=-1)],
-        "ck_accounts_user_balance_non_negative",
-        id="user-account-opened-in-debt",
-    ),
     *(
         pytest.param(
             lambda w, column=column: [
@@ -630,6 +757,25 @@ REJECTED_ROWS: Final = [
         "ck_trades_shares_positive",
         id="trade-of-zero-shares",
     ),
+    pytest.param(
+        lambda w: [_trade(w, market_version=1), _trade(w, market_version=1)],
+        "uq_trades_market_id_market_version",
+        id="two-trades-with-one-market-version",
+    ),
+    pytest.param(
+        lambda w: [_market(w.user.id, b_micro=10 * CR, budget_micro=6_931_471)],
+        "ck_markets_loss_bound_within_budget",
+        id="market-whose-budget-does-not-cover-b-ln-2",
+    ),
+    pytest.param(
+        lambda w: [
+            IdempotencyKey(
+                user_id=w.user.id, key=IDEMPOTENCY_KEY, request_hash="buy 1 CR", created_at=NOW
+            )
+        ],
+        "ck_idempotency_keys_request_hash_sha256_hex",
+        id="request-hash-that-is-no-hash",
+    ),
 ]
 
 
@@ -651,6 +797,74 @@ async def test_market_needs_no_liquidity_before_approval(
     proposal = _market(world.user.id, status=status, tier=None, budget_micro=0, b_micro=0)
     await _insert(uow_factory, [proposal])
     assert (proposal.q_yes_micro, proposal.q_no_micro, proposal.version) == (0, 0, 0)
+
+
+async def test_a_sell_may_bring_in_nothing(uow_factory: UowFactory, world: World) -> None:
+    """A.4: the proceeds of a sell can round down to 0; the trade is still recorded."""
+    await _insert(uow_factory, [_trade(world, side=TradeSide.SELL, amount_micro=0)])
+
+
+@pytest.mark.parametrize("column", ["b_micro", "budget_micro"])
+async def test_budget_and_b_cannot_change_while_a_market_is_open(
+    uow_factory: UowFactory, world: World, column: str
+) -> None:
+    """SPEC §5: both are immutable while the market is OPEN."""
+
+    async def change() -> None:
+        async with uow_factory() as uow:
+            market = await uow.markets.get_for_update(world.market.id)
+            assert market is not None
+            setattr(market, column, getattr(market, column) * 2)
+
+    with pytest.raises(IntegrityError, match="is OPEN: its budget and b cannot change"):
+        await change()
+
+    async with uow_factory() as uow:
+        market = await uow.markets.get(world.market.id)
+        assert market is not None
+        assert (market.budget_micro, market.b_micro) == (6_931_472, 10 * CR)
+
+
+async def test_budget_and_b_can_change_once_a_market_is_halted(
+    uow_factory: UowFactory, world: World
+) -> None:
+    """SPEC §5: "Changing them requires HALT"; trading it does not touch them at all."""
+    async with uow_factory() as uow:
+        market = await uow.markets.get_for_update(world.market.id)
+        assert market is not None
+        market.q_yes_micro += CR
+        market.version += 1
+        market.status = MarketStatus.HALTED
+    async with uow_factory() as uow:
+        market = await uow.markets.get_for_update(world.market.id)
+        assert market is not None
+        market.budget_micro, market.b_micro = 13_862_944, 20 * CR
+
+    async with uow_factory() as uow:
+        market = await uow.markets.get(world.market.id)
+        assert market is not None
+        assert (market.budget_micro, market.b_micro) == (13_862_944, 20 * CR)
+
+
+async def test_approval_sets_budget_and_b_as_it_opens_the_market(
+    uow_factory: UowFactory, world: World
+) -> None:
+    proposal = _market(
+        world.user.id, status=MarketStatus.PROPOSED, tier=None, budget_micro=0, b_micro=0
+    )
+    await _insert(uow_factory, [proposal])
+
+    async with uow_factory() as uow:
+        market = await uow.markets.get_for_update(proposal.id)
+        assert market is not None
+        market.status = MarketStatus.OPEN
+        market.tier = MarketTier.TIGHT
+        market.budget_micro, market.b_micro = 3_465_736, 5 * CR
+
+    async with uow_factory() as uow:
+        opened = await uow.markets.get(proposal.id)
+        assert opened is not None
+        assert (opened.status, opened.b_micro) == (MarketStatus.OPEN, 5 * CR)
 
 
 async def test_enum_columns_reject_unknown_values(owner_engine: AsyncEngine, world: World) -> None:
@@ -762,7 +976,33 @@ async def test_advisory_lock_serialises_transactions(uow_factory: UowFactory) ->
     await asyncio.wait_for(second, UNBLOCKED_WITHIN)
 
 
-async def test_add_to_balance_updates_the_loaded_account(
+async def test_lock_user_accounts_locks_the_accounts_of_those_users_in_id_order(
+    uow_factory: UowFactory, world: World
+) -> None:
+    issuance = await _system_account_id(uow_factory, AccountKind.VIS_ISSUANCE)
+    async with uow_factory() as uow:
+        others = [await uow.users.add(_user(name)) for name in ("bob", "carla", "dan")]
+        for user in others[:2]:
+            await uow.accounts.create_user_account(user.id)
+
+    async with uow_factory() as uow:
+        wanted = [others[1].id, world.user.id, others[0].id, others[2].id]
+        locked = await uow.accounts.lock_user_accounts(wanted)
+        # Dan has no account; the system and market accounts are nobody's.
+        assert {account.owner_id for account in locked} == set(wanted) - {others[2].id}
+        assert [account.id for account in locked] == sorted(account.id for account in locked)
+        assert await uow.accounts.lock_user_accounts([]) == []
+
+        payment = asyncio.create_task(_move(uow_factory, issuance, locked[0].id, CR))
+        await asyncio.sleep(BLOCKED_FOR)
+        assert not payment.done(), "a posting to a locked account waits for the lock"
+
+    await asyncio.wait_for(payment, UNBLOCKED_WITHIN)
+    async with uow_factory() as uow:
+        assert await uow.accounts.sum_balance_by_kind(AccountKind.USER) == CR
+
+
+async def test_a_posting_moves_the_balance_and_reload_many_shows_it(
     uow_factory: UowFactory, world: World
 ) -> None:
     async with uow_factory() as uow:
@@ -770,26 +1010,33 @@ async def test_add_to_balance_updates_the_loaded_account(
         account = await uow.accounts.get_user_account(world.user.id, for_update=True)
         assert account is not None
 
-        assert await uow.accounts.add_to_balance(issuance.id, -3 * CR) == -3 * CR
-        assert await uow.accounts.add_to_balance(account.id, 3 * CR) == 3 * CR
+        await _post(uow, "grant:alice:SIGNUP", {issuance.id: -3 * CR, account.id: 3 * CR})
 
-        assert (account.balance_micro, issuance.balance_micro) == (3 * CR, -3 * CR)
+        # The database moved both balances; the copies loaded before do not know yet.
+        assert (account.balance_micro, issuance.balance_micro) == (0, 0)
         assert await uow.accounts.sum_balance_by_kind(AccountKind.USER) == 3 * CR
         assert await uow.accounts.total_balance() == 0
 
+        reloaded = await uow.accounts.reload_many([account.id, issuance.id])
+        assert {row.id for row in reloaded} == {account.id, issuance.id}
+        assert (account.balance_micro, issuance.balance_micro) == (3 * CR, -3 * CR)
 
-async def test_add_to_balance_adds_to_the_database_value_not_to_a_stale_copy(
+
+async def test_postings_of_concurrent_transactions_add_up(
     uow_factory: UowFactory, world: World
 ) -> None:
+    """The addition happens in the database, on the row as it is at that moment."""
+    issuance = await _system_account_id(uow_factory, AccountKind.VIS_ISSUANCE)
+
+    await asyncio.gather(
+        *(_move(uow_factory, issuance, world.user_account.id, CR) for _ in range(8))
+    )
+
     async with uow_factory() as uow:
-        issuance = await uow.accounts.get_system_account(AccountKind.VIS_ISSUANCE)
-        assert issuance.balance_micro == 0
-
-        async with uow_factory() as other:
-            await other.accounts.add_to_balance(issuance.id, -5 * CR)
-
-        assert await uow.accounts.add_to_balance(issuance.id, -CR) == -6 * CR
-        assert issuance.balance_micro == -6 * CR
+        account = await uow.accounts.get(world.user_account.id)
+        assert account is not None
+        assert account.balance_micro == 8 * CR
+        assert await uow.accounts.total_balance() == 0
 
 
 # --- Idempotency and outbox -----------------------------------------------------------
@@ -961,7 +1208,7 @@ async def test_market_queries(uow_factory: UowFactory, world: World) -> None:
             _market(
                 world.admin.id,
                 status=MarketStatus.HALTED,
-                budget_micro=4 * CR,
+                budget_micro=8 * CR,
                 q_yes_micro=3 * CR,
                 q_no_micro=CR,
                 close_at=NOW + DAY,
@@ -972,7 +1219,8 @@ async def test_market_queries(uow_factory: UowFactory, world: World) -> None:
             _market(world.user.id, status=MarketStatus.PROPOSED, tier=None, b_micro=0)
         )
         halted_account = await uow.accounts.create_market_account(halted.id)
-        await uow.accounts.add_to_balance(halted_account.id, 2 * CR)
+        issuance = await uow.accounts.get_system_account(AccountKind.VIS_ISSUANCE)
+        await _post(uow, "trade:paid-in", {issuance.id: -2 * CR, halted_account.id: 2 * CR})
         await uow.resolutions.add(
             Resolution(
                 market_id=halted.id,
@@ -991,7 +1239,7 @@ async def test_market_queries(uow_factory: UowFactory, world: World) -> None:
         ]
         assert await uow.markets.list_by_statuses([]) == []
         assert await uow.markets.count_by_statuses(live) == 2
-        assert await uow.markets.sum_budget_by_statuses(live) == 4 * CR + 6_931_472
+        assert await uow.markets.sum_budget_by_statuses(live) == 8 * CR + 6_931_472
         assert await uow.markets.sum_budget_by_statuses([MarketStatus.VOID]) == 0
         # max(3, 1) - 2 for the halted market, max(0, 0) - 0 for the open one.
         assert await uow.markets.sum_exposure_by_statuses(live) == CR
@@ -1005,6 +1253,20 @@ async def test_market_queries(uow_factory: UowFactory, world: World) -> None:
         assert resolution is not None
         assert resolution.outcome is ResolutionOutcome.VOID
         assert await uow.resolutions.get_by_market(world.market.id) is None
+
+        wanted = [halted.id, world.market.id, proposal.id, uuid7()]
+        markets = await uow.markets.get_many(wanted)
+        assert set(markets) == set(wanted[:3])
+        assert markets[halted.id] is await uow.markets.get(halted.id)
+        assert await uow.markets.get_many([]) == {}
+        resolutions = await uow.resolutions.get_many_by_market(wanted)
+        assert list(resolutions) == [halted.id]
+        assert resolutions[halted.id] is resolution
+        accounts = await uow.accounts.list_market_accounts(wanted)
+        assert {market_id: a.balance_micro for market_id, a in accounts.items()} == {
+            halted.id: 2 * CR,
+            world.market.id: 0,
+        }
 
 
 async def test_position_queries(uow_factory: UowFactory, world: World) -> None:
@@ -1066,6 +1328,13 @@ async def test_trade_queries(uow_factory: UowFactory, world: World) -> None:
         assert [t.market_version for t in recent] == [2, 3]
         page = await uow.trades.list_for_market(world.market.id, limit=1, after_version=1)
         assert [t.market_version for t in page] == [2]
+        # With more trades than the limit, a chart must lose the oldest, not the newest.
+        latest = await uow.trades.list_for_market(world.market.id, limit=2, newest_first=True)
+        assert [t.market_version for t in latest] == [3, 2]
+        after = await uow.trades.list_for_market(
+            world.market.id, limit=10, after_version=2, newest_first=True
+        )
+        assert [t.market_version for t in after] == [3]
 
         assert await uow.trades.exists_for_user_market(world.user.id, world.market.id)
         assert not await uow.trades.exists_for_user_market(world.admin.id, world.market.id)
@@ -1163,6 +1432,10 @@ async def test_voucher_code_queries(uow_factory: UowFactory, world: World) -> No
             (world.batch.id, 0, 1, 2),
             (expired.id, 1, 0, 0),
         ]
+        one = await uow.code_batches.get_with_counts(world.batch.id)
+        assert one is not None
+        assert (one.batch, one.active, one.redeemed, one.revoked) == (batch, 0, 1, 2)
+        assert await uow.code_batches.get_with_counts(uuid7()) is None
 
 
 async def test_coffee_ticket_queries(uow_factory: UowFactory, world: World) -> None:

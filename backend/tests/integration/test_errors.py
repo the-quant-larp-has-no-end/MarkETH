@@ -2,8 +2,9 @@
 
 `{code, message, details}` for whatever goes wrong: an unknown route, a body that does
 not validate, a missing header, a foreign Origin, a missing session, a role that is not
-enough, a service error, a bug. The guard tests walk the OpenAPI document, so a route
-added later is covered without anyone remembering to add it here.
+enough, a service error, a bug, a database that is down. The guard tests walk the
+OpenAPI document, so a route added later is covered without anyone remembering to add
+it here.
 """
 
 import logging
@@ -14,7 +15,11 @@ from uuid import uuid7
 import httpx
 import pytest
 from fastapi import FastAPI
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.container import Container
 from app.core.enums import UserRole, UserStatus
 from app.core.errors import QuoteStaleError, RateLimitedError
 from app.core.identity import AuthenticatedUser
@@ -265,6 +270,19 @@ async def test_every_route_that_is_not_public_answers_401_without_a_session(
         assert_error(response, 401, "UNAUTHENTICATED")
 
 
+async def test_the_document_marks_exactly_the_routes_that_answer_401(app: FastAPI) -> None:
+    """`security` in openapi.json is read off the guards, so it matches what they do:
+    a session is required exactly where no session means 401."""
+    paths = app.openapi()["paths"]
+    needs_session = sorted(
+        (method.upper(), path)
+        for path, item in paths.items()
+        for method, operation in item.items()
+        if operation.get("security") and {} not in operation["security"]
+    )
+    assert needs_session == protected(app)
+
+
 async def test_a_missing_session_is_reported_before_a_bad_body(
     client: httpx.AsyncClient,
 ) -> None:
@@ -399,3 +417,98 @@ async def test_an_unexpected_error_is_500_logged_and_tells_the_client_nothing(
     assert "GET /api/_test/broken" in record.getMessage()
     assert record.exc_info is not None
     assert isinstance(record.exc_info[1], RuntimeError)
+
+
+# --- Postgres down (SPEC §9: "everything returns 503") -----------------------------
+
+
+def add_route_that_reads_the_database(app: FastAPI, path: str = "/api/_test/books") -> str:
+    """The smallest thing every service does: open a unit of work and run one query."""
+    container: Container = app.state.container
+
+    async def read() -> dict[str, int]:
+        async with container.uow_factory() as uow:
+            return {"total_micro": await uow.accounts.total_balance()}
+
+    app.add_api_route(path, read)
+    return path
+
+
+async def test_the_test_route_answers_while_postgres_is_up(
+    client: httpx.AsyncClient, app: FastAPI
+) -> None:
+    response = await client.get(add_route_that_reads_the_database(app))
+    assert (response.status_code, response.json()) == (200, {"total_micro": 0})
+
+
+@pytest.mark.postgres_down
+async def test_an_unreachable_postgres_is_503_not_500(
+    client: httpx.AsyncClient, app: FastAPI, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No service translates a lost connection, so the API layer has to, once."""
+    path = add_route_that_reads_the_database(app)
+
+    with caplog.at_level(logging.WARNING, logger="app.api.errors"):
+        response = await client.get(path)
+
+    details = assert_error(response, 503, "SERVICE_UNAVAILABLE")
+    assert details == {}
+    (record,) = [r for r in caplog.records if r.name == "app.api.errors"]
+    assert record.levelno == logging.WARNING
+    assert f"GET {path}" in record.getMessage()
+
+
+async def test_a_connection_postgres_dropped_mid_request_is_503(
+    client: httpx.AsyncClient, app: FastAPI, owner_engine: AsyncEngine
+) -> None:
+    """What a restart of Postgres looks like to a request that was already running."""
+    container: Container = app.state.container
+
+    async def read_after_losing_the_connection() -> dict[str, int]:
+        async with container.uow_factory() as uow:
+            backend = await uow.session.scalar(text("SELECT pg_backend_pid()"))
+            async with owner_engine.connect() as admin:
+                await admin.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": backend})
+            return {"total_micro": await uow.accounts.total_balance()}
+
+    app.add_api_route("/api/_test/dropped", read_after_losing_the_connection)
+    assert_error(await client.get("/api/_test/dropped"), 503, "SERVICE_UNAVAILABLE")
+
+    # The pool replaces the dead connection: the next request is served again.
+    response = await client.get(add_route_that_reads_the_database(app))
+    assert response.status_code == 200
+
+
+async def test_an_error_a_reachable_postgres_reports_stays_a_500(
+    unhandled_client: httpx.AsyncClient, app: FastAPI, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A violated constraint that a service let through is a bug, not an outage."""
+    container: Container = app.state.container
+
+    async def break_a_constraint() -> None:
+        async with container.uow_factory() as uow:
+            await uow.session.execute(
+                text("INSERT INTO accounts (id, kind) VALUES (gen_random_uuid(), 'VIS_ISSUANCE')")
+            )
+
+    app.add_api_route("/api/_test/constraint", break_a_constraint)
+    with caplog.at_level(logging.ERROR, logger="app.api.errors"):
+        response = await unhandled_client.get("/api/_test/constraint")
+
+    assert_error(response, 500, "INTERNAL_ERROR")
+    assert "uq_accounts_system_kind" not in response.text
+    (record,) = [r for r in caplog.records if r.name == "app.api.errors"]
+    assert record.exc_info is not None
+    assert isinstance(record.exc_info[1], IntegrityError)
+
+
+async def test_a_bug_that_is_an_os_error_stays_a_500(
+    unhandled_client: httpx.AsyncClient, app: FastAPI
+) -> None:
+    async def missing_file() -> None:
+        raise FileNotFoundError("/etc/marketh/secret.pem")
+
+    app.add_api_route("/api/_test/file", missing_file)
+    response = await unhandled_client.get("/api/_test/file")
+    assert_error(response, 500, "INTERNAL_ERROR")
+    assert "secret.pem" not in response.text

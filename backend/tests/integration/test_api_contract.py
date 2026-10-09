@@ -22,24 +22,27 @@ import pytest
 from fastapi import FastAPI
 from pydantic import BaseModel, ValidationError
 
+from app.api.access import DOCUMENTED_SESSION_COOKIE
 from app.container import Container
 from app.core.config import Settings
-from app.core.enums import MarketStatus, MarketTier
-from app.core.errors import NotFoundError, ServiceUnavailableError
-from app.core.units import to_cr
+from app.core.enums import MarketStatus, MarketTier, Outcome, TradeSide
+from app.core.errors import ErrorCode, NotFoundError, ServiceUnavailableError
+from app.core.units import MICRO, format_cr, to_cr
 from app.main import create_app
+from app.pricing import lmsr
 from app.schemas.admin.code_batches import CreateCodeBatchRequest
 from app.schemas.admin.markets import ApproveMarketRequest
 from app.schemas.common import (
     CreditAmount,
     ErrorResponse,
+    Limit,
     PageQuery,
     PositiveCreditAmount,
     SignedCreditAmount,
 )
 from app.schemas.live import QuoteEvent, StatusEvent
 from app.schemas.markets import ProposeMarketRequest
-from app.schemas.trading import QuoteQuery, TradeRequest
+from app.schemas.trading import QuoteQuery, QuoteResponse, TradeRequest
 from app.services.live_quotes import Heartbeat, LiveEvent
 from scripts.export_openapi import OPENAPI_FILE, render_openapi
 from tests.support.clock import TEST_NOW, FrozenClock
@@ -102,6 +105,27 @@ SUCCESS_STATUS: Final[dict[Operation, str]] = {
 """Operations that do not answer 200: accepted, no content, and the four creations."""
 
 ERROR_REF: Final[dict[str, str]] = {"$ref": "#/components/schemas/ErrorResponse"}
+
+# Who may call what (Appendix A.2), as the `security` of an operation says it.
+NO_SESSION: Final[list[dict[str, list[str]]]] = []
+VIEWER: Final[list[dict[str, list[str]]]] = [{}, {"session": []}]
+SIGNED_IN: Final[list[dict[str, list[str]]]] = [{"session": []}]
+STAFF: Final[list[dict[str, list[str]]]] = [{"session": ["BARISTA"]}, {"session": ["ADMIN"]}]
+ADMIN: Final[list[dict[str, list[str]]]] = [{"session": ["ADMIN"]}]
+
+PUBLIC_ACCESS: Final[dict[Operation, list[dict[str, list[str]]]]] = {
+    ("GET", "/api/health"): NO_SESSION,
+    ("GET", "/api/config"): NO_SESSION,
+    ("POST", "/api/auth/request-link"): NO_SESSION,
+    ("POST", "/api/auth/verify"): NO_SESSION,
+    ("POST", "/api/auth/logout"): NO_SESSION,
+    ("GET", "/api/markets"): VIEWER,
+    ("GET", "/api/markets/{market_id}"): VIEWER,
+    ("GET", "/api/markets/{market_id}/quote"): NO_SESSION,
+    ("GET", "/api/markets/{market_id}/history"): NO_SESSION,
+    ("GET", "/api/markets/{market_id}/stream"): NO_SESSION,
+}
+"""A.2: "Public, no session needed". Two of them show more to a signed-in viewer."""
 
 
 @pytest.fixture(scope="module")
@@ -192,6 +216,75 @@ def test_every_operation_declares_the_one_error_shape(
         "FORBIDDEN",
         "NOT_FOUND",
     }
+
+
+def test_every_operation_says_who_may_call_it(document: dict[str, Any]) -> None:
+    """A.2 "Who may call what" is binding, and the frontend reads it from this document."""
+    for operation, spec in each_operation(document):
+        _, path = operation
+        if operation in PUBLIC_ACCESS:
+            expected = PUBLIC_ACCESS[operation]
+        elif path.startswith("/api/admin/"):
+            expected = ADMIN
+        elif path.startswith("/api/barista/"):
+            expected = STAFF
+        else:
+            expected = SIGNED_IN
+        assert spec.get("security", NO_SESSION) == expected, operation
+        assert spec["description"].startswith("Access: "), operation
+        assert ("public" in spec["description"]) == (operation in PUBLIC_ACCESS), operation
+
+
+def test_the_one_security_scheme_is_the_session_cookie(
+    document: dict[str, Any], base_settings: Settings
+) -> None:
+    schemes = document["components"]["securitySchemes"]
+    assert list(schemes) == ["session"]
+    assert schemes["session"] | {"type": "apiKey", "in": "cookie"} == schemes["session"]
+    # The document is built without settings, so it repeats the name of `.example.env`.
+    assert schemes["session"]["name"] == DOCUMENTED_SESSION_COOKIE
+    assert base_settings.auth.session_cookie_name == DOCUMENTED_SESSION_COOKIE
+
+
+def test_the_error_schema_says_what_details_carries(schemas: dict[str, dict[str, Any]]) -> None:
+    """`details` is a free object; its keys per code are in the description."""
+    description = schemas["ErrorResponse"]["description"]
+    for code in (
+        ErrorCode.VALIDATION_ERROR,
+        ErrorCode.RATE_LIMITED,
+        ErrorCode.QUOTE_STALE,
+        ErrorCode.LIMIT_EXCEEDED,
+        ErrorCode.INSUFFICIENT_BALANCE,
+        ErrorCode.SERVICE_UNAVAILABLE,
+    ):
+        assert f"`{code.value}`" in description, code
+    for key in (
+        "errors",
+        "field",
+        "allowed_domains",
+        "retry_after_seconds",
+        "quote",
+        "limit",
+        "stake_limit_cr",
+        "stake_left_cr",
+        "issued_cr",
+        "requested_cr",
+        "cap_cr",
+        "balance_cr",
+        "required_cr",
+    ):
+        assert f"`{key}`" in description, key
+    for limit in Limit:
+        assert f"`{limit.value}`" in description, limit
+
+
+def test_the_redeem_request_says_that_the_client_sends_the_bare_code(
+    schemas: dict[str, dict[str, Any]],
+) -> None:
+    """A scanned code card holds a URL; posted as it is, it would cost an attempt."""
+    description = schemas["RedeemCodeRequest"]["description"]
+    assert "#code=" in description
+    assert "CODE_INVALID" in description
 
 
 def test_credits_and_shares_are_strings_and_probabilities_numbers(
@@ -377,6 +470,72 @@ def test_error_details_serialise_nested_amounts_as_strings() -> None:
     wallet = Wallet(balance_cr=to_cr(250_000), change_cr=to_cr(0))
     body = ErrorResponse(code="QUOTE_STALE", message="moved", details={"quote": wallet})
     assert body.model_dump(mode="json")["details"]["quote"]["balance_cr"] == "0.25"
+
+
+def test_a_bare_amount_in_error_details_is_written_like_every_other_amount() -> None:
+    """A.2: the server trims trailing zeros. `to_cr` and `format_cr` must give one form."""
+    body = ErrorResponse(
+        code=ErrorCode.LIMIT_EXCEEDED,
+        message="m",
+        details={
+            "limit": Limit.MAX_STAKE_PER_USER_MARKET,
+            "stake_limit_cr": to_cr(MICRO),
+            "stake_left_cr": to_cr(250_000),
+            "as_text_cr": format_cr(250_000),
+            "nested": {"amounts_cr": [to_cr(0), to_cr(1_500_000)]},
+            "retry_after_seconds": 42,
+        },
+    )
+
+    assert body.model_dump(mode="json")["details"] == {
+        "limit": "MAX_STAKE_PER_USER_MARKET",
+        "stake_limit_cr": "1",
+        "stake_left_cr": "0.25",
+        "as_text_cr": "0.25",
+        "nested": {"amounts_cr": ["0", "1.5"]},
+        "retry_after_seconds": 42,
+    }
+    assert json.loads(body.model_dump_json())["details"]["stake_left_cr"] == "0.25"
+
+
+def test_a_request_asks_for_less_than_a_response_can_hold() -> None:
+    """A budget buys more shares than it has credits, and the answer must hold them."""
+    largest = "999999999.999999"
+    for field in ("amount_cr", "shares"):
+        assert QuoteQuery.model_validate({"side": "BUY", "outcome": "YES", field: largest})
+        with pytest.raises(ValidationError) as rejected:
+            QuoteQuery.model_validate({"side": "BUY", "outcome": "YES", field: "1000000000"})
+        assert rejected.value.errors()[0]["type"] == "decimal_too_large"
+    # A response still holds twelve digits before the point.
+    assert Wallet(balance_cr=Decimal("999999999999.999999"), change_cr=Decimal(0))
+
+
+@pytest.mark.parametrize("b_cr", [1, 10, 1442])
+def test_the_largest_budget_a_request_accepts_fits_into_a_quote_response(b_cr: int) -> None:
+    """Found in review: the largest accepted budget bought more shares than
+    `QuoteResponse` could carry, a 500 on a public route."""
+    query = QuoteQuery.model_validate(
+        {"side": "BUY", "outcome": "YES", "amount_cr": "999999999.999999"}
+    )
+    assert query.amount_cr is not None
+    trailing = lmsr.MarketState(q_yes=0, q_no=1000 * MICRO, b=b_cr * MICRO)
+
+    quote = lmsr.quote_buy_for_budget(trailing, Outcome.YES, int(query.amount_cr * MICRO))
+
+    response = QuoteResponse(
+        market_id=uuid7(),
+        side=TradeSide.BUY,
+        outcome=Outcome.YES,
+        shares=to_cr(quote.shares_micro),
+        amount_cr=to_cr(quote.amount_micro),
+        average_price=1.0,
+        p_yes_before=0.0,
+        p_no_before=1.0,
+        p_yes_after=1.0,
+        p_no_after=0.0,
+        quote_version=0,
+    )
+    assert response.shares > query.amount_cr
 
 
 # --- Trade sizing and guards (A.4) --------------------------------------------------

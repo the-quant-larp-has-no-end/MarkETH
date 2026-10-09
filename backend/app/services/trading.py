@@ -77,7 +77,8 @@ class TradingService:
 
         2. BEGIN, then claim the key. The request hash is
            `sha256_hex(json.dumps({"market_id": str(market_id), **request.model_dump(
-           mode="json")}, sort_keys=True, separators=(",", ":")))`.
+           mode="json")}, sort_keys=True, separators=(",", ":")))`; the column accepts
+           nothing but a SHA-256.
            `idempotency.claim(user.id, str(idempotency_key), request_hash, now)`:
            * None: the key is new and this transaction owns it.
            * A row with another `request_hash`: `IdempotencyKeyReusedError` (422).
@@ -104,18 +105,27 @@ class TradingService:
            `details={"quote": QuoteService.to_response(market, quote).model_dump(
            mode="json")}`.
 
-        6. Buys only. With the user's positions in this market
+        6. Buys only, two checks. With the user's positions in this market
            (`positions.list_for_user_market`): if `Σ cost - Σ proceeds +
            quote.amount_micro > MAX_STAKE_PER_USER_MARKET`, `LimitExceededError` (409)
-           with `details={"stake_limit_cr", "stake_left_cr"}`. Then, if the account's
-           balance is below `quote.amount_micro`, `InsufficientBalanceError` (409).
-           Sells are never limited.
+           with `details={"limit": Limit.MAX_STAKE_PER_USER_MARKET, "stake_limit_cr":
+           to_cr(...), "stake_left_cr": to_cr(...)}`, the stake left being the one
+           before this trade. Then, if the account's balance is below
+           `quote.amount_micro`, `InsufficientBalanceError` (409) with
+           `details={"balance_cr": to_cr(...), "required_cr": to_cr(...)}`, the keys
+           `LedgerService` uses. Sells are never limited. "The market's limits" of
+           SPEC §8 are not checked here: the LMSR bounds what a market can lose, and
+           step 8 verifies that it did (A.4).
 
         7. Write, with `trade_id = uuid7()`:
            * Ledger. BUY: `TRADE_BUY`, user -cost, market account +cost. SELL:
              `TRADE_SELL`, market account -proceeds, user +proceeds. Both with
              `LedgerRef.TRADE`, `trade_id` and `trade_key(trade_id)`. The market
-             account is `accounts.get_market_account(market.id)`.
+             account is `accounts.get_market_account(market.id)`. A sell whose
+             proceeds are 0 (shares priced below a millionth of a credit round down
+             to nothing) books no entry at all: do not call `LedgerService.post`,
+             which refuses an entry without postings. Everything below is still
+             written, with `amount_micro = 0` (A.4). A buy always costs at least 1 µCR.
            * Position (insert it if missing). BUY: `shares_micro += shares`,
              `cost_micro += amount`. SELL: `shares_micro -= shares`,
              `proceeds_micro += amount`.
@@ -128,9 +138,10 @@ class TradingService:
              quote.p_yes_after_micro, q_yes_micro, q_no_micro, trade_id))` under
              `OutboxTopic.QUOTE_UPDATED`.
 
-        8. `InvariantChecker.check(uow, market)`. Build the `TradeResponse` (the quote's
-           figures as executed, `market_version`, the balance after the trade, the net
-           stake and `stake_left_cr` after it, `created_at=now`) and store
+        8. `InvariantChecker.check(uow, market)`: the four checks of the circuit
+           breaker, the market's loss bound among them. Build the `TradeResponse` (the
+           quote's figures as executed, `market_version`, the balance after the trade,
+           the net stake and `stake_left_cr` after it, `created_at=now`) and store
            `response.model_dump(mode="json")` with `idempotency.store_response`. COMMIT.
 
         9. After the commit, best effort and never failing the request:

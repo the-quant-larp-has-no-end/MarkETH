@@ -81,6 +81,37 @@ def test_a_missing_variable_fails_loading_instead_of_falling_back(
         Settings.load(incomplete)
 
 
+@pytest.mark.parametrize("precision", ["28", "45", "49"])
+def test_fewer_digits_than_spec_section_4_names_fail_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, precision: str
+) -> None:
+    """Fewer than 50 digits round against the market maker at the largest b (lmsr.py)."""
+    monkeypatch.delenv("PRICING_DECIMAL_PRECISION", raising=False)
+    lowered = tmp_path / ".env"
+    lowered.write_text(
+        EXAMPLE_ENV_FILE.read_text(encoding="utf-8").replace(
+            "PRICING_DECIMAL_PRECISION=50", f"PRICING_DECIMAL_PRECISION={precision}"
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="PRICING_DECIMAL_PRECISION"):
+        Settings.load(lowered)
+
+
+def test_more_digits_than_the_default_are_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("PRICING_DECIMAL_PRECISION", raising=False)
+    raised = tmp_path / ".env"
+    raised.write_text(
+        EXAMPLE_ENV_FILE.read_text(encoding="utf-8").replace(
+            "PRICING_DECIMAL_PRECISION=50", "PRICING_DECIMAL_PRECISION=60"
+        ),
+        encoding="utf-8",
+    )
+    assert Settings.load(raised).pricing.decimal_precision == 60
+
+
 def test_local_env_has_the_same_keys_as_the_example() -> None:
     """`.env` is gitignored; where a developer has one, it must not have drifted."""
     if not DEFAULT_ENV_FILE.exists():

@@ -19,8 +19,8 @@ from app.integrations.redis.market_cache import MarketCache
 from app.integrations.redis.quote_bus import QuoteBus
 from app.integrations.redis.rate_limiter import RateLimit, RedisRateLimiter
 from app.integrations.redis.session_cache import SessionCache
-
-from .conftest import LOOPBACK, SilentServer
+from tests.support.containers import LOOPBACK
+from tests.support.network import SilentServer
 
 pytestmark = pytest.mark.integration
 

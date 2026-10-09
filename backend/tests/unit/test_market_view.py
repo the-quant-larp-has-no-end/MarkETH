@@ -10,6 +10,7 @@ from app.core.config import Settings
 from app.core.enums import MarketStatus, MarketTier, Outcome, ResolutionOutcome
 from app.core.units import MICRO, to_cr
 from app.models import Market, Position, Resolution
+from app.schemas.markets import SellPortion
 from app.services.market_view import EVEN_ODDS_MICRO, MarketView
 from tests.support.clock import TEST_NOW
 
@@ -222,3 +223,67 @@ def test_summary_times_are_the_rows_own(view: MarketView) -> None:
     summary = view.summary(stored, TEST_NOW, None)
     assert isinstance(summary.close_at, datetime)
     assert (summary.close_at, summary.resolve_by) == (stored.close_at, stored.resolve_by)
+
+
+# --- Sell presets (A.11) -----------------------------------------------------------
+
+
+def test_sell_presets_are_half_and_all_of_each_holding(view: MarketView) -> None:
+    """SPEC §12 sells "half": 1.909029 shares cannot be halved to six places by the
+    client, so the server says how many shares half is."""
+    traded = market(q_yes_micro=1_909_029)
+    held = [position(traded.id, Outcome.YES, shares_micro=1_909_029, cost_micro=CR)]
+
+    presets = view.sell_presets(held, can_trade=True)
+
+    assert [(p.outcome, p.portion) for p in presets] == [
+        (Outcome.YES, SellPortion.HALF),
+        (Outcome.YES, SellPortion.ALL),
+        (Outcome.NO, SellPortion.HALF),
+        (Outcome.NO, SellPortion.ALL),
+    ]
+    assert [p.model_dump(mode="json")["shares"] for p in presets] == [
+        "0.954514",
+        "1.909029",
+        "0",
+        "0",
+    ]
+    assert [p.allowed for p in presets] == [True, True, False, False]
+
+
+def test_a_sell_preset_below_the_minimum_trade_size_is_not_allowed(view: MarketView) -> None:
+    """`MIN_TRADE_SHARES` is 0.01: half of 0.015 shares is too small, all of it is not."""
+    traded = market(q_no_micro=15_000)
+    held = [position(traded.id, Outcome.NO, shares_micro=15_000)]
+
+    presets = {(p.outcome, p.portion): p for p in view.sell_presets(held, can_trade=True)}
+
+    assert presets[Outcome.NO, SellPortion.HALF].shares == to_cr(7_500)
+    assert not presets[Outcome.NO, SellPortion.HALF].allowed
+    assert presets[Outcome.NO, SellPortion.ALL].allowed
+    exactly_the_minimum = [position(traded.id, Outcome.NO, shares_micro=10_000)]
+    assert view.sell_presets(exactly_the_minimum, can_trade=True)[3].allowed
+
+
+def test_no_sell_preset_is_allowed_to_someone_who_may_not_trade(view: MarketView) -> None:
+    traded = market(q_yes_micro=2 * CR, q_no_micro=CR)
+    held = [
+        position(traded.id, Outcome.YES, shares_micro=2 * CR),
+        position(traded.id, Outcome.NO, shares_micro=CR),
+    ]
+
+    presets = view.sell_presets(held, can_trade=False)
+
+    assert [p.shares for p in presets] == [to_cr(CR), to_cr(2 * CR), to_cr(CR // 2), to_cr(CR)]
+    assert not any(p.allowed for p in presets)
+
+
+def test_selling_half_and_then_all_sells_everything(view: MarketView) -> None:
+    """Half rounds down, so an odd number of micro-shares leaves nothing behind."""
+    odd = 1_909_029
+    half = view.sell_presets([position(uuid7(), Outcome.YES, shares_micro=odd)], True)[0]
+    rest = odd - 954_514
+
+    then_all = view.sell_presets([position(uuid7(), Outcome.YES, shares_micro=rest)], True)[1]
+
+    assert (half.shares, then_all.shares) == (to_cr(954_514), to_cr(954_515))

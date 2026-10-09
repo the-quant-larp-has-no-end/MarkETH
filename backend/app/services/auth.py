@@ -45,6 +45,7 @@ class AuthService:
         self._uow_factory = uow_factory
         self._auth = auth
         self._monthly_grant_micro = settings.vouchers.monthly_grant_micro
+        self._coffee_ticket_value_micro = settings.vouchers.coffee_ticket_value_micro
         self._public_base_url = settings.app.public_base_url
         self._clock = clock
         self._email_policy = email_policy
@@ -108,6 +109,7 @@ class AuthService:
            g. `SessionService.create(uow, user)`.
         3. Return `SignIn` with the session token, its expiry and a
            `VerifyLoginResponse`: the user's profile, the balance after the grant,
+           `can_get_coffee` (that balance covers `COFFEE_TICKET_VALUE_CR`),
            `monthly_grant_cr`, `next_monthly_grant_on=GrantService.next_grant_date()`
            and `signup_granted`.
 

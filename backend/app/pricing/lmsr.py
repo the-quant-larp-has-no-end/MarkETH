@@ -28,10 +28,28 @@ of 0 or 1), and it makes the rounding exact, see `_Amount`.
 Rounding always favours the market maker: costs up, proceeds down, shares bought for a
 budget down. No float is used anywhere.
 
-How many digits are enough: the `Decimal` part carries noise of about b · 10^-precision
-µCR, while a small trade in a deep market comes as close as about 1/b to a whole
-micro-unit. The two stay apart while b² is far below 10^precision. 28 digits cover the
-largest b that SPEC §4 allows (about 1.4 · 10^9 µCR), the default of 50 any BIGINT.
+How many digits are enough. Rounding in one direction is only right while the noise of
+the arithmetic stays far below the distance of a result from a whole micro-unit. The
+budget form is the demanding one: with m = 1 - e^(-c/b), the error of m is magnified by
+b/m, about b²/c, and for an outcome far behind the result creeps towards its limit in
+steps of about 1/b, so whole runs of market states put it next to a whole number. The
+noise, relative to that distance, is about b³ · 10^-precision / c. The quote functions
+therefore refuse a b for which b³ · 10^-precision exceeds 10^-17 (`_require_digits`)
+with `ValueError`, instead of quoting an amount that may be one micro-unit off:
+
+    precision 50 (the default, SPEC §4)   b up to 10^11 µCR, a budget of about 69,000 CR
+    precision 45                          the fewest digits that cover the largest b of
+                                          SPEC §4, 1,442.695040 CR
+
+With 28 to 32 digits, quotes at that b were shown to round against the market maker
+and to trip the assertion in `quote_buy_for_budget`; the inputs are kept in
+tests/unit/pricing/test_lmsr_adversarial.py. The bound of 10^-17 is a margin chosen
+from those findings, not a proof: it rejects every precision that failed and leaves
+45 digits, which round all of those inputs correctly, as the fewest for that b.
+
+Arguments are checked, not coerced: a quantity, size or b that is not an `int`, or an
+outcome that is not an `Outcome` member, raises `TypeError`. A string equal to "YES" is
+not `Outcome.YES`.
 """
 
 from dataclasses import dataclass, replace
@@ -45,7 +63,7 @@ from decimal import (
     Overflow,
     localcontext,
 )
-from typing import Final
+from typing import Final, assert_never
 
 from app.core.enums import Outcome, TradeSide
 from app.core.units import ceil_micro, floor_micro, probability_to_micro
@@ -55,6 +73,10 @@ DEFAULT_PRECISION: Final[int] = 50
 
 _EXPONENT_LIMIT: Final[int] = 999_999
 """Decimal exponent range. An e^(-|g|/b) below it becomes 0, which is its limit anyway."""
+
+_GUARD_DIGITS: Final[int] = 17
+"""Digits a quote keeps between its rounding noise and a whole micro-unit: b³ times
+10^-precision may be at most 10^-17. See "How many digits are enough" above."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,12 +132,17 @@ def quote_buy_for_budget(
 ) -> TradeQuote:
     """Buy as many shares of `outcome` as `budget_micro` pays for.
 
-    Shares round down; the cost is then recomputed from the rounded shares and rounded
-    up, so the trader pays `amount_micro`, which never exceeds the budget. A share costs
-    less than 1 CR, so any budget buys at least as many µshares as it has µCR; the
-    zero-share quote of Appendix A.9 cannot come out of valid inputs.
+    Shares round down; the cost is then recomputed from the rounded shares, rounded up
+    and asserted not to exceed the budget (SPEC §4). A share costs less than 1 CR, which
+    has two consequences a caller may rely on:
+
+    * `amount_micro == budget_micro`, always. The part of a µshare that was cut off is
+      worth less than 1 µCR, so the cost of the whole shares rounds back up to the
+      budget. A budget buy is never cheaper than its budget.
+    * `shares_micro >= budget_micro`. A quote of zero shares cannot come out of valid
+      inputs.
     """
-    _require_market(state)
+    _require_tradable(state, outcome, precision)
     _require_positive("budget_micro", budget_micro)
     with localcontext(_context(precision)):
         shares_micro = _shares_for_budget(state, outcome, budget_micro).floor()
@@ -136,8 +163,11 @@ def quote_buy_shares(
     *,
     precision: int = DEFAULT_PRECISION,
 ) -> TradeQuote:
-    """Buy exactly `shares_micro` of `outcome`; the cost is C(after) - C(before), rounded up."""
-    _require_market(state)
+    """Buy exactly `shares_micro` of `outcome`; the cost is C(after) - C(before), rounded up.
+
+    A buy always costs at least 1 µCR.
+    """
+    _require_tradable(state, outcome, precision)
     _require_positive("shares_micro", shares_micro)
     with localcontext(_context(precision)):
         after = _with_shares_added(state, outcome, shares_micro)
@@ -155,9 +185,11 @@ def quote_sell_shares(
     """Sell `shares_micro` of `outcome`; the proceeds are C(before) - C(after), rounded down.
 
     Whether the seller holds that many shares is the caller's check (SPEC §4: no short
-    positions). The proceeds are never negative and always below 1 CR per share.
+    positions). The proceeds are never negative and always below 1 CR per share. They
+    can be 0: shares of an outcome priced below one millionth of a credit per share
+    sold round down to nothing (Appendix A.4 says what a trade does then).
     """
-    _require_market(state)
+    _require_tradable(state, outcome, precision)
     _require_positive("shares_micro", shares_micro)
     with localcontext(_context(precision)):
         after = _with_shares_added(state, outcome, -shares_micro)
@@ -227,7 +259,16 @@ def _context(precision: int) -> Context:
     )
 
 
+def _require_int(name: str, value: object) -> None:
+    """Micro-units are whole. A bool is an int to Python and is refused as well."""
+    if type(value) is not int:
+        raise TypeError(f"{name} must be an int of micro-units, got {type(value).__name__}")
+
+
 def _require_market(state: MarketState) -> None:
+    _require_int("b", state.b)
+    _require_int("q_yes", state.q_yes)
+    _require_int("q_no", state.q_no)
     if state.b <= 0:
         raise ValueError(f"b must be positive, got {state.b}")
     if state.q_yes < 0 or state.q_no < 0:
@@ -235,8 +276,26 @@ def _require_market(state: MarketState) -> None:
 
 
 def _require_positive(name: str, value: int) -> None:
+    _require_int(name, value)
     if value <= 0:
         raise ValueError(f"{name} must be positive, got {value}")
+
+
+def _require_digits(b: int, precision: int) -> None:
+    """Refuse a b that `precision` digits cannot round reliably (see the module docstring)."""
+    if b**3 * 10**_GUARD_DIGITS > 10**precision:
+        raise ValueError(
+            f"b = {b} µCR cannot be quoted with {precision} digits: "
+            f"b³ must stay below 10^{precision - _GUARD_DIGITS}"
+        )
+
+
+def _require_tradable(state: MarketState, outcome: Outcome, precision: int) -> None:
+    """What every quote function checks before it computes anything."""
+    _require_market(state)
+    if not isinstance(outcome, Outcome):
+        raise TypeError(f"outcome must be an Outcome member, got {outcome!r}")
+    _require_digits(state.b, precision)
 
 
 def _sign(value: int) -> int:
@@ -260,9 +319,22 @@ def _price_yes(state: MarketState) -> Decimal:
 
 
 def _with_shares_added(state: MarketState, outcome: Outcome, shares_micro: int) -> MarketState:
-    if outcome is Outcome.YES:
-        return replace(state, q_yes=state.q_yes + shares_micro)
-    return replace(state, q_no=state.q_no + shares_micro)
+    match outcome:
+        case Outcome.YES:
+            return replace(state, q_yes=state.q_yes + shares_micro)
+        case Outcome.NO:
+            return replace(state, q_no=state.q_no + shares_micro)
+    assert_never(outcome)
+
+
+def _lead(state: MarketState, outcome: Outcome) -> int:
+    """By how many shares `outcome` is ahead of the other one; negative when it trails."""
+    match outcome:
+        case Outcome.YES:
+            return state.q_yes - state.q_no
+        case Outcome.NO:
+            return state.q_no - state.q_yes
+    assert_never(outcome)
 
 
 def _cost_increase(start: MarketState, end: MarketState) -> _Amount:
@@ -295,8 +367,7 @@ def _shares_for_budget(state: MarketState, outcome: Outcome, budget_micro: int) 
     The first logarithm is always positive. The second is positive exactly when c > |g|
     and zero when c = |g|: that budget buys 2 · |g| shares and mirrors the market.
     """
-    own, other = (state.q_yes, state.q_no) if outcome is Outcome.YES else (state.q_no, state.q_yes)
-    lead = own - other
+    lead = _lead(state, outcome)
     trailing_odds = (-Decimal(abs(lead)) / state.b).exp()
     move = 1 - (-Decimal(budget_micro) / state.b).exp()
     if lead >= 0:

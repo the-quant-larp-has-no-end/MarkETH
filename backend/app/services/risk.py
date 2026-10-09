@@ -36,18 +36,21 @@ class RiskService:
           approval checks (A.5), on stored statuses.
         * `obligations`: `user_balances_cr = accounts.sum_balance_by_kind(USER)`;
           `pending_coffee_tickets_cr = coffee_tickets.pending_value()`;
-          `market_exposure_cr = markets.sum_exposure_by_statuses(UNSETTLED_STATUSES)`,
-          so a market that is closed but not yet settled still counts; `total_cr`
-          their sum; `alert_threshold_cr = OBLIGATIONS_ALERT_THRESHOLD_CR`;
-          `above_threshold = total > threshold`. Reading the page writes no alert.
+          `market_exposure_cr = markets.sum_exposure_by_statuses(UNSETTLED_STATUSES)`:
+          "each open market" of SPEC §5 is read as every market not yet settled, so
+          one that is closed but still owes its payout counts (A.6); `total_cr` their
+          sum; `alert_threshold_cr = OBLIGATIONS_ALERT_THRESHOLD_CR`;
+          `above_threshold = total > threshold`. That flag is the alert of SPEC §5:
+          the page shows it, and reading the page writes no `alerts` row (A.6).
         * `unredeemed_code_value_cr = codes.unredeemed_value(now)`, reported beside the
           obligations, not inside them (A.6).
         * `code_issuance_this_month_cr = codes.issued_value_since(start_of_month(now,
           APP_TIMEZONE))` against `MAX_CODE_ISSUANCE_PER_MONTH`.
         * `markets`: one row per market of `markets.list_by_statuses(
           UNSETTLED_STATUSES)` (soonest `close_at` first) with its effective status,
-          display `p_yes`, the balance of its account and `exposure_cr = max(q_yes,
-          q_no) - balance`.
+          display `p_yes`, the balance of its account (all of them in one query,
+          `accounts.list_market_accounts`) and `exposure_cr = max(q_yes, q_no) -
+          balance`.
         * `alerts = alerts.list_unacknowledged()`, newest first.
         """
         raise NotImplementedError

@@ -9,8 +9,9 @@ import pytest
 from app.core.config import MailSettings, Settings
 from app.integrations.mail.mailer import MailDeliveryError, SmtpMailer
 from app.integrations.mail.templates import magic_link_mail
+from tests.support.containers import LOOPBACK
 
-from .conftest import LOOPBACK, Mailpit
+from .conftest import Mailpit
 
 pytestmark = pytest.mark.integration
 

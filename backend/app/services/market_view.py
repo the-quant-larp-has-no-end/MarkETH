@@ -5,7 +5,8 @@ all show markets. The rules they must agree on live here, once:
 
 * the effective status: an OPEN market past its deadline is CLOSED everywhere (A.4);
 * display probabilities: rounded once, with NO as the complement of the rounded YES;
-* what a holding is worth and what a user's net stake in a market is.
+* what a holding is worth, what a user's net stake in a market is, and how many
+  shares the sell buttons of the trade sheet stand for.
 
 `MarketView` reads rows and settings and computes; it does no I/O. The frontend
 computes nothing (golden rule 6), so every price it shows went through this class.
@@ -22,7 +23,7 @@ from app.core.units import MICRO, complement, display_probability, probability_t
 from app.models.market import Market, Resolution
 from app.models.trading import Position
 from app.pricing import lmsr
-from app.schemas.markets import Holding, MarketSummary
+from app.schemas.markets import Holding, MarketSummary, SellPortion, SellPreset
 
 EVEN_ODDS_MICRO: Final[int] = MICRO // 2
 """The price of a market that was never opened: it has no b yet, so no LMSR price."""
@@ -47,6 +48,7 @@ class MarketView:
         self._display_decimals = settings.pricing.price_display_decimals
         self._precision = settings.pricing.decimal_precision
         self._stake_limit_micro = settings.pricing.max_stake_per_user_market_micro
+        self._min_trade_shares_micro = settings.pricing.min_trade_shares_micro
 
     def effective_status(self, market: Market, now: datetime) -> MarketStatus:
         """The status to report and to act on: OPEN past `close_at` is CLOSED (A.4)."""
@@ -141,3 +143,30 @@ class MarketView:
                 Holding(outcome=outcome, shares=to_cr(shares_micro), value_cr=to_cr(value_micro))
             )
         return holdings
+
+    def sell_presets(self, positions: Sequence[Position], can_trade: bool) -> list[SellPreset]:
+        """The sell buttons of the trade sheet: half and all of each holding (A.11).
+
+        Always four entries, YES then NO, HALF then ALL. Half is rounded down to a whole
+        micro-share, so selling HALF and then ALL sells everything. A preset is allowed
+        when the viewer may trade (`can_trade`, as for the stake presets) and its size
+        is at least `MIN_TRADE_SHARES`; an outcome nobody holds gives two presets of
+        zero shares that are not allowed.
+        """
+        shares_by_outcome = {position.outcome: position.shares_micro for position in positions}
+        presets: list[SellPreset] = []
+        for outcome in (Outcome.YES, Outcome.NO):
+            held_micro = shares_by_outcome.get(outcome, 0)
+            for portion in (SellPortion.HALF, SellPortion.ALL):
+                size_micro = held_micro // 2 if portion is SellPortion.HALF else held_micro
+                presets.append(
+                    SellPreset(
+                        outcome=outcome,
+                        portion=portion,
+                        shares=to_cr(size_micro),
+                        allowed=can_trade
+                        and size_micro > 0
+                        and size_micro >= self._min_trade_shares_micro,
+                    )
+                )
+        return presets

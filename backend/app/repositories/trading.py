@@ -88,18 +88,17 @@ class TradeRepository(BaseRepository[Trade]):
         limit: int,
         since: datetime | None = None,
         after_version: int | None = None,
+        newest_first: bool = False,
     ) -> Sequence[Trade]:
         """A market's trades in the order they happened, oldest first.
 
         `since` bounds `created_at` from below (inclusive); `after_version` continues
-        after the last `market_version` seen.
+        after the last `market_version` seen. With more matching trades than `limit`,
+        the oldest `limit` are returned; `newest_first=True` returns the newest `limit`
+        instead, newest first, which is what a chart must not lose.
         """
-        statement = (
-            select(Trade)
-            .where(Trade.market_id == market_id)
-            .order_by(Trade.market_version, Trade.id)
-            .limit(limit)
-        )
+        order = Trade.market_version.desc() if newest_first else Trade.market_version
+        statement = select(Trade).where(Trade.market_id == market_id).order_by(order).limit(limit)
         if since is not None:
             statement = statement.where(Trade.created_at >= since)
         if after_version is not None:

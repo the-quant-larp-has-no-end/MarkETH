@@ -13,14 +13,28 @@ one anywhere near a balance. In Python the same field is a `Decimal`. Convert wi
 
 To put a response into JSON yourself (an idempotency record, the `details` of an
 error), use `model.model_dump(mode="json")`; it writes amounts as strings.
+
+Error details. `ErrorResponse` lists what `details` holds for each code. An amount in
+there is named `*_cr` and written like every other amount: pass `to_cr(micro)` or
+`format_cr(micro)`, both arrive as `"0.25"`. What a `LIMIT_EXCEEDED` ran into is
+named by a `Limit` member under `details.limit`.
 """
 
 import re
 from dataclasses import dataclass
 from decimal import Decimal
+from enum import StrEnum
 from typing import Annotated, Any, Final
 
-from pydantic import BaseModel, ConfigDict, Field, GetCoreSchemaHandler, GetJsonSchemaHandler
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    GetCoreSchemaHandler,
+    GetJsonSchemaHandler,
+    SerializerFunctionWrapHandler,
+    field_serializer,
+)
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema, PydanticCustomError, core_schema
 
@@ -30,10 +44,17 @@ from app.core.units import DECIMAL_PLACES, PrecisionError, format_cr, to_micro
 AMOUNT_INTEGER_DIGITS: Final[int] = 12
 """Digits an amount may have before the decimal point, so its µ-value fits a BIGINT."""
 
+REQUEST_INTEGER_DIGITS: Final[int] = 9
+"""Digits a size or budget in a request may have before the decimal point.
+
+Fewer than a response holds, on purpose: what the server computes from a request can be
+larger than the request. A budget buys more shares than it has credits (many more when
+the price is near zero), and that number of shares must still fit into the answer.
+"""
+
 DEFAULT_PAGE_SIZE: Final[int] = 50
 MAX_PAGE_SIZE: Final[int] = 200
 
-_AMOUNT_LIMIT: Final[Decimal] = Decimal(10) ** AMOUNT_INTEGER_DIGITS
 _PLAIN_DECIMAL: Final[re.Pattern[str]] = re.compile(r"-?[0-9]+(\.[0-9]+)?")
 
 
@@ -72,6 +93,7 @@ class _DecimalString:
 
     signed: bool = False
     positive: bool = False
+    integer_digits: int = AMOUNT_INTEGER_DIGITS
 
     def __get_pydantic_core_schema__(
         self, source_type: Any, handler: GetCoreSchemaHandler
@@ -87,7 +109,7 @@ class _DecimalString:
         self, schema: CoreSchema, handler: GetJsonSchemaHandler
     ) -> JsonSchemaValue:
         sign = "-?" if self.signed else ""
-        whole = f"[0-9]{{1,{AMOUNT_INTEGER_DIGITS}}}"
+        whole = f"[0-9]{{1,{self.integer_digits}}}"
         fraction = f"[0-9]{{1,{DECIMAL_PLACES}}}"
         return {
             "type": "string",
@@ -109,11 +131,11 @@ class _DecimalString:
             raise PydanticCustomError("decimal_not_positive", "Input should be greater than 0")
         if not self.signed and amount < 0:
             raise PydanticCustomError("decimal_negative", "Input should not be negative")
-        if abs(amount) >= _AMOUNT_LIMIT:
+        if abs(amount) >= Decimal(10) ** self.integer_digits:
             raise PydanticCustomError(
                 "decimal_too_large",
                 "Input should have at most {digits} digits before the decimal point",
-                {"digits": AMOUNT_INTEGER_DIGITS},
+                {"digits": self.integer_digits},
             )
         return amount
 
@@ -133,11 +155,29 @@ def _to_string(value: Decimal) -> str:
     return format_cr(to_micro(value))
 
 
+def _amounts_as_strings(value: object) -> object:
+    """A copy of an error's details in which every bare `Decimal` is an API amount string.
+
+    Without it `to_cr(250_000)` would leave as `"0.250000"` where `format_cr` gives
+    `"0.25"`. Schema objects are left alone; they serialise themselves.
+    """
+    if isinstance(value, Decimal):
+        text = format(value, "f")
+        return text.rstrip("0").rstrip(".") if "." in text else text
+    if isinstance(value, dict):
+        return {key: _amounts_as_strings(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_amounts_as_strings(item) for item in value]
+    return value
+
+
 CreditAmount = Annotated[Decimal, _DecimalString()]
 """Credits (CR), zero or more."""
 
-PositiveCreditAmount = Annotated[Decimal, _DecimalString(positive=True)]
-"""Credits (CR), more than zero."""
+PositiveCreditAmount = Annotated[
+    Decimal, _DecimalString(positive=True, integer_digits=REQUEST_INTEGER_DIGITS)
+]
+"""Credits (CR) a request asks for: more than zero, below 10^9."""
 
 SignedCreditAmount = Annotated[Decimal, _DecimalString(signed=True)]
 """Credits (CR) that may be negative: a ledger line, a market account, VIS's exposure."""
@@ -145,19 +185,65 @@ SignedCreditAmount = Annotated[Decimal, _DecimalString(signed=True)]
 ShareAmount = Annotated[Decimal, _DecimalString()]
 """Shares, zero or more. One winning share pays 1 CR."""
 
-PositiveShareAmount = Annotated[Decimal, _DecimalString(positive=True)]
-"""Shares, more than zero."""
+PositiveShareAmount = Annotated[
+    Decimal, _DecimalString(positive=True, integer_digits=REQUEST_INTEGER_DIGITS)
+]
+"""Shares a request asks for: more than zero, below 10^9."""
 
 Probability = Annotated[float, Field(ge=0, le=1)]
 """A price in [0, 1], rounded to `PRICE_DISPLAY_DECIMALS + 2` places (Appendix A.2)."""
 
 
+class Limit(StrEnum):
+    """`details.limit` of a `LIMIT_EXCEEDED` error: which limit the request ran into."""
+
+    MAX_STAKE_PER_USER_MARKET = "MAX_STAKE_PER_USER_MARKET"
+    """A buy would take the user's net stake in the market above the limit (SPEC §4)."""
+
+    MAX_PROPOSALS_PER_USER_PER_DAY = "MAX_PROPOSALS_PER_USER_PER_DAY"
+    MAX_OPEN_MARKETS = "MAX_OPEN_MARKETS"
+    MAX_MARKET_BUDGET = "MAX_MARKET_BUDGET"
+    MAX_AGGREGATE_LOSS_BUDGET = "MAX_AGGREGATE_LOSS_BUDGET"
+    MAX_CODE_ISSUANCE_PER_MONTH = "MAX_CODE_ISSUANCE_PER_MONTH"
+    ONE_CODE_PER_USER = "ONE_CODE_PER_USER"
+    """The user already redeemed a code of a batch that allows one per user (SPEC §2)."""
+
+
 class ErrorResponse(ResponseModel):
-    """The body of every non-2xx response (SPEC §10, Appendix A.2)."""
+    """The body of every non-2xx response (SPEC §10, Appendix A.2).
+
+    `message` is written for the user and can be shown as it is. `details` is an
+    object, empty unless the code is one of these:
+
+    * `VALIDATION_ERROR`. A request that does not match its schema: `errors`, a list
+      of `{loc, msg, type}`, one per field. A rule a service checks: `field`, the name
+      of the offending field. An email address that is not allowed: `allowed_domains`,
+      a list.
+    * `RATE_LIMITED`: `retry_after_seconds`, an integer, also sent as the
+      `Retry-After` header.
+    * `QUOTE_STALE`: `quote`, a fresh `QuoteResponse` for the same trade.
+    * `LIMIT_EXCEEDED`: `limit`, which names the limit: `MAX_STAKE_PER_USER_MARKET`,
+      `MAX_PROPOSALS_PER_USER_PER_DAY`, `MAX_OPEN_MARKETS`, `MAX_MARKET_BUDGET`,
+      `MAX_AGGREGATE_LOSS_BUDGET`, `MAX_CODE_ISSUANCE_PER_MONTH` or
+      `ONE_CODE_PER_USER`. With `MAX_STAKE_PER_USER_MARKET` also `stake_limit_cr` and
+      `stake_left_cr`; with `MAX_CODE_ISSUANCE_PER_MONTH` also `issued_cr`,
+      `requested_cr` and `cap_cr`.
+    * `INSUFFICIENT_BALANCE`: `balance_cr` and `required_cr`.
+    * `SERVICE_UNAVAILABLE`, from `GET /health` only: `postgres`, `redis` and
+      `scylla`, each `up` or `down`.
+
+    Amounts in `details` are decimal strings like every `*_cr` field.
+    """
 
     code: ErrorCode
     message: str
     details: dict[str, Any]
+
+    @field_serializer("details", mode="wrap", when_used="json")
+    def _details_with_api_amounts(
+        self, details: dict[str, Any], handler: SerializerFunctionWrapHandler
+    ) -> object:
+        return handler(_amounts_as_strings(details))
 
 
 class PageQuery(RequestModel):

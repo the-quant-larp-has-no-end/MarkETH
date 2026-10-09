@@ -82,14 +82,23 @@ class GrantService:
 
         1. Read the ids of all users in one transaction (`users.list_all()`), keeping
            those with status ACTIVE.
-        2. One transaction per user, so a failure costs one user and no lock is held
-           for long: lock the user's account, then `grant_owed_months`.
+        2. One transaction per user, so no lock is held for long: lock the user's
+           account, then `grant_owed_months`. A user whose transaction fails costs
+           only that user: the exception is logged with its traceback and the user's
+           id, counted, and the run goes on. Nothing is half-booked, because that
+           user's transaction rolled back.
         3. In a final transaction write the audit row: `AuditAction.MONTHLY_GRANT_RUN`,
            target `AuditService.target(AuditTarget.GRANTS, "monthly")`, `after =
-           {"users_checked", "grants_booked", "total_micro"}`.
+           {"users_checked", "users_failed", "grants_booked", "total_micro"}`. This
+           one admin action spans transactions, so its audit row is written after
+           the fact rather than with the change (A.5). It is written even when users
+           failed. Each grant is a journal entry of its own all the same; if the
+           process dies before this step, the grants are in the ledger and running
+           again books nothing twice.
 
-        `users_checked` counts the ACTIVE users, `grants_booked` the grants this run
-        booked, `total_cr` their sum. Safe to run at any time and to repeat.
+        `users_checked` counts the ACTIVE users, `users_failed` those whose transaction
+        failed, `grants_booked` the grants this run booked, `total_cr` their sum. Safe
+        to run at any time and to repeat; a repeat retries the users that failed.
         """
         raise NotImplementedError
 

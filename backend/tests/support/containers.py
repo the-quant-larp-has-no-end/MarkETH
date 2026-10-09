@@ -19,6 +19,16 @@ POSTGRES_COMMAND: Final[str] = (
 REDIS_IMAGE: Final[str] = "redis:8.8-alpine"
 REDIS_PORT: Final[int] = 6379
 
+SCYLLA_IMAGE: Final[str] = "scylladb/scylla:2026.1"
+SCYLLA_PORT: Final[int] = 9042
+# The single development node of SPEC §9.
+SCYLLA_COMMAND: Final[str] = "--smp 1 --memory 750M --overprovisioned 1 --developer-mode 1"
+SCYLLA_STARTUP_TIMEOUT_SECONDS: Final[int] = 300
+
+MAILPIT_IMAGE: Final[str] = "axllent/mailpit:v1.31"
+MAILPIT_SMTP_PORT: Final[int] = 1025
+MAILPIT_HTTP_PORT: Final[int] = 8025
+
 LOOPBACK: Final[str] = "127.0.0.1"
 
 PORT_LOOKUP_SECONDS: Final[float] = 10.0

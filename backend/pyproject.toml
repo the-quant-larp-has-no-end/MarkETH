@@ -76,6 +76,8 @@ addopts = "-ra --strict-markers --import-mode=importlib -m 'not scylla'"
 markers = [
     "integration: needs Docker (Postgres and Redis via Testcontainers)",
     "scylla: needs a ScyllaDB container; slow to start, deselected by default",
+    "redis_down: the `container` of this test has an unreachable Redis (tests/conftest.py)",
+    "postgres_down: the `container` of this test has an unreachable Postgres",
 ]
 
 # --- Architecture rules (see backend/CLAUDE.md) -------------------------------

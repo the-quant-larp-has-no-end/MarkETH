@@ -50,8 +50,10 @@ class HistoryService:
            * if the version-0 point is missing, add it: `t=opened_at`,
              `p_yes_micro=EVEN_ODDS_MICRO`;
            * append `trades.list_for_market(market_id, limit=MAX_POSTGRES_POINTS,
-             after_version=<newest ScyllaDB version, or 0>)`, each as
-             `t=created_at`, `p_yes_micro=p_yes_after_micro`, `version=market_version`.
+             after_version=<newest ScyllaDB version, or 0>, newest_first=True)`, each
+             as `t=created_at`, `p_yes_micro=p_yes_after_micro`,
+             `version=market_version`. Newest first, because the limit must cut the
+             oldest points of a very busy market, never the latest price.
         4. Order by `version` and keep one point per version. `p_yes` is
            `MarketView.probabilities(p_yes_micro)[0]`.
         5. `source` is `scylla` when ScyllaDB returned at least one point, else

@@ -49,6 +49,7 @@ class AccountService:
     ) -> None:
         self._uow_factory = uow_factory
         self._monthly_grant_micro = settings.vouchers.monthly_grant_micro
+        self._coffee_ticket_value_micro = settings.vouchers.coffee_ticket_value_micro
         self._clock = clock
         self._grants = grants
         self._view = view
@@ -57,7 +58,8 @@ class AccountService:
         """Profile, balance and the next monthly grant (`GET /me`).
 
         `id`, `email`, `role` and `created_at` come from the `users` row, `balance_cr`
-        from the user's account, `monthly_grant_cr` from `MONTHLY_GRANT_CR` and
+        from the user's account, `can_get_coffee` is `balance >=
+        COFFEE_TICKET_VALUE_CR`, `monthly_grant_cr` comes from `MONTHLY_GRANT_CR` and
         `next_monthly_grant_on` from `GrantService.next_grant_date()`. A user whose row
         or account is gone raises `UnauthenticatedError` (401).
         """
@@ -68,8 +70,10 @@ class AccountService:
 
         1. `positions.list_for_user(user.id)`, grouped by market. Every market with a
            position row is listed, also one whose shares were all sold.
-        2. Per market load the row and, when its status is RESOLVED or VOID, its
-           `resolutions` row. Build the entry with `MarketView`:
+        2. Load the markets and the resolutions of the settled ones in two queries,
+           whatever the number of markets: `markets.get_many(<market ids>)` and
+           `resolutions.get_many_by_market(<market ids>)`. Build each entry with
+           `MarketView`:
            `market = summary(...)`, `holdings = holdings(...)`, `value_cr` the sum of
            the two holding values, `cost_cr` and `proceeds_cr` the sums over both
            positions, `net_stake_cr = net_stake_micro(...)`.
@@ -91,7 +95,8 @@ class AccountService:
         1. `trades.list_for_user(user.id, limit=page.limit + 1, before_id=<cursor>)`.
         2. Return the first `page.limit` rows. `next_cursor` is the id of the last
            returned row when one more row came back, else null.
-        3. Each item carries its market's question (load each market once),
+        3. Each item carries its market's question (`markets.get_many` for the page's
+           market ids, one query),
            `average_price = MarketView.average_price(amount, shares)` and the display
            values of `p_yes_before_micro` and `p_yes_after_micro`
            (`MarketView.probabilities(...)[0]`).
