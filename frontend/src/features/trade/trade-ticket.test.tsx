@@ -29,6 +29,9 @@ import {
   SELL_NO,
   SELL_YES,
   sellChip,
+  sharesField,
+  sharesRefusal,
+  sharesSlider,
   sideSegment,
   stakeChip,
   stakeField,
@@ -744,7 +747,7 @@ describe("the quote", () => {
     });
   });
 
-  test("a quote of a sale that fails for any reason is the banner: selling has no stake entry to say it with", async () => {
+  test("what a quote says about the size of a sale stands with the shares entry", async () => {
     const { user } = openTicket({
       market: withPosition(),
       start: SELL_YES,
@@ -755,10 +758,131 @@ describe("the quote", () => {
 
     await user.click(sellChip("Half"));
 
-    const banner = await screen.findByRole("alert");
-    expect(banner).toHaveTextContent("This trade is below the minimum size.");
-    expect(within(banner).getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    await waitFor(() => expect(sharesRefusal()).toBeInTheDocument());
+    expect(sharesRefusal()).toHaveTextContent("This trade is below the minimum size.");
+    expect(sharesField()).toHaveAttribute("aria-invalid", "true");
+    // It is a verdict, not a failure: there is nothing to try again.
+    expect(screen.queryByRole("button", { name: /Try again/ })).not.toBeInTheDocument();
     expect(button("Sell YES shares")).toBeDisabled();
+  });
+});
+
+describe("the shares of a sell", () => {
+  /** The latest quote that was asked for, as the parameters it went out with. */
+  const asked = (api: ReturnType<typeof openTicket>["api"]) => [
+    ...api.lastCall(QUOTE)!.query.entries(),
+  ];
+  const sale = quote({ side: "SELL", shares: "40", amount_cr: "20.5" });
+
+  test("the slider runs where the server says, and writes the step it stands on into the field", async () => {
+    const { user, api } = openTicket({
+      market: withPosition(),
+      start: SELL_YES,
+      routes: { [QUOTE]: json(200, sale) },
+    });
+
+    // `slider` of the YES entry of `viewer.sell`: the whole shares of the holding.
+    expect(sharesSlider()).toHaveAttribute("aria-valuemin", "1");
+    expect(sharesSlider()).toHaveAttribute("aria-valuemax", "91");
+    expect(sharesSlider()).toHaveAttribute("aria-valuetext", "not set");
+    expect(sharesField()).toHaveValue("");
+
+    sharesSlider().focus();
+    await user.keyboard("{End}");
+
+    expect(sharesField()).toHaveValue("91");
+    expect(sharesSlider()).toHaveAttribute("aria-valuetext", "91 shares");
+    await waitFor(() => expect(button("Sell YES shares")).toBeEnabled());
+    expect(asked(api)).toEqual([
+      ["side", "SELL"],
+      ["outcome", "YES"],
+      ["shares", "91"],
+    ]);
+  });
+
+  test("a typed number of shares is quoted and sold with the characters that were typed", async () => {
+    const { user, api } = openTicket({
+      market: withPosition(),
+      start: SELL_YES,
+      routes: {
+        [QUOTE]: json(200, quote({ side: "SELL", shares: "12.5", amount_cr: "6.4" })),
+        [TRADE]: json(201, tradeResponse({ side: "SELL", shares: "12.5" })),
+      },
+    });
+
+    await user.type(sharesField(), "12,5");
+
+    await waitFor(() => expect(button("Sell YES shares")).toBeEnabled());
+    expect(sharesField()).toHaveValue("12.5");
+    expect(asked(api)).toEqual([
+      ["side", "SELL"],
+      ["outcome", "YES"],
+      ["shares", "12.5"],
+    ]);
+    // No chip holds this number, and the slider cannot show it.
+    expect(sellChip("Half")).toHaveAttribute("aria-pressed", "false");
+    expect(sellChip("All")).toHaveAttribute("aria-pressed", "false");
+    expect(sharesSlider()).toHaveAttribute("aria-valuetext", "not set");
+
+    await user.click(button("Sell YES shares"));
+    await screen.findByRole("heading", { name: "Sold 12.5 YES shares" });
+    expect(api.lastCall(TRADE)!.rawBody).toBe(
+      '{"side":"SELL","outcome":"YES","shares":"12.5","min_proceeds_cr":"6.4","quote_version":7}',
+    );
+  });
+
+  test("a chip writes its shares into the field as they arrived", async () => {
+    const { user } = openTicket({
+      market: withPosition(),
+      start: SELL_YES,
+      routes: { [QUOTE]: json(200, sale) },
+    });
+
+    await user.click(sellChip("All"));
+
+    expect(sharesField()).toHaveValue("91.645");
+    expect(sellChip("All")).toHaveAttribute("aria-pressed", "true");
+    expect(sellChip("Half")).toHaveAttribute("aria-pressed", "false");
+  });
+
+  test("more shares than the viewer holds is said with the shares entry, and the market is read again", async () => {
+    const { user, api } = openTicket({
+      market: withPosition(),
+      start: SELL_YES,
+      routes: {
+        [QUOTE]: apiError(409, "INSUFFICIENT_SHARES", "You cannot sell more shares than you hold."),
+      },
+    });
+    await waitFor(() => expect(api.calls(MARKET)).toHaveLength(1));
+
+    await user.type(sharesField(), "500");
+
+    await waitFor(() => expect(sharesRefusal()).toBeInTheDocument());
+    expect(sharesRefusal()).toHaveTextContent("You cannot sell more shares than you hold.");
+    expect(sharesField()).toHaveValue("500");
+    expect(button("Sell YES shares")).toBeDisabled();
+    await waitFor(() => expect(api.calls(MARKET)).toHaveLength(2));
+    // Once, not again and again.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(api.calls(MARKET)).toHaveLength(2);
+  });
+
+  test("an outcome without a slider has the field and the chips alone", () => {
+    openTicket({
+      market: marketDetail({
+        viewer: marketViewerWithPosition({
+          sell: [
+            { outcome: "YES", slider: null },
+            { outcome: "NO", slider: null },
+          ],
+        }),
+      }),
+      start: SELL_YES,
+    });
+
+    expect(screen.queryByRole("slider")).not.toBeInTheDocument();
+    expect(sharesField()).toBeEnabled();
+    expect(sellChip("All")).toBeEnabled();
   });
 });
 

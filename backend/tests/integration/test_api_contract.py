@@ -221,6 +221,7 @@ MARKET_VIEWER_FIELDS: Final[frozenset[str]] = frozenset(
         "stake_presets",
         "buy_slider",
         "sell_presets",
+        "sell",
         "can_trade",
         "cannot_trade_reason",
         "can_settle",

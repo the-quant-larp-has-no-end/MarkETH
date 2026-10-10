@@ -366,6 +366,10 @@ class MarketService:
           can_trade)`: half and all of each holding, each with what it brings in at
           the price of this read, so the client halves, prices and compares nothing
           (A.11).
+        * `sell = MarketView.sell_entries(<the positions>, can_trade)`: per outcome,
+          YES then NO, the whole shares of the holding between which a sell passes
+          right now, in steps of `TRADE_SHARE_STEP`; null where the viewer holds less
+          than the smallest sale or may not trade.
 
         The pricing calls of `buy` and `sell_presets` run on the rows this read
         found: at most one budget per outcome and one sale per sell shortcut.
@@ -492,6 +496,7 @@ class MarketService:
             stake_presets=self._view.stake_presets(stake_left_micro, balance_micro, can_trade),
             buy_slider=self._view.buy_slider(stake_left_micro, balance_micro, can_trade),
             sell_presets=self._view.sell_presets(market, positions, can_trade),
+            sell=self._view.sell_entries(positions, can_trade),
             can_trade=can_trade,
             cannot_trade_reason=reason,
             can_settle=can_settle,

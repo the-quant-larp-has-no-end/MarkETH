@@ -231,7 +231,7 @@ describe("SellPresets", () => {
   test("offer Half and All of the selected outcome, each with the shares the server worked out", async () => {
     const onChange = vi.fn();
     const { user } = renderWithProviders(
-      <SellPresets presets={presets} outcome="YES" value={null} onChange={onChange} />,
+      <SellPresets presets={presets} outcome="YES" value="" onChange={onChange} />,
     );
 
     const [half, all] = screen.getAllByRole("button");
@@ -241,26 +241,21 @@ describe("SellPresets", () => {
     expect(all).toHaveTextContent("91.64 shares");
 
     await user.click(half!);
-    // The preset is handed on whole: its shares string is sent as it arrived.
-    expect(onChange).toHaveBeenCalledWith({
-      outcome: "YES",
-      portion: "HALF",
-      shares: "45.8225",
-      allowed: true,
-    });
+    // Its shares are handed on as the string that arrived, for the shares field to hold.
+    expect(onChange).toHaveBeenCalledWith("45.8225");
   });
 
   test("a preset the server does not allow is disabled", () => {
     renderWithProviders(
-      <SellPresets presets={presets} outcome="NO" value={null} onChange={() => {}} />,
+      <SellPresets presets={presets} outcome="NO" value="" onChange={() => {}} />,
     );
 
     for (const chip of screen.getAllByRole("button")) expect(chip).toBeDisabled();
   });
 
-  test("the chosen portion is pressed", () => {
+  test("the chip whose shares the field holds is pressed", () => {
     renderWithProviders(
-      <SellPresets presets={presets} outcome="YES" value="ALL" onChange={() => {}} />,
+      <SellPresets presets={presets} outcome="YES" value="91.645" onChange={() => {}} />,
     );
 
     const [half, all] = screen.getAllByRole("button");
