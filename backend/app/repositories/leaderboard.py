@@ -7,6 +7,10 @@ ranking is computed from the rows the rest of the application writes.
 The measures and their rounding are defined once, in the docstring of
 `LeaderboardService.ranking`. This module turns that definition into SQL and nothing
 else: it takes bounds in micro-units and hands back integers.
+
+No price is computed here: pricing maths lives in `app/pricing/lmsr.py` and nowhere
+else. What a user's open positions are worth needs the current price of each market,
+and the service hands those in as values; the statement multiplies, rounds down and adds.
 """
 
 from collections.abc import Mapping, Sequence
@@ -19,14 +23,19 @@ from sqlalchemy import (
     BigInteger,
     BindParameter,
     ColumnElement,
+    FromClause,
     Numeric,
     Select,
+    Uuid,
+    case,
     cast,
+    column,
     func,
     literal,
     or_,
     select,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.types import TypeEngine
 
@@ -35,6 +44,7 @@ from app.core.enums import (
     DegreeLevel,
     LeaderboardSort,
     MarketStatus,
+    Outcome,
     ResolutionOutcome,
     SortOrder,
     UserStatus,
@@ -82,6 +92,10 @@ class LeaderboardRow:
     degree_level: DegreeLevel
     degree_programme: str
     credits_micro: int
+    """`balance_micro + positions_value_micro`: what the user is ranked and filtered by."""
+
+    balance_micro: int
+    positions_value_micro: int
     trades: int
     settled_markets: int
     win_rate_micro: int | None
@@ -103,8 +117,13 @@ class LeaderboardRepository:
         after_rank: int,
         limit: int,
         viewer_id: UUID,
+        p_yes_micro: Mapping[UUID, int],
     ) -> Sequence[LeaderboardRow]:
         """A stretch of the ranking and the viewer's own row, in one statement.
+
+        `p_yes_micro` is the exact YES price, in millionths, of every market whose
+        positions count as open, by market id (`MarketView.open_prices_micro`). A
+        position in a market that is not among them is worth nothing here.
 
         Returns, in rank order, the rows ranked `after_rank + 1` to `after_rank + limit`
         of the filtered, sorted list, and the row of `viewer_id` wherever it ranks. The
@@ -127,16 +146,29 @@ class LeaderboardRepository:
            div(SUM(returned) * 1000000, SUM(cost))`. `div` on NUMERIC is the exact
            truncated quotient.
         3. `traded`: `COUNT(*)` of `trades` per user.
-        4. `board`: every user whose status is ACTIVE, joined to their account (`kind =
-           'USER'`), left-joined to `traded` and `rated`. Credits are the account's
-           `balance_micro`; `trades` and `settled_markets` are 0 for a user who is in
-           neither; the two rates stay NULL for a user who is not in `rated`.
-        5. `ranked`: `board` narrowed by `filters`, each bound only when it is set,
+        4. `valued`: one row per user who holds a position in a market of `p_yes_micro`
+           whose row does not say RESOLVED or VOID. `prices` is `p_yes_micro` as rows:
+           two arrays, the ids and their prices, unnested side by side. A holding is
+           worth `div(shares_micro * price, 1000000)`, the price being `p_yes_micro`
+           for a YES position and `1000000 - p_yes_micro` for a NO position; `div` on
+           NUMERIC truncates, which for these two is rounding down. The user's value
+           is the sum over their holdings. This is `MarketView.holding_value_micro`
+           for every holding of a market that is not settled, added up: the
+           `total_value_cr` of that user's portfolio.
+        5. `board`: every user whose status is ACTIVE, joined to their account (`kind =
+           'USER'`), left-joined to `traded`, `rated` and `valued`. `balance_micro` is
+           the account's; `positions_value_micro` is the value of step 4, 0 for a user
+           who is not in `valued`; `credits_micro` is the two added up. `trades` and
+           `settled_markets` are 0 for a user who is in neither; the two rates stay
+           NULL for a user who is not in `rated`.
+        6. `ranked`: `board` narrowed by `filters`, each bound only when it is set,
            with `ROW_NUMBER() OVER (ORDER BY <measure> <order> NULLS LAST,
            users.created_at ASC, users.id ASC)` as `rank`. The measure is the column
-           of `sort`. NULLS LAST holds in both directions. A bound on a rate drops
-           the users whose rate is NULL, because no comparison with NULL is true.
-        6. The result: the rows of `ranked` with `after_rank < rank <= after_rank +
+           of `sort`; for credits it is `credits_micro`, the sum, and that is also
+           what the two bounds on credits compare with. NULLS LAST holds in both
+           directions. A bound on a rate drops the users whose rate is NULL, because
+           no comparison with NULL is true.
+        7. The result: the rows of `ranked` with `after_rank < rank <= after_rank +
            limit`, or with `user_id = viewer_id`, ordered by `rank`.
 
         Two things keep it as fast with filters as without. Postgres plans a statement
@@ -152,14 +184,18 @@ class LeaderboardRepository:
           user, and then joins `traded` and `rated` row by row. On 5,000 users that
           took a second where this takes a tenth.
 
-        Three things to get right in SQLAlchemy:
+        Four things to get right in SQLAlchemy:
 
         * `/` between integers renders a division by a NUMERIC cast. Use `//`, or
           `func.div`, where the quotient is to be truncated.
         * The sums of step 1 must not go through `sum_micro`, which casts to BIGINT:
-          `returned * 1000000` does not fit one for a large position.
+          `returned * 1000000` does not fit one for a large position. Neither does
+          `shares_micro * price` of step 4: cast the shares to NUMERIC first.
         * Bind every bound as BIGINT (`literal(value, BigInteger)`). An untyped Python
           int is bound as INTEGER, which a ratio bound above 2147.48 overflows.
+        * The prices are two bound arrays, whatever the number of markets, so the
+          text of the statement is the same for every request, and an empty mapping
+          is two empty arrays: no row of `prices`, nobody in `valued`.
 
         `win_rate_micro` is a quotient of BIGINTs and arrives as an `int`.
         `avg_payout_ratio_micro` is a quotient of NUMERICs and arrives as an integral
@@ -173,6 +209,7 @@ class LeaderboardRepository:
             after_rank=after_rank,
             limit=limit,
             viewer_id=viewer_id,
+            p_yes_micro=p_yes_micro,
         )
         return [
             LeaderboardRow(
@@ -182,6 +219,8 @@ class LeaderboardRepository:
                 degree_level=degree_level,
                 degree_programme=degree_programme,
                 credits_micro=credits_micro,
+                balance_micro=balance_micro,
+                positions_value_micro=positions_value_micro,
                 trades=trades,
                 settled_markets=settled_markets,
                 win_rate_micro=win_rate_micro,
@@ -196,6 +235,8 @@ class LeaderboardRepository:
                 degree_level,
                 degree_programme,
                 credits_micro,
+                balance_micro,
+                positions_value_micro,
                 trades,
                 settled_markets,
                 win_rate_micro,
@@ -212,12 +253,13 @@ def ranking_statement(
     after_rank: int,
     limit: int,
     viewer_id: UUID,
+    p_yes_micro: Mapping[UUID, int],
 ) -> Select[Any]:
     """The statement `LeaderboardRepository.rank` executes; its docstring numbers the
     steps. The columns come back in the order of the fields of `LeaderboardRow`."""
-    board = _board(_traded(), _rated(_settled()))
+    board = _board(_traded(), _rated(_settled()), _valued(_prices(p_yes_micro)))
 
-    # Step 5: the filtered list, numbered in the order asked for.
+    # Step 6: the filtered list, numbered in the order asked for.
     measure = board.c[MEASURE_COLUMNS[sort]]
     by_measure = measure.asc() if order is SortOrder.ASC else measure.desc()
     position = func.row_number().over(
@@ -225,7 +267,7 @@ def ranking_statement(
     )
     ranked = select(board, position.label("rank")).where(*_conditions(board, filters)).cte("ranked")
 
-    # Step 6: the stretch asked for, and the viewer's row.
+    # Step 7: the stretch asked for, and the viewer's row.
     in_stretch = (ranked.c.rank > _bigint(after_rank)) & (
         ranked.c.rank <= _bigint(after_rank + limit)
     )
@@ -237,6 +279,8 @@ def ranking_statement(
             ranked.c.degree_level,
             ranked.c.degree_programme,
             ranked.c.credits_micro,
+            ranked.c.balance_micro,
+            ranked.c.positions_value_micro,
             ranked.c.trades,
             ranked.c.settled_markets,
             ranked.c.win_rate_micro,
@@ -327,9 +371,55 @@ def _traded() -> CTE:
     return select(Trade.user_id, func.count().label("trades")).group_by(Trade.user_id).cte("traded")
 
 
-def _board(traded: CTE, rated: CTE) -> CTE:
-    """Step 4: every ACTIVE user with their measures. MATERIALIZED, so that no filter
+def _prices(p_yes_micro: Mapping[UUID, int]) -> FromClause:
+    """The prices the service worked out, as rows `(market_id, p_yes_micro)`: the ids
+    and their prices as two arrays of one length, unnested side by side."""
+    market_ids = list(p_yes_micro)
+    return (
+        func.unnest(
+            literal(market_ids, ARRAY(Uuid)),
+            literal([p_yes_micro[market_id] for market_id in market_ids], ARRAY(BigInteger)),
+        )
+        .table_valued(column("market_id", Uuid), column("p_yes_micro", BigInteger))
+        .render_derived(name="prices")
+    )
+
+
+def _valued(prices: FromClause) -> CTE:
+    """Step 4: per user who holds a position in a priced market that is not settled,
+    what their holdings are worth: each one its shares at the price of its outcome,
+    rounded down, and the sum of them."""
+    price = case(
+        (
+            Position.outcome == _inline(Outcome.YES, Position.outcome.type),
+            prices.c.p_yes_micro,
+        ),
+        else_=_MILLION - prices.c.p_yes_micro,
+    )
+    # NUMERIC: shares times a price in millionths does not fit a BIGINT for a large
+    # holding. Neither factor is negative, so the truncated quotient is the floor.
+    value = func.div(cast(Position.shares_micro, Numeric) * price, _MILLION, type_=Numeric)
+    return (
+        select(Position.user_id, func.sum(value).label("value_micro"))
+        .join(prices, prices.c.market_id == Position.market_id)
+        .join(Market, Market.id == Position.market_id)
+        .where(
+            Market.status.not_in(
+                [
+                    _inline(MarketStatus.RESOLVED, Market.status.type),
+                    _inline(MarketStatus.VOID, Market.status.type),
+                ]
+            )
+        )
+        .group_by(Position.user_id)
+        .cte("valued")
+    )
+
+
+def _board(traded: CTE, rated: CTE, valued: CTE) -> CTE:
+    """Step 5: every ACTIVE user with their measures. MATERIALIZED, so that no filter
     is planned into its joins."""
+    positions_value = cast(func.coalesce(valued.c.value_micro, _ZERO), BigInteger)
     return (
         select(
             User.id.label("user_id"),
@@ -337,7 +427,9 @@ def _board(traded: CTE, rated: CTE) -> CTE:
             User.degree_level,
             User.degree_programme,
             User.created_at,
-            Account.balance_micro.label("credits_micro"),
+            (Account.balance_micro + positions_value).label("credits_micro"),
+            Account.balance_micro.label("balance_micro"),
+            positions_value.label("positions_value_micro"),
             func.coalesce(traded.c.trades, _ZERO).label("trades"),
             func.coalesce(rated.c.settled_markets, _ZERO).label("settled_markets"),
             rated.c.win_rate_micro,
@@ -350,6 +442,7 @@ def _board(traded: CTE, rated: CTE) -> CTE:
         )
         .outerjoin(traded, traded.c.user_id == User.id)
         .outerjoin(rated, rated.c.user_id == User.id)
+        .outerjoin(valued, valued.c.user_id == User.id)
         .where(User.status == _inline(UserStatus.ACTIVE, User.status.type))
         .cte("board")
         .prefix_with("MATERIALIZED")
@@ -374,9 +467,9 @@ def _conditions(board: CTE, filters: LeaderboardFilter) -> list[ColumnElement[bo
             filters.max_avg_payout_ratio_micro,
         ),
     )
-    for column, lowest, highest in bounds:
+    for measure, lowest, highest in bounds:
         if lowest is not None:
-            conditions.append(column >= _bigint(lowest))
+            conditions.append(measure >= _bigint(lowest))
         if highest is not None:
-            conditions.append(column <= _bigint(highest))
+            conditions.append(measure <= _bigint(highest))
     return conditions

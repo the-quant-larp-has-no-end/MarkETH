@@ -34,6 +34,15 @@ function setUp(issue: Handler) {
   return { api, onNoAnswer, ...view };
 }
 
+/** A send that the write refuses: it says so, which is how a screen knows nothing went out. */
+function sendsNothing(write: ReturnType<typeof useIssue>): boolean {
+  let sent = true;
+  act(() => {
+    sent = write.send("coffee");
+  });
+  return !sent;
+}
+
 /** The reads of the hook have answered once: the screen is at rest. */
 async function atRest(api: ReturnType<typeof mockApi>) {
   await waitFor(() => expect(api.calls(VOUCHERS)).toHaveLength(1));
@@ -172,8 +181,7 @@ describe("a request without an answer", () => {
     expect(result.current.rereadError).toBeNull();
     await waitFor(() => expect(api.calls(VOUCHERS)).toHaveLength(2));
 
-    act(() => result.current.send("coffee"));
-    expect(api.calls(ISSUE)).toHaveLength(1);
+    expect(sendsNothing(result.current)).toBe(true);
 
     vouchers.resolve(json(200, { items: [voucherItem()] }));
     await waitFor(() => expect(api.calls(ME)).toHaveLength(2));
@@ -190,7 +198,9 @@ describe("a request without an answer", () => {
   });
 
   test("stays blocked when the reads fail too, and reads them again when asked", async () => {
-    const { api, result } = setUp(() => apiError(500, "INTERNAL_ERROR", "Something went wrong."));
+    const { api, client, result } = setUp(() =>
+      apiError(500, "INTERNAL_ERROR", "Something went wrong."),
+    );
     await atRest(api);
     api.on(VOUCHERS, noAnswer);
 
@@ -205,7 +215,11 @@ describe("a request without an answer", () => {
     // It cannot be talked out of waiting.
     act(() => result.current.dismiss());
     expect(result.current.unanswered?.code).toBe("INTERNAL_ERROR");
-    act(() => result.current.send("coffee"));
+    // The request itself is over by now, so nothing but the reads holds the write back.
+    expect(client.isMutating()).toBe(0);
+    expect(sendsNothing(result.current)).toBe(true);
+    // Whatever would go out by itself has had its turn.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(api.calls(ISSUE)).toHaveLength(1);
 
     api.on(VOUCHERS, json(200, { items: [] }));
@@ -213,7 +227,11 @@ describe("a request without an answer", () => {
 
     await waitFor(() => expect(result.current.blocked).toBe(false));
     expect(result.current.rereadError).toBeNull();
-    act(() => result.current.send("coffee"));
+    let sent = false;
+    act(() => {
+      sent = result.current.send("coffee");
+    });
+    expect(sent).toBe(true);
     await waitFor(() => expect(api.calls(ISSUE)).toHaveLength(2));
   });
 });

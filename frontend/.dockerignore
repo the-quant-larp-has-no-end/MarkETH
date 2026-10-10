@@ -16,6 +16,10 @@ npm-debug.log*
 Dockerfile
 .dockerignore
 
+# The browser suite runs from a checkout against a running stack, never in the image
+e2e/
+playwright.config.ts
+
 # Test output
 test-results/
 playwright-report/

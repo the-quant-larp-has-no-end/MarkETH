@@ -10,9 +10,11 @@ from app.schemas.codes import CODE_INPUT_MAX_LENGTH
 from app.schemas.common import CreditAmount, PositiveCreditAmount, RequestModel, ResponseModel
 
 LABEL_MAX_LENGTH: Final[int] = 100
+"""The longest label of a batch. `GET /config` tells it as `code_label_max_length`."""
 
 MAX_CODES_PER_BATCH: Final[int] = 10_000
-"""Bounds one request and one response. The monthly issuance cap is the real limit."""
+"""Bounds one request and one response. The monthly issuance cap is the real limit.
+`GET /config` tells it as `code_batch_max_count`."""
 
 CodeInput = Annotated[str, Field(min_length=1, max_length=CODE_INPUT_MAX_LENGTH)]
 
@@ -50,9 +52,14 @@ class CodeBatchItem(ResponseModel):
     active_count: int
     redeemed_count: int
     revoked_count: int
+    can_revoke: bool
+    """Whether revoking the batch would revoke at least one code: it has a code that is
+    neither redeemed nor revoked."""
 
 
 class CreatedCode(ResponseModel):
+    """A code a user can still redeem, as its card shows it."""
+
     code: str
     """As printed on the card: `XXXX-XXXX-XXXX`."""
 
@@ -62,7 +69,18 @@ class CreatedCode(ResponseModel):
 
 
 class CodeBatchCreatedResponse(ResponseModel):
-    """The new batch and, this once, its plain codes. The server keeps only hashes."""
+    """The batch that was created, and its codes. Those nobody has redeemed can be
+    read again: `GET /admin/code-batches/{id}/codes`."""
+
+    batch: CodeBatchItem
+    codes: list[CreatedCode]
+
+
+class CodeBatchCodesResponse(ResponseModel):
+    """`GET /admin/code-batches/{id}/codes`: a batch and the codes of it that can still
+    be redeemed, in the order they were created. A code that was redeemed or revoked
+    is not among them, and a batch that has expired has none. Every answer is written
+    to the audit log with who asked."""
 
     batch: CodeBatchItem
     codes: list[CreatedCode]

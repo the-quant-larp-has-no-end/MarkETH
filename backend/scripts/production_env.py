@@ -3,31 +3,33 @@
     python3 -B -m scripts.production_env \\
         --example ../.example.env --production ../infra/deploy/env.production \\
         --own ~/marketh.env --output ../.env --postgres-volume marketh_postgres-data \\
-        [--admins a@ethz.ch,b@ethz.ch] [--baristas c@ethz.ch]
+        [--admins a@ethz.ch,b@ethz.ch]
 
 The result is `.example.env` with two layers on top:
 
 1. `infra/deploy/env.production`: what production sets differently. Committed, no secret.
-2. The machine's own file: the two Postgres passwords and who is admin and barista. It
-   lives beside the deployed tree, is readable by its owner only and is never copied
-   anywhere. This command creates it the first time and generates the passwords then.
+2. The machine's own file: the two Postgres passwords and the bootstrap admins. It lives
+   beside the deployed tree, is readable by its owner only and is never copied anywhere.
+   This command creates it the first time and generates the passwords then.
 
 Postgres takes its passwords when its volume is created. So a password is generated only
 while no such volume exists: with a database in place and the own file gone, this
 command stops instead of locking the stack out of its own data.
 
-`--admins` and `--baristas` set the role lists; left out, the own file keeps what it has.
-The first run needs `--admins`.
+`--admins` sets the bootstrap admins; left out, the own file keeps the ones it has. The
+first run needs `--admins`.
 
-The role lists decide who may resolve markets and redeem vouchers, so an environment is
-refused unless they are exactly what this machine was told:
+A bootstrap admin is an admin from their first request on, and nothing in the app takes
+that away. Every other admin and every barista is appointed by an admin in the admin
+panel; those roles are kept with the accounts, in the database, and are none of this
+command's business. So an environment is refused unless its bootstrap admins are exactly
+who this machine was told:
 
-* The own file holds all four of its keys. A key it lacks would keep the value of
-  `.example.env`, and the admin of a laptop would be an admin here. `BARISTA_EMAILS` may
-  be empty.
+* The own file holds all three of its keys. A key it lacks would keep the value of
+  `.example.env`, and the admin of a laptop would be an admin here.
 * Each entry is an id as the API reads one (`portal_id`).
-* No entry is a role entry of `.example.env`. Those ids are public, and what they stand
-  for on a laptop is somebody else's account behind the portal.
+* No entry is an admin of `.example.env`. That id is public, and what it stands for on a
+  laptop is somebody else's account behind the portal.
 
 Standard library only: `make deploy-env` runs it with the machine's bare `python3`. It
 prints no value of any variable. Exit status 2 and a message on stderr mean nothing was
@@ -46,28 +48,26 @@ from typing import Final
 
 PASSWORD_VARIABLES: Final[tuple[str, ...]] = ("POSTGRES_PASSWORD", "POSTGRES_APP_PASSWORD")
 ADMIN_VARIABLE: Final[str] = "ADMIN_EMAILS"
-BARISTA_VARIABLE: Final[str] = "BARISTA_EMAILS"
-ROLE_VARIABLES: Final[tuple[str, ...]] = (ADMIN_VARIABLE, BARISTA_VARIABLE)
-OWN_VARIABLES: Final[tuple[str, ...]] = (*PASSWORD_VARIABLES, *ROLE_VARIABLES)
-"""The own file holds exactly these, all of them, and `env.production` none of them."""
-NEVER_EMPTY_OWN_VARIABLES: Final[tuple[str, ...]] = (*PASSWORD_VARIABLES, ADMIN_VARIABLE)
-"""`BARISTA_EMAILS` may be empty: an admin can redeem vouchers too."""
+"""The bootstrap admins. It is the one role `.env` knows: every other is in the database."""
+OWN_VARIABLES: Final[tuple[str, ...]] = (*PASSWORD_VARIABLES, ADMIN_VARIABLE)
+"""The own file holds exactly these, all of them with a value, and `env.production` none
+of them."""
 ALLOWED_DOMAINS_VARIABLE: Final[str] = "ALLOWED_EMAIL_DOMAINS"
 
 PASSWORD_BYTES: Final[int] = 24
 OWNER_ONLY: Final[int] = 0o600
 
 OWN_FILE_HEADER: Final[str] = (
-    "# What only this machine knows about MarkETH: the two Postgres passwords and who is\n"
-    "# admin and barista. Written by backend/scripts/production_env.py, which also merges\n"
+    "# What only this machine knows about MarkETH: the two Postgres passwords and the\n"
+    "# bootstrap admins. Written by backend/scripts/production_env.py, which also merges\n"
     "# it into the stack's .env. Postgres took the passwords when its volume was created:\n"
     "# changing them here locks the stack out of its database.\n"
 )
 
 SINGLE_ADMIN_WARNING: Final[str] = (
-    f"Warning: {ADMIN_VARIABLE} has a single address. An admin who traded a market may not "
-    "resolve or void it, so a market that account trades can be settled by nobody. "
-    "Add a second admin with --admins."
+    f"Warning: {ADMIN_VARIABLE} names a single admin. An admin who traded a market may not "
+    "resolve or void it: until there is a second admin, appointed in the admin panel or "
+    "named with --admins, nobody can settle a market that account trades."
 )
 
 _ASSIGNMENT: Final[re.Pattern[str]] = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
@@ -102,7 +102,8 @@ def csv_entries(value: str) -> list[str]:
 
 
 def portal_id(entry: str, allowed_domains: Collection[str]) -> str | None:
-    """The id a role entry stands for, or None when the portal could never send it.
+    """The id an entry of the admin list stands for, or None when the portal could never
+    send it.
 
     The rule is the one the API reads an id with (`app.core.identity.portal_address`,
     which this script cannot import: it runs without the API's dependencies). An id is
@@ -123,8 +124,8 @@ def portal_id(entry: str, allowed_domains: Collection[str]) -> str | None:
     return f"{local}@{domain}"
 
 
-def role_list(value: str) -> str:
-    """A role list as the own file stores it: lower case, each entry once, no blanks.
+def admin_list(value: str) -> str:
+    """The bootstrap admins as the own file stores them: lower case, each once, no blanks.
 
     An entry with a character outside ASCII is kept as it was typed, for `render` to
     refuse: lower case would turn some of those characters into ASCII letters.
@@ -136,11 +137,10 @@ def role_list(value: str) -> str:
 def own_values(
     existing: str | None,
     admins: str | None,
-    baristas: str | None,
     *,
     database_exists: Callable[[], bool],
 ) -> str:
-    """The text of the own file: what `existing` holds, with the role lists given here.
+    """The text of the own file: what `existing` holds, with the admins given here.
 
     A password the file does not hold is generated, unless `database_exists()`: that
     database was created with a password this command cannot know.
@@ -148,7 +148,9 @@ def own_values(
     current = assignments(existing) if existing is not None else {}
     unknown = sorted(set(current) - set(OWN_VARIABLES))
     if unknown:
-        raise EnvError(f"The own file holds {', '.join(unknown)}; it may hold only its four keys.")
+        raise EnvError(
+            f"The own file holds {', '.join(unknown)}; it may hold only {', '.join(OWN_VARIABLES)}."
+        )
 
     values: dict[str, str] = {}
     for key in PASSWORD_VARIABLES:
@@ -162,16 +164,14 @@ def own_values(
                 )
             password = secrets.token_hex(PASSWORD_BYTES)
         values[key] = password
-    values[ADMIN_VARIABLE] = role_list(
+    values[ADMIN_VARIABLE] = admin_list(
         admins if admins is not None else current.get(ADMIN_VARIABLE, "")
-    )
-    values[BARISTA_VARIABLE] = role_list(
-        baristas if baristas is not None else current.get(BARISTA_VARIABLE, "")
     )
     if not values[ADMIN_VARIABLE]:
         raise EnvError(
             f"{ADMIN_VARIABLE} is empty. Name at least one admin, by the id the portal sends "
-            "for that person: --admins <eth-username>@ethz.ch[,<eth-username>@ethz.ch]"
+            "for that person: --admins <eth-username>@ethz.ch[,<eth-username>@ethz.ch]. "
+            "Without one nobody can appoint anybody in the admin panel."
         )
     return OWN_FILE_HEADER + "".join(f"{key}={values[key]}\n" for key in OWN_VARIABLES)
 
@@ -190,20 +190,22 @@ def render(example: str, production: str, own: str) -> str:
     misplaced = sorted(set(production_values) & set(OWN_VARIABLES))
     if misplaced:
         raise EnvError(
-            f"env.production sets {', '.join(misplaced)}; passwords and role lists belong to "
-            "the own file of the machine."
+            f"env.production sets {', '.join(misplaced)}; passwords and the bootstrap admins "
+            "belong to the own file of the machine."
         )
     extra = sorted(set(own_file_values) - set(OWN_VARIABLES))
     if extra:
-        raise EnvError(f"The own file sets {', '.join(extra)}; it may hold only its four keys.")
+        raise EnvError(
+            f"The own file sets {', '.join(extra)}; it may hold only {', '.join(OWN_VARIABLES)}."
+        )
     missing = [key for key in OWN_VARIABLES if key not in own_file_values]
     if missing:
         raise EnvError(
-            f"The own file has no {', '.join(missing)}. It has to hold all four of its keys "
-            f"({BARISTA_VARIABLE} may be empty): one it lacks would keep the development "
-            "value of .example.env."
+            f"The own file has no {', '.join(missing)}. It has to hold all of "
+            f"{', '.join(OWN_VARIABLES)}: one it lacks would keep the development value of "
+            ".example.env."
         )
-    for key in NEVER_EMPTY_OWN_VARIABLES:
+    for key in OWN_VARIABLES:
         if not own_file_values[key]:
             raise EnvError(f"{key} is empty in the own file.")
     for key in PASSWORD_VARIABLES:
@@ -216,23 +218,20 @@ def render(example: str, production: str, own: str) -> str:
     allowed_domains = sorted(
         {domain.lower() for domain in csv_entries(rendered[ALLOWED_DOMAINS_VARIABLE])}
     )
-    development_ids = {
-        entry.lower() for key in ROLE_VARIABLES for entry in csv_entries(example_values[key])
-    }
-    for key in ROLE_VARIABLES:
-        for entry in csv_entries(rendered[key]):
-            address = portal_id(entry, allowed_domains)
-            if address is None:
-                raise EnvError(
-                    f"{key}: {entry!r} is not an id the portal can send: lower-case letters, "
-                    "digits, '.', '_' and '-', 64 at most and the first a letter or a digit, "
-                    f"then @{' or @'.join(allowed_domains)}. The API does not start with it."
-                )
-            if address in development_ids:
-                raise EnvError(
-                    f"{key}: {entry!r} is a development id of .example.env. Name the person "
-                    "by the id the portal sends for them."
-                )
+    development_admins = {entry.lower() for entry in csv_entries(example_values[ADMIN_VARIABLE])}
+    for entry in csv_entries(rendered[ADMIN_VARIABLE]):
+        address = portal_id(entry, allowed_domains)
+        if address is None:
+            raise EnvError(
+                f"{ADMIN_VARIABLE}: {entry!r} is not an id the portal can send: lower-case "
+                "letters, digits, '.', '_' and '-', 64 at most and the first a letter or a "
+                f"digit, then @{' or @'.join(allowed_domains)}. The API does not start with it."
+            )
+        if address in development_admins:
+            raise EnvError(
+                f"{ADMIN_VARIABLE}: {entry!r} is an admin of .example.env, a development id. "
+                "Name the person by the id the portal sends for them."
+            )
 
     lines: list[str] = []
     for line in example.splitlines():
@@ -301,8 +300,7 @@ def arguments(argv: Sequence[str] | None) -> argparse.Namespace:
         required=True,
         help="Docker volume of the database; while it exists no password is generated",
     )
-    parser.add_argument("--admins", help="comma-separated ids of the admins")
-    parser.add_argument("--baristas", help="comma-separated ids of the baristas; may be empty")
+    parser.add_argument("--admins", help="comma-separated ids of the bootstrap admins")
     return parser.parse_args(argv)
 
 
@@ -317,7 +315,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         own = own_values(
             existing,
             options.admins,
-            options.baristas,
             database_exists=lambda: docker_volume_exists(options.postgres_volume),
         )
         rendered = render(example, production, own)
@@ -335,8 +332,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     rendered_values = assignments(rendered)
     print(
         f"Wrote {output_path}: {len(rendered_values)} variables, "
-        f"{len(csv_entries(rendered_values[ADMIN_VARIABLE]))} admin and "
-        f"{len(csv_entries(rendered_values[BARISTA_VARIABLE]))} barista addresses."
+        f"{len(csv_entries(rendered_values[ADMIN_VARIABLE]))} bootstrap admins."
     )
     for warning in warnings(rendered):
         print(warning, file=sys.stderr)

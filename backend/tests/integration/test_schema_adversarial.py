@@ -21,7 +21,14 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError, ProgrammingError, StatementError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from app.core.enums import AccountKind, DegreeLevel, JournalKind, OutboxTopic, UserStatus
+from app.core.enums import (
+    AccountKind,
+    DegreeLevel,
+    JournalKind,
+    OutboxTopic,
+    UserRole,
+    UserStatus,
+)
 from app.db.database import Database
 from app.models import Account, JournalEntry, Posting, User, Voucher
 from app.repositories.unit_of_work import UnitOfWork
@@ -64,7 +71,9 @@ def _user(name: str) -> User:
         username=name,
         degree_level=DegreeLevel.BACHELOR,
         degree_programme="BSc Computer Science",
+        role=UserRole.USER,
         status=UserStatus.ACTIVE,
+        policy_accepted_at=NOW,
         created_at=NOW,
     )
 
@@ -328,9 +337,11 @@ async def test_a_large_entry_commits_in_one_pass(
         await connection.execute(
             text(
                 "INSERT INTO users (id, email, name, username, degree_level,"
-                "                   degree_programme, status, created_at)"
+                "                   degree_programme, role, status, policy_accepted_at,"
+                "                   created_at)"
                 " SELECT gen_random_uuid(), 'holder' || n || '@ethz.ch', 'Holder ' || n,"
-                "        'holder' || n, 'BACHELOR', 'BSc Computer Science', 'ACTIVE', :now"
+                "        'holder' || n, 'BACHELOR', 'BSc Computer Science', 'USER', 'ACTIVE',"
+                "        :now, :now"
                 " FROM generate_series(1, :holders) AS n"
             ),
             {"holders": LARGE_ENTRY_LEGS, "now": NOW},

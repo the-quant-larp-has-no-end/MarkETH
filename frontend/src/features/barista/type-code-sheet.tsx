@@ -14,7 +14,8 @@ import { codeCharacters } from "@/lib/format";
  * takes as many as a voucher code has (`voucher_code_length` of `/config`).
  *
  * The sheet only collects the code. What becomes of it is the scanner's to show: a typed
- * code ends in the same full-screen result as a scanned one.
+ * code ends in the same full-screen result as a scanned one. Like every sheet it has the
+ * close cross at its top right, which puts it away and sends nothing.
  */
 export function TypeCodeSheet({
   open,

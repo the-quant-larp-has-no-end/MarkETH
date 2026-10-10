@@ -2,10 +2,10 @@
 
 Every request here carries the two headers of the portal and nothing else. No test seam
 says who is calling: the real `authenticate_request` reads the headers, the real
-`IdentityService` finds the person, and the role is the one the application derives
-from the address. The market is a real one too: proposed, approved, traded and closed
-through the routes, so the admin who "traded the market" did so through the trading
-service.
+`IdentityService` finds the person, and the role is the one the application gives them:
+the one of their row, or ADMIN for a bootstrap admin. The market is a real one too:
+proposed, approved, traded and closed through the routes, so the admin who "traded the
+market" did so through the trading service.
 
 A refusal has to leave everything as it was. "Everything" is every row of every table,
 read before and after.
@@ -33,7 +33,7 @@ from app.services.market_lifecycle import SELF_DEALING_MESSAGE
 from tests.support.books import assert_books_balance
 from tests.support.clock import FrozenClock
 from tests.support.factories import Factory, PortalHeaders
-from tests.support.settings import TEST_ADMIN_EMAILS, TEST_BARISTA_EMAILS
+from tests.support.settings import TEST_ADMIN_EMAILS
 
 pytestmark = pytest.mark.integration
 
@@ -124,7 +124,7 @@ async def closed(
     traded = await factory.admin(0, balance_micro=WALLET)
     untouched = await factory.admin(1)
     assert (traded.email, untouched.email) == TEST_ADMIN_EMAILS
-    assert barista.email == TEST_BARISTA_EMAILS[0]
+    assert barista.role is UserRole.BARISTA
 
     close_at = clock.now() + WEEK
     proposed = await portal.post(
@@ -138,7 +138,7 @@ async def closed(
             "resolution_source": "The menu plan on ethz.ch",
             "close_at": close_at.isoformat(),
             "resolve_by": (close_at + WEEK).isoformat(),
-            "requested_tier": "DEFAULT",
+            "policy_accepted": True,
         },
     )
     assert proposed.status_code == 201, proposed.text
@@ -187,11 +187,13 @@ async def status_of(container: Container, market_id: UUID) -> MarketStatus:
 # --- Who the application takes the callers for ---------------------------------------------------
 
 
-async def test_the_roles_of_the_people_here_are_the_ones_their_addresses_have(
+async def test_the_roles_of_the_people_here_are_what_their_rows_and_addresses_make_them(
     closed: Closed, portal: Portal, container: Container
 ) -> None:
-    """Nothing in a table says admin or barista. `GET /me` under the real headers
-    answers with what the role lists of the settings make of each address."""
+    """The barista is one by the row. The two admins are the bootstrap admins of the
+    settings: their rows say USER, and `GET /me` under the real headers answers ADMIN
+    for their addresses."""
+    assert closed.traded.role is closed.untouched.role is UserRole.USER
     roles = {
         closed.proposer: UserRole.USER,
         closed.trader: UserRole.USER,
@@ -255,6 +257,40 @@ async def test_whoever_no_header_names_gets_401_and_nothing_is_written(
             "details": {},
         }
     assert await everything(container) == before
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_the_role_an_admin_gives_opens_the_settlement_and_taking_it_away_closes_it(
+    closed: Closed, portal: Portal, container: Container, factory: Factory
+) -> None:
+    """An admin by the row alone, made in the panel by another admin, through the
+    routes: without the role 403 and nothing written, with it the market page says
+    so and the resolution goes through under their name."""
+    bystander = await factory.user(username="bystander")
+    role_of_the_bystander = f"/admin/users/{bystander.id}/role"
+    before = await everything(container)
+
+    as_a_user = await portal.settle(bystander, closed.market_id, "resolve")
+    assert (as_a_user.status_code, await everything(container)) == (403, before)
+
+    given = await portal.post(closed.untouched, role_of_the_bystander, {"role": "ADMIN"})
+    assert (given.status_code, given.json()["role"]) == (200, "ADMIN"), given.text
+    assert (await portal.page(bystander, closed.market_id)).viewer.can_settle
+
+    taken = await portal.post(closed.untouched, role_of_the_bystander, {"role": "USER"})
+    assert (taken.status_code, taken.json()["role"]) == (200, "USER"), taken.text
+    without_it = await portal.settle(bystander, closed.market_id, "resolve")
+    assert without_it.status_code == 403, without_it.text
+    assert await settlement_of(container, closed.market_id) is None
+    assert not (await portal.page(bystander, closed.market_id)).viewer.can_settle
+
+    await portal.post(closed.untouched, role_of_the_bystander, {"role": "ADMIN"})
+    settled = await portal.settle(bystander, closed.market_id, "resolve")
+
+    assert settled.status_code == 200, settled.text
+    resolution = await settlement_of(container, closed.market_id)
+    assert resolution is not None
+    assert (resolution.outcome, resolution.resolved_by) == (ResolutionOutcome.YES, bystander.id)
     await assert_books_balance(container.uow_factory)
 
 

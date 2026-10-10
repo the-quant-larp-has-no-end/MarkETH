@@ -14,6 +14,7 @@ nothing here waits for the trading service.
 """
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -27,10 +28,12 @@ from hypothesis import HealthCheck, given
 from hypothesis import settings as hypothesis_settings
 from hypothesis import strategies as st
 from sqlalchemy import select
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from app.container import Container
 from app.core.config import Settings
 from app.core.enums import (
+    STORED_MARKET_STATUSES,
     AccountKind,
     JournalKind,
     MarketStatus,
@@ -59,6 +62,7 @@ from app.models import (
     AuditLogEntry,
     JournalEntry,
     Market,
+    Notice,
     OutboxEvent,
     Position,
     Posting,
@@ -84,23 +88,27 @@ from app.schemas.markets import MarketDetailResponse, TradeBlockReason
 from app.services import market_lifecycle
 from app.services.audit import AuditAction, AuditService, AuditTarget
 from app.services.ledger import LedgerRef, PostingLine, resolution_key, trade_key, void_key
+from app.services.live_quotes import LiveQuoteService
 from app.services.market_lifecycle import (
     ALLOWED_TRANSITIONS,
     BUDGET_LIMIT_MESSAGE,
     CLOSE_FIRST_MESSAGE,
     LOSS_BUDGET_LIMIT_MESSAGE,
     OPEN_MARKETS_LIMIT_MESSAGE,
+    PROPOSAL_EXPIRED_MESSAGE,
     SELF_DEALING_MESSAGE,
     MarketLifecycleService,
 )
-from app.services.market_view import EVEN_ODDS_MICRO
-from app.services.markets import PUBLIC_STATUSES, UNSTORABLE_TEXT_MESSAGE
+from app.services.market_view import EVEN_ODDS_MICRO, UNSETTLED_STATUSES
+from app.services.markets import PUBLIC_STATUSES, UNSTORABLE_TEXT_MESSAGE, MarketService
+from app.services.notices import NoticeService
 from app.services.outbox_events import quote_point_from_payload, quote_updated_payload
 from app.services.public_config import FIXED_TIERS
 from tests.support.books import assert_books_balance, count_rows, system_balance
 from tests.support.clock import FrozenClock
 from tests.support.factories import ActAs, Factory, PortalHeaders, identity_of
 from tests.support.settings import load_base_settings
+from tests.support.units_of_work import CountedUnitsOfWork
 
 pytestmark = pytest.mark.integration
 
@@ -144,6 +152,7 @@ WRITTEN: Final[tuple[type[Base], ...]] = (
     Posting,
     AuditLogEntry,
     OutboxEvent,
+    Notice,
 )
 """Every table a lifecycle action can write."""
 
@@ -414,9 +423,43 @@ def lifecycle_with(container: Container, **risk: int) -> MarketLifecycleService:
         container.ledger,
         container.audit,
         container.markets,
+        container.notices,
         container.market_cache,
         container.live_quotes,
     )
+
+
+def lifecycle_on(
+    container: Container, *, at_most: int | None = None
+) -> tuple[MarketLifecycleService, CountedUnitsOfWork]:
+    """A lifecycle service wired like the container's, on a unit-of-work factory that
+    counts. Every collaborator that could open a unit of work has the same factory, so
+    one opened by any of them is counted; with `at_most` the factory hands out that
+    many and then stands for a pool without a connection."""
+    units = CountedUnitsOfWork(container.uow_factory, at_most=at_most)
+    settings, clock, view = container.settings, container.clock, container.market_view
+    lifecycle = MarketLifecycleService(
+        units,
+        settings,
+        clock,
+        view,
+        container.ledger,
+        container.audit,
+        MarketService(units, settings, clock, view, container.market_cache),
+        NoticeService(units, clock),
+        container.market_cache,
+        LiveQuoteService(units, settings, clock, view, container.quote_bus),
+    )
+    return lifecycle, units
+
+
+async def market_for(container: Container, factory: Factory, action: Action) -> Market:
+    """A market `action` takes: a proposal for the two that decide on one, and for the
+    other five a market four people traded, so that its answer has figures in it."""
+    start = action.starts[0]
+    if start is MarketStatus.PROPOSED:
+        return await factory.market(status=start)
+    return (await traded(container, factory, start)).market
 
 
 def linger_after(monkeypatch: pytest.MonkeyPatch, repository: type, query: str) -> None:
@@ -753,7 +796,7 @@ def test_the_actions_of_these_tests_are_the_arrows_of_the_state_machine() -> Non
     }
 
 
-@pytest.mark.parametrize("status", list(MarketStatus))
+@pytest.mark.parametrize("status", STORED_MARKET_STATUSES, ids=str)
 @every_action
 async def test_an_action_takes_a_market_in_a_status_of_its_own_and_is_409_for_every_other(
     container: Container,
@@ -783,6 +826,185 @@ async def test_an_action_takes_a_market_in_a_status_of_its_own_and_is_409_for_ev
     assert await everything(container) == before
 
 
+# --- An expired proposal -----------------------------------------------------------------
+
+from_the_deadline_on = pytest.mark.parametrize(
+    "late_by", [timedelta(0), TICK, DAY, 400 * DAY], ids=["at", "a-tick", "a-day", "a-year"]
+)
+
+
+@from_the_deadline_on
+@pytest.mark.parametrize("action", [APPROVE, REJECT], ids=str)
+async def test_an_expired_proposal_can_be_neither_approved_nor_rejected(
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    lifecycle: MarketLifecycleService,
+    admin: AuthenticatedUser,
+    action: Action,
+    late_by: timedelta,
+) -> None:
+    """From the instant of `close_at` on: 409 with a sentence of its own, and nothing
+    is written. The row still says PROPOSED and is reported EXPIRED."""
+    proposal = await factory.market(status=MarketStatus.PROPOSED, close_in=timedelta(hours=1))
+    clock.set(proposal.close_at + late_by)
+    before = await everything(container)
+
+    with pytest.raises(ConflictError) as refused:
+        await action.by(lifecycle, admin, proposal.id)
+
+    assert (refused.value.status_code, refused.value.message) == (409, PROPOSAL_EXPIRED_MESSAGE)
+    assert refused.value.details == {}
+    assert PROPOSAL_EXPIRED_MESSAGE == "This proposal expired: its closing time has passed."
+    assert await everything(container) == before
+    assert (await market_row(container, proposal.id)).status is MarketStatus.PROPOSED
+    assert (await container.markets.detail(admin, proposal.id)).status is MarketStatus.EXPIRED
+
+
+@pytest.mark.parametrize("action", [APPROVE, REJECT], ids=str)
+async def test_a_proposal_is_decided_on_until_the_last_moment_before_its_deadline(
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    lifecycle: MarketLifecycleService,
+    admin: AuthenticatedUser,
+    action: Action,
+) -> None:
+    proposal = await factory.market(status=MarketStatus.PROPOSED, close_in=timedelta(hours=1))
+    clock.set(proposal.close_at - TICK)
+
+    answer = await action.by(lifecycle, admin, proposal.id)
+
+    assert answer.status is action.target
+    assert (await market_row(container, proposal.id)).status is action.target
+
+
+async def test_no_date_an_approval_carries_reopens_an_expired_proposal(
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    lifecycle: MarketLifecycleService,
+    admin: AuthenticatedUser,
+) -> None:
+    """The expiry is a fact about the proposal, judged before the request is looked
+    at: a new deadline in the request does not undo it, and neither does a request
+    that would be refused for other reasons be told those first."""
+    proposal = await factory.market(status=MarketStatus.PROPOSED, close_in=timedelta(hours=1))
+    clock.set(proposal.close_at)
+    before = await everything(container)
+    moved = ApproveMarketRequest(
+        tier=MarketTier.TIGHT, close_at=clock.now() + DAY, resolve_by=clock.now() + 2 * DAY
+    )
+    oversized = ApproveMarketRequest(
+        tier=MarketTier.CUSTOM, budget_cr=to_cr(MAX_MARKET_BUDGET + 1), close_at=clock.now() - DAY
+    )
+
+    for request in (moved, oversized):
+        with pytest.raises(ConflictError) as refused:
+            await lifecycle.approve(admin, proposal.id, request)
+        assert refused.value.message == PROPOSAL_EXPIRED_MESSAGE
+
+    assert await everything(container) == before
+
+
+@every_action
+async def test_no_action_takes_an_expired_proposal(
+    container: Container,
+    factory: Factory,
+    lifecycle: MarketLifecycleService,
+    admin: AuthenticatedUser,
+    action: Action,
+) -> None:
+    """The other five do not start from a proposal at all; the two that do are told
+    that it expired."""
+    expired = await factory.market(status=MarketStatus.PROPOSED, close_in=-DAY)
+    before = await everything(container)
+
+    with pytest.raises(ConflictError) as refused:
+        await action.by(lifecycle, admin, expired.id)
+
+    told_why = refused.value.message == PROPOSAL_EXPIRED_MESSAGE
+    assert told_why == (action in (APPROVE, REJECT))
+    assert await everything(container) == before
+
+
+async def test_a_rejected_proposal_stays_rejected_past_its_deadline(
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    lifecycle: MarketLifecycleService,
+    admin: AuthenticatedUser,
+) -> None:
+    """Only a proposal nobody decided on expires. One that was turned down in time
+    keeps saying so, with its reason."""
+    proposal = await factory.market(status=MarketStatus.PROPOSED, close_in=timedelta(hours=1))
+    await REJECT.by(lifecycle, admin, proposal.id)
+
+    clock.set(proposal.close_at + DAY)
+
+    detail = await container.markets.detail(admin, proposal.id)
+    assert (detail.status, detail.rejection_reason) == (
+        MarketStatus.REJECTED,
+        "It names a private person.",
+    )
+    for action in (APPROVE, REJECT):
+        with pytest.raises(ConflictError) as refused:
+            await action.by(lifecycle, admin, proposal.id)
+        assert refused.value.message != PROPOSAL_EXPIRED_MESSAGE
+
+
+async def test_a_rejection_that_waited_for_the_market_row_is_judged_when_it_got_it(
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    lifecycle: MarketLifecycleService,
+    admin: AuthenticatedUser,
+) -> None:
+    """The clock is read after the lock, as for every other action (A.4): a rejection
+    that arrives in time and gets the row after the deadline finds the proposal
+    expired."""
+    proposal = await factory.market(status=MarketStatus.PROPOSED, close_in=timedelta(hours=1))
+
+    async with container.uow_factory() as holder:
+        await holder.markets.get_for_update(proposal.id)
+        rejecting = asyncio.create_task(REJECT.by(lifecycle, admin, proposal.id))
+        await asyncio.sleep(BLOCKED_FOR_SECONDS)
+        assert not rejecting.done()
+        clock.advance(timedelta(hours=2))
+
+    with pytest.raises(ConflictError) as refused:
+        await asyncio.wait_for(rejecting, RECEIVE_TIMEOUT_SECONDS)
+
+    assert refused.value.message == PROPOSAL_EXPIRED_MESSAGE
+    row = await market_row(container, proposal.id)
+    assert (row.status, row.rejection_reason) == (MarketStatus.PROPOSED, None)
+
+
+@pytest.mark.parametrize("action", [APPROVE, REJECT], ids=str)
+async def test_the_routes_answer_409_with_the_sentence_for_an_expired_proposal(
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    action: Action,
+) -> None:
+    as_user(await factory.admin())
+    proposal = await factory.market(status=MarketStatus.PROPOSED, close_in=timedelta(hours=1))
+    clock.set(proposal.close_at)
+
+    response = await client.post(action.path(proposal.id), json=action.body)
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "code": "CONFLICT",
+        "message": "This proposal expired: its closing time has passed.",
+        "details": {},
+    }
+    assert await count_rows(container.uow_factory, AuditLogEntry) == 0
+    assert await count_rows(container.uow_factory, Notice) == 0
+
+
 # --- Approval: tiers and budgets ---------------------------------------------------------
 
 
@@ -796,19 +1018,15 @@ async def test_approving_a_fixed_tier_opens_the_market_with_the_b_of_the_tier_an
     tier: MarketTier,
 ) -> None:
     """A.5: the tier fixes b, and the budget is ceil(b · ln 2). The admin picks the
-    tier; what the proposer asked for stays on record."""
-    proposal = await factory.market(status=MarketStatus.PROPOSED, tier=MarketTier.MEDIUM)
+    tier: a proposal names none."""
+    proposal = await factory.market(status=MarketStatus.PROPOSED)
     opened_at = clock.advance(timedelta(hours=3))
 
     answer = await lifecycle.approve(admin, proposal.id, ApproveMarketRequest(tier=tier))
 
     row = await market_row(container, proposal.id)
     b_micro = container.settings.pricing.tier_b_micro(tier)
-    assert (row.status, row.tier, row.requested_tier) == (
-        MarketStatus.OPEN,
-        tier,
-        MarketTier.MEDIUM,
-    )
+    assert (row.status, row.tier) == (MarketStatus.OPEN, tier)
     assert (row.b_micro, row.budget_micro) == (
         b_micro,
         lmsr.max_loss_micro(b_micro, precision=PRECISION),
@@ -1142,26 +1360,27 @@ async def test_an_edit_that_changes_nothing_is_not_audited_as_a_change(
     assert (await market_row(container, proposal.id)).close_at == proposal.close_at
 
 
-async def test_a_proposal_whose_deadline_passed_while_it_waited_is_422_until_the_date_is_moved(
+async def test_the_dates_of_a_proposal_are_held_against_the_instant_of_its_approval(
     container: Container,
     factory: Factory,
     clock: FrozenClock,
     lifecycle: MarketLifecycleService,
     admin: AuthenticatedUser,
 ) -> None:
-    """The dates are judged when the market opens, not when it was proposed."""
-    proposal = await factory.market(status=MarketStatus.PROPOSED, close_in=timedelta(hours=1))
-    clock.set(proposal.close_at)
+    """Not against the day it was proposed. A proposal that closes a day further ahead
+    than a market may stay open is 422 on the date today, and opens tomorrow as it is."""
+    proposal = await factory.market(status=MarketStatus.PROPOSED, close_in=LIFETIME + DAY)
+    as_proposed = ApproveMarketRequest(tier=MarketTier.TIGHT)
     before = await everything(container)
 
     with pytest.raises(ValidationFailedError) as refused:
-        await lifecycle.approve(admin, proposal.id, ApproveMarketRequest(tier=MarketTier.TIGHT))
+        await lifecycle.approve(admin, proposal.id, as_proposed)
 
     assert refused.value.status_code == 422
     assert refused.value.details == {"field": "close_at"}
     assert await everything(container) == before
-    moved = ApproveMarketRequest(tier=MarketTier.TIGHT, close_at=clock.now() + DAY)
-    assert (await lifecycle.approve(admin, proposal.id, moved)).status is MarketStatus.OPEN
+    clock.advance(DAY)
+    assert (await lifecycle.approve(admin, proposal.id, as_proposed)).status is MarketStatus.OPEN
 
 
 @pytest.mark.parametrize(
@@ -1435,7 +1654,8 @@ async def test_an_approval_waits_for_the_one_before_it_and_is_judged_and_dated_a
 ) -> None:
     """Approvals check the caps one at a time (A.5), so one may have to wait. It opens
     its market at the moment it gets its turn: that is `opened_at`, the start of the
-    chart and the instant its dates are held against."""
+    chart and the instant its deadline is held against. A proposal whose `close_at`
+    passed while its approval waited has expired by then."""
     in_time = await factory.market(status=MarketStatus.PROPOSED)
     too_late = await factory.market(status=MarketStatus.PROPOSED, close_in=timedelta(hours=1))
 
@@ -1449,10 +1669,10 @@ async def test_an_approval_waits_for_the_one_before_it_and_is_judged_and_dated_a
         turn_at = clock.advance(timedelta(hours=2))
 
     opened = await asyncio.wait_for(opening, RECEIVE_TIMEOUT_SECONDS)
-    with pytest.raises(ValidationFailedError) as refused:
+    with pytest.raises(ConflictError) as refused:
         await asyncio.wait_for(expiring, RECEIVE_TIMEOUT_SECONDS)
 
-    assert refused.value.details == {"field": "close_at"}
+    assert refused.value.message == PROPOSAL_EXPIRED_MESSAGE
     assert opened.opened_at == turn_at
     async with container.uow_factory() as uow:
         (queued,) = (await uow.session.scalars(select(OutboxEvent))).all()
@@ -2501,6 +2721,219 @@ async def test_a_text_postgres_cannot_store_is_422_naming_the_field_before_anyth
     assert await everything(container) == before
 
 
+# --- The answer of an action -------------------------------------------------------------
+
+
+@every_action
+async def test_the_answer_of_an_action_is_the_detail_the_market_gives_right_afterwards(
+    container: Container,
+    factory: Factory,
+    lifecycle: MarketLifecycleService,
+    admin: AuthenticatedUser,
+    action: Action,
+) -> None:
+    """The answer is built inside the transaction that makes the change (A.5), and it is
+    what a reader gets from the committed rows a moment later: field for field, and
+    character for character as it travels."""
+    market = await market_for(container, factory, action)
+
+    answer = await action.by(lifecycle, admin, market.id)
+
+    afterwards = await container.markets.detail(admin, market.id)
+    assert answer == afterwards
+    assert answer.model_dump_json() == afterwards.model_dump_json()
+    assert answer.status is action.target
+    assert (answer.proposer_email, answer.viewer.can_settle) == (afterwards.proposer_email, True)
+    assert (answer.void_cost_cr is None) == (action.target not in UNSETTLED_STATUSES)
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_an_approval_answers_the_dates_it_edited_as_every_later_reader_gets_them(
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+) -> None:
+    """The approval dialog sends its two times at an offset. The answer is built before
+    the commit, from the rows of the transaction, so it spells them as the database
+    keeps them and as the market's own page reads them afterwards: in UTC."""
+    as_user(await factory.admin())
+    proposal = await factory.market(status=MarketStatus.PROPOSED)
+    kolkata = timezone(timedelta(hours=5, minutes=30))
+    body = APPROVE.body | {
+        "close_at": (clock.now() + 3 * DAY).astimezone(kolkata).isoformat(),
+        "resolve_by": (clock.now() + 5 * DAY).astimezone(kolkata).isoformat(),
+        "question": "Will the Polymensa serve Älplermagronen next Friday?",
+    }
+    assert body["close_at"] == "2026-10-12T17:30:00+05:30"
+
+    response = await client.post(APPROVE.path(proposal.id), json=body)
+    read = await client.get(f"/api/markets/{proposal.id}")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == read.json()
+    assert (response.json()["close_at"], response.json()["resolve_by"]) == (
+        "2026-10-12T12:00:00Z",
+        "2026-10-14T12:00:00Z",
+    )
+    assert response.json()["question"] == body["question"]
+    assert (await market_row(container, proposal.id)).close_at == clock.now() + 3 * DAY
+
+
+@every_action
+async def test_an_action_opens_exactly_one_unit_of_work(
+    container: Container, factory: Factory, admin: AuthenticatedUser, action: Action
+) -> None:
+    """Its change and its answer are one transaction. The detail it returns is read
+    before the commit, and neither the notice of an approval nor what follows the
+    commit opens a unit of work of its own."""
+    market = await market_for(container, factory, action)
+    counted, units = lifecycle_on(container)
+
+    answer = await action.by(counted, admin, market.id)
+
+    assert units.opened == 1
+    assert answer.status is action.target
+    assert (await market_row(container, market.id)).status is action.target
+    await assert_books_balance(container.uow_factory)
+
+
+@every_action
+async def test_an_action_that_took_effect_is_answered_even_with_no_connection_left_afterwards(
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+    container: Container,
+    factory: Factory,
+    monkeypatch: pytest.MonkeyPatch,
+    action: Action,
+) -> None:
+    """The pool gives the request its one connection and has none after that. A read
+    after the commit would be answered 503 for a change that stands, and the admin
+    who sent a resolution again would get 409 for a market that paid out the first
+    time. No such read exists: the request is answered 200."""
+    acting_admin = await factory.admin()
+    market = await market_for(container, factory, action)
+    counted, units = lifecycle_on(container, at_most=1)
+    monkeypatch.setattr(container, "market_lifecycle", counted)
+    as_user(acting_admin)
+
+    response = await client.post(action.path(market.id), json=action.body)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == action.target
+    assert (units.opened, units.refused) == (1, 0)
+    assert (await market_row(container, market.id)).status is action.target
+    (audited,) = [row for row in await audit_rows(container) if row.action == action.audit]
+    assert audited.actor_id == acting_admin.id
+    # The stand-in is dry: whoever asks it for a unit of work now gets none.
+    with pytest.raises(PoolTimeoutError):
+        units()
+    await assert_books_balance(container.uow_factory)
+
+
+async def after_the_commit_fails(*args: object, **kwargs: object) -> None:
+    raise RuntimeError("this step after the commit failed")
+
+
+def logged_by_the_lifecycle(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """The errors the lifecycle service itself logged, whatever else was logged."""
+    return [
+        record
+        for record in caplog.records
+        if record.name == market_lifecycle.__name__ and record.levelno >= logging.ERROR
+    ]
+
+
+@pytest.mark.parametrize("action", PUBLISHED, ids=str)
+async def test_an_action_whose_cached_lists_cannot_be_dropped_answers_and_still_tells_open_phones(
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+    container: Container,
+    factory: Factory,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    action: Action,
+) -> None:
+    """The change stands and its answer is built: what goes wrong after the commit is
+    logged, the request is answered 200, and the next step still runs."""
+    as_user(await factory.admin())
+    market = await factory.market(status=action.starts[0])
+    monkeypatch.setattr(container.market_cache, "invalidate_lists", after_the_commit_fails)
+
+    with caplog.at_level(logging.ERROR, logger=market_lifecycle.__name__):
+        async with watching(container, market.id) as queue:
+            response = await client.post(action.path(market.id), json=action.body)
+            published = await next_message(queue)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == action.target
+    row = await market_row(container, market.id)
+    assert row.status is action.target
+    assert published == status_event(container, row)
+    (logged,) = logged_by_the_lifecycle(caplog)
+    assert str(market.id) in logged.getMessage()
+    assert logged.exc_info is not None
+    assert isinstance(logged.exc_info[1], RuntimeError)
+
+
+@pytest.mark.parametrize("action", PUBLISHED, ids=str)
+async def test_an_action_whose_status_event_cannot_be_published_answers_and_still_drops_the_lists(
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+    container: Container,
+    factory: Factory,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    action: Action,
+) -> None:
+    acting_admin = await factory.admin()
+    as_user(acting_admin)
+    await factory.market()
+    market = await factory.market(status=action.starts[0])
+    await container.markets.list_markets(factory.identity(acting_admin), None)
+    assert await container.market_cache.get(PUBLIC_LIST) is not None
+    monkeypatch.setattr(container.live_quotes, "publish_status", after_the_commit_fails)
+
+    with caplog.at_level(logging.ERROR, logger=market_lifecycle.__name__):
+        response = await client.post(action.path(market.id), json=action.body)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == action.target
+    assert (await market_row(container, market.id)).status is action.target
+    assert await container.market_cache.get(PUBLIC_LIST) is None
+    (logged,) = logged_by_the_lifecycle(caplog)
+    assert str(market.id) in logged.getMessage()
+
+
+@every_action
+async def test_an_action_is_answered_when_redis_fails_in_a_way_no_adapter_expects(
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+    container: Container,
+    factory: Factory,
+    monkeypatch: pytest.MonkeyPatch,
+    action: Action,
+) -> None:
+    """The adapters turn an unreachable Redis into a miss and a dropped event. An error
+    of any other kind from underneath them still fails no action that has committed."""
+    acting_admin = await factory.admin()
+    as_user(acting_admin)
+    market = await market_for(container, factory, action)
+    for command in ("delete", "publish"):
+        monkeypatch.setattr(container.redis, command, after_the_commit_fails)
+
+    response = await client.post(action.path(market.id), json=action.body)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == action.target
+    assert (await market_row(container, market.id)).status is action.target
+    assert MarketDetailResponse.model_validate(response.json()) == (
+        await container.markets.detail(factory.identity(acting_admin), market.id)
+    )
+    await assert_books_balance(container.uow_factory)
+
+
 # --- Through the routes ------------------------------------------------------------------
 
 
@@ -2517,11 +2950,13 @@ async def test_each_action_has_its_route_which_answers_the_market_as_it_is_after
     as_user(acting_admin)
 
     response = await client.post(action.path(market.id), json=action.body)
+    read = await client.get(f"/api/markets/{market.id}")
 
     assert response.status_code == 200, response.text
     assert MarketDetailResponse.model_validate(response.json()) == (
         await container.markets.detail(factory.identity(acting_admin), market.id)
     )
+    assert response.json() == read.json(), "the answer is the market's own page"
     assert response.json()["status"] == action.target
     assert response.json()["proposer_email"] is not None
     (audited,) = await audit_rows(container)

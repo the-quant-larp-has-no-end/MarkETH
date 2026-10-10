@@ -3,13 +3,19 @@
 Each action answers with the market's `MarketDetailResponse` as it is afterwards.
 """
 
-from typing import Self
+from typing import Final, Self
 
 from pydantic import AwareDatetime, model_validator
 
 from app.core.enums import MarketTier, Outcome
-from app.schemas.common import PositiveCreditAmount, RequestModel
+from app.schemas.common import PositiveCreditAmount, RequestModel, on_field
 from app.schemas.markets import LongText, QuestionText, ShortText
+
+BUDGET_NEEDED_MESSAGE: Final[str] = "Enter the budget of a custom market."
+"""What an approval says on `budget_cr` when the tier is CUSTOM and it names none."""
+
+BUDGET_NOT_TAKEN_MESSAGE: Final[str] = "Leave the budget out unless the tier is custom."
+"""What an approval says on `budget_cr` when a fixed tier comes with one."""
 
 
 class ApproveMarketRequest(RequestModel):
@@ -34,9 +40,9 @@ class ApproveMarketRequest(RequestModel):
     @model_validator(mode="after")
     def _budget_only_for_custom(self) -> Self:
         if self.tier is MarketTier.CUSTOM and self.budget_cr is None:
-            raise ValueError("a CUSTOM market needs budget_cr")
+            raise on_field("budget_cr", "value_error", BUDGET_NEEDED_MESSAGE)
         if self.tier is not MarketTier.CUSTOM and self.budget_cr is not None:
-            raise ValueError("budget_cr applies to the CUSTOM tier only; a fixed tier sets its own")
+            raise on_field("budget_cr", "value_error", BUDGET_NOT_TAKEN_MESSAGE)
         return self
 
 

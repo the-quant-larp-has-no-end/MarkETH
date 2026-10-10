@@ -3,7 +3,6 @@ import { describe, expect, test } from "vitest";
 import {
   formatDate,
   formatDateTime,
-  formatDay,
   formatDeadline,
   formatTime,
   fromDateTimeInput,
@@ -60,22 +59,6 @@ describe("an instant is shown in the timezone of /config", () => {
       "15 Dec 2026",
     ]);
     expect(formatDateTime("2026-09-30T10:30:00Z", ZURICH)).toBe("30 Sep 2026, 12:30");
-  });
-});
-
-describe("a day is shown as sent, without conversion", () => {
-  test("1 Nov 2026", () => {
-    expect(formatDay("2026-11-01")).toBe("1 Nov 2026");
-    expect(formatDay("2027-01-31")).toBe("31 Jan 2027");
-  });
-
-  test("September is Sep here too", () => {
-    expect(formatDay("2026-09-01")).toBe("1 Sep 2026");
-  });
-
-  test("anything else is shown as it came", () => {
-    expect(formatDay("next month")).toBe("next month");
-    expect(formatDay("2026-13-01")).toBe("2026-13-01");
   });
 });
 

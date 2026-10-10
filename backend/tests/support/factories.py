@@ -9,20 +9,22 @@ rules `tests/support/books.py` holds a database against.
     user = await factory.user(balance_micro=5 * MICRO)
     market = await factory.market()                       # OPEN, default tier
     await factory.position(user, market, Outcome.YES, shares_micro=MICRO)
-    admin = await factory.admin()                         # an address of ADMIN_EMAILS
+    admin = await factory.admin()                         # a bootstrap admin
+    barista = await factory.barista()                     # a row with the role BARISTA
     as_user(user)                                         # a plain user
     as_user(admin)                                        # an admin: the address says so
+    as_user(barista)                                      # a barista: the row says so
     as_user(user, UserRole.ADMIN)                         # a guard test names the role
     client.get("/api/me", headers=portal_headers(admin))  # through the real headers
 
-Who has which role is derived the way the application derives it: from the address and
-the role lists of the test settings (tests/support/settings.py). `factory.identity`,
-`as_user` and the real seam therefore agree about every user the factory makes.
+Who has which role is worked out the way the application does it: the role of the row,
+unless the address is a bootstrap admin of the test settings (tests/support/settings.py).
+`factory.identity`, `as_user` and the real seam therefore agree about every user the
+factory makes.
 
 Rows come back detached and readable. Time is the container's clock.
 """
 
-from collections.abc import Sequence
 from datetime import timedelta
 from typing import Final, Protocol
 from urllib.parse import quote
@@ -68,9 +70,10 @@ type Named = User | AuthenticatedUser | PortalIdentity
 
 
 class ActAs(Protocol):
-    """The `as_user` fixture. A `User` row acts with the role its address has in the
-    test settings, or with `role` when a test names one. The other actors say for
-    themselves what they are, so giving one of them a role is refused."""
+    """The `as_user` fixture. A `User` row acts with the role the application gives it
+    (the row's own, or ADMIN for a bootstrap admin), or with `role` when a test names
+    one. The other actors say for themselves what they are, so giving one of them a
+    role is refused."""
 
     def __call__(self, who: Actor, role: UserRole | None = None) -> None: ...
 
@@ -82,16 +85,16 @@ class PortalHeaders(Protocol):
     def __call__(self, who: Named) -> dict[str, str]: ...
 
 
-def identity_of(user: User, role: UserRole = UserRole.USER) -> AuthenticatedUser:
-    """The registered caller a request of `user` resolves to when `.env` gives that
-    person `role`. A role is in no column, so the test says which one it means: this
-    is for a test of a guard, which asks what a role may do whoever holds it. What role
-    a user of the factory really has is `Factory.identity`."""
+def identity_of(user: User, role: UserRole) -> AuthenticatedUser:
+    """`user` as a registered caller who has `role`, whatever the row and the settings
+    say. This is for a test of a guard, which asks what a role may do whoever holds
+    it. The role a user of the factory has in effect is `Factory.identity`."""
     return AuthenticatedUser(
         id=user.id,
         email=user.email,
         name=user.name,
         username=user.username,
+        degree_programme=user.degree_programme,
         role=role,
         status=user.status,
     )
@@ -101,12 +104,13 @@ def caller_of(who: Actor, role: UserRole | None, roles: EmailPolicy) -> Caller |
     """What `authenticate_request` returns for `who`: None for nobody, a `Caller`
     without a user for a bare `PortalIdentity`, a registered caller otherwise.
 
-    A `User` row gets `role`, and without one the role `roles` derives from its
-    address, as the application would. Every other actor carries its own role, and a
-    second one beside it would silently lose, so it is refused.
+    A `User` row gets `role`, and without one the role it has in effect
+    (`EmailPolicy.effective_role`), as the application would give it. Every other
+    actor carries its own role, and a second one beside it would silently lose, so it
+    is refused.
     """
     if isinstance(who, User):
-        user = identity_of(who, role or roles.role_for(who.email))
+        user = identity_of(who, role or roles.effective_role(who.email, who.role))
     elif role is not None:
         raise ValueError("only a `User` row takes a role; this actor carries its own")
     elif who is None:
@@ -147,16 +151,19 @@ class Factory:
         name: str | None = None,
         degree_level: DegreeLevel = DEFAULT_DEGREE_LEVEL,
         degree_programme: str = DEFAULT_DEGREE_PROGRAMME,
+        role: UserRole = UserRole.USER,
         status: UserStatus = UserStatus.ACTIVE,
     ) -> User:
-        """A user with a profile and their ledger account, created now.
+        """A user with a profile and their ledger account, created now, who accepted
+        the usage policy at that instant.
 
         The user counts as having received the signup grant: the `grants` row
         exists, and a positive `balance_micro` is booked as that grant from
         `vis:issuance`. Left out, the n-th user of a test is `user{n}@…` at the first
         of `ALLOWED_EMAIL_DOMAINS`, with the username `user{n}` and the name
         `User {n}`. `email` is stored as given: pass an id as `EmailPolicy.identify`
-        returns it, in lower case.
+        returns it, in lower case. `role` is what the row says, as if an admin had
+        set it.
         """
         self._users_made += 1
         number = self._users_made
@@ -170,7 +177,9 @@ class Factory:
                     username=username or f"user{number}",
                     degree_level=degree_level,
                     degree_programme=degree_programme,
+                    role=role,
                     status=status,
+                    policy_accepted_at=now,
                     created_at=now,
                 )
             )
@@ -195,45 +204,49 @@ class Factory:
         return user
 
     async def admin(self, index: int = 0, *, balance_micro: int = 0) -> User:
-        """A registered user whose address is the `index`-th of `ADMIN_EMAILS`.
+        """A registered bootstrap admin: the user whose address is the `index`-th of
+        `ADMIN_EMAILS`.
 
         The test settings name two, so `admin()` and `admin(1)` are two admins: the
-        second can settle a market the first traded (A.4). Nothing on the row says
-        admin; the address does, to `identity`, to `as_user` and to the application.
-        One per index and test: the address is unique.
+        second can settle a market the first traded (A.4) and act on the account of
+        the first. The row says USER, as the profile service writes it; the address
+        makes the admin, to `identity`, to `as_user` and to the application. One per
+        index and test: the address is unique. An admin by the row alone is
+        `user(role=UserRole.ADMIN)`.
         """
-        return await self._role_holder(
-            "admin", self._settings.identity.admin_emails, index, balance_micro
-        )
-
-    async def barista(self, index: int = 0, *, balance_micro: int = 0) -> User:
-        """A registered user whose address is the `index`-th of `BARISTA_EMAILS`. The
-        test settings name one."""
-        return await self._role_holder(
-            "barista", self._settings.identity.barista_emails, index, balance_micro
-        )
-
-    async def _role_holder(
-        self, title: str, addresses: Sequence[str], index: int, balance_micro: int
-    ) -> User:
+        addresses = self._settings.identity.admin_emails
         if not 0 <= index < len(addresses):
             raise ValueError(
-                f"the test settings name {len(addresses)} {title} address(es); "
+                f"the test settings name {len(addresses)} admin address(es); "
                 f"there is none with index {index}"
             )
         return await self.user(
             balance_micro=balance_micro,
             # A list entry may be written with capitals; the row holds the id.
             email=self._roles.identify(addresses[index]),
-            username=f"{title}{index}",
-            name=f"{title.capitalize()} {index}",
+            username=f"admin{index}",
+            name=f"Admin {index}",
+        )
+
+    async def barista(self, index: int = 0, *, balance_micro: int = 0) -> User:
+        """A registered user whose row has the role BARISTA: `barista{index}@…`, with
+        the username `barista{index}`. One per index and test."""
+        if index < 0:
+            raise ValueError(f"there is no barista with index {index}")
+        domain = self._settings.identity.allowed_email_domains[0]
+        return await self.user(
+            balance_micro=balance_micro,
+            email=f"barista{index}@{domain}",
+            username=f"barista{index}",
+            name=f"Barista {index}",
+            role=UserRole.BARISTA,
         )
 
     def identity(self, user: User) -> AuthenticatedUser:
         """The registered caller a request of `user` resolves to: the row, with the role
-        the application derives from its address (`EmailPolicy.role_for`). For calling
-        a service directly as that user."""
-        return identity_of(user, self._roles.role_for(user.email))
+        it has in effect (`EmailPolicy.effective_role`). For calling a service directly
+        as that user."""
+        return identity_of(user, self._roles.effective_role(user.email, user.role))
 
     async def market(
         self,
@@ -271,7 +284,6 @@ class Factory:
             resolution_criteria="The menu published for that Friday decides.",
             resolution_source="ethz.ch/menu",
             status=status,
-            requested_tier=MarketTier.DEFAULT if tier is MarketTier.CUSTOM else tier,
             close_at=close_at,
             resolve_by=close_at + DEFAULT_RESOLVE_AFTER_CLOSE,
             created_by=creator.id,

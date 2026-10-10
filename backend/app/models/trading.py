@@ -49,6 +49,8 @@ class Trade(Base):
         UniqueConstraint("market_id", "market_version"),
         Index(None, "market_id", "created_at"),
         Index(None, "user_id", "id"),
+        # A user's trade instants after a day: what a streak counts.
+        Index(None, "user_id", "created_at"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid7)

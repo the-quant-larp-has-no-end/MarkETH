@@ -1,14 +1,17 @@
-"""`/me` and its lists: what a user reads about themselves (SPEC §10, A.2)."""
+"""`/me` and its lists: what a user reads about themselves, and the one thing they
+mark there, a notice as seen (SPEC §10, A.2)."""
 
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Query
 
-from app.api.deps import AccountServiceDep, CurrentUser
+from app.api.deps import AccountServiceDep, CurrentUser, NoticeServiceDep
 from app.schemas.common import PageQuery
 from app.schemas.me import (
     LedgerListResponse,
     MeResponse,
+    NoticeItem,
     PortfolioResponse,
     ProposalListResponse,
     TradeListResponse,
@@ -17,7 +20,7 @@ from app.schemas.me import (
 router = APIRouter(prefix="/me", tags=["me"])
 
 
-@router.get("", summary="Profile, balance and next monthly grant")
+@router.get("", summary="Profile, balance, next monthly grant and unseen notices")
 async def get_me(user: CurrentUser, account: AccountServiceDep) -> MeResponse:
     return await account.me(user)
 
@@ -44,3 +47,10 @@ async def list_my_ledger(
 @router.get("/proposals", summary="Markets the user proposed and their status")
 async def list_my_proposals(user: CurrentUser, account: AccountServiceDep) -> ProposalListResponse:
     return await account.proposals(user)
+
+
+@router.post("/notices/{notice_id}/seen", summary="Mark a notice as seen")
+async def mark_notice_seen(
+    notice_id: UUID, user: CurrentUser, notices: NoticeServiceDep
+) -> NoticeItem:
+    return await notices.mark_seen(user, notice_id)

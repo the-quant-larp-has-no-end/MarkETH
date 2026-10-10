@@ -1,5 +1,5 @@
 export { AppShell } from "./app-shell";
-export { Link } from "./link";
+export { Link, TextLink } from "./link";
 export { NotFoundScreen } from "./not-found-screen";
 export { Screen, type ScreenProps } from "./screen";
 export { ScreenSkeleton } from "./screen-skeleton";

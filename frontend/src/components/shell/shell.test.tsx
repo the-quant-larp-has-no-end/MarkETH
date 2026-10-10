@@ -1,18 +1,25 @@
-import { screen, within } from "@testing-library/react";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { useQuery } from "@tanstack/react-query";
+import { act, screen, waitFor, within } from "@testing-library/react";
+import { usePathname } from "next/navigation";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
+import { meQuery } from "@/lib/api/queries";
 import type { UserRole } from "@/lib/api/schema";
 import { me } from "@/test/fixtures";
+import { deferred, json, mockApi, type Route } from "@/test/http";
 import { setViewport } from "@/test/media";
 import { navigation } from "@/test/navigation";
 import { renderWithProviders } from "@/test/render";
 
 import { AppShell } from "./app-shell";
-import { Link } from "./link";
+import { Link, TextLink } from "./link";
 import { NotFoundScreen } from "./not-found-screen";
 import { Screen } from "./screen";
 import { useHideTabBar, useShellStore } from "./shell-store";
 import { tabsFor } from "./tabs";
+import { BareTopBar } from "./top-bar";
+
+const ME: Route = "GET /api/me";
 
 function renderShell(
   screenProps: Partial<Parameters<typeof Screen>[0]> = {},
@@ -36,14 +43,42 @@ const tabNames = (nav: HTMLElement) =>
     .map((link) => link.textContent);
 
 describe("the tab bar", () => {
+  // On a phone the Leaderboard tab reads "Ranking": a word that fits a fifth of the screen.
   test.each([
-    ["USER", ["Markets", "Portfolio", "Leaderboard", "Wallet"]],
-    ["BARISTA", ["Markets", "Portfolio", "Leaderboard", "Wallet", "Scan"]],
-    ["ADMIN", ["Markets", "Portfolio", "Leaderboard", "Wallet", "Admin"]],
+    ["USER", ["Markets", "Portfolio", "Ranking", "Wallet"]],
+    ["BARISTA", ["Markets", "Portfolio", "Ranking", "Wallet", "Scan"]],
+    ["ADMIN", ["Markets", "Portfolio", "Ranking", "Wallet", "Admin"]],
   ] as const)("shows a %s these tabs", (role, tabs) => {
     renderShell({}, { me: me({ role }) });
 
     expect(tabNames(tabBar()!)).toEqual(tabs);
+  });
+
+  test("the Leaderboard tab is named by the word it shows, and leads to the Leaderboard", () => {
+    renderShell();
+
+    const tab = within(tabBar()!).getByRole("link", { name: "Ranking" });
+    expect(tab).toHaveAttribute("href", "/leaderboard");
+    expect(within(tabBar()!).queryByText("Leaderboard")).not.toBeInTheDocument();
+  });
+
+  test("every label stands on one line inside its tab, and none is longer than the one that was measured", () => {
+    renderShell({}, { me: me({ role: "ADMIN" }) });
+
+    const labels = [...tabBar()!.querySelectorAll("[data-slot=tab-label]")];
+    expect(labels).toHaveLength(5);
+    for (const label of labels) {
+      expect(label).toHaveClass("max-w-full", "truncate");
+      expect(label.closest("li")).toHaveClass("min-w-0", "flex-1");
+    }
+    // Five tabs on a 320 px screen have 64 px each. "Portfolio" is the widest label, and
+    // Chrome draws it 48 px wide there ("Leaderboard" takes 74 px): no label of any role
+    // has more characters than it.
+    for (const role of ["USER", "BARISTA", "ADMIN"] satisfies UserRole[]) {
+      for (const tab of tabsFor(role)) {
+        expect((tab.short ?? tab.label).length).toBeLessThanOrEqual("Portfolio".length);
+      }
+    }
   });
 
   test("never has more than five tabs, whatever the role", () => {
@@ -66,7 +101,7 @@ describe("the tab bar", () => {
     ["/markets/3f6c2f0e", "Markets"],
     ["/propose", "Markets"],
     ["/portfolio", "Portfolio"],
-    ["/leaderboard", "Leaderboard"],
+    ["/leaderboard", "Ranking"],
     ["/wallet", "Wallet"],
     ["/admin/risk", "Admin"],
   ])("on %s the %s tab is the current one, in white", (path, tab) => {
@@ -91,6 +126,7 @@ describe("the tab bar", () => {
   });
 
   test("is a navigation landmark that navigates", async () => {
+    mockApi({ [ME]: json(200, me()) });
     const { user } = renderShell();
 
     await user.click(
@@ -135,7 +171,9 @@ describe("the tab bar", () => {
 
     expect(tabBar()).not.toBeInTheDocument();
     const nav = within(topBar()).getByRole("navigation", { name: "Main" });
+    // There the tab has room for its whole name, which is also the title of its screen.
     expect(tabNames(nav)).toEqual(["Markets", "Portfolio", "Leaderboard", "Wallet", "Scan"]);
+    expect(within(nav).queryByText("Ranking")).not.toBeInTheDocument();
     expect(screen.getAllByRole("navigation")).toHaveLength(1);
   });
 });
@@ -174,6 +212,10 @@ describe("the top bar", () => {
   });
 
   describe("the back arrow", () => {
+    // Arriving on another screen reads /me again: the API is there to answer.
+    beforeEach(() => {
+      mockApi({ [ME]: json(200, me()) });
+    });
     afterEach(() => {
       Reflect.deleteProperty(window, "navigation");
     });
@@ -224,6 +266,22 @@ describe("the top bar", () => {
     });
   });
 
+  test("before the app knows who is looking it shows the logo and nothing on its right", () => {
+    renderWithProviders(<BareTopBar />, { me: null });
+
+    expect(within(topBar()).getByRole("img", { name: "MarkETH" })).toBeInTheDocument();
+    expect(within(topBar()).queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  test("the bare logo can lead somewhere: to the profile set-up, from the usage policy of a visitor", () => {
+    renderWithProviders(<BareTopBar href="/" />, { me: null });
+
+    const link = within(topBar()).getByRole("link", { name: "MarkETH" });
+    expect(link).toHaveAttribute("href", "/");
+    expect(link).toHaveClass("h-11");
+    expect(within(topBar()).getAllByRole("link")).toHaveLength(1);
+  });
+
   test("on an inner screen the tabs join the top bar from 1024 px", () => {
     setViewport("wide");
     const { unmount } = renderShell({ top: "inner", title: "Propose a market" });
@@ -233,6 +291,90 @@ describe("the top bar", () => {
     setViewport("desktop");
     renderShell({ top: "inner", title: "Propose a market" });
     expect(within(topBar()).getByRole("navigation", { name: "Main" })).toBeInTheDocument();
+  });
+});
+
+describe("the balance in the top bar", () => {
+  const balance = () => within(topBar()).getByRole("link", { name: /^Wallet,/ });
+
+  test("is read again on every arrival on another screen, so it follows payouts, refunds and monthly tokens", async () => {
+    // A market the user holds was resolved while they looked at the Markets list.
+    const api = mockApi({ [ME]: json(200, me({ balance_cr: "331.64" })) });
+    const { user } = renderShell({}, { me: me({ balance_cr: "240" }) });
+    expect(balance()).toHaveTextContent("240");
+    expect(api.calls(ME)).toHaveLength(0);
+
+    await user.click(within(tabBar()!).getByRole("link", { name: "Portfolio" }));
+
+    expect(navigation.pathname).toBe("/portfolio");
+    await waitFor(() => expect(balance()).toHaveTextContent("331.64"));
+    expect(api.calls(ME)).toHaveLength(1);
+
+    await user.click(within(tabBar()!).getByRole("link", { name: "Ranking" }));
+    await waitFor(() => expect(api.calls(ME)).toHaveLength(2));
+  });
+
+  test("the route the page was loaded on reads nothing: start-up has just read /me", async () => {
+    const api = mockApi({ [ME]: json(200, me()) });
+    navigation.go("/portfolio");
+
+    renderShell();
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+
+    expect(api.calls(ME)).toHaveLength(0);
+  });
+
+  test("a change of the query string is no navigation: a sort or an open sheet reads nothing", async () => {
+    const api = mockApi({ [ME]: json(200, me()) });
+    navigation.go("/leaderboard");
+    renderShell();
+
+    act(() => navigation.router.push("/leaderboard?sort=trades"));
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+
+    expect(navigation.href).toBe("/leaderboard?sort=trades");
+    expect(api.calls(ME)).toHaveLength(0);
+  });
+
+  test("a screen that reads /me itself as it opens shares the one request", async () => {
+    const answer = deferred();
+    const api = mockApi({ [ME]: answer.handler });
+    /** The Wallet reads the balance again whenever it opens. */
+    function Wallet() {
+      useQuery(meQuery);
+      return <p>The wallet</p>;
+    }
+    function Route() {
+      return usePathname() === "/wallet" ? <Wallet /> : <p>Markets</p>;
+    }
+    const { user } = renderWithProviders(
+      <AppShell>
+        <Screen top="main" title="MarkETH">
+          <Route />
+        </Screen>
+      </AppShell>,
+    );
+
+    await user.click(within(tabBar()!).getByRole("link", { name: "Wallet" }));
+    await screen.findByText("The wallet");
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+
+    // One request on the wire, not one that was cut short and a second one.
+    expect(api.calls(ME)).toHaveLength(1);
+    answer.resolve(json(200, me({ balance_cr: "440" })));
+    await waitFor(() => expect(balance()).toHaveTextContent("440"));
+    expect(api.calls(ME)).toHaveLength(1);
+  });
+
+  test("a /me that cannot be reached leaves the balance that was read before on screen", async () => {
+    mockApi({ [ME]: () => Promise.reject(new TypeError("Failed to fetch")) });
+    const { user } = renderShell({}, { me: me({ balance_cr: "240" }) });
+
+    await user.click(within(tabBar()!).getByRole("link", { name: "Portfolio" }));
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+
+    expect(balance()).toHaveTextContent("240");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });
 
@@ -350,5 +492,30 @@ describe("the route progress line", () => {
     renderWithProviders(<Link href="/wallet">Wallet</Link>);
 
     expect(screen.getByRole("link", { name: "Wallet" })).toHaveAttribute("href", "/wallet");
+  });
+});
+
+describe("TextLink", () => {
+  test("is a link that is text: white, underlined, with a target 44 px tall, and never green or red", () => {
+    renderWithProviders(<TextLink href="/policy">Usage policy</TextLink>);
+
+    const link = screen.getByRole("link", { name: "Usage policy" });
+    expect(link).toHaveAttribute("href", "/policy");
+    expect(link).toHaveClass("text-foreground", "underline", "min-h-11");
+    expect(link.className).not.toMatch(/\b(text|bg)-(yes|no)\b/);
+    // It stays in the page it is on.
+    expect(link).not.toHaveAttribute("target");
+  });
+
+  test("can open beside the page, which then keeps what was typed into it", () => {
+    renderWithProviders(
+      <TextLink href="/policy" newTab>
+        usage policy
+      </TextLink>,
+    );
+
+    const link = screen.getByRole("link", { name: "usage policy" });
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener");
   });
 });

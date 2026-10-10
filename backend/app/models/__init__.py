@@ -10,11 +10,16 @@ exist. `fingerprint` reduces all of it to one hash, which says whether a databas
 built from this code.
 """
 
+from app.models.broadcast import Broadcast
+from app.models.chat import ChatMessage
 from app.models.code import Code, CodeBatch
+from app.models.discussion import Question
 from app.models.grant import Grant
 from app.models.ledger import Account, JournalEntry, Posting
 from app.models.market import Market, Resolution
+from app.models.notice import Notice
 from app.models.ops import Alert, AuditLogEntry, OutboxEvent
+from app.models.streak import Streak
 from app.models.trading import IdempotencyKey, Position, Trade
 from app.models.user import User
 from app.models.voucher import Voucher
@@ -23,16 +28,21 @@ __all__ = [
     "Account",
     "Alert",
     "AuditLogEntry",
+    "Broadcast",
+    "ChatMessage",
     "Code",
     "CodeBatch",
     "Grant",
     "IdempotencyKey",
     "JournalEntry",
     "Market",
+    "Notice",
     "OutboxEvent",
     "Position",
     "Posting",
+    "Question",
     "Resolution",
+    "Streak",
     "Trade",
     "User",
     "Voucher",

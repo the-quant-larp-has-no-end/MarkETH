@@ -8,11 +8,13 @@ A trade is sized in one of three modes, and each mode has its own slippage guard
 | BUY  | `shares`    | `max_cost_cr`     | cost above `max_cost_cr`           |
 | SELL | `shares`    | `min_proceeds_cr` | proceeds below `min_proceeds_cr`   |
 
-The models reject every other combination with 422, so a service never sees one.
+The models reject every other combination with 422, so a service never sees one. A
+form sends none of them, so these rules are worded for whoever builds a client: the
+size that is wrong and the guard that does not fit are named in the error's `loc`.
 """
 
 from datetime import datetime
-from typing import Self
+from typing import Final, Self
 from uuid import UUID
 
 from pydantic import Field, StrictInt, model_validator
@@ -26,7 +28,18 @@ from app.schemas.common import (
     RequestModel,
     ResponseModel,
     ShareAmount,
+    on_field,
+    said,
 )
+
+SIZED_ONE_WAY_MESSAGE: Final[str] = "Enter either an amount or a number of shares."
+"""What a trade or a quote says that names both sizes or neither."""
+
+SELL_BY_SHARES_MESSAGE: Final[str] = "Enter the number of shares to sell."
+"""What a sell says that is sized by an amount, on `amount_cr`."""
+
+GUARD_DOES_NOT_APPLY_MESSAGE: Final[str] = "This limit does not apply to this trade."
+"""What a trade says on a guard that is not the one of its mode."""
 
 
 class TradeSize(RequestModel):
@@ -43,14 +56,14 @@ class TradeSize(RequestModel):
     @model_validator(mode="after")
     def _sized_one_way(self) -> Self:
         if (self.amount_cr is None) == (self.shares is None):
-            raise ValueError("give exactly one of amount_cr and shares")
+            raise said("value_error", SIZED_ONE_WAY_MESSAGE)
         if self.side is TradeSide.SELL and self.amount_cr is not None:
-            raise ValueError("a sell is sized by shares, not by amount_cr")
+            raise on_field("amount_cr", "value_error", SELL_BY_SHARES_MESSAGE)
         return self
 
 
 class QuoteQuery(TradeSize):
-    """Query string of `GET /markets/{id}/quote`."""
+    """Query string of `GET /markets/{id}/quote`: a trade without its guards."""
 
 
 class TradeRequest(TradeSize):
@@ -67,7 +80,7 @@ class TradeRequest(TradeSize):
         allowed = self._guard_of_mode()
         for guard in ("min_shares", "max_cost_cr", "min_proceeds_cr"):
             if guard != allowed and getattr(self, guard) is not None:
-                raise ValueError(f"{guard} does not apply here; this trade is guarded by {allowed}")
+                raise on_field(guard, "value_error", GUARD_DOES_NOT_APPLY_MESSAGE)
         return self
 
     def _guard_of_mode(self) -> str:
@@ -77,7 +90,15 @@ class TradeRequest(TradeSize):
 
 
 class QuoteResponse(ResponseModel):
-    """What a trade would do right now. Also sent as `details.quote` of `QUOTE_STALE`."""
+    """What a trade would do right now. Also sent as `details.quote` of `QUOTE_STALE`.
+
+    `GET /markets/{id}/quote` answers with it for a trade the caller could make. For
+    one they could not, it answers the error the trade would get instead, with the
+    same code, message and details: 403 `FORBIDDEN` in a market the caller proposed,
+    409 `MARKET_NOT_OPEN`, 409 `INSUFFICIENT_SHARES` for a sell of more than the
+    caller holds, 422 `TRADE_TOO_SMALL`, 409 `LIMIT_EXCEEDED` for a buy above the
+    stake left and 409 `INSUFFICIENT_BALANCE` for one above the balance. So the
+    answer to a typed amount is the server's, and the client compares nothing."""
 
     market_id: UUID
     side: TradeSide

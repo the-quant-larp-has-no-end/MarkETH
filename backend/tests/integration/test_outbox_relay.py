@@ -887,10 +887,12 @@ async def test_the_relay_process_delivers_to_the_real_scylla_and_stops_cleanly_o
     assert relay.log[-1].endswith(STOPPED)
     assert not any("Traceback" in line for line in relay.log), relay.log
     real = QuoteHistoryStore(scylla_client, scylla_settings)
-    assert await real.read(market_id, TEST_NOW, TEST_NOW + timedelta(hours=1)) == [
-        *earlier,
-        later,
-    ]
+    assert await real.read(
+        market_id,
+        TEST_NOW,
+        TEST_NOW + timedelta(hours=1),
+        limit=scylla_settings.history_read_limit,
+    ) == [*earlier, later]
 
 
 @pytest.mark.scylla
@@ -911,6 +913,7 @@ async def test_run_forever_creates_a_missing_keyspace_and_heals_a_wiped_one_on_t
     before = [point(version, market_id) for version in range(2)]
     after = [point(version, market_id) for version in range(2, 4)]
     schema_timeout = scylla_settings.request_timeout_seconds * 10
+    hour = (TEST_NOW, TEST_NOW + timedelta(hours=1))
     with pytest.raises(ScyllaUnavailableError):
         await store.write(before[0])
 
@@ -921,7 +924,7 @@ async def test_run_forever_creates_a_missing_keyspace_and_heals_a_wiped_one_on_t
         task = asyncio.create_task(relay.run_forever(stop))
         try:
             await until(drained(container), within_seconds=NODE_SECONDS)
-            assert await store.read(market_id, TEST_NOW, TEST_NOW + timedelta(hours=1)) == before
+            assert await store.read(market_id, *hour, limit=own.history_read_limit) == before
 
             await scylla_client.execute(
                 f"DROP KEYSPACE {own.keyspace}", timeout_seconds=schema_timeout
@@ -933,7 +936,7 @@ async def test_run_forever_creates_a_missing_keyspace_and_heals_a_wiped_one_on_t
             stop.set()
             await asyncio.wait_for(task, 60)
 
-        assert await store.read(market_id, TEST_NOW, TEST_NOW + timedelta(hours=1)) == after
+        assert await store.read(market_id, *hour, limit=own.history_read_limit) == after
     finally:
         with suppress(ScyllaUnavailableError):
             await scylla_client.execute(
@@ -974,7 +977,12 @@ async def test_delivering_a_batch_twice_to_the_real_scylla_leaves_one_row_per_po
         await uow.session.execute(text("UPDATE outbox SET published_at = NULL"))
     assert await relay.drain_once() == 3
 
-    stored = await store.read(market_id, TEST_NOW, TEST_NOW + timedelta(hours=1))
+    stored = await store.read(
+        market_id,
+        TEST_NOW,
+        TEST_NOW + timedelta(hours=1),
+        limit=scylla_settings.history_read_limit,
+    )
     assert stored == [
         QuotePoint(
             market_id=market_id,

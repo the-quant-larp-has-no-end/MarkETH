@@ -3,9 +3,20 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 
 /**
- * A table of the admin area and of the wide leaderboard (DESIGN.md §13): rows 44 px tall
- * in `body-sm`, 1 px `--border` dividers, scrolling sideways when the screen is narrower
- * than its columns. Numbers go in a right-aligned cell with `type-number`.
+ * The table of DESIGN.md §12: the tables of the admin area, and the ranking of the
+ * Leaderboard from 768 px. A heading row 44 px tall in `caption`, 1 px `--border`
+ * dividers between the rows, no outline, rows at least 44 px tall.
+ *
+ * A column says what it holds, cell by cell:
+ *
+ * - Text is the default: left aligned, and it gives way by wrapping.
+ * - `clip`: text that has to stay one line gives way by being cut with an ellipsis.
+ * - `numeric`: figures are right aligned, in `number`, as wide as the widest of them, and
+ *   never shrink.
+ * - `nowrap`: what is neither (a date, a badge, a button) keeps its line and its width.
+ *
+ * A table that is still wider than its column scrolls sideways inside its own box; the
+ * page never does.
  */
 function Table({ className, ...props }: React.ComponentProps<"table">) {
   return (
@@ -33,12 +44,21 @@ function TableBody({ className, ...props }: React.ComponentProps<"tbody">) {
   );
 }
 
-function TableRow({ className, ...props }: React.ComponentProps<"tr">) {
+/**
+ * A row: at least 44 px tall. `tall` is the 56 px row of the Leaderboard. A row that can
+ * be tapped shows it on hover; give one that cannot `hover:bg-transparent`.
+ */
+function TableRow({
+  className,
+  tall = false,
+  ...props
+}: React.ComponentProps<"tr"> & { tall?: boolean }) {
   return (
     <tr
       data-slot="table-row"
       className={cn(
-        "h-11 border-b transition-colors duration-(--duration-fast) hover:bg-raised",
+        "border-b transition-colors duration-(--duration-fast) hover:bg-raised",
+        tall ? "h-14" : "h-11",
         className,
       )}
       {...props}
@@ -46,12 +66,31 @@ function TableRow({ className, ...props }: React.ComponentProps<"tr">) {
   );
 }
 
-function TableHead({ className, ...props }: React.ComponentProps<"th">) {
+/** What a cell holds, which says how its column behaves when room is short. */
+type Holds = {
+  /** Figures: right aligned, in `number`, as wide as the widest, never shrinking. */
+  numeric?: boolean;
+  /** One line that keeps its width: a date, a badge, a button. */
+  nowrap?: boolean;
+  /**
+   * One line of text that is cut with an ellipsis. Its column takes the room the others
+   * leave: give two such columns a share each (`w-1/2`). A cell with two lines gives each
+   * line `truncate` itself.
+   */
+  clip?: boolean;
+};
+
+function TableHead({
+  className,
+  numeric = false,
+  ...props
+}: React.ComponentProps<"th"> & Pick<Holds, "numeric">) {
   return (
     <th
       data-slot="table-head"
       className={cn(
-        "h-11 px-3 text-left align-middle type-caption whitespace-nowrap text-muted-foreground",
+        "h-11 px-3 align-middle type-caption whitespace-nowrap text-muted-foreground",
+        numeric ? "text-right" : "text-left",
         className,
       )}
       {...props}
@@ -59,11 +98,24 @@ function TableHead({ className, ...props }: React.ComponentProps<"th">) {
   );
 }
 
-function TableCell({ className, ...props }: React.ComponentProps<"td">) {
+function TableCell({
+  className,
+  numeric = false,
+  nowrap = false,
+  clip = false,
+  ...props
+}: React.ComponentProps<"td"> & Holds) {
   return (
     <td
       data-slot="table-cell"
-      className={cn("px-3 py-2 align-middle whitespace-nowrap", className)}
+      className={cn(
+        "px-3 py-2 align-middle",
+        numeric && "w-px text-right type-number whitespace-nowrap",
+        nowrap && "w-px whitespace-nowrap",
+        clip && "max-w-0 truncate",
+        !numeric && !nowrap && !clip && "wrap-break-word",
+        className,
+      )}
       {...props}
     />
   );

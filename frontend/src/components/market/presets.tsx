@@ -46,11 +46,14 @@ function PresetChip({
 }
 
 /**
- * The stake presets of a buy (DESIGN.md §12): a row of equal chips from
- * `viewer.stake_presets`, each with the token icon and its `amount_cr`. A preset with
- * `allowed: false` is disabled: that flag is the server's, and the frontend never
- * decides it from the balance or the limit. The chosen `amount_cr` is passed on as the
- * string it arrived as.
+ * The presets of the stake entry (DESIGN.md §12): a row of equal chips from
+ * `viewer.stake_presets`, each with the token icon and its `amount_cr`. They are shortcuts:
+ * a tap hands on the preset's `amount_cr`, as the string it arrived as, for the amount
+ * field to hold. A chip is selected while `value`, the text of that field, is exactly its
+ * `amount_cr`: a test of two strings for equality, nothing is read as a number.
+ *
+ * A preset with `allowed: false` is disabled: that flag is the server's, and the frontend
+ * never decides it from the balance or the limit.
  */
 export function StakePresets({
   presets,
@@ -61,8 +64,8 @@ export function StakePresets({
 }: {
   /** `viewer.stake_presets`, in the API's order. */
   presets: readonly StakePreset[];
-  /** The `amount_cr` of the chosen preset, or null while none is chosen. */
-  value: string | null;
+  /** What the amount field holds. */
+  value: string;
   onChange: (amount_cr: string) => void;
   /** Switches the whole row off, for example while a trade waits for its answer. */
   disabled?: boolean;
@@ -71,7 +74,7 @@ export function StakePresets({
   return (
     <div
       role="group"
-      aria-label="Stake"
+      aria-label="Quick amounts"
       data-slot="stake-presets"
       className={cn("grid auto-cols-fr grid-flow-col gap-2", className)}
     >
@@ -141,21 +144,28 @@ export function SellPresets({
 }
 
 /**
- * The line under the stake presets and in "Your position" (DESIGN.md §12):
+ * The stake-left line of the stake entry and of "Your position" (DESIGN.md §12):
  * "{stake_left_cr} of {stake_limit_cr} tokens left in this market". Both amounts come
  * from the market's `viewer`, or from the `details` of a `LIMIT_EXCEEDED` answer.
  */
 export function StakeLeftLine({
+  id,
   stakeLeftCr,
   stakeLimitCr,
   className,
 }: {
+  /** For what the line describes: the stake entry names it in `aria-describedby`. */
+  id?: string;
   stakeLeftCr: string;
   stakeLimitCr: string;
   className?: string;
 }) {
   return (
-    <p data-slot="stake-left" className={cn("type-body-sm text-muted-foreground", className)}>
+    <p
+      id={id}
+      data-slot="stake-left"
+      className={cn("type-body-sm text-muted-foreground", className)}
+    >
       {formatAmount(stakeLeftCr)} of {formatTokens(stakeLimitCr)} left in this market
     </p>
   );

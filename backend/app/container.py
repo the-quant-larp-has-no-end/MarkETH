@@ -23,6 +23,7 @@ from app.integrations.scylla.quote_history import QuoteHistoryStore
 from app.repositories.unit_of_work import UnitOfWork
 from app.services import UowFactory
 from app.services.account import AccountService
+from app.services.admin_users import AdminUserService
 from app.services.audit import AuditService
 from app.services.codes import CodeService
 from app.services.email_policy import EmailPolicy
@@ -34,9 +35,11 @@ from app.services.invariants import InvariantChecker
 from app.services.leaderboard import LeaderboardService
 from app.services.ledger import LedgerService
 from app.services.live_quotes import LiveQuoteService
+from app.services.market_access import MarketAccess
 from app.services.market_lifecycle import MarketLifecycleService
 from app.services.market_view import MarketView
 from app.services.markets import MarketService
+from app.services.notices import NoticeService
 from app.services.profile import ProfileService
 from app.services.public_config import PublicConfigService
 from app.services.quotes import QuoteService
@@ -74,23 +77,30 @@ class Container:
         # Services, in dependency order.
         uow_factory = self.uow_factory
         self.market_view = MarketView(settings)
+        self.market_access = MarketAccess()
         self.ledger = LedgerService()
         self.audit = AuditService(clock)
         self.email_policy = EmailPolicy(settings)
         self.public_config = PublicConfigService(settings)
         self.health = HealthService(self.database, self.redis, self.scylla)
         self.invariants = InvariantChecker()
+        self.notices = NoticeService(uow_factory, clock)
 
         self.grants = GrantService(uow_factory, settings, clock, self.ledger, self.audit)
         self.vouchers = VoucherService(uow_factory, settings, clock, self.ledger)
         self.upkeep = UserUpkeepService(uow_factory, settings, clock, self.grants, self.vouchers)
         self.identity = IdentityService(uow_factory, self.email_policy, self.upkeep)
-        self.account = AccountService(uow_factory, settings, clock, self.grants, self.market_view)
+        self.account = AccountService(
+            uow_factory, settings, clock, self.grants, self.market_view, self.notices
+        )
         self.profile = ProfileService(uow_factory, settings, clock, self.grants, self.account)
+        self.admin_users = AdminUserService(
+            uow_factory, settings, clock, self.email_policy, self.ledger, self.audit
+        )
         self.codes = CodeService(
             uow_factory, settings, clock, self.ledger, self.audit, self.rate_limiter
         )
-        self.leaderboard = LeaderboardService(uow_factory, settings)
+        self.leaderboard = LeaderboardService(uow_factory, settings, self.market_view)
 
         self.live_quotes = LiveQuoteService(
             uow_factory, settings, clock, self.market_view, self.quote_bus
@@ -106,6 +116,7 @@ class Container:
             self.ledger,
             self.audit,
             self.markets,
+            self.notices,
             self.market_cache,
             self.live_quotes,
         )

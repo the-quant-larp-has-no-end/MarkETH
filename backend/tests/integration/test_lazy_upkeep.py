@@ -7,29 +7,28 @@ An ordinary request of a user is all it takes. The portal's headers lead to
 own with stand-ins for the others; here they are the real ones, wired as the
 application wires them, and every request carries the portal's headers.
 
-Months are those of `APP_TIMEZONE`. The clock of the tests starts on 9 October 2026 at
-noon UTC; a user the factory makes registered then.
+The clock of the tests starts on 9 October 2026 at noon UTC, which is 14:00 in
+`APP_TIMEZONE`; a user the factory makes registered then. Their monthly grants fall due
+on the 9th of every later month at 14:00 in Zurich.
 """
 
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 import httpx
 import pytest
 from pydantic import BaseModel
-from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy import select
 
 from app.container import Container
-from app.core.clock import first_of_next_month, local_date, month_period
+from app.core.clock import local_date, month_period
 from app.core.enums import (
     SIGNUP_GRANT_PERIOD,
     AccountKind,
     JournalKind,
-    UserStatus,
     VoucherStatus,
 )
 from app.core.errors import SUSPENDED_MESSAGE
@@ -67,21 +66,16 @@ ZONE: Final = _SETTINGS.app.timezone
 SECOND: Final[timedelta] = timedelta(seconds=1)
 
 
-def start_of_the_month_after(instant: datetime) -> datetime:
-    """The first instant of the calendar month after the one of `instant`, in
-    `APP_TIMEZONE`: when the next monthly grant falls due."""
-    first = first_of_next_month(local_date(instant, ZONE))
-    return datetime(first.year, first.month, first.day, tzinfo=ZONE).astimezone(UTC)
-
-
 def month_of(instant: datetime) -> str:
     """The `grants.period` of the month of `instant`."""
     return month_period(local_date(instant, ZONE))
 
 
-NOVEMBER: Final[datetime] = start_of_the_month_after(TEST_NOW)
-DECEMBER: Final[datetime] = start_of_the_month_after(NOVEMBER)
-JANUARY: Final[datetime] = start_of_the_month_after(DECEMBER)
+FIRST_DUE: Final[datetime] = datetime(2026, 11, 9, 14, 0, tzinfo=ZONE).astimezone(UTC)
+SECOND_DUE: Final[datetime] = datetime(2026, 12, 9, 14, 0, tzinfo=ZONE).astimezone(UTC)
+THIRD_DUE: Final[datetime] = datetime(2027, 1, 9, 14, 0, tzinfo=ZONE).astimezone(UTC)
+"""When the first three monthly grants of a user of these tests fall due: a month,
+two and three after `TEST_NOW`, on its day and at its time of day in Zurich."""
 
 
 class Portal:
@@ -144,44 +138,39 @@ async def pending(container: Container) -> int:
     return await system_balance(container.uow_factory, AccountKind.VIS_REDEMPTION_PENDING)
 
 
-async def set_status(owner_engine: AsyncEngine, user: User, status: UserStatus) -> None:
-    """Suspend an account or lift the suspension, as the owner role: the API has no
-    route for it (A.3)."""
-    async with owner_engine.begin() as connection:
-        await connection.execute(
-            text("UPDATE users SET status = :status WHERE id = :id"),
-            {"status": status.value, "id": user.id},
-        )
-
-
 # --- The monthly grant -----------------------------------------------------------------------
 
 
-async def test_the_first_request_of_a_month_books_its_grant_and_shows_it_in_its_own_answer(
+async def test_the_first_request_after_a_grant_fell_due_books_it_and_shows_it_in_its_own_answer(
     portal: Portal, container: Container, factory: Factory, clock: FrozenClock
 ) -> None:
     """Upkeep runs before the route answers: the request that brings the grant about is
-    the first to see it."""
+    the first to see it. Until the day and the time of day of the sign-up have come
+    round, no request brings one about, the first of the month included."""
     user = await factory.user(balance_micro=GRANT)
 
-    october = await portal.me(user)
-    clock.set(NOVEMBER - 2 * INTERVAL)
-    still_october = await portal.me(user)
-    clock.set(NOVEMBER)
-    november = await portal.me(user)
+    at_sign_up = await portal.me(user)
+    clock.set(datetime(2026, 11, 1, tzinfo=ZONE))
+    on_the_first = await portal.me(user)
+    clock.set(FIRST_DUE - 2 * INTERVAL)
+    just_before = await portal.me(user)
+    clock.set(FIRST_DUE)
+    due = await portal.me(user)
 
-    assert october.balance_cr == still_october.balance_cr == to_cr(GRANT)
-    assert october.next_monthly_grant_on == local_date(NOVEMBER, ZONE) == date(2026, 11, 1)
-    assert november.balance_cr == to_cr(GRANT + MONTHLY)
-    assert november.monthly_grant_cr == to_cr(MONTHLY)
-    assert november.next_monthly_grant_on == local_date(DECEMBER, ZONE)
-    assert await periods(container, user) == sorted([month_of(NOVEMBER), SIGNUP_GRANT_PERIOD])
+    for before in (at_sign_up, on_the_first, just_before):
+        assert before.balance_cr == to_cr(GRANT)
+        assert before.next_monthly_grant_at == FIRST_DUE
+    assert FIRST_DUE.astimezone(ZONE) == datetime(2026, 11, 9, 14, 0, tzinfo=ZONE)
+    assert due.balance_cr == to_cr(GRANT + MONTHLY)
+    assert due.monthly_grant_cr == to_cr(MONTHLY)
+    assert due.next_monthly_grant_at == SECOND_DUE
+    assert await periods(container, user) == sorted([month_of(FIRST_DUE), SIGNUP_GRANT_PERIOD])
     ledger = await portal.ok(user, "GET", "/me/ledger", LedgerListResponse)
     assert [(item.kind, item.description, item.amount_cr) for item in ledger.items] == [
         (JournalKind.MONTHLY_GRANT, ledger_description(JournalKind.MONTHLY_GRANT), to_cr(MONTHLY)),
         (JournalKind.SIGNUP_GRANT, ledger_description(JournalKind.SIGNUP_GRANT), to_cr(GRANT)),
     ]
-    assert ledger.items[0].created_at == NOVEMBER
+    assert ledger.items[0].created_at == FIRST_DUE
     await assert_books_balance(container.uow_factory)
 
 
@@ -189,10 +178,10 @@ async def test_any_ordinary_request_books_the_grant_and_it_is_booked_once(
     portal: Portal, container: Container, factory: Factory, clock: FrozenClock
 ) -> None:
     """The request does not have to ask about the balance, and however often the user
-    comes back that month, within the interval or long after it, nothing more is
-    booked."""
+    comes back before the next grant falls due, within the interval or long after it,
+    nothing more is booked."""
     user = await factory.user(balance_micro=GRANT)
-    clock.set(NOVEMBER + timedelta(hours=9))
+    clock.set(FIRST_DUE + timedelta(hours=9))
 
     await portal.browse(user)
     assert await factory.balance_micro(user) == GRANT + MONTHLY
@@ -201,23 +190,25 @@ async def test_any_ordinary_request_books_the_grant_and_it_is_booked_once(
         await portal.browse(user)
         assert (await portal.me(user)).balance_cr == to_cr(GRANT + MONTHLY)
 
-    assert local_date(clock.now(), ZONE).month == 11
+    assert clock.now() < SECOND_DUE
     assert await entries_of(container, JournalKind.MONTHLY_GRANT) == 1
-    assert await periods(container, user) == sorted([month_of(NOVEMBER), SIGNUP_GRANT_PERIOD])
+    assert await periods(container, user) == sorted([month_of(FIRST_DUE), SIGNUP_GRANT_PERIOD])
     await assert_books_balance(container.uow_factory)
 
 
 async def test_a_user_who_stayed_away_is_booked_every_month_they_missed_with_their_next_request(
     portal: Portal, container: Container, factory: Factory, clock: FrozenClock
 ) -> None:
-    """A.3: from the month after signup, including the months missed in between. The
-    month of signup itself brings none: the signup grant covers it."""
+    """A.3: every grant that has fallen due, including those of the months in which the
+    user never came by. The month of signup itself brings none: the signup grant covers
+    it."""
     user = await factory.user(balance_micro=GRANT)
-    clock.set(JANUARY + timedelta(days=14))
+    clock.set(THIRD_DUE + timedelta(days=14))
 
     back = await portal.me(user)
 
-    months = [month_of(NOVEMBER), month_of(DECEMBER), month_of(JANUARY)]
+    months = [month_of(FIRST_DUE), month_of(SECOND_DUE), month_of(THIRD_DUE)]
+    assert months == ["2026-11", "2026-12", "2027-01"]
     assert back.balance_cr == to_cr(GRANT + len(months) * MONTHLY)
     assert await periods(container, user) == sorted([*months, SIGNUP_GRANT_PERIOD])
     assert month_of(TEST_NOW) not in await periods(container, user)
@@ -227,14 +218,14 @@ async def test_a_user_who_stayed_away_is_booked_every_month_they_missed_with_the
     await assert_books_balance(container.uow_factory)
 
 
-async def test_requests_that_arrive_together_at_the_start_of_a_month_book_one_grant(
+async def test_requests_that_arrive_together_as_a_grant_falls_due_book_one_grant(
     portal: Portal, container: Container, factory: Factory, clock: FrozenClock
 ) -> None:
     """A phone opens with several requests at once. One of them starts the upkeep; the
     others do not wait for it, so each shows the balance before or after the grant, and
     the grant is there once."""
     user = await factory.user(balance_micro=GRANT)
-    clock.set(NOVEMBER)
+    clock.set(FIRST_DUE)
 
     answers = await asyncio.gather(*(portal.me(user) for _ in range(8)))
 
@@ -273,7 +264,7 @@ async def test_two_api_processes_that_both_find_a_user_due_book_the_grant_once(
     start the upkeep. The account lock makes one wait for the other, and the `grants`
     row makes the month happen once (SPEC §2)."""
     user = await factory.user(balance_micro=GRANT)
-    clock.set(NOVEMBER)
+    clock.set(FIRST_DUE)
 
     async with another_process(container) as elsewhere:
         answers = await asyncio.gather(
@@ -288,7 +279,7 @@ async def test_two_api_processes_that_both_find_a_user_due_book_the_grant_once(
     assert later.json()["balance_cr"] == format_cr(GRANT + MONTHLY)
     assert await factory.balance_micro(user) == GRANT + MONTHLY
     assert await entries_of(container, JournalKind.MONTHLY_GRANT) == 1
-    assert await periods(container, user) == sorted([month_of(NOVEMBER), SIGNUP_GRANT_PERIOD])
+    assert await periods(container, user) == sorted([month_of(FIRST_DUE), SIGNUP_GRANT_PERIOD])
     await assert_books_balance(container.uow_factory)
 
 
@@ -317,40 +308,68 @@ async def test_an_expired_voucher_is_refunded_by_the_next_ordinary_request_of_it
     voucher = await issued_voucher(portal, user)
     price = PRODUCT.price_micro
     assert voucher.expires_at == TEST_NOW + EXPIRY
+    assert voucher.expires_at + timedelta(hours=13) < FIRST_DUE, "no grant falls due in this test"
     assert await factory.balance_micro(user) == GRANT - price
 
-    # A minute before it expires: the visit books November's grant and no refund.
+    # A minute before it expires: the visit books no refund.
     clock.set(voucher.expires_at - 2 * INTERVAL)
     (waiting,) = (await portal.ok(user, "GET", "/me/vouchers", VoucherListResponse)).items
     assert waiting.status is VoucherStatus.ACTIVE
-    assert await factory.balance_micro(user) == GRANT - price + MONTHLY
+    assert await factory.balance_micro(user) == GRANT - price
     assert await pending(container) == price
 
     # Expired, and its owner has not been back yet: nothing has moved.
     clock.set(voucher.expires_at)
-    assert await factory.balance_micro(user) == GRANT - price + MONTHLY
+    assert await factory.balance_micro(user) == GRANT - price
     assert await pending(container) == price
 
     await portal.browse(user)
 
-    assert await factory.balance_micro(user) == GRANT + MONTHLY
+    assert await factory.balance_micro(user) == GRANT
     assert await pending(container) == 0
     (expired,) = (await portal.ok(user, "GET", "/me/vouchers", VoucherListResponse)).items
     assert (expired.id, expired.status) == (voucher.id, VoucherStatus.EXPIRED)
     ledger = await portal.ok(user, "GET", "/me/ledger", LedgerListResponse)
     assert [(item.description, item.amount_cr) for item in ledger.items] == [
         (ledger_description(JournalKind.VOUCHER_REFUND, PRODUCT.name), to_cr(price)),
-        (ledger_description(JournalKind.MONTHLY_GRANT), to_cr(MONTHLY)),
         (ledger_description(JournalKind.VOUCHER_ISSUE, PRODUCT.name), -to_cr(price)),
         (ledger_description(JournalKind.SIGNUP_GRANT), to_cr(GRANT)),
     ]
     assert ledger.items[0].created_at == voucher.expires_at
 
     # Coming back again books nothing more.
-    for wait in (INTERVAL, timedelta(days=3)):
+    for wait in (INTERVAL, timedelta(hours=12)):
         clock.advance(wait)
-        assert (await portal.me(user)).balance_cr == to_cr(GRANT + MONTHLY)
+        assert (await portal.me(user)).balance_cr == to_cr(GRANT)
     assert await entries_of(container, JournalKind.VOUCHER_REFUND) == 1
+    assert await entries_of(container, JournalKind.MONTHLY_GRANT) == 0
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_one_request_books_the_refund_and_the_grant_of_somebody_who_was_away_for_both(
+    portal: Portal, container: Container, factory: Factory, clock: FrozenClock
+) -> None:
+    """The voucher expired a day before the first monthly grant fell due, and the user
+    came back after both: one request, one run of upkeep, both lines in the ledger with
+    the instant of that request."""
+    user = await factory.user(balance_micro=GRANT)
+    voucher = await issued_voucher(portal, user)
+    price = PRODUCT.price_micro
+    back_at = FIRST_DUE + timedelta(days=2)
+    assert voucher.expires_at < FIRST_DUE < back_at
+    clock.set(back_at)
+
+    back = await portal.me(user)
+
+    assert back.balance_cr == to_cr(GRANT + MONTHLY)
+    assert await pending(container) == 0
+    ledger = await portal.ok(user, "GET", "/me/ledger", LedgerListResponse)
+    assert [(item.description, item.amount_cr, item.created_at) for item in ledger.items] == [
+        (ledger_description(JournalKind.VOUCHER_REFUND, PRODUCT.name), to_cr(price), back_at),
+        (ledger_description(JournalKind.MONTHLY_GRANT), to_cr(MONTHLY), back_at),
+        (ledger_description(JournalKind.VOUCHER_ISSUE, PRODUCT.name), -to_cr(price), TEST_NOW),
+        (ledger_description(JournalKind.SIGNUP_GRANT), to_cr(GRANT), TEST_NOW),
+    ]
     await assert_books_balance(container.uow_factory)
 
 
@@ -370,7 +389,7 @@ async def test_the_code_of_a_voucher_its_owner_was_refunded_for_buys_nothing_at_
     scan = await portal.send(barista, "POST", "/barista/vouchers/redeem", {"code": voucher.code})
     fresh = await portal.send(user, "POST", f"/vouchers/{voucher.id}/code")
 
-    assert refunded == GRANT + MONTHLY
+    assert refunded == GRANT
     assert (scan.status_code, scan.json()["code"]) == (400, "CODE_INVALID")
     assert (fresh.status_code, fresh.json()["code"]) == (409, "CONFLICT"), (
         "an expired one takes none"
@@ -396,10 +415,11 @@ async def test_a_voucher_scanned_in_time_is_not_refunded_when_its_date_has_passe
     scan = await portal.send(barista, "POST", "/barista/vouchers/redeem", {"code": voucher.code})
     assert scan.status_code == 200, scan.text
 
-    clock.set(voucher.expires_at + timedelta(days=1))
+    clock.set(FIRST_DUE + timedelta(days=1))
+    assert voucher.expires_at < clock.now()
     after = await portal.me(user)
 
-    assert after.balance_cr == to_cr(GRANT - price + MONTHLY)
+    assert after.balance_cr == to_cr(GRANT - price + MONTHLY), "the grant, and no refund"
     assert await system_balance(container.uow_factory, AccountKind.VIS_REDEEMED) == price
     assert await entries_of(container, JournalKind.VOUCHER_REFUND) == 0
     async with container.uow_factory() as uow:
@@ -412,20 +432,22 @@ async def test_a_voucher_scanned_in_time_is_not_refunded_when_its_date_has_passe
 
 
 async def test_a_suspended_user_is_refunded_and_gets_no_grant_until_the_suspension_is_lifted(
-    portal: Portal,
-    container: Container,
-    factory: Factory,
-    clock: FrozenClock,
-    owner_engine: AsyncEngine,
+    portal: Portal, container: Container, factory: Factory, clock: FrozenClock
 ) -> None:
-    """A.3: a suspension stops what a user may do, not what they are owed back. Their
-    request is refused, and the refund of their expired voucher is booked by it all the
-    same; a monthly grant is for ACTIVE users, and follows once the account is one
-    again."""
+    """A.3: a suspension stops what a user may do, not what they are owed back. An
+    admin suspends the account through the panel's route. The user's request is then
+    refused, and the refund of their expired voucher is booked by it all the same; a
+    monthly grant is for ACTIVE users, and follows once an admin has reinstated the
+    account."""
     user = await factory.user(balance_micro=GRANT)
+    admin = await factory.admin()
     voucher = await issued_voucher(portal, user)
-    await set_status(owner_engine, user, UserStatus.SUSPENDED)
-    clock.set(voucher.expires_at + INTERVAL)
+    suspended = await portal.send(
+        admin, "POST", f"/admin/users/{user.id}/suspend", {"reason": "Under review."}
+    )
+    assert (suspended.status_code, suspended.json()["status"]) == (200, "SUSPENDED")
+    clock.set(FIRST_DUE + INTERVAL)
+    assert voucher.expires_at < clock.now(), "a refund and a grant have both fallen due"
 
     refused = await portal.send(user, "GET", "/me")
 
@@ -437,10 +459,13 @@ async def test_a_suspended_user_is_refunded_and_gets_no_grant_until_the_suspensi
     assert await entries_of(container, JournalKind.VOUCHER_REFUND) == 1
     await assert_books_balance(container.uow_factory)
 
-    await set_status(owner_engine, user, UserStatus.ACTIVE)
+    reinstated = await portal.send(
+        admin, "POST", f"/admin/users/{user.id}/reinstate", {"reason": "Cleared."}
+    )
+    assert (reinstated.status_code, reinstated.json()["status"]) == (200, "ACTIVE")
     clock.advance(INTERVAL)
     back = await portal.me(user)
 
     assert back.balance_cr == to_cr(GRANT + MONTHLY)
-    assert await periods(container, user) == sorted([month_of(NOVEMBER), SIGNUP_GRANT_PERIOD])
+    assert await periods(container, user) == sorted([month_of(FIRST_DUE), SIGNUP_GRANT_PERIOD])
     await assert_books_balance(container.uow_factory)

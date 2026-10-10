@@ -1,3 +1,5 @@
+import { useSyncExternalStore } from "react";
+
 import type { TradeTicketProps } from "@/features/trade";
 import { history, MARKET_ID, marketDetail } from "@/test/fixtures";
 import { json, mockApi, type Route } from "@/test/http";
@@ -44,4 +46,44 @@ function TicketStandIn({ market, intent, onIntentChange }: TradeTicketProps) {
   );
 }
 
-export const tradeFeature = { TradeTicket: TicketStandIn };
+/**
+ * What the stand-in says about a trade of the market. A test sets it with `sendTrade` and
+ * `answerTrade`, and `resetTrade` in its `beforeEach` puts it back.
+ */
+const trade = { out: false, listeners: new Set<() => void>() };
+
+function setOut(out: boolean) {
+  trade.out = out;
+  for (const listener of [...trade.listeners]) listener();
+}
+
+/** The ticket sent a trade: until `answerTrade`, one is on its way. */
+export const sendTrade = () => setOut(true);
+/** The trade has its answer. */
+export const answerTrade = () => setOut(false);
+/** Whether the screen is following the ticket right now. */
+export const followsTicket = () => trade.listeners.size > 0;
+
+export function resetTrade() {
+  trade.out = false;
+  trade.listeners.clear();
+}
+
+function follow(onChange: () => void) {
+  trade.listeners.add(onChange);
+  return () => {
+    trade.listeners.delete(onChange);
+  };
+}
+
+const followNothing = () => () => {};
+
+/**
+ * Stands in for `useTradeOut`: a trade is on its way when the test said so. Like the hook
+ * it stands for, it follows the ticket only while the screen says the sheet is shown.
+ */
+function useTradeOutStandIn(_marketId: string, shown: boolean): boolean {
+  return useSyncExternalStore(shown ? follow : followNothing, () => shown && trade.out);
+}
+
+export const tradeFeature = { TradeTicket: TicketStandIn, useTradeOut: useTradeOutStandIn };

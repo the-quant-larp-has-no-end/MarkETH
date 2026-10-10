@@ -7,15 +7,17 @@ import { Checkbox as CheckboxPrimitive } from "radix-ui";
 import { cn } from "@/lib/utils";
 
 /**
- * A yes-or-no setting of a form ("One code per person"). The box is 20 px; the tap
- * target is the label row around it, which is at least 44 px tall.
+ * The box of a checkbox (DESIGN.md §12): 20 px, `--radius-sm`, a 1 px `--border-strong`
+ * outline on `--background`; ticked, a `--foreground` fill with a `--primary-foreground`
+ * check. The tap target is the row around it, which `CheckboxField` of
+ * `@/components/form` builds: the box and its text, at least 44 px tall.
  */
 function Checkbox({ className, ...props }: React.ComponentProps<typeof CheckboxPrimitive.Root>) {
   return (
     <CheckboxPrimitive.Root
       data-slot="checkbox"
       className={cn(
-        "peer flex size-5 shrink-0 items-center justify-center rounded-sm border border-border-strong",
+        "peer flex size-5 shrink-0 items-center justify-center rounded-sm border border-border-strong bg-background",
         "transition-[background-color,border-color] duration-(--duration-fast)",
         "data-[state=checked]:border-primary data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground",
         "aria-invalid:border-no",

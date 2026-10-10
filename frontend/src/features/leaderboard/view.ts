@@ -49,23 +49,27 @@ export type View = {
 export type BoundKind = "amount" | "percent" | "count" | "ratio";
 
 export type Measure = {
-  /** The key the API sorts by. A key is not copy: the words are the three below. */
+  /** The key the API sorts by. A key is not copy: the words are the ones below. */
   sort: LeaderboardSort;
-  /** The name on its chip, its column heading and its row of the filter sheet. */
+  /** The name on its chip, its column heading and its group of the filter sheet. */
   name: string;
   /** The line under the title while the list is sorted by it. */
   caption: string;
+  /** What the figure is made of, in a few words, where its name alone does not say it. */
+  parts?: string;
   from: BoundName;
   to: BoundName;
   kind: BoundKind;
 };
 
-/** The four measures of DESIGN.md §13, in the order of the sort row. */
+/** The four measures of DESIGN.md §13, in the order of the sort chips. */
 export const MEASURES: readonly Measure[] = [
   {
     sort: "credits",
     name: "Tokens",
-    caption: "Tokens held right now.",
+    // `credits_cr` is the API's sum of the two: the screen says so and adds nothing.
+    caption: "Tokens in the wallet plus the value of open positions.",
+    parts: "Wallet plus open positions",
     from: "min_credits_cr",
     to: "max_credits_cr",
     kind: "amount",
@@ -163,6 +167,7 @@ export function requestOf(view: View): LeaderboardParams {
  */
 export type Draft = Record<FilterName, string>;
 
+/** How the bound of a filter is typed, or null for the two selects. */
 function kindOf(name: FilterName): BoundKind | null {
   const measure = MEASURES.find((candidate) => candidate.from === name || candidate.to === name);
   return measure?.kind ?? null;
@@ -180,61 +185,36 @@ export function draftOf(filters: Filters): Draft {
 }
 
 /**
- * What a field keeps of what is typed into it: digits for a whole number; digits, points
- * and commas for the others. Nothing else can be part of a figure, so nothing else shows.
+ * A percentage as it was typed, as the fraction the API takes: the decimal point moves
+ * two places in the string, and nothing is calculated. A point nothing follows and a
+ * point nothing stands before are a figure that is being typed: `80.` is 80 percent and
+ * `.5` half a percent. Null for what is no percentage.
  */
-export function cleanBound(kind: BoundKind, typed: string): string {
-  return typed.replace(kind === "count" ? /\D/g : /[^\d.,]/g, "");
-}
-
-/** A figure with its thousands grouped, the way the app itself writes one: `1,204.5`. */
-const GROUPED = /^[1-9]\d{0,2}(,\d{3})+(\.\d+)?$/;
-/** A figure with a decimal comma, which is what the decimal key of many phones here types. */
-const DECIMAL_COMMA = /^\d*,\d+$/;
-
-/**
- * A figure as it was typed, as the plain decimal the API reads. This is spelling, not
- * arithmetic, and it only settles what a comma means:
- *
- * - `1,204.5` is read the way the app writes it: the commas group thousands and go.
- * - `62,5` has a decimal comma: it becomes a point.
- * - A separator nothing follows is dropped (`5.` is `5`), and a figure that starts with
- *   one gets its zero (`.5` is `0.5`).
- *
- * Anything else stays as it is, and the API says on the field what it makes of it.
- */
-function finish(typed: string): string {
-  let text = typed.trim().replace(/[.,]$/, "");
-  if (GROUPED.test(text)) text = text.replace(/,/g, "");
-  else if (DECIMAL_COMMA.test(text)) text = text.replace(",", ".");
-  return text.startsWith(".") ? `0${text}` : text;
-}
-
-/** The fields as they are sent: each bound finished, the rest as it stands. */
-export function finishDraft(draft: Draft): Draft {
-  const finished = { ...draft };
-  for (const name of BOUND_NAMES) finished[name] = finish(draft[name]);
-  return finished;
+function fractionOf(typed: string): string | null {
+  // A point alone is no figure yet.
+  if (typed === ".") return null;
+  const whole = typed.startsWith(".") ? `0${typed}` : typed;
+  return percentToFraction(whole.endsWith(".") ? whole.slice(0, -1) : whole);
 }
 
 /**
- * The filters a finished draft stands for. A percentage becomes the fraction the API
- * takes by moving its decimal point in the string; every other field is sent as typed.
- * What is no percentage goes out as it is, and the API says so on its field.
+ * The filters a draft stands for. A percentage becomes the fraction the API takes; every
+ * other field is sent with the characters that were typed (DESIGN.md §10). What is no
+ * percentage goes out as it is, and the API says so on its field.
  */
 export function filtersOf(draft: Draft): Filters {
   const filters: Filters = {};
   for (const name of FILTER_NAMES) {
     const text = draft[name];
     if (text === "") continue;
-    filters[name] = kindOf(name) === "percent" ? (percentToFraction(text) ?? text) : text;
+    filters[name] = kindOf(name) === "percent" ? (fractionOf(text) ?? text) : text;
   }
   return filters;
 }
 
 /* ---- Filters that are set ---------------------------------------------------------- */
 
-/** A filter that is set, as its chip under the sort row states it. */
+/** A filter that is set, as its chip under the sort chips states it. */
 export type SetFilter = {
   id: string;
   /** "BSc Computer Science", "Win rate from 50%". */

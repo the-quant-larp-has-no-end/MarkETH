@@ -326,8 +326,9 @@ describe("getting a voucher", () => {
     await waitFor(() => expect(button).toBeDisabled());
     expect(button).toHaveAttribute("aria-busy", "true");
     expect(within(sheet).getByRole("button", { name: "Back" })).toBeDisabled();
-    // No drag, no cross, no Escape: the sheet stays until the answer is there.
-    expect(within(sheet).queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
+    // No drag, no Escape, and the close cross is disabled: the sheet stays until the
+    // answer is there.
+    expect(within(sheet).getByRole("button", { name: "Close" })).toBeDisabled();
     await user.keyboard("{Escape}");
     expect(screen.getByRole("dialog")).toBeInTheDocument();
 

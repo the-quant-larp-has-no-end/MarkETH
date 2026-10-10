@@ -2,7 +2,7 @@
 
 import { BeanDrop } from "@/components/feedback";
 import { Amount } from "@/components/money";
-import { Day } from "@/components/time";
+import { DateTime } from "@/components/time";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { MeResponse } from "@/lib/api/schema";
@@ -19,7 +19,8 @@ export type Arrival = {
 /**
  * The balance card of the Wallet (DESIGN.md §13): the token icon and `balance_cr` in
  * `display`, labelled "Your tokens", and below it when the next monthly tokens come and
- * how many. Every figure is a field of `GET /me`, shown as sent.
+ * how many. Every figure is a field of `GET /me`, shown as sent. Monthly tokens come due
+ * on the day and at the time of day the profile was created, so the line names both.
  *
  * The bean drop plays into the balance when a code is redeemed (DESIGN.md §7), once per
  * `arrival` and never when the Wallet opens: tokens booked while nobody was looking
@@ -29,7 +30,7 @@ export function BalanceCard({
   me,
   arrival,
 }: {
-  me: Pick<MeResponse, "balance_cr" | "monthly_grant_cr" | "next_monthly_grant_on">;
+  me: Pick<MeResponse, "balance_cr" | "monthly_grant_cr" | "next_monthly_grant_at">;
   arrival: Arrival | null;
 }) {
   return (
@@ -45,7 +46,7 @@ export function BalanceCard({
       </BeanDrop>
       <p className="type-body-sm text-muted-foreground">
         Next monthly tokens: {formatAmount(me.monthly_grant_cr)} on{" "}
-        <Day value={me.next_monthly_grant_on} />
+        <DateTime value={me.next_monthly_grant_at} />
       </p>
     </Card>
   );

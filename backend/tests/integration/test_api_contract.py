@@ -10,6 +10,7 @@ marker.
 """
 
 import json
+import time
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -40,19 +41,37 @@ from app.core.identity import USERNAME_PATTERN, AuthenticatedUser, Caller, Porta
 from app.core.units import MICRO, format_cr, to_cr
 from app.main import create_app
 from app.pricing import lmsr
-from app.schemas.admin.code_batches import CreateCodeBatchRequest
-from app.schemas.admin.markets import ApproveMarketRequest
+from app.schemas.admin.code_batches import (
+    LABEL_MAX_LENGTH,
+    MAX_CODES_PER_BATCH,
+    CreateCodeBatchRequest,
+)
+from app.schemas.admin.markets import (
+    BUDGET_NEEDED_MESSAGE,
+    BUDGET_NOT_TAKEN_MESSAGE,
+    ApproveMarketRequest,
+)
+from app.schemas.admin.users import AdjustBalanceRequest, AdminUserListQuery
 from app.schemas.common import (
     CreditAmount,
     ErrorResponse,
     Limit,
+    NonZeroCreditAmount,
     PageQuery,
     PositiveCreditAmount,
     SignedCreditAmount,
 )
 from app.schemas.live import QuoteEvent, StatusEvent
 from app.schemas.markets import ProposeMarketRequest
-from app.schemas.trading import QuoteQuery, QuoteResponse, TradeRequest
+from app.schemas.profile import SaveProfileRequest
+from app.schemas.trading import (
+    GUARD_DOES_NOT_APPLY_MESSAGE,
+    SELL_BY_SHARES_MESSAGE,
+    SIZED_ONE_WAY_MESSAGE,
+    QuoteQuery,
+    QuoteResponse,
+    TradeRequest,
+)
 from app.services.live_quotes import Heartbeat, LiveEvent
 from scripts.export_openapi import OPENAPI_FILE, render_openapi
 from tests.support.clock import TEST_NOW, FrozenClock
@@ -96,13 +115,20 @@ APPENDIX_A2: Final[frozenset[Operation]] = frozenset(
         ("GET", "/api/config"),
         ("PUT", "/api/me/profile"),
         ("GET", "/api/me/proposals"),
+        ("POST", "/api/me/notices/{notice_id}/seen"),
         ("GET", "/api/me/vouchers"),
         ("GET", "/api/vouchers/products"),
         ("POST", "/api/vouchers/{voucher_id}/code"),
         ("GET", "/api/leaderboard"),
         ("GET", "/api/admin/code-batches"),
+        ("GET", "/api/admin/code-batches/{batch_id}/codes"),
         ("POST", "/api/admin/alerts/{alert_id}/ack"),
         ("POST", "/api/admin/grants/monthly"),
+        ("GET", "/api/admin/users"),
+        ("POST", "/api/admin/users/{user_id}/suspend"),
+        ("POST", "/api/admin/users/{user_id}/reinstate"),
+        ("POST", "/api/admin/users/{user_id}/role"),
+        ("POST", "/api/admin/users/{user_id}/adjustments"),
     }
 )
 
@@ -111,8 +137,9 @@ SUCCESS_STATUS: Final[dict[Operation, str]] = {
     ("POST", "/api/markets/{market_id}/trades"): "201",
     ("POST", "/api/vouchers"): "201",
     ("POST", "/api/admin/code-batches"): "201",
+    ("POST", "/api/admin/users/{user_id}/adjustments"): "201",
 }
-"""Operations that do not answer 200: the four that create something."""
+"""Operations that do not answer 200: the five that create something."""
 
 ERROR_REF: Final[dict[str, str]] = {"$ref": "#/components/schemas/ErrorResponse"}
 
@@ -136,11 +163,11 @@ IDENTITY_ACCESS: Final[frozenset[Operation]] = frozenset({("PUT", "/api/me/profi
 OPERATIONS_PER_ACCESS: Final[dict[str, int]] = {
     "public": 2,
     "identity": 1,
-    "member": 18,
+    "member": 19,
     "staff": 1,
-    "admin": 13,
+    "admin": 19,
 }
-"""How the 35 operations fall into the five access levels of A.2."""
+"""How the 42 operations fall into the five access levels of A.2."""
 
 VOUCHER_FIELDS: Final[frozenset[str]] = frozenset(
     {
@@ -148,6 +175,7 @@ VOUCHER_FIELDS: Final[frozenset[str]] = frozenset(
         "product_id",
         "product_name",
         "status",
+        "refunded",
         "value_cr",
         "created_at",
         "expires_at",
@@ -168,6 +196,7 @@ MARKET_VIEWER_FIELDS: Final[frozenset[str]] = frozenset(
         "stake_limit_cr",
         "stake_left_cr",
         "stake_presets",
+        "buy_slider",
         "sell_presets",
         "can_trade",
         "cannot_trade_reason",
@@ -186,6 +215,7 @@ CONFIG_FIELDS: Final[frozenset[str]] = frozenset(
         "degrees",
         "max_stake_per_market_cr",
         "stake_presets_cr",
+        "stake_step_cr",
         "min_trade_cr",
         "min_trade_shares",
         "price_display_decimals",
@@ -205,6 +235,8 @@ CONFIG_FIELDS: Final[frozenset[str]] = frozenset(
         "code_max_value_cr",
         "code_default_value_cr",
         "max_code_issuance_per_month_cr",
+        "code_batch_max_count",
+        "code_label_max_length",
         "voucher_code_length",
         "voucher_expiry_days",
     }
@@ -237,6 +269,8 @@ LEADERBOARD_ENTRY_FIELDS: Final[frozenset[str]] = frozenset(
         "degree_level",
         "degree_programme",
         "credits_cr",
+        "balance_cr",
+        "positions_value_cr",
         "trades",
         "settled_markets",
         "win_rate",
@@ -255,12 +289,31 @@ ME_FIELDS: Final[frozenset[str]] = frozenset(
         "degree_programme",
         "role",
         "created_at",
+        "policy_accepted_at",
         "balance_cr",
         "can_get_voucher",
         "monthly_grant_cr",
-        "next_monthly_grant_on",
+        "next_monthly_grant_at",
+        "notices",
     }
 )
+
+ADMIN_USER_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "id",
+        "email",
+        "name",
+        "username",
+        "degree_level",
+        "degree_programme",
+        "role",
+        "status",
+        "bootstrap_admin",
+        "balance_cr",
+        "created_at",
+    }
+)
+"""A user as the admin panel lists them."""
 
 
 @pytest.fixture(scope="module")
@@ -298,7 +351,7 @@ def test_every_endpoint_of_the_spec_is_served_and_nothing_else(document: dict[st
     expected = SPEC_SECTION_10 | APPENDIX_A2
     assert expected - served == set(), "in SPEC §10 or A.2 but not served"
     assert served - expected == set(), "served but in neither SPEC §10 nor A.2"
-    assert len(served) == 35
+    assert len(served) == 42
 
 
 def test_the_document_names_the_api_and_lives_under_api(document: dict[str, Any]) -> None:
@@ -375,8 +428,8 @@ def test_every_operation_says_who_may_call_it(document: dict[str, Any]) -> None:
 
 
 def test_the_operations_fall_into_the_five_access_levels(document: dict[str, Any]) -> None:
-    """Two need nobody, one needs a name, eighteen a profile, one a barista, thirteen an
-    admin: a route that moved to another level shows here."""
+    """Two need nobody, one needs a name, nineteen a profile, one a barista, nineteen
+    an admin: a route that moved to another level shows here."""
     levels = {
         json.dumps(NO_IDENTITY): "public",
         json.dumps(IDENTITY): "identity",
@@ -389,7 +442,7 @@ def test_the_operations_fall_into_the_five_access_levels(document: dict[str, Any
         counted[levels[json.dumps(spec.get("security", NO_IDENTITY))]] += 1
 
     assert counted == OPERATIONS_PER_ACCESS
-    assert sum(counted.values()) == 35
+    assert sum(counted.values()) == 42
 
 
 def test_the_one_security_scheme_is_the_header_in_which_the_portal_names_the_caller(
@@ -418,20 +471,18 @@ def test_the_profile_route_takes_a_profile_and_answers_like_me(
     assert set(schemas["ProfileSavedResponse"]["properties"]) == ME_FIELDS | {"signup_granted"}
 
 
-def test_a_profile_request_states_a_username_and_a_degree(
+def test_a_profile_request_states_a_username_a_degree_and_whether_the_policy_is_accepted(
     schemas: dict[str, dict[str, Any]],
 ) -> None:
     request = schemas["SaveProfileRequest"]
     fields = request["properties"]
-    assert (
-        set(request["required"])
-        == set(fields)
-        == {
-            "username",
-            "degree_level",
-            "degree_programme",
-        }
-    )
+    assert set(request["required"]) == {"username", "degree_level", "degree_programme"}
+    assert set(fields) == set(request["required"]) | {"policy_accepted"}
+    # A plain boolean that may be left out: a save that edits a profile sends none, and
+    # whether a save needs it is the service's to say.
+    policy = fields["policy_accepted"]
+    assert (policy["type"], policy["default"]) == ("boolean", False)
+    assert "const" not in policy
     username = fields["username"]
     assert (username["minLength"], username["maxLength"]) == (1, 32)
     # Lower case only, and the very expression the database holds the column to.
@@ -442,6 +493,119 @@ def test_a_profile_request_states_a_username_and_a_degree(
     assert (programme["minLength"], programme["maxLength"]) == (1, 100)
     assert schemas["DegreeLevel"]["enum"] == [level.value for level in DegreeLevel]
     assert len(DegreeLevel) == 6
+
+
+def test_me_says_when_the_policy_was_accepted_and_when_the_next_grant_falls_due(
+    schemas: dict[str, dict[str, Any]],
+) -> None:
+    """Two instants. The frontend formats the second in the viewer's own timezone and
+    works out no date of its own."""
+    me = schemas["MeResponse"]["properties"]
+    for instant in ("policy_accepted_at", "next_monthly_grant_at", "created_at"):
+        assert (me[instant]["type"], me[instant]["format"]) == ("string", "date-time"), instant
+    assert me["role"] == {"$ref": "#/components/schemas/UserRole"} | {
+        "description": me["role"]["description"]
+    }
+    assert schemas["UserRole"]["enum"] == ["USER", "ADMIN", "BARISTA"]
+
+
+def test_a_proposal_carries_the_acceptance_of_the_policy_and_only_true_is_one(
+    schemas: dict[str, dict[str, Any]],
+) -> None:
+    """`const: true`: the generated client cannot send a proposal that declines."""
+    proposal = schemas["ProposeMarketRequest"]
+    assert "policy_accepted" in proposal["required"]
+    policy = proposal["properties"]["policy_accepted"]
+    assert (policy["type"], policy["const"]) == ("boolean", True)
+
+
+def test_the_admin_lists_users_by_a_text_a_role_and_a_status_page_by_page(
+    document: dict[str, Any], schemas: dict[str, dict[str, Any]]
+) -> None:
+    listing = document["paths"]["/api/admin/users"]["get"]
+    assert "requestBody" not in listing
+    parameters = {parameter["name"]: parameter for parameter in listing["parameters"]}
+    assert set(parameters) == {"q", "role", "status", "limit", "cursor"}
+    assert all(parameter["in"] == "query" for parameter in parameters.values())
+    assert not any(parameter["required"] for parameter in parameters.values())
+
+    def kinds(name: str) -> list[dict[str, Any]]:
+        """The alternatives of an optional parameter other than null."""
+        return [
+            option for option in parameters[name]["schema"]["anyOf"] if option != {"type": "null"}
+        ]
+
+    assert kinds("q") == [{"type": "string", "minLength": 1, "maxLength": 100}]
+    assert kinds("role") == [{"$ref": "#/components/schemas/UserRole"}]
+    assert kinds("status") == [{"$ref": "#/components/schemas/UserStatus"}]
+    assert schemas["UserStatus"]["enum"] == ["ACTIVE", "SUSPENDED"]
+    assert parameters["limit"]["schema"]["maximum"] == 200
+
+    answered = listing["responses"]["200"]["content"]["application/json"]["schema"]
+    assert answered == {"$ref": "#/components/schemas/AdminUserListResponse"}
+    page = schemas["AdminUserListResponse"]["properties"]
+    assert set(page) == {"items", "next_cursor"}
+    assert page["items"]["items"] == {"$ref": "#/components/schemas/AdminUserItem"}
+
+    user = schemas["AdminUserItem"]["properties"]
+    assert set(user) == ADMIN_USER_FIELDS
+    assert user["bootstrap_admin"]["type"] == "boolean"
+    assert user["balance_cr"]["type"] == "string"
+    assert user["status"] == {"$ref": "#/components/schemas/UserStatus"}
+
+
+def test_the_three_actions_on_an_account_take_a_small_body_and_answer_with_the_user(
+    document: dict[str, Any], schemas: dict[str, dict[str, Any]]
+) -> None:
+    bodies = {
+        "suspend": ("SuspendUserRequest", {"reason"}),
+        "reinstate": ("ReinstateUserRequest", {"reason"}),
+        "role": ("SetUserRoleRequest", {"role"}),
+    }
+    for action, (request, fields) in bodies.items():
+        operation = document["paths"][f"/api/admin/users/{{user_id}}/{action}"]["post"]
+        (parameter,) = operation["parameters"]
+        assert (parameter["name"], parameter["in"], parameter["required"]) == (
+            "user_id",
+            "path",
+            True,
+        )
+        assert parameter["schema"] | {"type": "string", "format": "uuid"} == parameter["schema"]
+        sent = operation["requestBody"]["content"]["application/json"]["schema"]
+        assert sent == {"$ref": f"#/components/schemas/{request}"}, action
+        assert set(schemas[request]["required"]) == set(schemas[request]["properties"]) == fields
+        answered = operation["responses"]["200"]["content"]["application/json"]["schema"]
+        assert answered == {"$ref": "#/components/schemas/AdminUserItem"}, action
+    for request in ("SuspendUserRequest", "ReinstateUserRequest"):
+        reason = schemas[request]["properties"]["reason"]
+        assert (reason["type"], reason["minLength"], reason["maxLength"]) == ("string", 1, 500)
+    assert schemas["SetUserRoleRequest"]["properties"]["role"]["$ref"].endswith("/UserRole")
+
+
+def test_an_adjustment_is_a_signed_amount_with_a_reason_under_an_idempotency_key(
+    document: dict[str, Any], schemas: dict[str, dict[str, Any]]
+) -> None:
+    adjust = document["paths"]["/api/admin/users/{user_id}/adjustments"]["post"]
+    (header,) = [p for p in adjust["parameters"] if p["in"] == "header"]
+    assert (header["name"], header["required"]) == ("Idempotency-Key", True)
+    assert header["schema"] | {"type": "string", "format": "uuid"} == header["schema"]
+    sent = adjust["requestBody"]["content"]["application/json"]["schema"]
+    assert sent == {"$ref": "#/components/schemas/AdjustBalanceRequest"}
+    answered = adjust["responses"]["201"]["content"]["application/json"]["schema"]
+    assert answered == {"$ref": "#/components/schemas/BalanceAdjustmentResponse"}
+
+    request = schemas["AdjustBalanceRequest"]
+    assert set(request["required"]) == set(request["properties"]) == {"amount_cr", "reason"}
+    amount = request["properties"]["amount_cr"]
+    assert (amount["type"], amount["pattern"]) == ("string", "^-?[0-9]{1,9}(\\.[0-9]{1,6})?$")
+    reason = request["properties"]["reason"]
+    assert (reason["minLength"], reason["maxLength"]) == (1, 500)
+
+    booked = schemas["BalanceAdjustmentResponse"]["properties"]
+    assert set(booked) == {"user_id", "amount_cr", "balance_cr", "created_at"}
+    assert booked["amount_cr"]["pattern"].startswith("^-?"), "signed: a debit is negative"
+    assert not booked["balance_cr"]["pattern"].startswith("^-?")
+    assert "ADMIN_ADJUSTMENT" in schemas["JournalKind"]["enum"]
 
 
 def test_config_offers_the_degree_catalogue_and_the_username_lengths(
@@ -477,6 +641,24 @@ def test_config_tells_the_frontend_exactly_these_things(
     assert proposal["resolution_criteria"]["maxLength"] == 2000
 
 
+def test_config_announces_the_bounds_the_batch_request_holds_a_batch_to(
+    schemas: dict[str, dict[str, Any]],
+) -> None:
+    """How many codes and how long a label: the form says so before a 422 does, and
+    each figure is the one constant the request model reads."""
+    config = schemas["PublicConfigResponse"]["properties"]
+    for bound in ("code_batch_max_count", "code_label_max_length"):
+        assert config[bound]["type"] == "integer", bound
+        assert bound in schemas["PublicConfigResponse"]["required"], bound
+
+    batch = schemas["CreateCodeBatchRequest"]["properties"]
+    assert (batch["count"]["minimum"], batch["count"]["maximum"]) == (1, MAX_CODES_PER_BATCH)
+    assert (batch["label"]["minLength"], batch["label"]["maxLength"]) == (1, LABEL_MAX_LENGTH)
+    count, label = (CreateCodeBatchRequest.model_fields[name] for name in ("count", "label"))
+    assert MAX_CODES_PER_BATCH in [getattr(rule, "le", None) for rule in count.metadata]
+    assert LABEL_MAX_LENGTH in [getattr(rule, "max_length", None) for rule in label.metadata]
+
+
 def test_a_market_always_comes_with_the_viewers_side(schemas: dict[str, dict[str, Any]]) -> None:
     """Every reader of a market is a user, so `viewer` is an object, never null."""
     viewer = schemas["MarketDetailResponse"]["properties"]["viewer"]
@@ -505,6 +687,150 @@ def test_the_viewers_side_says_what_a_settled_market_paid_and_who_may_settle_it(
     assert entry["refund_cr"]["anyOf"] == viewer["refund_cr"]["anyOf"]
 
 
+def test_the_viewers_side_carries_the_slider_of_a_buy_in_whole_credits(
+    schemas: dict[str, dict[str, Any]],
+) -> None:
+    """`{min, max, step}` as JSON integers, which is what a range input takes, or null
+    where the viewer cannot buy. The step is also in `/config`, as an amount."""
+    viewer = schemas["MarketViewer"]["properties"]
+    assert viewer["buy_slider"]["anyOf"] == [
+        {"$ref": "#/components/schemas/BuySlider"},
+        {"type": "null"},
+    ]
+    assert "buy_slider" in schemas["MarketViewer"]["required"]
+
+    slider = schemas["BuySlider"]
+    assert set(slider["required"]) == set(slider["properties"]) == {"min", "max", "step"}
+    for position in ("min", "max", "step"):
+        assert slider["properties"][position]["type"] == "integer", position
+
+    config = schemas["PublicConfigResponse"]["properties"]
+    assert config["stake_step_cr"]["type"] == "string"
+    assert config["stake_step_cr"]["pattern"] == config["min_trade_cr"]["pattern"]
+    # The buttons stay beside it.
+    assert viewer["stake_presets"]["items"] == {"$ref": "#/components/schemas/StakePreset"}
+
+
+def test_a_proposal_asks_for_no_liquidity_and_a_market_tells_it_to_admins_only(
+    schemas: dict[str, dict[str, Any]],
+) -> None:
+    """Nothing a user sends or reads names a tier they could pick. The three liquidity
+    figures of a market are always sent and are null to whoever is no admin."""
+    proposal = schemas["ProposeMarketRequest"]
+    assert (
+        set(proposal["properties"])
+        == set(proposal["required"])
+        == {
+            "question",
+            "yes_definition",
+            "no_definition",
+            "resolution_criteria",
+            "resolution_source",
+            "close_at",
+            "resolve_by",
+            "policy_accepted",
+        }
+    )
+
+    detail = schemas["MarketDetailResponse"]
+    assert "requested_tier" not in detail["properties"]
+    assert detail["properties"]["tier"]["anyOf"] == [
+        {"$ref": "#/components/schemas/MarketTier"},
+        {"type": "null"},
+    ]
+    for amount in ("b_cr", "max_loss_cr"):
+        string, null = detail["properties"][amount]["anyOf"]
+        assert (string["type"], null) == ("string", {"type": "null"}), amount
+    for told_to_admins in ("tier", "b_cr", "max_loss_cr", "void_cost_cr", "proposer_email"):
+        assert told_to_admins in detail["required"], told_to_admins
+        assert "admins only" in detail["properties"][told_to_admins]["description"]
+
+    liquidity = {"requested_tier", "tier", "b_cr", "max_loss_cr", "void_cost_cr", "budget_cr"}
+    for told_to_everybody in ("ProposalItem", "MarketSummary", "MarketViewer", "PortfolioEntry"):
+        assert liquidity.isdisjoint(schemas[told_to_everybody]["properties"]), told_to_everybody
+    # The approval is where a tier is picked, by an admin, from what `/config` lists.
+    assert "tier" in schemas["ApproveMarketRequest"]["required"]
+    assert schemas["PublicConfigResponse"]["properties"]["tiers"]["items"] == {
+        "$ref": "#/components/schemas/TierConfig"
+    }
+
+
+def test_a_quote_takes_the_size_of_a_trade_and_is_for_the_caller(
+    document: dict[str, Any], schemas: dict[str, dict[str, Any]]
+) -> None:
+    """Side, outcome and one of amount and shares: no guard, no key and no body. Who it
+    is for is the caller, so the answer names the errors their trade would get."""
+    quote = document["paths"]["/api/markets/{market_id}/quote"]["get"]
+    assert "requestBody" not in quote
+    assert {(parameter["name"], parameter["in"]) for parameter in quote["parameters"]} == {
+        ("market_id", "path"),
+        ("side", "query"),
+        ("outcome", "query"),
+        ("amount_cr", "query"),
+        ("shares", "query"),
+    }
+    assert quote["security"] == MEMBER
+    answered = quote["responses"]["200"]["content"]["application/json"]["schema"]
+    assert answered == {"$ref": "#/components/schemas/QuoteResponse"}
+    described = schemas["QuoteResponse"]["description"]
+    for code in (
+        ErrorCode.FORBIDDEN,
+        ErrorCode.MARKET_NOT_OPEN,
+        ErrorCode.INSUFFICIENT_SHARES,
+        ErrorCode.TRADE_TOO_SMALL,
+        ErrorCode.LIMIT_EXCEEDED,
+        ErrorCode.INSUFFICIENT_BALANCE,
+    ):
+        assert f"`{code.value}`" in described, code
+
+
+def test_an_admin_opens_the_codes_of_a_batch_again_by_its_id(
+    document: dict[str, Any], schemas: dict[str, dict[str, Any]]
+) -> None:
+    """A read that takes nothing but the batch, and answers in the shape the creation
+    answered in, so the card sheet is built from either."""
+    read = document["paths"]["/api/admin/code-batches/{batch_id}/codes"]["get"]
+    assert "requestBody" not in read
+    (parameter,) = read["parameters"]
+    assert (parameter["name"], parameter["in"], parameter["required"]) == (
+        "batch_id",
+        "path",
+        True,
+    )
+    assert parameter["schema"] | {"type": "string", "format": "uuid"} == parameter["schema"]
+    assert read["security"] == ADMIN
+    assert "audited" in read["summary"]
+    answered = read["responses"]["200"]["content"]["application/json"]["schema"]
+    assert answered == {"$ref": "#/components/schemas/CodeBatchCodesResponse"}
+
+    def shape(schema: str) -> dict[str, Any]:
+        """The fields of a schema without what is written about them."""
+        return {
+            name: {key: value for key, value in field.items() if key != "description"}
+            for name, field in schemas[schema]["properties"].items()
+        }
+
+    assert (
+        shape("CodeBatchCodesResponse")
+        == shape("CodeBatchCreatedResponse")
+        == {
+            "batch": {"$ref": "#/components/schemas/CodeBatchItem"},
+            "codes": {
+                "type": "array",
+                "items": {"$ref": "#/components/schemas/CreatedCode"},
+                "title": "Codes",
+            },
+        }
+    )
+    assert set(schemas["CreatedCode"]["properties"]) == {"code", "redeem_url"}
+    # Creating a batch answers as it did, and the list of batches holds no code.
+    create = document["paths"]["/api/admin/code-batches"]["post"]
+    created = create["responses"]["201"]["content"]["application/json"]["schema"]
+    assert created == {"$ref": "#/components/schemas/CodeBatchCreatedResponse"}
+    assert "codes" not in schemas["CodeBatchListResponse"]["properties"]
+    assert "code" not in schemas["CodeBatchItem"]["properties"]
+
+
 def test_the_market_list_takes_the_status_any_number_of_times(
     document: dict[str, Any], schemas: dict[str, dict[str, Any]]
 ) -> None:
@@ -523,6 +849,7 @@ def test_the_market_list_takes_the_status_any_number_of_times(
         "CLOSED",
         "RESOLVED",
         "VOID",
+        "EXPIRED",
     ]
     answered = listing["responses"]["200"]["content"]["application/json"]["schema"]
     assert answered == {"$ref": "#/components/schemas/MarketListResponse"}
@@ -536,6 +863,73 @@ def test_the_risk_page_says_what_voiding_a_market_would_cost(
     assert row["void_cost_cr"]["type"] == "string"
     assert row["void_cost_cr"]["pattern"] == row["exposure_cr"]["pattern"], "signed, like exposure"
     assert row["void_cost_cr"]["pattern"].startswith("^-?")
+
+
+def test_an_admin_reads_the_void_cost_on_the_market_itself_and_nobody_else_does(
+    schemas: dict[str, dict[str, Any]],
+) -> None:
+    """The figure of the risk page, on the page an admin voids a market from: the same
+    signed amount, always sent, and null to whoever is no admin."""
+    detail = schemas["MarketDetailResponse"]
+    amount, null = detail["properties"]["void_cost_cr"]["anyOf"]
+    assert null == {"type": "null"}
+    assert amount["type"] == "string"
+    assert amount["pattern"] == schemas["RiskMarketRow"]["properties"]["void_cost_cr"]["pattern"]
+    assert "void_cost_cr" in detail["required"]
+
+
+def test_the_risk_page_shows_the_months_adjustments_beside_the_months_codes(
+    schemas: dict[str, dict[str, Any]],
+) -> None:
+    """Signed: what admins took from balances can outweigh what they added."""
+    risk = schemas["RiskResponse"]
+    adjustments = risk["properties"]["adjustments_this_month_cr"]
+    issued = risk["properties"]["code_issuance_this_month_cr"]
+    assert "adjustments_this_month_cr" in risk["required"]
+    assert adjustments["type"] == "string"
+    assert adjustments["pattern"].startswith("^-?")
+    assert not issued["pattern"].startswith("^-?")
+
+
+def test_the_chart_says_where_its_right_edge_is(
+    document: dict[str, Any], schemas: dict[str, dict[str, Any]]
+) -> None:
+    """`until` is an instant of the server, so a chart is drawn with no device clock."""
+    history = document["paths"]["/api/markets/{market_id}/history"]["get"]
+    answered = history["responses"]["200"]["content"]["application/json"]["schema"]
+    assert answered == {"$ref": "#/components/schemas/HistoryResponse"}
+
+    chart = schemas["HistoryResponse"]
+    assert set(chart["required"]) == set(chart["properties"]) == {"points", "source", "until"}
+    until = chart["properties"]["until"]
+    assert (until["type"], until["format"]) == ("string", "date-time")
+    assert set(schemas["HistoryPoint"]["properties"]) == {"t", "p_yes", "version"}
+
+
+def test_a_proposal_in_the_list_says_how_its_market_ended(
+    schemas: dict[str, dict[str, Any]],
+) -> None:
+    """The same nullable outcome a market card carries."""
+    proposal = schemas["ProposalItem"]
+    assert "outcome" in proposal["required"]
+    assert proposal["properties"]["outcome"]["anyOf"] == [
+        {"$ref": "#/components/schemas/ResolutionOutcome"},
+        {"type": "null"},
+    ]
+    assert (
+        proposal["properties"]["outcome"]["anyOf"]
+        == schemas["MarketSummary"]["properties"]["outcome"]["anyOf"]
+        == schemas["MarketDetailResponse"]["properties"]["outcome"]["anyOf"]
+    )
+    assert schemas["ResolutionOutcome"]["enum"] == ["YES", "NO", "VOID"]
+
+
+def test_a_batch_says_whether_a_revoke_would_revoke_anything(
+    schemas: dict[str, dict[str, Any]],
+) -> None:
+    batch = schemas["CodeBatchItem"]
+    assert "can_revoke" in batch["required"]
+    assert batch["properties"]["can_revoke"]["type"] == "boolean"
 
 
 def test_the_leaderboard_takes_its_order_and_its_filters_as_query_parameters(
@@ -615,6 +1009,20 @@ def test_a_leaderboard_row_names_nobody_and_carries_rates_as_nullable_numbers(
     assert entry["degree_level"] == {"$ref": "#/components/schemas/DegreeLevel"}
 
 
+LIMITS_NO_OPERATION_REFUSES_WITH: Final[frozenset[Limit]] = frozenset(
+    {
+        Limit.PROGRAMME_CHANGE_COOLDOWN_DAYS,
+        Limit.DISCUSSION_MAX_WAITING_PER_USER,
+        Limit.DISCUSSION_MAX_QUESTIONS_PER_MARKET,
+        Limit.MAX_LIVE_BROADCASTS,
+        Limit.MAX_BROADCAST_REQUESTS_PER_USER_PER_DAY,
+    }
+)
+"""Members of `Limit` that no operation answers with, so `ErrorResponse` does not describe
+them. The test below fails for a member the description names: whoever adds the refusal
+describes it there and takes the name out of this set."""
+
+
 def test_the_error_schema_says_what_details_carries(schemas: dict[str, dict[str, Any]]) -> None:
     """`details` is a free object; its keys per code are in the description."""
     description = schemas["ErrorResponse"]["description"]
@@ -630,6 +1038,8 @@ def test_the_error_schema_says_what_details_carries(schemas: dict[str, dict[str,
         ErrorCode.SERVICE_UNAVAILABLE,
     ):
         assert f"`{code.value}`" in description, code
+    assert "`policy_accepted`" in description
+    assert "`GET /markets/{id}/quote`" in description, "a quote is answered like its trade"
     for key in (
         "errors",
         "field",
@@ -648,8 +1058,10 @@ def test_the_error_schema_says_what_details_carries(schemas: dict[str, dict[str,
         "required_cr",
     ):
         assert f"`{key}`" in description, key
+    # A limit is named exactly if an operation refuses with it.
     for limit in Limit:
-        assert f"`{limit.value}`" in description, limit
+        named = f"`{limit.value}`" in description
+        assert named == (limit not in LIMITS_NO_OPERATION_REFUSES_WITH), limit
 
 
 def test_the_redeem_request_says_that_the_client_sends_the_bare_code(
@@ -687,7 +1099,15 @@ def test_a_voucher_is_issued_for_a_product_and_every_answer_names_it(
         "product_name",
         "value_cr",
         "redeemed_at",
+        "repeat",
     }
+    # Whether an expired voucher has its value back, on every shape that is a voucher.
+    for voucher in ("VoucherItem", "VoucherIssuedResponse"):
+        assert schemas[voucher]["properties"]["refunded"]["type"] == "boolean", voucher
+        assert "refunded" in schemas[voucher]["required"], voucher
+    # A second scan by the same barista is told apart from the first by this flag.
+    assert schemas["VoucherRedeemResponse"]["properties"]["repeat"]["type"] == "boolean"
+    assert "repeat" in schemas["VoucherRedeemResponse"]["required"]
 
 
 def test_a_barista_sends_the_code_of_a_voucher_in_the_body(
@@ -766,9 +1186,15 @@ def test_a_voucher_gets_a_fresh_code_from_a_route_that_takes_no_body(
 
     assert set(schemas["VoucherCodeResponse"]["properties"]) == {
         "voucher_id",
+        "product_name",
         "code",
         "expires_at",
     }
+    assert (
+        schemas["VoucherCodeResponse"]["properties"]["product_name"]["type"]
+        == schemas["VoucherItem"]["properties"]["product_name"]["type"]
+        == "string"
+    )
     assert "code" not in schemas["VoucherItem"]["properties"]
     assert schemas["VoucherListResponse"]["properties"]["items"]["items"] == {
         "$ref": "#/components/schemas/VoucherItem"
@@ -828,15 +1254,32 @@ def test_the_trade_route_requires_an_idempotency_key_that_is_a_uuid(
     assert header["schema"] | {"type": "string", "format": "uuid"} == header["schema"]
 
 
+def test_exactly_the_trade_route_and_the_adjustment_route_take_an_idempotency_key(
+    document: dict[str, Any],
+) -> None:
+    """No other operation takes a header of its own."""
+    keyed = {
+        operation
+        for operation, spec in each_operation(document)
+        for parameter in spec.get("parameters", [])
+        if parameter["in"] == "header"
+    }
+    assert keyed == {
+        ("POST", "/api/markets/{market_id}/trades"),
+        ("POST", "/api/admin/users/{user_id}/adjustments"),
+    }
+
+
 def test_lists_that_can_grow_take_a_limit_and_a_cursor(
     document: dict[str, Any], schemas: dict[str, dict[str, Any]]
 ) -> None:
     for path, response in (
         ("/api/me/trades", "TradeListResponse"),
         ("/api/me/ledger", "LedgerListResponse"),
+        ("/api/admin/users", "AdminUserListResponse"),
     ):
         parameters = {p["name"]: p for p in document["paths"][path]["get"]["parameters"]}
-        assert set(parameters) == {"limit", "cursor"}
+        assert {"limit", "cursor"} <= set(parameters)
         assert parameters["limit"]["schema"]["maximum"] == 200
         assert not parameters["cursor"]["required"]
         assert set(schemas[response]["properties"]) == {"items", "next_cursor"}
@@ -882,10 +1325,16 @@ def test_building_the_application_reads_no_settings(monkeypatch: pytest.MonkeyPa
 # --- Amounts (A.2) ----------------------------------------------------------------
 
 
+LONG_NUMBER_SECONDS: Final[float] = 2.0
+"""How long rejecting a number of a million digits may take. It takes milliseconds;
+converting such a number to an integer first takes half a minute."""
+
+
 class Wallet(BaseModel):
     balance_cr: CreditAmount
     change_cr: SignedCreditAmount
     stake_cr: PositiveCreditAmount | None = None
+    adjustment_cr: NonZeroCreditAmount | None = None
 
 
 @pytest.mark.parametrize(
@@ -938,6 +1387,79 @@ def test_only_a_signed_amount_may_be_negative_and_a_positive_one_not_zero() -> N
     assert rejected.value.errors()[0]["type"] == "decimal_not_positive"
 
 
+@pytest.mark.parametrize("sent", ["25", "-25", "0.000001", "-0.000001", "-999999999.999999"])
+def test_an_adjustment_is_an_amount_above_or_below_zero(sent: str) -> None:
+    wallet = Wallet.model_validate({"balance_cr": "1", "change_cr": "0", "adjustment_cr": sent})
+    assert wallet.adjustment_cr == Decimal(sent)
+
+
+@pytest.mark.parametrize(
+    ("sent", "error"),
+    [
+        ("0", "decimal_zero"),
+        ("-0", "decimal_zero"),
+        ("0.000000", "decimal_zero"),
+        ("1000000000", "decimal_too_large"),
+        ("-1000000000", "decimal_too_large"),
+        ("0.0000001", "decimal_places"),
+        ("+5", "decimal_string"),
+        ("5e3", "decimal_string"),
+    ],
+)
+def test_an_adjustment_of_nothing_or_of_too_much_is_rejected(sent: str, error: str) -> None:
+    with pytest.raises(ValidationError) as rejected:
+        Wallet.model_validate({"balance_cr": "1", "change_cr": "0", "adjustment_cr": sent})
+    assert [e["type"] for e in rejected.value.errors()] == [error]
+    assert rejected.value.errors()[0]["loc"] == ("adjustment_cr",)
+
+
+@pytest.mark.parametrize("field", ["balance_cr", "change_cr", "stake_cr", "adjustment_cr"])
+@pytest.mark.parametrize(
+    "digits", [13, 100, 5000, 999_999, 1_000_000, 1_500_000], ids=lambda digits: f"{digits}-digits"
+)
+def test_a_number_too_long_to_convert_is_too_large_like_any_other(field: str, digits: int) -> None:
+    """Ordinary decimal arithmetic gives up on a number of about a million digits,
+    and turning one into an integer takes seconds. The parser does neither: it is
+    the same rejection as for thirteen digits, at once."""
+    wallet = {"balance_cr": "1", "change_cr": "0"}
+    started = time.monotonic()
+
+    for sent in ("7" * digits, "7" * digits + ".5", "-" + "7" * digits):
+        with pytest.raises(ValidationError) as rejected:
+            Wallet.model_validate(wallet | {field: sent})
+        assert [e["type"] for e in rejected.value.errors()] == ["decimal_too_large"]
+        assert rejected.value.errors()[0]["loc"] == (field,)
+
+    assert time.monotonic() - started < LONG_NUMBER_SECONDS
+
+
+@pytest.mark.parametrize("field", ["balance_cr", "change_cr", "stake_cr", "adjustment_cr"])
+@pytest.mark.parametrize(
+    "sent",
+    [
+        "0." + "0" * 1_500_000 + "1",
+        "1." + "0" * 1_500_000 + "1",
+        "0." + "3" * 1_500_000,
+        "1.0000000000000000000000000000001",
+    ],
+    ids=["next-to-nothing", "one-and-next-to-nothing", "a-million-and-a-half-places", "31-places"],
+)
+def test_a_fraction_too_long_to_convert_has_too_many_places_like_any_other(
+    field: str, sent: str
+) -> None:
+    """To ordinary decimal arithmetic the first of these is zero and the last is one:
+    each would pass for an amount of six places and be booked as something it is not.
+    Each has a digit beyond the sixth place and is rejected for that."""
+    started = time.monotonic()
+
+    with pytest.raises(ValidationError) as rejected:
+        Wallet.model_validate({"balance_cr": "1", "change_cr": "0"} | {field: sent})
+
+    assert [e["type"] for e in rejected.value.errors()] == ["decimal_places"]
+    assert rejected.value.errors()[0]["loc"] == (field,)
+    assert time.monotonic() - started < LONG_NUMBER_SECONDS
+
+
 def test_services_pass_decimals_and_json_gets_trimmed_strings() -> None:
     wallet = Wallet(balance_cr=to_cr(2_500_000), change_cr=to_cr(-1_000_000), stake_cr=None)
     assert wallet.balance_cr == Decimal("2.5")
@@ -945,6 +1467,7 @@ def test_services_pass_decimals_and_json_gets_trimmed_strings() -> None:
         "balance_cr": "2.5",
         "change_cr": "-1",
         "stake_cr": None,
+        "adjustment_cr": None,
     }
     assert Wallet.model_validate(wallet.model_dump(mode="json")) == wallet
 
@@ -1048,35 +1571,61 @@ def test_the_three_trade_modes_and_their_guards_are_accepted(body: dict[str, Any
 
 
 @pytest.mark.parametrize(
-    ("body", "reason"),
+    ("body", "where", "sentence"),
     [
-        ({"side": "BUY", "outcome": "YES"}, "exactly one of amount_cr and shares"),
+        ({"side": "BUY", "outcome": "YES"}, (), SIZED_ONE_WAY_MESSAGE),
         (
             {"side": "BUY", "outcome": "YES", "amount_cr": "1", "shares": "1"},
-            "exactly one of amount_cr and shares",
+            (),
+            SIZED_ONE_WAY_MESSAGE,
         ),
-        ({"side": "SELL", "outcome": "YES", "amount_cr": "1"}, "sized by shares"),
+        (
+            {"side": "SELL", "outcome": "YES", "amount_cr": "1"},
+            ("amount_cr",),
+            SELL_BY_SHARES_MESSAGE,
+        ),
         (
             {"side": "BUY", "outcome": "YES", "amount_cr": "1", "max_cost_cr": "1"},
-            "guarded by min_shares",
+            ("max_cost_cr",),
+            GUARD_DOES_NOT_APPLY_MESSAGE,
         ),
         (
             {"side": "BUY", "outcome": "YES", "shares": "1", "min_shares": "1"},
-            "guarded by max_cost_cr",
+            ("min_shares",),
+            GUARD_DOES_NOT_APPLY_MESSAGE,
         ),
         (
             {"side": "SELL", "outcome": "YES", "shares": "1", "max_cost_cr": "1"},
-            "guarded by min_proceeds_cr",
+            ("max_cost_cr",),
+            GUARD_DOES_NOT_APPLY_MESSAGE,
         ),
         (
             {"side": "BUY", "outcome": "YES", "shares": "1", "min_proceeds_cr": "1"},
-            "guarded by max_cost_cr",
+            ("min_proceeds_cr",),
+            GUARD_DOES_NOT_APPLY_MESSAGE,
         ),
     ],
+    ids=[
+        "no-size",
+        "two-sizes",
+        "a-sell-by-amount",
+        "a-buy-by-amount-with-a-cost-guard",
+        "a-buy-by-shares-with-a-shares-guard",
+        "a-sell-with-a-cost-guard",
+        "a-buy-with-a-proceeds-guard",
+    ],
 )
-def test_every_other_combination_is_a_validation_error(body: dict[str, Any], reason: str) -> None:
-    with pytest.raises(ValidationError, match=reason):
+def test_every_other_combination_is_a_validation_error(
+    body: dict[str, Any], where: tuple[str, ...], sentence: str
+) -> None:
+    """Each names the field that does not fit, where one field is it, and says so in
+    a sentence: the guard that is not the one of the mode, the amount of a sell."""
+    with pytest.raises(ValidationError) as rejected:
         TradeRequest.model_validate(body)
+
+    assert [(error["loc"], error["type"], error["msg"]) for error in rejected.value.errors()] == [
+        (where, "value_error", sentence)
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1098,7 +1647,7 @@ def test_a_trade_needs_a_positive_size_known_enums_and_no_extras(body: dict[str,
 
 def test_a_quote_is_sized_like_a_trade_but_takes_no_guard() -> None:
     assert QuoteQuery.model_validate({"side": "SELL", "outcome": "NO", "shares": "0.5"})
-    with pytest.raises(ValidationError, match="sized by shares"):
+    with pytest.raises(ValidationError, match=SELL_BY_SHARES_MESSAGE):
         QuoteQuery.model_validate({"side": "SELL", "outcome": "NO", "amount_cr": "0.5"})
     with pytest.raises(ValidationError, match="Extra inputs"):
         QuoteQuery.model_validate(
@@ -1118,7 +1667,7 @@ def proposal(**overrides: Any) -> dict[str, Any]:
         "resolution_source": "ethz.ch/menu",
         "close_at": (TEST_NOW + timedelta(days=7)).isoformat(),
         "resolve_by": (TEST_NOW + timedelta(days=9)).isoformat(),
-        "requested_tier": "DEFAULT",
+        "policy_accepted": True,
     } | overrides
 
 
@@ -1136,28 +1685,115 @@ def test_a_proposal_states_everything_spec_section_6_asks_for() -> None:
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"requested_tier": "CUSTOM"},
+        {"requested_tier": "DEFAULT"},
         {"question": "Too short"},
         {"question": "x" * 201},
         {"yes_definition": "   "},
         {"close_at": "2026-10-16T12:00:00"},
         {"resolve_by": (TEST_NOW + timedelta(days=6)).isoformat()},
+        {"policy_accepted": False},
+        {"policy_accepted": 1},
+        {"policy_accepted": "true"},
+        {"policy_accepted": None},
     ],
-    ids=["custom-tier", "short", "long", "blank", "naive-time", "resolves-before-close"],
+    ids=[
+        "names-a-tier",
+        "short",
+        "long",
+        "blank",
+        "naive-time",
+        "resolves-before-close",
+        "policy-declined",
+        "policy-as-a-number",
+        "policy-as-a-word",
+        "policy-as-null",
+    ],
 )
 def test_a_proposal_that_breaks_a_rule_is_rejected(overrides: dict[str, Any]) -> None:
     with pytest.raises(ValidationError):
         ProposeMarketRequest.model_validate(proposal(**overrides))
 
 
+def test_a_proposal_without_the_policy_accepted_is_rejected_on_that_field() -> None:
+    for declined in ({"policy_accepted": False}, {"policy_accepted": "true"}):
+        with pytest.raises(ValidationError) as rejected:
+            ProposeMarketRequest.model_validate(proposal(**declined))
+        assert [error["loc"] for error in rejected.value.errors()] == [("policy_accepted",)]
+    missing = proposal()
+    del missing["policy_accepted"]
+    with pytest.raises(ValidationError) as rejected:
+        ProposeMarketRequest.model_validate(missing)
+    assert [(error["loc"], error["type"]) for error in rejected.value.errors()] == [
+        (("policy_accepted",), "missing")
+    ]
+
+
+def test_a_profile_takes_the_policy_as_a_strict_boolean_and_may_leave_it_out() -> None:
+    profile = {"username": "neo", "degree_level": "OTHER", "degree_programme": "ETH staff"}
+
+    assert SaveProfileRequest.model_validate(profile).policy_accepted is False
+    for sent in (True, False):
+        request = SaveProfileRequest.model_validate(profile | {"policy_accepted": sent})
+        assert request.policy_accepted is sent
+    for not_a_boolean in (1, 0, "true", "false", None):
+        with pytest.raises(ValidationError) as rejected:
+            SaveProfileRequest.model_validate(profile | {"policy_accepted": not_a_boolean})
+        assert [(error["loc"], error["type"]) for error in rejected.value.errors()] == [
+            (("policy_accepted",), "bool_type")
+        ]
+
+
+def test_an_adjustment_states_a_signed_amount_and_a_reason() -> None:
+    credit = AdjustBalanceRequest.model_validate({"amount_cr": "25", "reason": "  Prize.  "})
+    debit = AdjustBalanceRequest.model_validate({"amount_cr": "-0.5", "reason": "Typo."})
+    assert (credit.amount_cr, credit.reason) == (Decimal(25), "Prize.")
+    assert debit.amount_cr == Decimal("-0.5")
+    for broken in (
+        {"amount_cr": "0"},
+        {"amount_cr": 25.0},
+        {"amount_cr": "1000000000"},
+        {"reason": "   "},
+        {"reason": "x" * 501},
+        {"note": "extra"},
+    ):
+        with pytest.raises(ValidationError):
+            AdjustBalanceRequest.model_validate({"amount_cr": "25", "reason": "Prize."} | broken)
+    for missing in ("amount_cr", "reason"):
+        body = {"amount_cr": "25", "reason": "Prize."}
+        del body[missing]
+        with pytest.raises(ValidationError, match=missing):
+            AdjustBalanceRequest.model_validate(body)
+
+
+def test_the_user_list_takes_a_text_of_one_to_a_hundred_characters() -> None:
+    assert AdminUserListQuery().q is None
+    assert AdminUserListQuery.model_validate({"q": "  neo  "}).q == "neo"
+    assert AdminUserListQuery.model_validate({"role": "BARISTA", "status": "SUSPENDED"})
+    for broken in (
+        {"q": ""},
+        {"q": "   "},
+        {"q": "x" * 101},
+        {"role": "OWNER"},
+        {"status": "GONE"},
+    ):
+        with pytest.raises(ValidationError):
+            AdminUserListQuery.model_validate(broken)
+
+
 def test_approval_takes_a_budget_for_custom_and_only_for_custom() -> None:
     assert ApproveMarketRequest.model_validate({"tier": "DEFAULT"}).tier is MarketTier.DEFAULT
     custom = ApproveMarketRequest.model_validate({"tier": "CUSTOM", "budget_cr": "50"})
     assert custom.budget_cr == 50
-    with pytest.raises(ValidationError, match="needs budget_cr"):
-        ApproveMarketRequest.model_validate({"tier": "CUSTOM"})
-    with pytest.raises(ValidationError, match="CUSTOM tier only"):
-        ApproveMarketRequest.model_validate({"tier": "TIGHT", "budget_cr": "50"})
+    for refused, sentence in (
+        ({"tier": "CUSTOM"}, BUDGET_NEEDED_MESSAGE),
+        ({"tier": "TIGHT", "budget_cr": "50"}, BUDGET_NOT_TAKEN_MESSAGE),
+    ):
+        with pytest.raises(ValidationError) as rejected:
+            ApproveMarketRequest.model_validate(refused)
+        # Both are about the budget, so both are reported on its field.
+        assert [(error["loc"], error["msg"]) for error in rejected.value.errors()] == [
+            (("budget_cr",), sentence)
+        ]
 
 
 def test_a_code_batch_needs_strict_counts_and_flags() -> None:
@@ -1228,6 +1864,7 @@ def offline_app(offline_container: Container) -> FastAPI:
         email="viewer@ethz.ch",
         name="Vera Viewer",
         username="viewer",
+        degree_programme="BSc Computer Science",
         role=UserRole.USER,
         status=UserStatus.ACTIVE,
     )

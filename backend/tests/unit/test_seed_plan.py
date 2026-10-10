@@ -18,10 +18,11 @@ import pytest
 
 from app.core.config import Settings
 from app.core.degrees import is_programme
-from app.core.enums import MarketStatus, UserRole
+from app.core.enums import MarketStatus
 from app.core.identity import USERNAME_PATTERN, portal_address
 from app.schemas.admin.code_batches import CreateCodeBatchRequest
 from app.schemas.admin.markets import (
+    ApproveMarketRequest,
     CloseMarketRequest,
     HaltMarketRequest,
     RejectMarketRequest,
@@ -71,6 +72,11 @@ BEHIND_THE_SERVICES: Final[frozenset[str]] = frozenset(
 )
 """Attributes of a `Container` through which a caller would get past the services."""
 
+NEVER_OPENED: Final[frozenset[MarketStatus]] = frozenset(
+    {MarketStatus.PROPOSED, MarketStatus.EXPIRED, MarketStatus.REJECTED}
+)
+"""Where a demo market ends that no approval opened."""
+
 every_market = pytest.mark.parametrize("market", MARKETS, ids=lambda market: market.slug)
 
 
@@ -101,6 +107,7 @@ def test_every_demo_account_registers_with_a_profile_the_service_accepts(
         username=person.username,
         degree_level=person.degree_level,
         degree_programme=person.degree_programme,
+        policy_accepted=True,
     )
 
     assert re.fullmatch(USERNAME_PATTERN, request.username)
@@ -117,18 +124,18 @@ def test_no_two_demo_accounts_share_an_address_or_a_username() -> None:
 
 
 @pytest.mark.parametrize("person", PEOPLE, ids=lambda person: person.username)
-def test_every_demo_address_is_one_the_portal_could_send_and_has_no_role(
+def test_every_demo_address_is_one_the_portal_could_send_and_no_bootstrap_admin(
     person: Person, base_settings: Settings
 ) -> None:
-    """Neither on the role lists of the tests nor on those of `.example.env`: a demo
-    account is nobody's real one."""
+    """Neither among the bootstrap admins of the tests nor among those of
+    `.example.env`: a demo account is nobody's real one."""
     address = address_of(person, base_settings)
 
     assert portal_address(address, base_settings.identity.allowed_email_domains) == address
     for settings in (base_settings, Settings.load(EXAMPLE_ENV_FILE)):
         roles = EmailPolicy(settings)
         assert roles.identify(address) == address
-        assert roles.role_for(address) is UserRole.USER
+        assert not roles.is_bootstrap_admin(address)
 
 
 def test_the_names_the_plan_calls_the_students_by_are_theirs() -> None:
@@ -152,7 +159,7 @@ def test_the_names_the_plan_calls_the_students_by_are_theirs() -> None:
 
 def test_the_plan_has_a_market_for_every_state_a_screen_shows() -> None:
     """Open in each of the three tiers, and one each paused, closed, resolved, voided,
-    proposed and rejected."""
+    proposed, expired and rejected: every status the API reports."""
     ends = Counter(market.ends for market in MARKETS)
 
     assert ends == {
@@ -162,10 +169,29 @@ def test_the_plan_has_a_market_for_every_state_a_screen_shows() -> None:
         MarketStatus.RESOLVED: 1,
         MarketStatus.VOID: 1,
         MarketStatus.PROPOSED: 1,
+        MarketStatus.EXPIRED: 1,
         MarketStatus.REJECTED: 1,
     }
-    open_tiers = [market.tier for market in MARKETS if market.ends is MarketStatus.OPEN]
-    assert sorted(open_tiers) == sorted(FIXED_TIERS)
+    assert set(ends) == set(MarketStatus)
+    open_tiers = {market.tier for market in MARKETS if market.ends is MarketStatus.OPEN}
+    assert open_tiers == set(FIXED_TIERS)
+
+
+def test_the_one_proposal_the_demo_lets_expire_closes_in_a_moment_and_every_other_in_days(
+    base_settings: Settings,
+) -> None:
+    """The proposal that expires is proposed through the service like every other, so
+    its deadline lies in the future when it is made: a moment away, within the minute.
+    No other demo market comes near its deadline while a demo is looked at. The one
+    that stays proposed is the review queue of the demo; it must not expire with it."""
+    (expiring,) = [market for market in MARKETS if market.ends is MarketStatus.EXPIRED]
+    others = [market for market in MARKETS if market is not expiring]
+
+    assert expiring.closes_in == seed.EXPIRES_AFTER
+    assert timedelta(0) < seed.EXPIRES_AFTER <= timedelta(minutes=1)
+    assert all(market.closes_in >= timedelta(days=7) for market in others)
+    assert MARKETS[-1] is expiring, "made last: nothing of the run waits on its deadline"
+    assert set(seed.UNDECIDED) == {MarketStatus.PROPOSED, MarketStatus.EXPIRED}
 
 
 def test_no_two_demo_markets_share_a_question_or_a_slug() -> None:
@@ -179,7 +205,7 @@ def test_no_two_demo_markets_share_a_question_or_a_slug() -> None:
 def test_the_wording_of_every_demo_market_is_a_proposal_the_api_takes(
     market: DemoMarket, base_settings: Settings
 ) -> None:
-    close_at = TEST_NOW + timedelta(days=market.closes_in_days)
+    close_at = TEST_NOW + market.closes_in
     proposal = ProposeMarketRequest(
         question=market.question,
         yes_definition=market.yes_definition,
@@ -188,13 +214,25 @@ def test_the_wording_of_every_demo_market_is_a_proposal_the_api_takes(
         resolution_source=market.resolution_source,
         close_at=close_at,
         resolve_by=close_at + seed.RESOLVE_WITHIN,
-        requested_tier=market.tier,
+        policy_accepted=True,
     )
 
-    assert proposal.requested_tier in FIXED_TIERS
-    assert 0 < market.closes_in_days <= base_settings.risk.max_market_lifetime_days
+    assert proposal.question == market.question
+    assert timedelta(0) < market.closes_in <= base_settings.risk.max_market_lifetime
     assert base_settings.lifecycle.max_resolution_delay >= seed.RESOLVE_WITHIN
     assert 0 <= market.proposer < len(STUDENTS)
+
+
+@every_market
+def test_a_demo_market_names_a_tier_exactly_if_the_desk_opens_it(market: DemoMarket) -> None:
+    """A proposal asks for no liquidity. The desk picks the tier when it approves, so
+    the plan names one for a market that opens and none for one that never does."""
+    opens = market.ends not in NEVER_OPENED
+
+    assert (market.tier is not None) == opens
+    if market.tier is not None:
+        assert market.tier in FIXED_TIERS
+        assert ApproveMarketRequest(tier=market.tier).budget_cr is None
 
 
 @every_market
@@ -203,7 +241,7 @@ def test_every_demo_market_says_what_its_last_step_needs_said(market: DemoMarket
     outcome exactly where a market resolves."""
     assert (market.outcome is not None) == (market.ends is MarketStatus.RESOLVED)
     match market.ends:
-        case MarketStatus.OPEN | MarketStatus.PROPOSED:
+        case MarketStatus.OPEN | MarketStatus.PROPOSED | MarketStatus.EXPIRED:
             assert market.remark is None
         case MarketStatus.REJECTED:
             assert market.remark is not None
@@ -225,7 +263,7 @@ def test_every_demo_market_says_what_its_last_step_needs_said(market: DemoMarket
 
 @every_market
 def test_only_a_market_that_opens_is_traded(market: DemoMarket) -> None:
-    opens = market.ends not in (MarketStatus.PROPOSED, MarketStatus.REJECTED)
+    opens = market.ends not in NEVER_OPENED
 
     assert bool(market.trades) == opens
 

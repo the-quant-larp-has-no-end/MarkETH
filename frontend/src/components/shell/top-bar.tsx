@@ -18,16 +18,25 @@ import { TopTabs } from "./tab-bar";
 
 const barClasses = "sticky top-0 z-40 bg-card pt-safe print:hidden";
 const rowClasses = "relative mx-auto flex h-14 max-w-[67.5rem] items-center gap-2 px-4";
+/** The logo as a link: a 44 px target that leaves the logo where it stands without one. */
+const logoLinkClasses = "-ml-2 inline-flex h-11 shrink-0 items-center rounded-md px-2";
 
 /**
  * The top bar before the app knows who is looking (DESIGN.md §13, Start-up): the logo
- * and nothing on its right.
+ * and nothing on its right. With `href` the logo is a link: on the usage policy of a
+ * visitor without a profile it leads to the profile set-up.
  */
-export function BareTopBar() {
+export function BareTopBar({ href }: { href?: string }) {
   return (
     <header data-slot="top-bar" className={barClasses}>
       <div className={rowClasses}>
-        <Logo />
+        {href === undefined ? (
+          <Logo />
+        ) : (
+          <Link href={href} className={logoLinkClasses}>
+            <Logo />
+          </Link>
+        )}
       </div>
     </header>
   );
@@ -63,7 +72,7 @@ export function TopBar({ variant, title, backTo = "/" }: TopBarProps) {
     <header data-slot="top-bar" className={barClasses}>
       <div className={rowClasses}>
         {variant === "main" ? (
-          <Link href="/" className="-ml-2 inline-flex h-11 shrink-0 items-center rounded-md px-2">
+          <Link href="/" className={logoLinkClasses}>
             <Logo />
           </Link>
         ) : (

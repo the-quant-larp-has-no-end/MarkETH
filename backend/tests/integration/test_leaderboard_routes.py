@@ -36,6 +36,7 @@ def someone() -> AuthenticatedUser:
         email="trinity@ethz.ch",
         name="Trinity",
         username="trinity",
+        degree_programme="BSc Computer Science",
         role=UserRole.USER,
         status=UserStatus.ACTIVE,
     )
@@ -48,6 +49,8 @@ def entry(rank: int, username: str, **overrides: object) -> LeaderboardEntry:
         "degree_level": DegreeLevel.MASTER,
         "degree_programme": "MSc Computer Science",
         "credits_cr": to_cr(612_500_000),
+        "balance_cr": to_cr(600_000_000),
+        "positions_value_cr": to_cr(12_500_000),
         "trades": 14,
         "settled_markets": 3,
         "win_rate": 0.667,
@@ -74,6 +77,8 @@ class RecordedLeaderboard:
             degree_level=DegreeLevel.OTHER,
             degree_programme="ETH staff",
             credits_cr=to_cr(500_000_000),
+            balance_cr=to_cr(500_000_000),
+            positions_value_cr=to_cr(0),
             trades=0,
             settled_markets=0,
             win_rate=None,
@@ -126,6 +131,8 @@ async def test_the_answer_leaves_with_credits_as_strings_rates_as_numbers_and_nu
                 "degree_level": "MASTER",
                 "degree_programme": "MSc Computer Science",
                 "credits_cr": "612.5",
+                "balance_cr": "600",
+                "positions_value_cr": "12.5",
                 "trades": 14,
                 "settled_markets": 3,
                 "win_rate": 0.667,
@@ -138,6 +145,8 @@ async def test_the_answer_leaves_with_credits_as_strings_rates_as_numbers_and_nu
                 "degree_level": "OTHER",
                 "degree_programme": "ETH staff",
                 "credits_cr": "500",
+                "balance_cr": "500",
+                "positions_value_cr": "0",
                 "trades": 0,
                 "settled_markets": 0,
                 "win_rate": None,
@@ -152,6 +161,8 @@ async def test_the_answer_leaves_with_credits_as_strings_rates_as_numbers_and_nu
             "degree_level": "MASTER",
             "degree_programme": "MSc Computer Science",
             "credits_cr": "612.5",
+            "balance_cr": "600",
+            "positions_value_cr": "12.5",
             "trades": 14,
             "settled_markets": 3,
             "win_rate": 0.667,
@@ -245,8 +256,6 @@ async def test_each_measure_can_be_asked_for_in_both_directions(
         ({"degree_level": "KINDERGARTEN"}, ["query", "degree_level"], "enum"),
         ({"degree_programme": "x" * 101}, ["query", "degree_programme"], "string_too_long"),
         ({"limit": "201"}, ["query", "limit"], "less_than_equal"),
-        ({"min_trades": "11", "max_trades": "10"}, ["query"], "value_error"),
-        ({"min_win_rate": "0.6", "max_win_rate": "0.5"}, ["query"], "value_error"),
     ],
     ids=[
         "a-measure-that-does-not-exist",
@@ -260,8 +269,6 @@ async def test_each_measure_can_be_asked_for_in_both_directions(
         "a-level-that-does-not-exist",
         "a-programme-of-101-characters",
         "a-page-of-201",
-        "more-trades-at-least-than-at-most",
-        "a-higher-win-rate-at-least-than-at-most",
     ],
 )
 async def test_a_query_the_contract_does_not_allow_is_422_and_never_reaches_the_service(
@@ -283,17 +290,50 @@ async def test_a_query_the_contract_does_not_allow_is_422_and_never_reaches_the_
     assert leaderboard.calls == []
 
 
-async def test_a_minimum_above_its_maximum_says_which_two_parameters_disagree(
+async def test_a_minimum_above_its_maximum_is_the_services_to_refuse(
     client: httpx.AsyncClient, as_user: ActAs, leaderboard: RecordedLeaderboard
 ) -> None:
+    """Each of the two bounds is one the contract allows, so the route hands both on.
+    The service answers the pair with 422 and the lower bound as `details.field`
+    (tests/unit/test_leaderboard_schema.py, tests/integration/test_leaderboard.py)."""
     as_user(someone())
 
     response = await client.get(
         LEADERBOARD, params={"min_credits_cr": "500", "max_credits_cr": "499.999999"}
     )
 
-    (error,) = response.json()["details"]["errors"]
-    assert "min_credits_cr must not be above max_credits_cr" in error["msg"]
+    assert response.status_code == 200
+    ((_, query),) = leaderboard.calls
+    assert (query.min_credits_cr, query.max_credits_cr) == (Decimal(500), Decimal("499.999999"))
+
+
+async def test_a_refused_parameter_is_told_in_a_sentence_for_the_person_who_typed_it(
+    client: httpx.AsyncClient, as_user: ActAs, leaderboard: RecordedLeaderboard
+) -> None:
+    """The filter sheet shows `msg` under the field `loc` names. A win rate is typed in
+    percent and sent as a fraction, so 150 % arrives as 1.5 and is answered in percent."""
+    as_user(someone())
+
+    answered = {
+        field: (await client.get(LEADERBOARD, params={field: sent})).json()["details"]["errors"]
+        for field, sent in {
+            "max_win_rate": "1.5",
+            "min_trades": "2.5",
+            "min_avg_payout_ratio": "plenty",
+            "min_credits_cr": "0.1234567",
+        }.items()
+    }
+
+    assert {field: errors[0]["msg"] for field, errors in answered.items()} == {
+        "max_win_rate": "Enter a percentage between 0 and 100.",
+        "min_trades": "Enter a whole number.",
+        "min_avg_payout_ratio": "Enter a number, for example 1.25.",
+        "min_credits_cr": "Use at most 6 decimal places.",
+    }
+    assert {field: errors[0]["loc"] for field, errors in answered.items()} == {
+        field: ["query", field] for field in answered
+    }
+    assert leaderboard.calls == []
 
 
 async def test_the_leaderboard_is_read_only(

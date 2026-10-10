@@ -9,15 +9,15 @@ import type { QuoteResponse } from "@/lib/api/schema";
 import { useConfig } from "@/lib/api/session";
 import { useDebouncedValue } from "@/lib/hooks";
 
-/** Keys the query while nothing is chosen. It is never asked for. */
-const NOTHING_CHOSEN: QuoteRequest = { side: "BUY", outcome: "YES", amount_cr: "" };
+/** Keys the query while there is nothing to quote. It is never asked for. */
+const NOTHING_TO_QUOTE: QuoteRequest = { side: "BUY", outcome: "YES", amount_cr: "" };
 
 export type QuoteRead = {
-  /** The quote for exactly the request in hand, or null: nothing chosen, on its way, failed. */
+  /** The quote for exactly the request in hand, or null: nothing to quote, on its way, failed. */
   quote: QuoteResponse | null;
   /** True from the change of the input until its quote, or its failure, is there. */
   loading: boolean;
-  /** Why the quote could not be read. */
+  /** Why there is no quote: the server's verdict on the input, or a read that failed. */
   error: ApiError | null;
   /** Asks for the same quote again, after a failure. */
   retry: () => void;
@@ -26,7 +26,12 @@ export type QuoteRead = {
 /**
  * The quote of the trade sheet (DESIGN.md §13): `GET /markets/{market_id}/quote`, asked
  * for `quote_debounce_ms` (from `/config`) after the last change of the input, with the
- * side, the outcome and the preset as it arrived.
+ * side, the outcome and either the text of the amount field or the preset's shares, as
+ * they stand.
+ *
+ * The quote is about the caller: it applies the stake limit, the balance and the smallest
+ * trade, and answers the error the trade itself would get. That is how a typed amount is
+ * judged, by the server; `error` carries its verdict.
  *
  * Only an answer for the input as it is now counts, so Confirm stays disabled from a
  * change until the quote for it has arrived. Nothing asks again behind the user's back:
@@ -41,13 +46,16 @@ export function useQuote(marketId: string, request: QuoteRequest | null): QuoteR
   const asked = settled === null ? null : (JSON.parse(settled) as QuoteRequest);
 
   const query = useQuery({
-    ...quoteQuery(marketId, asked ?? NOTHING_CHOSEN),
+    ...quoteQuery(marketId, asked ?? NOTHING_TO_QUOTE),
     enabled: asked !== null,
   });
 
-  const current = wanted !== null && wanted === settled;
-  const quote = current ? (query.data ?? null) : null;
-  const error = current && !query.isFetching ? query.error : null;
+  // An answer counts once it is the latest one for the input as it is now. A quote that
+  // is being asked for again (after "Try again", or after a trade it guarded was refused)
+  // is on its way, and one whose latest read failed is none.
+  const current = wanted !== null && wanted === settled && !query.isFetching;
+  const error = current ? query.error : null;
+  const quote = current && error === null ? (query.data ?? null) : null;
 
   return {
     quote,

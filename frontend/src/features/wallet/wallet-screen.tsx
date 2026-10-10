@@ -5,7 +5,7 @@ import { useId, useState } from "react";
 import { toast } from "sonner";
 
 import { Banner, ErrorBanner } from "@/components/feedback";
-import { Screen } from "@/components/shell";
+import { Screen, TextLink } from "@/components/shell";
 import { Button } from "@/components/ui/button";
 import { useWelcomeOpen } from "@/features/session";
 import {
@@ -35,7 +35,7 @@ type Sheet = "voucher" | "qr" | "redeem";
 
 /**
  * Wallet (`/wallet`): DESIGN.md §13. Top to bottom: the balance card, "Get a voucher" and
- * "Redeem code", the vouchers, the activity.
+ * "Redeem code", the vouchers, the activity, and at the foot the link to the usage policy.
  *
  * Every figure is a field of the API, shown as sent, and every decision is the server's:
  * "Get a voucher" follows `can_get_voucher`, a product follows `affordable`, and nothing
@@ -153,6 +153,11 @@ export function WalletScreen() {
         disabled={code.blocked}
       />
       <ActivitySection ledger={ledger} />
+
+      {/* The foot of the screen: one of the four places that lead to the usage policy. */}
+      <footer data-slot="wallet-footer" className="type-body-sm text-muted-foreground">
+        <TextLink href="/policy">Usage policy</TextLink>
+      </footer>
 
       <VoucherSheet
         key={opening}

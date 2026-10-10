@@ -14,7 +14,7 @@ const MESSAGES: Record<Exclude<Camera, "starting" | "live">, string> = {
   unavailable: "No camera is available. Type the code instead.",
 };
 
-/** A frame is looked at this often at most; reading a QR costs time on an old phone. */
+/** A frame is looked at this often at most; reading a QR costs time on a slow phone. */
 const DECODE_EVERY_MS = 120;
 /** The longer side of the frame handed to jsQR. */
 const DECODE_SIZE = 640;

@@ -2,14 +2,15 @@
 
 `/me`, the portfolio, the trades, the ledger and the proposals are reads. What they
 show is put in place here the way the services that write it leave it: buys through the
-factory, and sells, settlements, vouchers and a redeemed code through the helpers below,
-each booked with the postings of Appendix A.8, so the books balance under every
-answer. Every price, value, payout and refund a test expects is asked of `MarketView`.
+factory, and sells, settlements, vouchers, a redeemed code and an admin's adjustment
+through the helpers below, each booked with the postings of Appendix A.8, so the books
+balance under every answer. Every price, value, payout and refund a test expects is
+asked of `MarketView`.
 """
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import date, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Final
 from uuid import UUID, uuid7
@@ -44,6 +45,7 @@ from app.services.account import LEDGER_DESCRIPTIONS, MAX_POSTING_ID
 from app.services.ledger import (
     LedgerRef,
     PostingLine,
+    admin_adjustment_key,
     code_redemption_key,
     resolution_key,
     trade_key,
@@ -52,6 +54,7 @@ from app.services.ledger import (
     voucher_redeem_key,
     voucher_refund_key,
 )
+from app.services.public_config import FIXED_TIERS
 from tests.support.books import assert_books_balance
 from tests.support.clock import TEST_NOW, FrozenClock
 from tests.support.factories import ActAs, Factory, identity_of
@@ -65,6 +68,11 @@ CHEAPEST: Final[int] = BASE.vouchers.lowest_price_micro
 
 STARTING: Final[int] = 500 * MICRO
 """What a trader of these tests starts with."""
+
+FIRST_GRANT_DUE: Final[datetime] = datetime(2026, 11, 9, 14, 0, tzinfo=BASE.app.timezone)
+SECOND_GRANT_DUE: Final[datetime] = datetime(2026, 12, 9, 14, 0, tzinfo=BASE.app.timezone)
+"""When the first two monthly grants fall due for somebody who signed up at `TEST_NOW`:
+a month and two months later, on its day and at its time of day in Zurich."""
 
 
 def product(name: str) -> VoucherProduct:
@@ -305,6 +313,25 @@ async def redeem_code(container: Container, user: User, value_micro: int) -> Non
         )
 
 
+async def adjust_balance(container: Container, user: User, by: User, amount_micro: int) -> None:
+    """An admin's adjustment as `AdminUserService.adjust_balance` books it:
+    `ADMIN_ADJUSTMENT` between `vis:issuance` and the user, to the user for an amount
+    above zero and back to `vis:issuance` for one below."""
+    async with container.uow_factory() as uow:
+        account = await uow.accounts.get_user_account(user.id, for_update=True)
+        assert account is not None
+        issuance = await uow.accounts.get_system_account(AccountKind.VIS_ISSUANCE)
+        await container.ledger.post(
+            uow,
+            kind=JournalKind.ADMIN_ADJUSTMENT,
+            ref_type=LedgerRef.USER,
+            ref_id=user.id,
+            idempotency_key=admin_adjustment_key(by.id, uuid7()),
+            lines=[PostingLine(issuance.id, -amount_micro), PostingLine(account.id, amount_micro)],
+            at=container.clock.now(),
+        )
+
+
 async def book_owed_months(container: Container, user: User) -> int:
     """The monthly grants `user` is owed, booked the way upkeep books them."""
     async with container.uow_factory() as uow:
@@ -420,9 +447,11 @@ async def test_me_reports_the_profile_the_balance_and_the_next_monthly_grant(
     )
     assert (me.degree_level, me.degree_programme) == (DegreeLevel.OTHER, "ETH staff")
     assert (me.role, me.created_at) == (UserRole.USER, TEST_NOW)
+    assert me.policy_accepted_at == TEST_NOW
     assert me.balance_cr == to_cr(12_500_000)
     assert me.monthly_grant_cr == to_cr(settings.grants.monthly_grant_micro)
-    assert me.next_monthly_grant_on == container.grants.next_grant_date() == date(2026, 11, 1)
+    assert me.next_monthly_grant_at == container.grants.next_grant_at(user) == FIRST_GRANT_DUE
+    assert me.notices == []
     await assert_books_balance(container.uow_factory)
 
 
@@ -453,10 +482,27 @@ async def test_can_get_voucher_says_whether_the_balance_covers_the_cheapest_prod
 async def test_me_reports_the_role_of_the_request(
     container: Container, factory: Factory, role: UserRole
 ) -> None:
-    """It is in no column: whatever the request resolved to is what `/me` says."""
+    """Whatever the request resolved to is what `/me` says: the role of the row for
+    most, ADMIN for a bootstrap admin. The service does not work it out again."""
     user = await factory.user()
 
     assert (await container.account.me(identity_of(user, role))).role is role
+
+
+async def test_me_reports_the_role_an_admin_gave_and_admin_for_a_bootstrap_admin(
+    container: Container, factory: Factory
+) -> None:
+    student, barista = await factory.user(), await factory.barista()
+    made_admin = await factory.user(role=UserRole.ADMIN)
+    bootstrap = await factory.admin()
+
+    roles = [
+        (await container.account.me(factory.identity(user))).role
+        for user in (student, barista, made_admin, bootstrap)
+    ]
+
+    assert roles == [UserRole.USER, UserRole.BARISTA, UserRole.ADMIN, UserRole.ADMIN]
+    assert bootstrap.role is UserRole.USER, "its row says USER: the address makes the admin"
 
 
 async def test_me_follows_the_balance_and_the_calendar(
@@ -469,7 +515,7 @@ async def test_me_follows_the_balance_and_the_calendar(
     me = await container.account.me(factory.identity(user))
 
     assert me.balance_cr == to_cr(CHEAPEST + 5 * MICRO)
-    assert me.next_monthly_grant_on == date(2026, 12, 1)
+    assert me.next_monthly_grant_at == SECOND_GRANT_DUE
     await assert_books_balance(container.uow_factory)
 
 
@@ -929,8 +975,8 @@ def line(item: LedgerItem) -> tuple[JournalKind, Decimal, str]:
 async def test_the_ledger_lists_every_movement_on_the_balance_newest_first_under_its_label(
     container: Container, factory: Factory, settings: Settings, clock: FrozenClock
 ) -> None:
-    """One of each of the nine ways a user's balance can move, and a tenth entry that
-    is none of the user's business."""
+    """One of each of the ten ways a user's balance can move, and an eleventh entry
+    that is none of the user's business."""
     admin, barista = await factory.admin(), await factory.barista()
     alice = await factory.user(balance_micro=STARTING)
     resolved, voided = await factory.market(), await factory.market()
@@ -953,13 +999,17 @@ async def test_the_ledger_lists_every_movement_on_the_balance_newest_first_under
     later()
     await redeem_code(container, alice, 3 * MICRO)
     later()
+    await adjust_balance(container, alice, admin, -2 * MICRO)
+    later()
     mate = await issue_voucher(container, alice, product("Mate"))
     twix = await issue_voucher(container, alice, product("Twix"))
     later()
     await redeem_voucher(container, twix, barista)
-    # A month on, as upkeep finds her: a grant is owed and the Mate was never fetched.
+    # A month on, as upkeep finds her: a grant has fallen due and the Mate was never
+    # fetched.
     clock.set(mate.expires_at + timedelta(days=1))
     moments.append(clock.now())
+    assert FIRST_GRANT_DUE <= clock.now() < SECOND_GRANT_DUE
     assert await book_owed_months(container, alice) == 1
     await refund_voucher(container, mate)
     monthly_micro = settings.grants.monthly_grant_micro
@@ -973,6 +1023,7 @@ async def test_the_ledger_lists_every_movement_on_the_balance_newest_first_under
         (JournalKind.MONTHLY_GRANT, to_cr(monthly_micro), "Monthly tokens"),
         (JournalKind.VOUCHER_ISSUE, to_cr(-twix_micro), "Voucher: Twix"),
         (JournalKind.VOUCHER_ISSUE, to_cr(-mate_micro), "Voucher: Mate"),
+        (JournalKind.ADMIN_ADJUSTMENT, to_cr(-2 * MICRO), "Adjustment by VIS"),
         (JournalKind.CODE_REDEMPTION, to_cr(3 * MICRO), "Code redeemed"),
         (JournalKind.MARKET_VOID, to_cr(staked_micro), "Market voided, stake refunded"),
         (JournalKind.TRADE_BUY, to_cr(-staked_micro), "Bought shares"),
@@ -981,14 +1032,18 @@ async def test_the_ledger_lists_every_movement_on_the_balance_newest_first_under
         (JournalKind.TRADE_BUY, to_cr(-bought_micro), "Bought shares"),
         (JournalKind.SIGNUP_GRANT, to_cr(STARTING), "Welcome tokens"),
     ]
-    # Every way a balance can move is among them; a scan at the bar is not one of them.
+    # Every way a balance can move is among them, except the three no step above books:
+    # a scan at the bar, and the tokens and the bonus of a streak.
     assert {item.kind for item in page.items} == set(LEDGER_DESCRIPTIONS) - {
-        JournalKind.VOUCHER_REDEEM
+        JournalKind.VOUCHER_REDEEM,
+        JournalKind.STREAK_REWARD,
+        JournalKind.STREAK_BONUS,
     }
     assert [item.created_at for item in page.items] == [
-        moments[8],
-        moments[8],
-        moments[6],
+        moments[9],
+        moments[9],
+        moments[7],
+        moments[7],
         moments[6],
         moments[5],
         moments[4],
@@ -1156,10 +1211,12 @@ async def test_proposals_are_listed_newest_first_in_every_status_with_their_effe
     bob = await factory.user()
     proposed: list[Market] = []
     for status, close_in, tier in (
-        (MarketStatus.PROPOSED, timedelta(days=7), MarketTier.TIGHT),
+        (MarketStatus.PROPOSED, timedelta(days=7), MarketTier.DEFAULT),
+        (MarketStatus.PROPOSED, timedelta(hours=1), MarketTier.DEFAULT),
         (MarketStatus.REJECTED, timedelta(days=7), MarketTier.DEFAULT),
+        (MarketStatus.REJECTED, timedelta(hours=1), MarketTier.DEFAULT),
         (MarketStatus.OPEN, timedelta(days=7), MarketTier.MEDIUM),
-        (MarketStatus.OPEN, timedelta(hours=1), MarketTier.DEFAULT),
+        (MarketStatus.OPEN, timedelta(hours=1), MarketTier.TIGHT),
         (MarketStatus.HALTED, timedelta(days=7), MarketTier.DEFAULT),
         (MarketStatus.CLOSED, timedelta(days=7), MarketTier.DEFAULT),
         (MarketStatus.RESOLVED, timedelta(days=7), MarketTier.DEFAULT),
@@ -1177,7 +1234,7 @@ async def test_proposals_are_listed_newest_first_in_every_status_with_their_effe
         clock.advance(timedelta(minutes=10))
     theirs = await factory.market(created_by=bob)
     await factory.market()
-    # The market that closes an hour after it was proposed is past its deadline now.
+    # The three that close an hour after they were proposed are past their deadline now.
     clock.advance(timedelta(hours=1))
     view = container.market_view
 
@@ -1192,7 +1249,9 @@ async def test_proposals_are_listed_newest_first_in_every_status_with_their_effe
         MarketStatus.HALTED,
         MarketStatus.CLOSED,  # stored OPEN, and past its deadline
         MarketStatus.OPEN,
+        MarketStatus.REJECTED,  # turned down in time: it stays rejected past its deadline
         MarketStatus.REJECTED,
+        MarketStatus.EXPIRED,  # stored PROPOSED, and past its deadline
         MarketStatus.PROPOSED,
     ]
     for item, market in zip(listed.items, newest_first, strict=True):
@@ -1211,16 +1270,118 @@ async def test_proposals_are_listed_newest_first_in_every_status_with_their_effe
             market.resolve_by,
             market.created_at,
         )
-        assert item.requested_tier is market.requested_tier
         assert item.rejection_reason == market.rejection_reason
-    assert [item.requested_tier for item in listed.items[-3:]] == [
-        MarketTier.MEDIUM,
-        MarketTier.DEFAULT,
-        MarketTier.TIGHT,
+    assert [item.rejection_reason for item in listed.items[-4:]] == [
+        "Rejected in a test.",
+        "Rejected in a test.",
+        None,
+        None,
     ]
-    assert [item.rejection_reason for item in listed.items[-2:]] == ["Rejected in a test.", None]
+    # How a market ended, for the two that did; the factory resolves to YES.
+    assert [item.outcome for item in listed.items] == [
+        ResolutionOutcome.VOID,
+        ResolutionOutcome.YES,
+        *[None] * 8,
+    ]
+    # Whatever tier VIS opened a market with, its proposer is told nothing of it.
+    assert {market.tier for market in proposed} == {None, *FIXED_TIERS}
+    told = {field for item in listed.items for field in item.model_dump()}
+    assert told.isdisjoint({"requested_tier", "tier", "b_cr", "max_loss_cr", "budget_cr"})
     his = await container.account.proposals(factory.identity(bob))
     assert [item.id for item in his.items] == [theirs.id]
+
+
+@pytest.mark.parametrize(
+    "outcome", [ResolutionOutcome.YES, ResolutionOutcome.NO], ids=lambda outcome: outcome.value
+)
+async def test_a_proposal_says_how_its_market_ended_and_nothing_before_that(
+    container: Container,
+    factory: Factory,
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+    outcome: ResolutionOutcome,
+) -> None:
+    """The outcome a market card carries, in the list of the person who proposed it:
+    YES or NO once it is RESOLVED, VOID once it is VOID, null while it is neither."""
+    alice = await factory.user()
+    resolved = await factory.market(
+        status=MarketStatus.RESOLVED, created_by=alice, outcome=outcome, question="Resolved?"
+    )
+    voided = await factory.market(status=MarketStatus.VOID, created_by=alice, question="Voided?")
+    closed = await factory.market(status=MarketStatus.CLOSED, created_by=alice, question="Closed?")
+    # A market of somebody else that ended the other way changes nothing here.
+    await factory.market(status=MarketStatus.VOID, question="Somebody else's?")
+    as_user(alice)
+
+    listed = (await client.get("/api/me/proposals")).json()["items"]
+    detail = (await client.get(f"/api/markets/{resolved.id}")).json()
+
+    assert {item["id"]: item["outcome"] for item in listed} == {
+        str(resolved.id): outcome.value,
+        str(voided.id): "VOID",
+        str(closed.id): None,
+    }
+    assert detail["outcome"] == outcome.value, "the list says what the market itself says"
+    assert all("outcome" in item for item in listed)
+
+
+async def test_my_proposals_show_a_proposal_as_expired_from_its_deadline_on(
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+) -> None:
+    """An expired proposal is out of review: from the instant of `close_at` itself the list
+    says EXPIRED, with no outcome and no reason, and the row still says PROPOSED."""
+    alice = await factory.user()
+    proposal = await factory.market(
+        status=MarketStatus.PROPOSED, created_by=alice, close_in=timedelta(hours=1)
+    )
+    waiting = await factory.market(status=MarketStatus.PROPOSED, created_by=alice)
+    as_user(alice)
+
+    async def statuses() -> dict[str, str]:
+        listed = (await client.get("/api/me/proposals")).json()["items"]
+        assert all(item["outcome"] is None for item in listed)
+        assert all(item["rejection_reason"] is None for item in listed)
+        return {item["id"]: item["status"] for item in listed}
+
+    clock.set(proposal.close_at - timedelta(microseconds=1))
+    assert await statuses() == {str(proposal.id): "PROPOSED", str(waiting.id): "PROPOSED"}
+    clock.set(proposal.close_at)
+    assert await statuses() == {str(proposal.id): "EXPIRED", str(waiting.id): "PROPOSED"}
+    clock.set(proposal.close_at + timedelta(days=1))
+    assert await statuses() == {str(proposal.id): "EXPIRED", str(waiting.id): "PROPOSED"}
+    async with container.uow_factory() as uow:
+        row = await uow.markets.get(proposal.id)
+    assert row is not None
+    assert row.status is MarketStatus.PROPOSED
+
+
+async def test_the_outcomes_of_any_number_of_proposals_are_read_with_one_statement(
+    container: Container, factory: Factory
+) -> None:
+    """One query for the markets and one for the resolutions of the settled ones,
+    however many there are; none for somebody whose proposals are all unsettled."""
+    alice = await factory.user()
+    bob = await factory.user()
+    for number in range(4):
+        await factory.market(
+            status=MarketStatus.RESOLVED, created_by=alice, question=f"Settled {number}?"
+        )
+    await factory.market(created_by=bob)
+
+    with recorded_selects(container) as for_alice:
+        settled = await container.account.proposals(factory.identity(alice))
+    with recorded_selects(container) as for_bob:
+        unsettled = await container.account.proposals(factory.identity(bob))
+
+    assert [item.outcome for item in settled.items] == [ResolutionOutcome.YES] * 4
+    assert [item.outcome for item in unsettled.items] == [None]
+    assert len([statement for statement in for_alice if "FROM resolutions" in statement]) == 1
+    assert len([statement for statement in for_alice if "FROM markets" in statement]) == 1
+    assert [statement for statement in for_bob if "FROM resolutions" in statement] == []
 
 
 async def test_somebody_who_proposed_nothing_has_no_proposals(
@@ -1269,11 +1430,15 @@ async def test_the_five_routes_answer_with_amounts_as_strings_and_prices_as_numb
         "degree_programme": admin.degree_programme,
         "role": "ADMIN",
         "created_at": TEST_NOW.isoformat().replace("+00:00", "Z"),
+        "policy_accepted_at": TEST_NOW.isoformat().replace("+00:00", "Z"),
         "balance_cr": format_cr(balance_micro),
         "can_get_voucher": True,
         "monthly_grant_cr": format_cr(settings.grants.monthly_grant_micro),
-        "next_monthly_grant_on": "2026-11-01",
+        # 9 November at 14:00 in Zurich, sent as the instant it is.
+        "next_monthly_grant_at": "2026-11-09T13:00:00Z",
+        "notices": [],
     }
+    assert FIRST_GRANT_DUE.astimezone(UTC).isoformat() == "2026-11-09T13:00:00+00:00"
     (entry,) = positions.json()["items"]
     assert entry["holdings"][0] == {
         "outcome": "YES",

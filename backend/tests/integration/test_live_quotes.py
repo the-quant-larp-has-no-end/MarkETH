@@ -172,8 +172,8 @@ def live_service(
     `SSE_HEARTBEAT_SECONDS`."""
     chosen = container.settings
     if heartbeat_seconds is not None:
-        redis = chosen.redis.model_copy(update={"sse_heartbeat_seconds": heartbeat_seconds})
-        chosen = chosen.model_copy(update={"redis": redis})
+        live = chosen.live.model_copy(update={"heartbeat_seconds": heartbeat_seconds})
+        chosen = chosen.model_copy(update={"live": live})
     return LiveQuoteService(
         container.uow_factory,
         chosen,

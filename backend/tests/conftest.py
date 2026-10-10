@@ -8,23 +8,23 @@ serve the run.
 
 What a test of the API or of a service uses (mark the module `integration`):
 
-    settings    `.example.env` with two admins and one barista, pointing at the
-                Postgres and Redis containers. ScyllaDB points at a closed port: the
+    settings    `.example.env` with two bootstrap admins, pointing at the Postgres
+                and Redis containers. ScyllaDB points at a closed port: the
                 default suite proves the API works without it.
     clock       a `FrozenClock`; move it with `advance()` or `set()`
     container   the application's `Container`, built with that clock on the shared
                 database, started, and stopped after the test
-    factory     writes users, markets and positions directly; `factory.admin()` and
-                `factory.barista()` are users whose address has that role
-                (tests/support/factories.py)
+    factory     writes users, markets and positions directly; `factory.admin()` is
+                a bootstrap admin and `factory.barista()` a user whose row has
+                that role (tests/support/factories.py)
     app         the FastAPI application around that container
     client      an `httpx.AsyncClient` on it; paths start with `/api`, and the Origin
                 header is already set. It sends no portal header: nobody is calling
                 until `as_user` says who
     as_user     `as_user(user)` makes every request come from that user, with the
-                role the application derives from their address: a plain user, unless
-                the factory made them an admin or a barista. `as_user(user,
-                UserRole.ADMIN)` names the role instead, for a test of a guard.
+                role the application gives them: the one of their row, or ADMIN
+                for a bootstrap admin. `as_user(user, UserRole.ADMIN)` names the
+                role instead, for a test of a guard.
                 `as_user(PortalIdentity(...))` is somebody the portal named who has no
                 profile yet; `as_user(None)` is nobody again. It stands in for the
                 headers and `IdentityService`.
@@ -56,12 +56,19 @@ runs through the outage, on the same clean database:
 
 For an adapter on its own: `redis_client`, `unreachable_redis`, `scylla_client`.
 
+A streak that books tokens. The tests run with `STREAK_DAILY_REWARD_CR=0` and no
+milestone, so that a trade moves the credits of the trade and nothing else
+(tests/support/settings.py). A test of what a streak books says so:
+
+    @pytest.mark.streak_rewards  `container` runs with the streak values of `.example.env`
+
 Two Docker Desktop quirks are absorbed here, once, for every container fixture in the
 suite: where the reaper finds the Docker socket, and a race while it starts.
 """
 
 import os
 import sys
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import Final
 
@@ -112,7 +119,11 @@ from tests.support.factories import (
     portal_headers_of,
 )
 from tests.support.network import SwitchableProxy
-from tests.support.settings import load_base_settings
+from tests.support.settings import (
+    STREAK_REWARDS_MARKER,
+    example_streak_settings,
+    load_base_settings,
+)
 
 if sys.platform == "darwin":
     # On macOS Docker runs in a VM. The socket the client talks to on the host (under the
@@ -122,6 +133,8 @@ if sys.platform == "darwin":
 
 DOCKER_MARKERS: Final[tuple[str, ...]] = ("integration", "scylla")
 REAPER_START_ATTEMPTS: Final[int] = 10
+REAPER_RETRY_SECONDS: Final[float] = 0.5
+"""What lies between two attempts to start the reaper: time for Docker to catch up."""
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -140,22 +153,30 @@ def _start_reaper() -> None:
     `ConnectionError`: 5 of 12 starts on a busy machine. Left alone, that fails whichever
     container fixture happens to run first. Started here, no fixture has to start it; once
     it runs, this returns at once.
+
+    Every attempt that fails stops its half-started container, the last one too. One
+    left running keeps the reaper's name until it gives up by itself, about a minute
+    later, and every test that sets up in that minute fails on the name.
     """
-    for _ in range(REAPER_START_ATTEMPTS - 1):
+    for attempts_left in reversed(range(REAPER_START_ATTEMPTS)):
         try:
             Reaper.get_instance()
         except ConnectionError:
-            # Stops the half-started container, which frees its name for the next attempt.
+            # Stops the half-started container, which frees its name: for the next
+            # attempt, and after the last one for the next test.
             Reaper.delete_instance()
+            if not attempts_left:
+                raise
+            time.sleep(REAPER_RETRY_SECONDS)
         else:
             return
-    Reaper.get_instance()
 
 
 @pytest.fixture(scope="session")
 def base_settings() -> Settings:
-    """The committed `.example.env` with APP_ENV=test and the role lists of the tests:
-    two admins and one barista. Nothing runs behind its hosts.
+    """The committed `.example.env` with APP_ENV=test, the bootstrap admins of the
+    tests, of which there are two, and a streak that books nothing. Nothing runs behind
+    its hosts.
 
     For tests that need tunables but no services; it never starts Docker.
     """
@@ -344,11 +365,15 @@ def _without_postgres(settings: Settings) -> Settings:
 
 @pytest.fixture
 def container_settings(request: pytest.FixtureRequest, settings: Settings) -> Settings:
-    """What `container` is built from: `settings`, minus what the test declares down.
+    """What `container` is built from: `settings`, minus what the test declares down,
+    and with the streak values of `.example.env` for a test marked `streak_rewards`.
 
-    See "A dependency that fails" in the module docstring.
+    See "A dependency that fails" and "A streak that books tokens" in the module
+    docstring.
     """
     chosen = settings
+    if request.node.get_closest_marker(STREAK_REWARDS_MARKER) is not None:
+        chosen = chosen.model_copy(update={"streaks": example_streak_settings()})
     if request.node.get_closest_marker("redis_down") is not None:
         chosen = _without_redis(chosen)
     if request.node.get_closest_marker("postgres_down") is not None:
@@ -428,7 +453,7 @@ def portal_headers(base_settings: Settings) -> PortalHeaders:
 
     A request that carries them is not acted for: it goes through the real
     `authenticate_request` and `IdentityService`, so the role it gets is the one the
-    application derives. The header names are those of the settings.
+    application gives. The header names are those of the settings.
     """
 
     def headers(who: Named) -> dict[str, str]:

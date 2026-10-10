@@ -5,7 +5,7 @@ import { codeBatch, codeBatchCreated } from "@/test/fixtures";
 import { browser } from "./browser";
 import { codesCsv, csvFileName } from "./codes-csv";
 
-describe("the CSV of a new batch", () => {
+describe("the CSV of the codes of a batch", () => {
   test("has one row per code with its link, and the batch's label, value and expiry as the API sent them", () => {
     const csv = codesCsv(
       codeBatchCreated({

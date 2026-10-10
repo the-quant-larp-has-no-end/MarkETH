@@ -4,18 +4,28 @@
 trades and average payout ratio. The server sorts, filters and ranks; a client sends its
 choice as the query and shows the rows in the order they arrive (golden rule 6).
 
+Credits are what a user has: the balance of the wallet plus what the open positions are
+worth at the current prices. A row carries the sum and its two parts.
+
 The two rates are JSON numbers, already rounded for display like a probability. They are
 not amounts: a rate is a quotient, and no balance is ever computed from one. Credits are
 decimal strings like every `*_cr` field.
 """
 
-from typing import Annotated, Final, Self
+from typing import Annotated, Final
 
-from pydantic import Field, model_validator
+from pydantic import Field
 
 from app.core.degrees import PROGRAMME_MAX_LENGTH
 from app.core.enums import DegreeLevel, LeaderboardSort, SortOrder
-from app.schemas.common import CreditAmount, CursorPage, PageQuery, Probability, ResponseModel
+from app.schemas.common import (
+    CreditAmount,
+    CursorPage,
+    PageQuery,
+    Probability,
+    ResponseModel,
+    in_its_own_words,
+)
 
 TRADES_FILTER_MAX: Final[int] = 1_000_000_000
 """The largest number of trades a filter may name. It only keeps a bound inside what the
@@ -36,13 +46,45 @@ PayoutRatio = Annotated[float, Field(ge=0)]
 """Credits returned per credit put in, cut to two places: 1.25 is a quarter more than
 was put in, 0 is everything lost."""
 
+NOT_A_PERCENTAGE_MESSAGE: Final[str] = "Enter a percentage between 0 and 100."
+"""What a bound on the win rate says for anything that is no fraction from 0 to 1. The
+filter is typed in percent, and the sentence is in the unit the person typed."""
+
+NOT_A_RATIO_MESSAGE: Final[str] = "Enter a number, for example 1.25."
+"""What a bound on the payout ratio says for something that is no number."""
+
+WinRateBound = Annotated[
+    float,
+    Field(ge=0, le=1, allow_inf_nan=False),
+    in_its_own_words(
+        float_type=NOT_A_PERCENTAGE_MESSAGE,
+        float_parsing=NOT_A_PERCENTAGE_MESSAGE,
+        finite_number=NOT_A_PERCENTAGE_MESSAGE,
+        greater_than_equal=NOT_A_PERCENTAGE_MESSAGE,
+        less_than_equal=NOT_A_PERCENTAGE_MESSAGE,
+    ),
+]
+"""A bound on the win rate, as the fraction it is sent as: 0.5 is 50 %."""
+
+PayoutRatioBound = Annotated[
+    float,
+    Field(ge=0, le=PAYOUT_RATIO_FILTER_MAX, allow_inf_nan=False),
+    in_its_own_words(
+        float_type=NOT_A_RATIO_MESSAGE,
+        float_parsing=NOT_A_RATIO_MESSAGE,
+        finite_number=NOT_A_RATIO_MESSAGE,
+    ),
+]
+"""A bound on the payout ratio: credits returned per credit put in."""
+
 
 class LeaderboardQuery(PageQuery):
     """Query string of `GET /leaderboard`: the order, and whom to leave out.
 
     Every bound is inclusive and optional, and all that are given must hold. A bound on
     `win_rate` or on `avg_payout_ratio` also leaves out everybody who has no rate yet
-    (`settled_markets` of 0). A `min_…` above its `max_…` is rejected.
+    (`settled_markets` of 0). A `min_…` above its `max_…` is rejected by the service:
+    422 with the `min_…` in `details.field`.
     """
 
     sort: LeaderboardSort = LeaderboardSort.CREDITS
@@ -53,37 +95,27 @@ class LeaderboardQuery(PageQuery):
     """`desc` puts the highest first."""
 
     min_credits_cr: CreditAmount | None = None
+    """Compared with `credits_cr` of a row: the balance and the value of the open
+    positions together, not the balance alone."""
+
     max_credits_cr: CreditAmount | None = None
     min_trades: int | None = Field(default=None, ge=0, le=TRADES_FILTER_MAX)
     max_trades: int | None = Field(default=None, ge=0, le=TRADES_FILTER_MAX)
-    min_win_rate: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    min_win_rate: WinRateBound | None = None
     """A fraction: 0.5 is half of the markets. It is compared with the exact rate, not
     with the rounded one a row shows."""
 
-    max_win_rate: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
-    min_avg_payout_ratio: float | None = Field(
-        default=None, ge=0, le=PAYOUT_RATIO_FILTER_MAX, allow_inf_nan=False
-    )
+    max_win_rate: WinRateBound | None = None
+    min_avg_payout_ratio: PayoutRatioBound | None = None
     """Compared with the exact ratio, not with the one a row shows cut to two places."""
 
-    max_avg_payout_ratio: float | None = Field(
-        default=None, ge=0, le=PAYOUT_RATIO_FILTER_MAX, allow_inf_nan=False
-    )
+    max_avg_payout_ratio: PayoutRatioBound | None = None
     degree_level: DegreeLevel | None = None
     degree_programme: str | None = Field(
         default=None, min_length=1, max_length=PROGRAMME_MAX_LENGTH
     )
     """A label as `GET /config` lists it. Users are matched on what their profile says;
     a label nobody has gives an empty list, not an error."""
-
-    @model_validator(mode="after")
-    def _each_minimum_at_most_its_maximum(self) -> Self:
-        for measure in MEASURES_WITH_BOUNDS:
-            lowest = getattr(self, f"min_{measure}")
-            highest = getattr(self, f"max_{measure}")
-            if lowest is not None and highest is not None and lowest > highest:
-                raise ValueError(f"min_{measure} must not be above max_{measure}")
-        return self
 
 
 class LeaderboardEntry(ResponseModel):
@@ -92,7 +124,8 @@ class LeaderboardEntry(ResponseModel):
 
     rank: int
     """The user's place in the list as it was asked for, 1 being first. It counts within
-    the filters and in the chosen order."""
+    the filters and in the chosen order: the first of a filtered list has rank 1,
+    whatever their place among everybody is."""
 
     username: str
     degree_level: DegreeLevel
@@ -100,7 +133,17 @@ class LeaderboardEntry(ResponseModel):
     """A label of `degree_level`, as `GET /config` lists it."""
 
     credits_cr: CreditAmount
-    """The user's balance right now."""
+    """What the user has right now: `balance_cr` plus `positions_value_cr`. It is what
+    the `credits` sort orders by and what `min_credits_cr` and `max_credits_cr` bound."""
+
+    balance_cr: CreditAmount
+    """The part in the wallet: the balance of the user's account."""
+
+    positions_value_cr: CreditAmount
+    """The part in open positions: the shares the user holds in markets that are not
+    yet RESOLVED or VOID, each holding at the current price of its outcome and rounded
+    down. It is the `total_value_cr` of that user's `GET /me/positions`. 0 for someone
+    who holds nothing."""
 
     trades: int
     """How many trades the user made, over every market."""

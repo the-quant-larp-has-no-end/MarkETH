@@ -93,18 +93,23 @@ describe("OutcomeToggle", () => {
 });
 
 describe("StakePresets", () => {
+  const chips = () => within(screen.getByRole("group", { name: "Quick amounts" }));
+
   test("show one chip per preset of the market, each with its amount as sent", () => {
     renderWithProviders(
-      <StakePresets presets={marketViewer().stake_presets} value={null} onChange={() => {}} />,
+      <StakePresets presets={marketViewer().stake_presets} value="" onChange={() => {}} />,
     );
 
-    const chips = within(screen.getByRole("group", { name: "Stake" })).getAllByRole("button");
-    expect(chips.map((chip) => chip.textContent)).toEqual([
-      "2525 tokens",
-      "5050 tokens",
-      "100100 tokens",
-    ]);
-    for (const chip of chips) expect(chip).toHaveAttribute("aria-pressed", "false");
+    expect(
+      chips()
+        .getAllByRole("button")
+        .map((chip) => chip.textContent),
+    ).toEqual(["2525 tokens", "5050 tokens", "100100 tokens"]);
+    // Each is named by its amount.
+    expect(chips().getByRole("button", { name: "25 tokens" })).toBeInTheDocument();
+    for (const chip of chips().getAllByRole("button")) {
+      expect(chip).toHaveAttribute("aria-pressed", "false");
+    }
   });
 
   test("a preset is disabled by allowed alone: the frontend looks at no balance and no limit", async () => {
@@ -116,7 +121,7 @@ describe("StakePresets", () => {
       { amount_cr: "100", allowed: true },
     ];
     const { user } = renderWithProviders(
-      <StakePresets presets={presets} value={null} onChange={onChange} />,
+      <StakePresets presets={presets} value="" onChange={onChange} />,
     );
     const [small, , large] = screen.getAllByRole("button");
 
@@ -127,6 +132,23 @@ describe("StakePresets", () => {
     expect(onChange).toHaveBeenCalledWith("100");
   });
 
+  test("a tap hands on the preset's amount as the string that arrived", async () => {
+    const onChange = vi.fn();
+    // More digits than a float keeps: a detour through a number would change them.
+    const amount = "0.100000000000000000000000000001";
+    const { user } = renderWithProviders(
+      <StakePresets
+        presets={[{ amount_cr: amount, allowed: true }]}
+        value=""
+        onChange={onChange}
+      />,
+    );
+
+    await user.click(screen.getByRole("button"));
+
+    expect(onChange).toHaveBeenCalledExactlyOnceWith(amount);
+  });
+
   test("a chip that cannot be chosen looks it: figure and outline in subtle, the token icon dimmed", () => {
     renderWithProviders(
       <StakePresets
@@ -134,7 +156,7 @@ describe("StakePresets", () => {
           { amount_cr: "25", allowed: false },
           { amount_cr: "50", allowed: true },
         ]}
-        value={null}
+        value=""
         onChange={() => {}}
       />,
     );
@@ -149,14 +171,44 @@ describe("StakePresets", () => {
     expect(refused!.className).not.toMatch(/(^| )disabled:text-subtle( |$)/);
   });
 
-  test("the chosen chip is pressed and filled white", () => {
+  test("the chip whose amount the field holds is pressed and filled white", () => {
     renderWithProviders(
       <StakePresets presets={marketViewer().stake_presets} value="50" onChange={() => {}} />,
     );
 
-    const [, chosen] = screen.getAllByRole("button");
+    const [small, chosen, large] = screen.getAllByRole("button");
     expect(chosen).toHaveAttribute("aria-pressed", "true");
     expect(chosen!.className).toContain("data-[state=on]:bg-foreground");
+    expect(small).toHaveAttribute("aria-pressed", "false");
+    expect(large).toHaveAttribute("aria-pressed", "false");
+  });
+
+  test.each(["50.0", "50.", "050", "5", "500", " 50"])(
+    "selects by the characters alone: a field that holds %j selects no chip",
+    (text) => {
+      renderWithProviders(
+        <StakePresets presets={marketViewer().stake_presets} value={text} onChange={() => {}} />,
+      );
+
+      for (const chip of screen.getAllByRole("button")) {
+        expect(chip).toHaveAttribute("aria-pressed", "false");
+      }
+    },
+  );
+
+  test("tapping the chip that is selected changes nothing and leaves it selected", async () => {
+    const onChange = vi.fn();
+    const { user } = renderWithProviders(
+      <StakePresets presets={marketViewer().stake_presets} value="50" onChange={onChange} />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "50 tokens" }));
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "50 tokens" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
   });
 
   test("the whole row can be switched off while a trade waits for its answer", () => {
@@ -227,6 +279,12 @@ describe("StakeLeftLine", () => {
     rerender(<StakeLeftLine stakeLeftCr="0" stakeLimitCr="1" />);
     expect(screen.getByText("0 of 1 token left in this market")).toBeInTheDocument();
   });
+
+  test("takes an id, so that what it describes can name it", () => {
+    renderWithProviders(<StakeLeftLine id="left" stakeLeftCr="50" stakeLimitCr="100" />);
+
+    expect(screen.getByText("50 of 100 tokens left in this market")).toHaveAttribute("id", "left");
+  });
 });
 
 describe("QuotePanel", () => {
@@ -288,7 +346,7 @@ describe("QuotePanel", () => {
     expect(document.querySelector("dl")).toHaveAttribute("aria-busy", "true");
   });
 
-  test("with nothing to quote and nothing on its way, the rows stand without figures and do not pulse", () => {
+  test("with nothing to quote and nothing on its way, the rows keep their labels, show no value and do not pulse", () => {
     renderWithProviders(<QuotePanel side="SELL" outcome="NO" quote={null} idle />);
 
     for (const label of ["You receive", "Shares", "Average price", "New probability"]) {

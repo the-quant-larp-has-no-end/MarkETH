@@ -68,8 +68,19 @@ function scan(text: string) {
 }
 
 const paused = () => screen.getByTestId("scanner").getAttribute("data-paused") === "true";
-const result = (verdict: "accepted" | "rejected") =>
+const result = (verdict: "accepted" | "repeat" | "rejected") =>
   document.querySelector<HTMLElement>(`[data-verdict=${verdict}]`);
+
+/** The result of that kind, once it is on screen. */
+const shows = (verdict: "accepted" | "repeat" | "rejected") =>
+  waitFor(() => {
+    const element = result(verdict);
+    expect(element).not.toBeNull();
+    return element!;
+  });
+
+/** The API's answer to a scan of a voucher this barista redeemed a moment ago. */
+const REPEATED = json(200, voucherRedeemed({ repeat: true }));
 
 describe("who the scanner is for", () => {
   test.each(["BARISTA", "ADMIN"] as const)("a caller with the role %s sees it", (role) => {
@@ -104,6 +115,7 @@ describe("the scanner at rest", () => {
     expect(main).toContainElement(screen.getByTestId("scanner"));
     expect(paused()).toBe(false);
     expect(result("accepted")).toBeNull();
+    expect(result("repeat")).toBeNull();
     expect(result("rejected")).toBeNull();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(api.requests).toHaveLength(0);
@@ -186,6 +198,7 @@ describe("an accepted voucher", () => {
     expect(shown.querySelectorAll(".type-display")).toHaveLength(1);
     expect(shown.querySelector("svg.lucide-check")).toHaveClass("size-24");
     expect(result("rejected")).toBeNull();
+    expect(result("repeat")).toBeNull();
     // It is read out the moment it appears.
     expect(shown.parentElement).toHaveAttribute("aria-live", "assertive");
   });
@@ -275,7 +288,169 @@ describe("a voucher that is not valid", () => {
   });
 });
 
+describe("a voucher this barista redeemed a moment ago", () => {
+  test("fills the screen in a colour that is neither green nor red, with the product and the time of the redemption", async () => {
+    renderBarista(
+      json(
+        200,
+        voucherRedeemed({
+          product_name: "Iced Tea",
+          value_cr: "35",
+          redeemed_at: "2026-10-05T16:02:41Z",
+          repeat: true,
+        }),
+      ),
+    );
+
+    scan("7KQ2-M9XA");
+
+    const shown = await shows("repeat");
+    expect(shown).toHaveClass("fixed", "inset-0", "bg-raised", "text-foreground");
+    expect(shown).not.toHaveClass("bg-yes");
+    expect(shown).not.toHaveClass("bg-no");
+    expect(shown).not.toHaveClass("text-ink");
+    expect(shown.querySelector("svg.lucide-clock")).toHaveClass("size-24");
+    // The product is still the largest thing on the screen.
+    expect(within(shown).getByText("Iced Tea")).toHaveClass("type-display");
+    expect(shown.querySelectorAll(".type-display")).toHaveLength(1);
+    expect(within(shown).getByText("Redeemed a moment ago at this bar")).toHaveClass("type-h2");
+    // The time of day alone, in the timezone of /config, whatever the device is set to.
+    const time = within(shown).getByText("18:02");
+    expect(time.tagName).toBe("TIME");
+    expect(time).toHaveClass("type-number-lg");
+    expect(time).toHaveAttribute("datetime", "2026-10-05T16:02:41Z");
+    expect(shown.querySelector("[data-slot=amount]")).toHaveTextContent("35 tokens");
+    expect(
+      within(shown).getByText("It counts once. Hand it over if you have not yet."),
+    ).toBeInTheDocument();
+    // Neither of the other two results, and nothing of theirs.
+    expect(result("accepted")).toBeNull();
+    expect(result("rejected")).toBeNull();
+    expect(shown).not.toHaveTextContent("Voucher accepted");
+    expect(shown).not.toHaveTextContent("Paid in predictions.");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  test("is read out when it appears, with its time", async () => {
+    renderBarista(REPEATED);
+
+    scan("7KQ2-M9XA");
+
+    const shown = await shows("repeat");
+    const region = shown.parentElement!;
+    expect(region).toHaveAttribute("aria-live", "assertive");
+    expect(region).toHaveAttribute("aria-atomic", "true");
+    // The sentence and the time are heard as two words, not as one.
+    expect(region.textContent).toContain("Redeemed a moment ago at this bar 10:02");
+  });
+
+  test("the answer says which result it is: `repeat` false is the green one, true the third", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { api } = renderBarista(json(200, voucherRedeemed({ repeat: false })));
+
+    scan("7KQ2-M9XA");
+    await shows("accepted");
+    expect(result("repeat")).toBeNull();
+
+    // The same voucher after it was away: the same fields, and only `repeat` differs.
+    await act(() => vi.advanceTimersByTimeAsync(BARISTA_RESULT_MS));
+    await act(() => vi.advanceTimersByTimeAsync(5_000));
+    api.on(REDEEM, REPEATED);
+    scan("7KQ2-M9XA");
+
+    await shows("repeat");
+    expect(result("accepted")).toBeNull();
+  });
+
+  test("vibrates with one long pulse, shows for 2.5 s, and then the scanner returns", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderBarista(REPEATED);
+
+    scan("7KQ2-M9XA");
+
+    await shows("repeat");
+    expect(vibrate).toHaveBeenCalledTimes(1);
+    const pulse = vibrate.mock.calls[0]![0] as number;
+    // One pulse, and a longer one than the pulse of an accepted voucher.
+    expect(typeof pulse).toBe("number");
+    expect(paused()).toBe(true);
+
+    await act(() => vi.advanceTimersByTimeAsync(BARISTA_RESULT_MS - 100));
+    expect(result("repeat")).not.toBeNull();
+    await act(() => vi.advanceTimersByTimeAsync(100));
+
+    expect(result("repeat")).toBeNull();
+    expect(paused()).toBe(false);
+    expect(vibrate).toHaveBeenCalledTimes(1);
+  });
+
+  test("the three results vibrate in three ways: one pulse, two pulses, one long pulse", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { api } = renderBarista(json(200, voucherRedeemed()));
+
+    scan("7KQ2-M9XA");
+    await shows("accepted");
+    await act(() => vi.advanceTimersByTimeAsync(BARISTA_RESULT_MS));
+    api.on(REDEEM, INVALID);
+    scan("B4T8-WN3C");
+    await shows("rejected");
+    await act(() => vi.advanceTimersByTimeAsync(BARISTA_RESULT_MS));
+    api.on(REDEEM, REPEATED);
+    scan("Z6PD-4F7K");
+    await shows("repeat");
+
+    const [accepted, rejected, repeated] = vibrate.mock.calls.map((call) => call[0] as unknown);
+    expect(typeof accepted).toBe("number");
+    expect(rejected).toHaveLength(3);
+    expect(typeof repeated).toBe("number");
+    expect(repeated as number).toBeGreaterThan(accepted as number);
+  });
+
+  test("shows the voucher's amount as the string the API sent", async () => {
+    renderBarista(json(200, voucherRedeemed({ repeat: true, value_cr: "999999999999.999999" })));
+
+    scan("7KQ2-M9XA");
+
+    const shown = await shows("repeat");
+    expect(shown.querySelector("[data-slot=amount]")).toHaveTextContent(
+      "999,999,999,999.99 tokens",
+    );
+  });
+});
+
 describe("a failure that is no verdict on the voucher", () => {
+  test("a scan whose answer was lost keeps its banner, and the next scan of that voucher shows the third result, never the red one", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // The request redeemed the voucher, and its answer did not arrive.
+    const { api } = renderBarista(noAnswer);
+
+    scan("7KQ2-M9XA");
+
+    const banner = await screen.findByRole("alert");
+    expect(banner).toHaveTextContent("No connection. Try again.");
+    expect(result("rejected")).toBeNull();
+    expect(result("repeat")).toBeNull();
+    expect(vibrate).not.toHaveBeenCalled();
+
+    // The barista shows the voucher once more. The API knows who redeemed it a moment ago.
+    await act(() => vi.advanceTimersByTimeAsync(5_000));
+    api.on(REDEEM, json(200, voucherRedeemed({ product_name: "Mate", repeat: true })));
+    scan("7KQ2-M9XA");
+
+    const shown = await shows("repeat");
+    expect(shown).toHaveTextContent("Mate");
+    expect(shown).toHaveTextContent("Redeemed a moment ago at this bar");
+    expect(result("rejected")).toBeNull();
+    expect(result("accepted")).toBeNull();
+    // The banner has made room for the verdict.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(api.calls(REDEEM)).toHaveLength(2);
+    expect(api.calls(REDEEM).map((request) => request.body)).toEqual([
+      { code: "7KQ2-M9XA" },
+      { code: "7KQ2-M9XA" },
+    ]);
+  });
+
   test.each([
     ["no response", () => noAnswer(), "No connection. Try again."],
     [
@@ -411,9 +586,165 @@ describe("a voucher that stays in front of the camera", () => {
     await waitFor(() => expect(result("accepted")).not.toBeNull());
     expect(api.calls(REDEEM)).toHaveLength(2);
   });
+
+  test("held there for thirty seconds it is one request, one green result and no other", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { api } = renderBarista(json(200, voucherRedeemed()));
+
+    scan("7KQ2-M9XA");
+    await shows("accepted");
+    await act(() => vi.advanceTimersByTimeAsync(BARISTA_RESULT_MS));
+
+    // Whatever a second request would be answered, none is made.
+    api.on(REDEEM, INVALID);
+    for (let held = 0; held < 30_000; held += 600) {
+      scan("7KQ2-M9XA");
+      await act(() => vi.advanceTimersByTimeAsync(600));
+      expect(result("rejected")).toBeNull();
+      expect(result("repeat")).toBeNull();
+    }
+
+    expect(api.calls(REDEEM)).toHaveLength(1);
+    expect(vibrate).toHaveBeenCalledTimes(1);
+  });
+
+  test("lost for a few seconds and shown again it is a scan, and the API's `repeat` shows the third result, not the red one", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { api } = renderBarista(json(200, voucherRedeemed({ product_name: "Mate" })));
+
+    scan("7KQ2-M9XA");
+    await shows("accepted");
+    await act(() => vi.advanceTimersByTimeAsync(BARISTA_RESULT_MS));
+
+    // Out of sight for four seconds, then under the camera again.
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    api.on(REDEEM, json(200, voucherRedeemed({ product_name: "Mate", repeat: true })));
+    scan("7KQ2-M9XA");
+
+    const shown = await shows("repeat");
+    expect(shown).toHaveTextContent("Mate");
+    expect(result("accepted")).toBeNull();
+    expect(result("rejected")).toBeNull();
+    expect(api.calls(REDEEM)).toHaveLength(2);
+
+    // And while it stays there after that, nothing more is sent.
+    await act(() => vi.advanceTimersByTimeAsync(BARISTA_RESULT_MS));
+    for (let look = 0; look < 6; look += 1) {
+      scan("7KQ2-M9XA");
+      await act(() => vi.advanceTimersByTimeAsync(600));
+    }
+    expect(api.calls(REDEEM)).toHaveLength(2);
+  });
+
+  test("the time its result covers the view does not count as time away", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { api } = renderBarista(json(200, voucherRedeemed()));
+
+    scan("7KQ2-M9XA");
+    await shows("accepted");
+    // The result alone is up for longer than a QR may be out of sight.
+    await act(() => vi.advanceTimersByTimeAsync(BARISTA_RESULT_MS));
+    expect(result("accepted")).toBeNull();
+
+    api.on(REDEEM, INVALID);
+    // The scanner needs a moment to read it again, and has it.
+    await act(() => vi.advanceTimersByTimeAsync(1_500));
+    scan("7KQ2-M9XA");
+
+    expect(paused()).toBe(true);
+    expect(api.calls(REDEEM)).toHaveLength(1);
+    expect(result("rejected")).toBeNull();
+  });
+
+  test("two vouchers that the camera reads in turn are each sent once: a second one does not make it forget the first", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { api } = renderBarista(json(200, voucherRedeemed({ product_name: "Coffee" })));
+
+    scan("7KQ2-M9XA");
+    await shows("accepted");
+    await act(() => vi.advanceTimersByTimeAsync(BARISTA_RESULT_MS));
+    api.on(REDEEM, json(200, voucherRedeemed({ product_name: "Mate" })));
+    scan("B4T8-WN3C");
+    await waitFor(() => expect(result("accepted")).toHaveTextContent("Mate"));
+    await act(() => vi.advanceTimersByTimeAsync(BARISTA_RESULT_MS));
+
+    // The camera reads now one, now the other, for twenty seconds.
+    api.on(REDEEM, INVALID);
+    for (let look = 0; look < 34; look += 1) {
+      scan(look % 2 === 0 ? "7KQ2-M9XA" : "B4T8-WN3C");
+      expect(paused()).toBe(true);
+      await act(() => vi.advanceTimersByTimeAsync(600));
+    }
+
+    expect(api.calls(REDEEM)).toHaveLength(2);
+    expect(result("rejected")).toBeNull();
+    expect(result("repeat")).toBeNull();
+  });
+
+  test("a voucher that is not valid is not sent again while it stays there either", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { api } = renderBarista(INVALID);
+
+    scan("not a voucher at all");
+    await shows("rejected");
+    await act(() => vi.advanceTimersByTimeAsync(BARISTA_RESULT_MS));
+
+    for (let look = 0; look < 8; look += 1) {
+      scan("not a voucher at all");
+      await act(() => vi.advanceTimersByTimeAsync(600));
+      expect(result("rejected")).toBeNull();
+    }
+    expect(api.calls(REDEEM)).toHaveLength(1);
+    expect(vibrate).toHaveBeenCalledTimes(1);
+
+    // Shown again after it was away, it is refused again.
+    await act(() => vi.advanceTimersByTimeAsync(5_000));
+    scan("not a voucher at all");
+    await shows("rejected");
+    expect(api.calls(REDEEM)).toHaveLength(2);
+  });
 });
 
 describe("a typed voucher code", () => {
+  test("the sheet has its close cross, which closes it and sends nothing", async () => {
+    const { api, user } = renderBarista();
+    await user.click(screen.getByRole("button", { name: "Type the voucher code" }));
+    const sheet = await screen.findByRole("dialog", { name: "Type the voucher code" });
+    await user.type(within(sheet).getByLabelText("Voucher code"), "7kq2m9xa");
+
+    const cross = within(sheet).getByRole("button", { name: "Close" });
+    expect(cross).toBeEnabled();
+    expect(cross.querySelector("svg")).toBeInTheDocument();
+    await user.click(cross);
+
+    await waitFor(() => expect(sheet).not.toBeInTheDocument());
+    expect(api.requests).toHaveLength(0);
+    // What was typed is still there when the sheet is opened again.
+    await user.click(screen.getByRole("button", { name: "Type the voucher code" }));
+    expect(await screen.findByLabelText("Voucher code")).toHaveValue("7KQ2-M9XA");
+  });
+
+  test("a typed code of a voucher redeemed a moment ago ends in the third result, and the field is emptied", async () => {
+    const { api, user } = renderBarista(
+      json(200, voucherRedeemed({ product_name: "Mate", repeat: true })),
+    );
+    await user.click(screen.getByRole("button", { name: "Type the voucher code" }));
+    const sheet = await screen.findByRole("dialog");
+    await user.type(within(sheet).getByLabelText("Voucher code"), "7kq2m9xa{Enter}");
+
+    const shown = await shows("repeat");
+    expect(shown).toHaveTextContent("Mate");
+    expect(result("accepted")).toBeNull();
+    expect(api.lastCall(REDEEM)?.body).toEqual({ code: "7KQ2-M9XA" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    await act(() => vi.advanceTimersByTimeAsync(BARISTA_RESULT_MS));
+    vi.useRealTimers();
+    await user.click(screen.getByRole("button", { name: "Type the voucher code" }));
+    expect(await screen.findByLabelText("Voucher code")).toHaveValue("");
+  });
+
   test("opens a sheet with the field of a voucher code, and pauses the scanner meanwhile", async () => {
     const { user } = renderBarista();
 

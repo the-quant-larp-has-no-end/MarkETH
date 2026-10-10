@@ -24,6 +24,7 @@ def test_every_way_credits_can_move_has_a_label() -> None:
         (JournalKind.TRADE_SELL, "Sold shares"),
         (JournalKind.MARKET_RESOLUTION, "Market payout"),
         (JournalKind.MARKET_VOID, "Market voided, stake refunded"),
+        (JournalKind.ADMIN_ADJUSTMENT, "Adjustment by VIS"),
     ],
 )
 def test_a_line_is_called_by_the_kind_of_its_entry(kind: JournalKind, label: str) -> None:

@@ -63,6 +63,7 @@ from app.pricing import lmsr
 from app.relay.outbox_relay import OutboxRelay
 from app.schemas.admin.code_batches import CodeBatchCreatedResponse
 from app.schemas.admin.risk import AlertItem, RiskMarketRow, RiskResponse
+from app.schemas.admin.users import AdminUserItem
 from app.schemas.barista import VoucherRedeemResponse
 from app.schemas.codes import RedeemCodeResponse
 from app.schemas.common import Limit
@@ -88,14 +89,14 @@ from app.schemas.trading import TradeResponse
 from app.schemas.vouchers import VoucherIssuedResponse, VoucherProductListResponse
 from app.services.account import ledger_description
 from app.services.audit import AuditAction
-from app.services.codes import ONE_PER_USER_MESSAGE, OWN_BATCH_MESSAGE
+from app.services.codes import ADMIN_REDEEM_MESSAGE, ONE_PER_USER_MESSAGE
 from app.services.history import HistoryService
 from app.services.leaderboard import PAYOUT_RATIO_PLACES
 from app.services.ledger import resolution_key, void_key
 from app.services.live_quotes import LiveEvent
 from app.services.market_lifecycle import CLOSE_FIRST_MESSAGE
 from app.services.markets import PUBLIC_STATUSES
-from app.services.trading import OWN_MARKET_MESSAGE
+from app.services.quotes import OWN_MARKET_MESSAGE
 from tests.support.books import (
     assert_books_balance,
     count_rows,
@@ -107,7 +108,7 @@ from tests.support.books import (
 from tests.support.clock import FrozenClock
 from tests.support.factories import ActAs, Factory, PortalHeaders
 from tests.support.history import MemoryHistory, unpublished_ids
-from tests.support.settings import TEST_ADMIN_EMAILS, TEST_BARISTA_EMAILS, load_base_settings
+from tests.support.settings import TEST_ADMIN_EMAILS, load_base_settings
 
 pytestmark = pytest.mark.integration
 
@@ -200,7 +201,9 @@ class Api:
         assert response.status_code == 200, response.text
         return model.model_validate(response.json())
 
-    async def propose(self, who: User, now: datetime, tier: MarketTier) -> MarketDetailResponse:
+    async def propose(self, who: User, now: datetime) -> MarketDetailResponse:
+        """A proposal. It says nothing about liquidity: the admin who approves it picks
+        the tier."""
         close_at = now + WEEK
         response = await self.send(
             who,
@@ -214,7 +217,7 @@ class Api:
                 "resolution_source": "The menu plan on ethz.ch",
                 "close_at": close_at.isoformat(),
                 "resolve_by": (close_at + WEEK).isoformat(),
-                "requested_tier": tier.value,
+                "policy_accepted": True,
             },
         )
         assert response.status_code == 201, response.text
@@ -488,7 +491,7 @@ async def resolved(api: Api, container: Container, factory: Factory, clock: Froz
     admin = await factory.admin()
     books = container.uow_factory
 
-    market_id = (await api.propose(paula, clock.now(), MarketTier.DEFAULT)).id
+    market_id = (await api.propose(paula, clock.now())).id
     opened = await api.done(admin, market_id, "approve", tier="DEFAULT")
     assert (opened.status, opened.version) == (MarketStatus.OPEN, 0)
     await assert_books_balance(books)
@@ -763,7 +766,7 @@ async def voided(api: Api, container: Container, factory: Factory, clock: Frozen
     admin = await factory.admin()
     books = container.uow_factory
 
-    market_id = (await api.propose(paula, clock.now(), MarketTier.TIGHT)).id
+    market_id = (await api.propose(paula, clock.now())).id
     await api.done(admin, market_id, "approve", tier="TIGHT")
     for who, outcome, choose in (
         (erin, Outcome.YES, smallest),
@@ -961,18 +964,17 @@ async def test_a_proposal_is_for_its_proposer_and_the_admins_until_it_is_approve
     paula = await factory.user()
     alice = await factory.user(balance_micro=GRANT)
     admin = await factory.admin()
-    proposed = await api.propose(paula, clock.now(), MarketTier.MEDIUM)
+    proposed = await api.propose(paula, clock.now())
 
     own = await api.market(paula, proposed.id)
     for_admin = await api.market(admin, proposed.id)
     listed = await api.read(alice, "/markets", MarketListResponse)
     pending = await api.read(admin, "/markets", MarketListResponse, status="PROPOSED")
 
-    assert (own.status, own.tier, own.requested_tier) == (
-        MarketStatus.PROPOSED,
-        None,
-        MarketTier.MEDIUM,
-    )
+    assert (own.status, for_admin.status) == (MarketStatus.PROPOSED, MarketStatus.PROPOSED)
+    # The admin sees that no liquidity is set yet; the proposer is told nothing of it.
+    assert (for_admin.tier, for_admin.b_cr, for_admin.max_loss_cr) == (None, to_cr(0), to_cr(0))
+    assert (own.tier, own.b_cr, own.max_loss_cr) == (None, None, None)
     assert (own.proposer_email, for_admin.proposer_email) == (None, paula.email)
     assert (own.viewer.can_trade, own.viewer.cannot_trade_reason) == (
         False,
@@ -993,9 +995,14 @@ async def test_a_proposal_is_for_its_proposer_and_the_admins_until_it_is_approve
     opened = await api.done(admin, proposed.id, "approve", tier="MEDIUM")
 
     assert (opened.status, opened.tier) == (MarketStatus.OPEN, MarketTier.MEDIUM)
-    assert (await api.market(alice, proposed.id)).viewer.can_trade
+    assert opened.b_cr == to_cr(container.settings.pricing.tier_b_micro(MarketTier.MEDIUM))
+    for_alice = await api.market(alice, proposed.id)
+    assert for_alice.viewer.can_trade
     own_now = await api.market(paula, proposed.id)
     assert own_now.viewer.cannot_trade_reason is TradeBlockReason.OWN_MARKET
+    # The tier the admin picked stays between the admins.
+    for kept_from in (for_alice, own_now):
+        assert (kept_from.tier, kept_from.b_cr, kept_from.max_loss_cr) == (None, None, None)
     barred = await api.trade(paula, proposed.id, side="BUY", outcome="YES", amount_cr="25")
     assert refusal(barred, 403, "FORBIDDEN")["message"] == OWN_MARKET_MESSAGE
     await assert_books_balance(container.uow_factory)
@@ -1009,7 +1016,7 @@ async def test_the_market_list_shows_the_price_of_the_last_trade_and_the_status_
     paula = await factory.user()
     alice = await factory.user(balance_micro=GRANT)
     admin = await factory.admin()
-    market_id = (await api.propose(paula, clock.now(), MarketTier.DEFAULT)).id
+    market_id = (await api.propose(paula, clock.now())).id
     await api.done(admin, market_id, "approve", tier="DEFAULT")
 
     (fresh,) = (await api.read(alice, "/markets", MarketListResponse)).items
@@ -1037,7 +1044,7 @@ async def test_a_trader_at_the_stake_limit_is_offered_no_buy_and_refused_one(
     paula = await factory.user()
     carol = await factory.user(balance_micro=GRANT)
     admin = await factory.admin()
-    market_id = (await api.propose(paula, clock.now(), MarketTier.DEFAULT)).id
+    market_id = (await api.propose(paula, clock.now())).id
     await api.done(admin, market_id, "approve", tier="DEFAULT")
     bought = await api.tap_buy(carol, market_id, Outcome.YES, largest)
     before = await written(container)
@@ -1066,17 +1073,36 @@ async def test_a_trader_at_the_stake_limit_is_offered_no_buy_and_refused_one(
     await assert_books_balance(container.uow_factory)
 
 
+async def arrived(container: Container, market_id: UUID) -> None:
+    """Return once everything published on the channel of a market so far has arrived.
+
+    An action publishes its event after its commit and answers right away, so that
+    event can still be on its way through Redis when the answer is in, and a stream
+    opened at that moment would carry it. A marker published now travels behind it:
+    when the marker is back, so is everything that was sent before it.
+    """
+    marker = {"type": "marker"}
+    async with container.quote_bus.subscribe(market_id) as channel:
+        await container.quote_bus.publish(market_id, marker)
+        while await asyncio.wait_for(channel.get(), timeout=STREAM_SECONDS) != marker:
+            pass
+
+
 async def test_an_open_phone_is_told_of_every_trade_and_every_admin_action_on_its_market(
     api: Api, container: Container, factory: Factory, clock: FrozenClock
 ) -> None:
     """SPEC §8 step 9 and §9: the stream of a market starts with its state, then carries
     a quote event for every committed trade, with the price that trade was answered
-    with, and a status event for every committed admin action."""
+    with, and a status event for every committed admin action.
+
+    The phone starts listening once the approval's own status event has arrived: what
+    it hears from then on is what happens while it listens."""
     (paula,) = await registered(factory, clock, "paula")
     (alice,) = await registered(factory, clock, "alice", balance_micro=GRANT)
     admin = await factory.admin()
-    market_id = (await api.propose(paula, clock.now(), MarketTier.DEFAULT)).id
+    market_id = (await api.propose(paula, clock.now())).id
     await api.done(admin, market_id, "approve", tier="DEFAULT")
+    await arrived(container, market_id)
 
     async def heard(events: AsyncIterator[LiveEvent]) -> LiveEvent:
         return await asyncio.wait_for(anext(events), timeout=STREAM_SECONDS)
@@ -1139,7 +1165,7 @@ async def test_the_chart_of_a_market_starts_at_its_approval_and_follows_every_tr
     (paula,) = await registered(factory, clock, "paula")
     alice, bob = await registered(factory, clock, "alice", "bob", balance_micro=GRANT)
     admin = await factory.admin()
-    market_id = (await api.propose(paula, clock.now(), MarketTier.DEFAULT)).id
+    market_id = (await api.propose(paula, clock.now())).id
     opened = await api.done(admin, market_id, "approve", tier="DEFAULT")
     bought: list[TradeResponse] = []
     for who, outcome, choose in (
@@ -1186,7 +1212,7 @@ async def test_a_trade_on_broken_books_halts_the_market_and_tells_the_admins_on_
     paula = await factory.user()
     alice, bob = [await factory.user(balance_micro=GRANT) for _ in range(2)]
     admin = await factory.admin()
-    market_id = (await api.propose(paula, clock.now(), MarketTier.DEFAULT)).id
+    market_id = (await api.propose(paula, clock.now())).id
     await api.done(admin, market_id, "approve", tier="DEFAULT")
     await api.tap_buy(alice, market_id, Outcome.YES, smallest)
     await assert_books_balance(container.uow_factory)
@@ -1261,8 +1287,8 @@ async def test_a_trade_on_broken_books_halts_the_market_and_tells_the_admins_on_
 
 
 def somebody(mailbox: str, name: str) -> PortalIdentity:
-    """Somebody the portal signed in. The role is not sent: the API derives it from the
-    address, and `portal_headers` only takes the address and the name."""
+    """Somebody the portal signed in. The role is not sent: the API works it out, and
+    `portal_headers` only takes the address and the name."""
     return PortalIdentity(email=mailbox, name=name, role=UserRole.USER)
 
 
@@ -1311,9 +1337,10 @@ async def test_a_credit_is_followed_from_the_first_sign_in_to_the_counter_and_no
     portal: Portal, container: Container, clock: FrozenClock
 ) -> None:
     """Nothing is put in place by the test: five people the portal names set up their
-    profile, a code is redeemed, a market is proposed, approved, traded and resolved,
-    and a winner turns credits into a voucher a barista scans. Every request carries
-    the portal's headers and nothing else.
+    profile, the admin among them makes one of the others a barista, a code is
+    redeemed, a market is proposed, approved, traded and resolved, and a winner turns
+    credits into a voucher that barista scans. Every request carries the portal's
+    headers and nothing else.
 
     At the end every credit is accounted for (SPEC §1): what `vis:issuance` gave out is
     the signup grants and the one code; every user's balance is the sum of the lines
@@ -1323,12 +1350,13 @@ async def test_a_credit_is_followed_from_the_first_sign_in_to_the_counter_and_no
     grant = settings.grants.signup_grant_micro
     product = settings.vouchers.products[0]
     board = somebody(TEST_ADMIN_EMAILS[0], "Vera Vorstand")
-    counter = somebody(TEST_BARISTA_EMAILS[0], "Bruno Barista")
+    counter = somebody("bruno@ethz.ch", "Bruno Barista")
     nora = somebody("nora@ethz.ch", "Nora Neu")
     omar = somebody("omar@ethz.ch", "Omar Omlette")
     pia = somebody("pia@ethz.ch", "Pia Pfeiffer")
     usernames = {board: "the_board", counter: "the_counter", nora: "nora", omar: "omar", pia: "pia"}
-    roles = {board: UserRole.ADMIN, counter: UserRole.BARISTA}
+    # Everybody starts as a plain user; the board is an admin by its address.
+    roles = {board: UserRole.ADMIN}
 
     # Everybody signs in for the first time and sets up a profile.
     ids: dict[PortalIdentity, UUID] = {}
@@ -1343,13 +1371,27 @@ async def test_a_credit_is_followed_from_the_first_sign_in_to_the_counter_and_no
             "PUT",
             "/me/profile",
             ProfileSavedResponse,
-            {"username": username, "degree_level": "OTHER", "degree_programme": "ETH staff"},
+            {
+                "username": username,
+                "degree_level": "OTHER",
+                "degree_programme": "ETH staff",
+                "policy_accepted": True,
+            },
         )
         assert saved.signup_granted
         assert (saved.balance_cr, saved.role) == (to_cr(grant), roles.get(who, UserRole.USER))
         assert (saved.email, saved.name, saved.username) == (who.email, who.name, username)
         ids[who] = saved.id
     await assert_books_balance(container.uow_factory)
+
+    # The board puts Bruno behind the counter.
+    not_yet = await portal.send(counter, "POST", "/barista/vouchers/redeem", {"code": "ABCD-EFGH"})
+    refusal(not_yet, 403, "FORBIDDEN")
+    hired = await portal.ok(
+        board, "POST", f"/admin/users/{ids[counter]}/role", AdminUserItem, {"role": "BARISTA"}
+    )
+    assert (hired.id, hired.role, hired.bootstrap_admin) == (ids[counter], UserRole.BARISTA, False)
+    assert (await portal.ok(counter, "GET", "/me", MeResponse)).role is UserRole.BARISTA
 
     # The board hands out codes; one is redeemed, and not by the board.
     batch = await portal.ok(
@@ -1371,7 +1413,7 @@ async def test_a_credit_is_followed_from_the_first_sign_in_to_the_counter_and_no
     own = await portal.send(board, "POST", "/codes/redeem", {"code": second})
     greedy = await portal.send(nora, "POST", "/codes/redeem", {"code": second})
     assert (redeemed.value_cr, redeemed.balance_cr) == (CODE_VALUE, to_cr(grant) + CODE_VALUE)
-    assert refusal(own, 403, "FORBIDDEN")["message"] == OWN_BATCH_MESSAGE
+    assert refusal(own, 403, "FORBIDDEN")["message"] == ADMIN_REDEEM_MESSAGE
     assert refusal(greedy, 409, "LIMIT_EXCEEDED")["message"] == ONE_PER_USER_MESSAGE
     await assert_books_balance(container.uow_factory)
 
@@ -1390,7 +1432,7 @@ async def test_a_credit_is_followed_from_the_first_sign_in_to_the_counter_and_no
             "resolution_source": "The menu plan on ethz.ch",
             "close_at": close_at.isoformat(),
             "resolve_by": (close_at + WEEK).isoformat(),
-            "requested_tier": "TIGHT",
+            "policy_accepted": True,
         },
         status_code=201,
     )
@@ -1444,13 +1486,19 @@ async def test_a_credit_is_followed_from_the_first_sign_in_to_the_counter_and_no
     scanned = await portal.ok(
         counter, "POST", "/barista/vouchers/redeem", VoucherRedeemResponse, {"code": voucher.code}
     )
-    scanned_twice = await portal.send(
-        counter, "POST", "/barista/vouchers/redeem", {"code": voucher.code}
+    scanned_again = await portal.ok(
+        counter, "POST", "/barista/vouchers/redeem", VoucherRedeemResponse, {"code": voucher.code}
+    )
+    by_the_board = await portal.send(
+        board, "POST", "/barista/vouchers/redeem", {"code": voucher.code}
     )
     assert offered.items[0].affordable
     refusal(not_staff, 403, "FORBIDDEN")
     assert (scanned.voucher_id, scanned.product_name) == (voucher.id, product.name)
-    refusal(scanned_twice, 400, "CODE_INVALID")
+    # The counter is shown its own redemption again; to anybody else the voucher is used.
+    assert (scanned.repeat, scanned_again.repeat) == (False, True)
+    assert scanned_again == scanned.model_copy(update={"repeat": True})
+    refusal(by_the_board, 400, "CODE_INVALID")
     await assert_books_balance(container.uow_factory)
 
     # Every credit is accounted for.
@@ -1488,6 +1536,7 @@ async def test_a_credit_is_followed_from_the_first_sign_in_to_the_counter_and_no
     assert audited == {
         (action, ids[board])
         for action in (
+            AuditAction.USER_SET_ROLE,
             AuditAction.CODE_BATCH_CREATE,
             AuditAction.MARKET_APPROVE,
             AuditAction.MARKET_CLOSE,

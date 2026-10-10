@@ -5,6 +5,10 @@
     HALTED   -> OPEN (resume)  | CLOSED (close)
     CLOSED   -> RESOLVED (resolve YES or NO) | VOID (void)
 
+A proposal nobody decided on before its `close_at` has expired: its row stays PROPOSED,
+it is reported EXPIRED (`MarketView.effective_status`), and `approve` and `reject`
+both refuse it with `ConflictError` (409, `PROPOSAL_EXPIRED_MESSAGE`).
+
 Shared by all seven methods:
 
 * Only an admin acts. An `actor` for whom `actor.is_admin` is false raises
@@ -21,6 +25,9 @@ Shared by all seven methods:
 * A move that `ALLOWED_TRANSITIONS` does not list raises `ConflictError` (409). So does
   an action on a market it does not start from: `approve` and `resume` both end OPEN,
   and only a PROPOSED market is approved, only a HALTED one resumed.
+* The approval of a market somebody else proposed tells its proposer, with a notice
+  written in the same transaction (`NoticeService.proposal_approved`). No other action
+  writes one.
 * Lock order: the market row, then the user accounts a settlement pays (all at once,
   `accounts.lock_user_accounts`), then whatever `LedgerService.post` locks. Positions
   need no lock of their own: every writer of a market's positions holds its row.
@@ -28,10 +35,14 @@ Shared by all seven methods:
   target `AuditService.target(AuditTarget.MARKET, market.id)`, and `before` and `after`
   holding at least `{"status": ...}` plus what the action changed or was told (tier,
   budget, a reason, the outcome).
+* The result is the market's detail as the action leaves it, built as the last step
+  of the transaction: `MarketService.detail_in(uow, actor, market.id)`. Nothing is read
+  once the transaction has committed, so an action that took effect is never answered
+  as one that failed. Sent again after such an answer it would be refused with 409.
 * After the commit, best effort: `MarketCache.invalidate_lists()` and
-  `LiveQuoteService.publish_status(market)`. `reject` does neither: a proposal was never
-  in a list and nobody is watching it.
-* The result is the market's detail afterwards: `MarketService.detail(actor, market.id)`.
+  `LiveQuoteService.publish_status(market)`. Neither can fail the request: what goes
+  wrong there is logged, and the answer stands. `reject` does neither: a proposal was
+  never in a list and nobody is watching it.
 
 Construction checks that the liquidity settings can work, and raises `ValueError` if
 they cannot, so the api and the relay do not start on them: the b of every fixed tier
@@ -42,6 +53,7 @@ an admin could open a market nobody can trade; without the second a tier could n
 approved. `check_liquidity_settings` is that check.
 """
 
+import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, Final
@@ -73,6 +85,7 @@ from app.models.trading import Position
 from app.pricing import lmsr
 from app.repositories.unit_of_work import UnitOfWork
 from app.schemas.admin.markets import (
+    BUDGET_NEEDED_MESSAGE,
     ApproveMarketRequest,
     CloseMarketRequest,
     HaltMarketRequest,
@@ -89,9 +102,12 @@ from app.services.ledger import LedgerRef, LedgerService, PostingLine, resolutio
 from app.services.live_quotes import LiveQuoteService
 from app.services.market_view import EVEN_ODDS_MICRO, MarketView
 from app.services.markets import MarketService, check_market_dates, refuse_nul
+from app.services.notices import NoticeService
 from app.services.outbox_events import quote_updated_payload
 from app.services.public_config import FIXED_TIERS
 from app.services.risk import CAPPED_STATUSES
+
+logger = logging.getLogger(__name__)
 
 ALLOWED_TRANSITIONS: Final[Mapping[MarketStatus, frozenset[MarketStatus]]] = {
     MarketStatus.PROPOSED: frozenset({MarketStatus.OPEN, MarketStatus.REJECTED}),
@@ -102,7 +118,8 @@ ALLOWED_TRANSITIONS: Final[Mapping[MarketStatus, frozenset[MarketStatus]]] = {
     MarketStatus.RESOLVED: frozenset(),
     MarketStatus.VOID: frozenset(),
 }
-"""The state machine of SPEC §6, on stored statuses: from a status, where it may go."""
+"""The state machine of SPEC §6, on stored statuses: from a status, where it may go.
+EXPIRED is not in it: no row says it, and nothing leads on from it."""
 
 APPROVAL_LOCK: Final[str] = "market-approval"
 """Name of the advisory lock that makes approvals check the caps one at a time (A.5)."""
@@ -110,6 +127,10 @@ APPROVAL_LOCK: Final[str] = "market-approval"
 SELF_DEALING_MESSAGE: Final[str] = "You traded this market, so another admin has to settle it."
 """Message of the `ForbiddenError` that `resolve` and `void` answer an admin with who
 has a trade in the market (A.4). `MarketViewer.can_settle` is false for that admin."""
+
+PROPOSAL_EXPIRED_MESSAGE: Final[str] = "This proposal expired: its closing time has passed."
+"""Message of the `ConflictError` that `approve` and `reject` answer for a proposal
+whose `close_at` has passed (A.5)."""
 
 CLOSE_FIRST_MESSAGE: Final[str] = "Trading is still open in this market. Close it first."
 """Message of the `ConflictError` that `resolve` and `void` answer for an OPEN market
@@ -187,6 +208,7 @@ class MarketLifecycleService:
         ledger: LedgerService,
         audit: AuditService,
         markets: MarketService,
+        notices: NoticeService,
         cache: MarketCache,
         live: LiveQuoteService,
     ) -> None:
@@ -198,6 +220,7 @@ class MarketLifecycleService:
         self._ledger = ledger
         self._audit = audit
         self._markets = markets
+        self._notices = notices
         self._cache = cache
         self._live = live
 
@@ -211,7 +234,10 @@ class MarketLifecycleService:
            Taking it while holding the market row cannot deadlock: nothing that holds
            this advisory lock waits for a market row. A market that is not PROPOSED
            is refused before it, and the clock is read once it is granted: an approval
-           that waited for another one opens its market at that moment.
+           that waited for another one opens its market at that moment. A proposal
+           whose `close_at` has passed by then has expired and is refused with
+           `ConflictError` (409, `PROPOSAL_EXPIRED_MESSAGE`), whatever dates the
+           request carries: an expired proposal is not opened, it is proposed again.
         2. Apply the edits the request carries (wording, `close_at`, `resolve_by`).
         3. Dates, on the edited values, each a `ValidationFailedError` (422) naming the
            field in `details.field`: `now < close_at <= now + MAX_MARKET_LIFETIME` and
@@ -241,6 +267,9 @@ class MarketLifecycleService:
            0, EVEN_ODDS_MICRO, 0, 0, None)), now)`. Audit `MARKET_APPROVE` with the
            tier, the budget and b, and each wording or date the approval changed, as
            it was and as it is.
+        7. Tell the proposer: `NoticeService.proposal_approved(uow, market, actor,
+           now)` writes their PROPOSAL_APPROVED notice, unless the approver is the
+           proposer. It commits with the approval or not at all.
 
         No credit moves: a market starts at q = 0 with an empty account. That account
         never goes below zero; what the market maker loses here, at most the budget,
@@ -254,6 +283,7 @@ class MarketLifecycleService:
             _require_move(market, MarketStatus.OPEN, start=MarketStatus.PROPOSED)
             await uow.advisory_lock(APPROVAL_LOCK)
             now = self._clock.now()
+            self._refuse_expired(market, now)
 
             before: dict[str, Any] = {
                 "status": market.status.value,
@@ -310,14 +340,20 @@ class MarketLifecycleService:
                     **edited_to,
                 },
             )
+            await self._notices.proposal_approved(uow, market, actor, now)
+            answer = await self._markets.detail_in(uow, actor, market.id)
 
         await self._after_commit(market)
-        return await self._markets.detail(actor, market.id)
+        return answer
 
     async def reject(
         self, actor: AuthenticatedUser, market_id: UUID, request: RejectMarketRequest
     ) -> MarketDetailResponse:
         """Turn a proposal down. PROPOSED -> REJECTED.
+
+        A proposal whose `close_at` has passed has expired and is refused with
+        `ConflictError` (409, `PROPOSAL_EXPIRED_MESSAGE`): its proposer already sees
+        it as expired, and a rejection would say something else afterwards.
 
         Set `status=REJECTED` and `rejection_reason=request.reason`; audit
         `MARKET_REJECT`. A rejected market was never public: no list is dropped from
@@ -327,8 +363,10 @@ class MarketLifecycleService:
         refuse_nul(request)
         async with self._uow_factory() as uow:
             market = await _lock(uow, market_id)
+            now = self._clock.now()
             previous = market.status
             _require_move(market, MarketStatus.REJECTED)
+            self._refuse_expired(market, now)
             market.status = MarketStatus.REJECTED
             market.rejection_reason = request.reason
             await self._record(
@@ -339,8 +377,9 @@ class MarketLifecycleService:
                 before={"status": previous.value},
                 after={"status": market.status.value, "reason": request.reason},
             )
+            answer = await self._markets.detail_in(uow, actor, market.id)
 
-        return await self._markets.detail(actor, market.id)
+        return answer
 
     async def halt(
         self, actor: AuthenticatedUser, market_id: UUID, request: HaltMarketRequest
@@ -369,9 +408,10 @@ class MarketLifecycleService:
                 before={"status": previous.value},
                 after={"status": market.status.value, "reason": request.reason},
             )
+            answer = await self._markets.detail_in(uow, actor, market.id)
 
         await self._after_commit(market)
-        return await self._markets.detail(actor, market.id)
+        return answer
 
     async def resume(
         self, actor: AuthenticatedUser, market_id: UUID, request: ResumeMarketRequest
@@ -396,9 +436,10 @@ class MarketLifecycleService:
                 before={"status": previous.value},
                 after={"status": market.status.value, "note": request.note},
             )
+            answer = await self._markets.detail_in(uow, actor, market.id)
 
         await self._after_commit(market)
-        return await self._markets.detail(actor, market.id)
+        return answer
 
     async def close(
         self, actor: AuthenticatedUser, market_id: UUID, request: CloseMarketRequest
@@ -415,9 +456,10 @@ class MarketLifecycleService:
             now = self._clock.now()
             _require_move(market, MarketStatus.CLOSED)
             await self._close(uow, actor, market, now, note=request.note)
+            answer = await self._markets.detail_in(uow, actor, market.id)
 
         await self._after_commit(market)
-        return await self._markets.detail(actor, market.id)
+        return answer
 
     async def resolve(
         self, actor: AuthenticatedUser, market_id: UUID, request: ResolveMarketRequest
@@ -495,9 +537,10 @@ class MarketLifecycleService:
                     "payouts_micro": sum(payouts_micro.values()),
                 },
             )
+            answer = await self._markets.detail_in(uow, actor, market.id)
 
         await self._after_commit(market)
-        return await self._markets.detail(actor, market.id)
+        return answer
 
     async def void(
         self, actor: AuthenticatedUser, market_id: UUID, request: VoidMarketRequest
@@ -578,9 +621,10 @@ class MarketLifecycleService:
                     "refunds_micro": sum(refunds_micro.values()),
                 },
             )
+            answer = await self._markets.detail_in(uow, actor, market.id)
 
         await self._after_commit(market)
-        return await self._markets.detail(actor, market.id)
+        return answer
 
     def _liquidity(self, request: ApproveMarketRequest) -> tuple[int, int]:
         """Step 4 of `approve`: the budget and the b of the tier asked for, in µCR."""
@@ -589,11 +633,17 @@ class MarketLifecycleService:
         if request.tier is MarketTier.CUSTOM:
             if request.budget_cr is None:
                 # The request model refuses this; only a request built around it is here.
-                raise ValidationFailedError(details={"field": "budget_cr"})
+                raise ValidationFailedError(BUDGET_NEEDED_MESSAGE, details={"field": "budget_cr"})
             budget_micro = to_micro(request.budget_cr)
             return budget_micro, lmsr.b_from_budget_micro(budget_micro, precision=precision)
         b_micro = pricing.tier_b_micro(request.tier)
         return lmsr.max_loss_micro(b_micro, precision=precision), b_micro
+
+    def _refuse_expired(self, market: Market, now: datetime) -> None:
+        """What `approve` and `reject` share: a proposal that is EXPIRED at `now`
+        (`MarketView.effective_status`) can be neither opened nor turned down."""
+        if self._view.effective_status(market, now) is MarketStatus.EXPIRED:
+            raise ConflictError(PROPOSAL_EXPIRED_MESSAGE)
 
     async def _refuse_a_trader(
         self, uow: UnitOfWork, actor: AuthenticatedUser, market: Market
@@ -709,9 +759,22 @@ class MarketLifecycleService:
 
     async def _after_commit(self, market: Market) -> None:
         """What follows a committed change of a public market, best effort: drop the
-        cached lists, then tell open phones. Neither call raises."""
-        await self._cache.invalidate_lists()
-        await self._live.publish_status(market)
+        cached lists, then tell open phones.
+
+        The change stands and its answer is built, so nothing here is the request's
+        to fail. Both calls degrade by themselves when Redis is away; whatever else
+        one of them raises is logged here, and the other still runs. A request that
+        is cancelled stays cancelled: that is no failure of either call, and it is
+        not caught.
+        """
+        try:
+            await self._cache.invalidate_lists()
+        except Exception:
+            logger.exception("The cached lists were not dropped for market %s", market.id)
+        try:
+            await self._live.publish_status(market)
+        except Exception:
+            logger.exception("No status event was published for market %s", market.id)
 
 
 def _require_admin(actor: AuthenticatedUser) -> None:

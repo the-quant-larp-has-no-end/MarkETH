@@ -6,11 +6,13 @@ VARCHAR column.
 """
 
 from enum import StrEnum
+from typing import Final
 
 
 class UserRole(StrEnum):
-    """What a caller may do. Derived from `ADMIN_EMAILS` and `BARISTA_EMAILS` on every
-    request and stored nowhere (Appendix A.3)."""
+    """What a caller may do. `users.role` keeps it: USER when a profile is created,
+    and whatever an admin sets after that. An address of `ADMIN_EMAILS` is ADMIN
+    whatever its row says (Appendix A.3)."""
 
     USER = "USER"
     ADMIN = "ADMIN"
@@ -35,7 +37,9 @@ class DegreeLevel(StrEnum):
 
 
 class MarketStatus(StrEnum):
-    """The seven market states of SPEC §6."""
+    """What a market is reported as: one of the seven states of SPEC §6, which its
+    row keeps, or EXPIRED, which is worked out from the clock and never kept: a
+    proposal whose `close_at` passed before an admin decided on it."""
 
     PROPOSED = "PROPOSED"
     REJECTED = "REJECTED"
@@ -44,6 +48,25 @@ class MarketStatus(StrEnum):
     CLOSED = "CLOSED"
     RESOLVED = "RESOLVED"
     VOID = "VOID"
+    EXPIRED = "EXPIRED"
+    """A proposal whose `close_at` passed before an admin decided on it
+    (`MarketView.effective_status`). Its row says PROPOSED and stays that way, and
+    nobody can approve or reject it."""
+
+
+STORED_MARKET_STATUSES: Final[tuple[MarketStatus, ...]] = (
+    MarketStatus.PROPOSED,
+    MarketStatus.REJECTED,
+    MarketStatus.OPEN,
+    MarketStatus.HALTED,
+    MarketStatus.CLOSED,
+    MarketStatus.RESOLVED,
+    MarketStatus.VOID,
+)
+"""The statuses `markets.status` holds, in the order its CHECK lists them. The column
+is built from this tuple and from nothing else, so a status that is not here can be
+neither written nor asked for: binding it to a statement fails, and the database's
+CHECK refuses it from anybody who goes around the application."""
 
 
 class MarketTier(StrEnum):
@@ -107,6 +130,12 @@ class JournalKind(StrEnum):
     VOUCHER_ISSUE = "VOUCHER_ISSUE"
     VOUCHER_REDEEM = "VOUCHER_REDEEM"
     VOUCHER_REFUND = "VOUCHER_REFUND"
+    ADMIN_ADJUSTMENT = "ADMIN_ADJUSTMENT"
+    STREAK_REWARD = "STREAK_REWARD"
+    """The tokens of one counted day of a streak, from `vis:issuance` to the user."""
+
+    STREAK_BONUS = "STREAK_BONUS"
+    """The bonus of a milestone a streak reached, from `vis:issuance` to the user."""
 
 
 class CodeStatus(StrEnum):
@@ -131,11 +160,49 @@ class OutboxTopic(StrEnum):
     QUOTE_UPDATED = "quote.updated"
 
 
+class NoticeKind(StrEnum):
+    """What a notice tells its user (`notices.kind`)."""
+
+    PROPOSAL_APPROVED = "PROPOSAL_APPROVED"
+    """An admin approved a market the user proposed: it is open."""
+
+
+class BroadcastStatus(StrEnum):
+    """Where a broadcast stands (`broadcasts.status`). A row holds every one of the five.
+
+    A proposer's broadcast is REQUESTED until an admin approves or refuses it; an
+    admin's own starts LIVE. REQUESTED, APPROVED and LIVE are open: a market has at
+    most one open broadcast."""
+
+    REQUESTED = "REQUESTED"
+    APPROVED = "APPROVED"
+    REFUSED = "REFUSED"
+    LIVE = "LIVE"
+    ENDED = "ENDED"
+
+
+class BroadcastEndReason(StrEnum):
+    """Why a broadcast ended (`broadcasts.end_reason`)."""
+
+    BROADCASTER = "BROADCASTER"
+    """Its broadcaster ended it."""
+
+    ADMIN = "ADMIN"
+    """An admin ended it."""
+
+    STALLED = "STALLED"
+    """No piece arrived for `BROADCAST_STALL_SECONDS`."""
+
+    TIME_LIMIT = "TIME_LIMIT"
+    """It ran for `BROADCAST_MAX_MINUTES`."""
+
+
 class LeaderboardSort(StrEnum):
     """The measure a leaderboard is ordered by (`GET /leaderboard`, Appendix A.2)."""
 
     CREDITS = "credits"
-    """The balance of the user's account."""
+    """What the user has: the balance of their account plus the value of their open
+    positions."""
 
     WIN_RATE = "win_rate"
     """The share of the user's resolved markets that returned more than was put in."""

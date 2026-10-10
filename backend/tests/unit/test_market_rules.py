@@ -20,7 +20,7 @@ from hypothesis import strategies as st
 
 from app.container import Container
 from app.core.config import Settings
-from app.core.enums import MarketStatus, MarketTier
+from app.core.enums import STORED_MARKET_STATUSES, MarketStatus, MarketTier
 from app.core.errors import ValidationFailedError
 from app.core.units import MICRO
 from app.pricing import lmsr
@@ -372,7 +372,7 @@ PROPOSAL: Final[dict[str, Any]] = {
     "resolution_source": "ethz.ch/menu",
     "close_at": TEST_NOW + timedelta(days=7),
     "resolve_by": TEST_NOW + timedelta(days=9),
-    "requested_tier": MarketTier.DEFAULT,
+    "policy_accepted": True,
 }
 
 TEXTS_OF_A_PROPOSAL: Final[tuple[str, ...]] = (
@@ -462,8 +462,17 @@ def test_the_state_machine_is_the_diagram_of_spec_section_6() -> None:
         (status, target) for status, targets in ALLOWED_TRANSITIONS.items() for target in targets
     }
 
-    assert set(ALLOWED_TRANSITIONS) == set(MarketStatus)
+    assert set(ALLOWED_TRANSITIONS) == set(STORED_MARKET_STATUSES)
     assert arrows == SPEC_SECTION_6
+
+
+def test_the_state_machine_knows_no_expired_market() -> None:
+    """EXPIRED is what a proposal past its deadline is reported as. No row says it, so
+    it is no state of the machine: nothing starts from it and nothing leads to it."""
+    targets = {target for reachable in ALLOWED_TRANSITIONS.values() for target in reachable}
+
+    assert MarketStatus.EXPIRED not in ALLOWED_TRANSITIONS
+    assert MarketStatus.EXPIRED not in targets
 
 
 @pytest.mark.parametrize(

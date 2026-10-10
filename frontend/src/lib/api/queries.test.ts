@@ -1,7 +1,11 @@
-import { QueryClient } from "@tanstack/react-query";
-import { describe, expect, test } from "vitest";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
+import { describe, expect, test, vi } from "vitest";
 
 import {
+  adminUser,
+  adminUsers,
+  BATCH_ID,
+  codeBatchCodes,
   config,
   leaderboard,
   ledgerItem,
@@ -15,7 +19,10 @@ import {
 import { apiError, json, mockApi } from "@/test/http";
 
 import { ApiError } from "./errors";
+import { keys } from "./keys";
 import {
+  adminUsersQuery,
+  batchCodesQuery,
   configQuery,
   leaderboardQuery,
   ledgerQuery,
@@ -136,5 +143,80 @@ describe("lists that page", () => {
       degree_level: "MASTER",
       min_credits_cr: "100.5",
     });
+  });
+});
+
+describe("the admin's reads", () => {
+  test("the users are asked for with the search and the filters under the API's names, page by page", async () => {
+    const api = mockApi({
+      "GET /api/admin/users": (request) =>
+        request.query.get("cursor") === null
+          ? json(200, adminUsers({ next_cursor: "page-2" }))
+          : json(200, adminUsers({ items: [adminUser({ id: "second" })], next_cursor: null })),
+    });
+    const queries = client();
+    const users = adminUsersQuery({ q: "bea", role: "USER", status: "ACTIVE" });
+
+    const both = await queries.fetchInfiniteQuery({ ...users, pages: 2 });
+
+    expect(both.pages.map((page) => page.items[0]?.id)).toEqual([adminUser().id, "second"]);
+    const sent = api.calls("GET /api/admin/users").map((request) => request.query.toString());
+    // No page size: the list is as long as the API makes it.
+    expect(sent).toEqual([
+      "q=bea&role=USER&status=ACTIVE",
+      "q=bea&role=USER&status=ACTIVE&cursor=page-2",
+    ]);
+    expect(users.queryKey).toEqual([
+      "admin",
+      "users",
+      { q: "bea", role: "USER", status: "ACTIVE" },
+    ]);
+  });
+
+  test("an empty search and no filter send nothing at all", async () => {
+    const api = mockApi({ "GET /api/admin/users": json(200, adminUsers()) });
+
+    await client().fetchInfiniteQuery(adminUsersQuery());
+
+    expect(api.lastCall("GET /api/admin/users")?.query.toString()).toBe("");
+  });
+
+  test("the codes of a batch are asked for by its id", async () => {
+    const api = mockApi({
+      "GET /api/admin/code-batches/{batch_id}/codes": json(200, codeBatchCodes()),
+    });
+
+    const answer = await client().fetchQuery(batchCodesQuery(BATCH_ID));
+
+    expect(api.lastCall("GET /api/admin/code-batches/{batch_id}/codes")?.path).toBe(
+      `/api/admin/code-batches/${BATCH_ID}/codes`,
+    );
+    expect(answer.codes.map((entry) => entry.code)).toEqual(["4F7KQ2M9XAB3", "T8WN3CB4Z6PD"]);
+    expect(answer.batch.label).toBe("Welcome week");
+  });
+
+  test("the codes are read when they are asked for and never behind the admin's back: every read is recorded", () => {
+    const codes = batchCodesQuery(BATCH_ID);
+
+    // Not when the window gets the focus back, not when the connection is back, and not
+    // because time has passed: a read that is on screen stays as it is.
+    expect(codes.refetchOnWindowFocus).toBe(false);
+    expect(codes.refetchOnReconnect).toBe(false);
+    expect(codes.staleTime).toBe(Infinity);
+    // Not under the batches, which are marked out of date after every write.
+    expect(codes.queryKey.slice(0, 2)).not.toEqual(keys.admin.batches);
+  });
+
+  test("the codes are dropped from memory as soon as nothing shows them", async () => {
+    mockApi({ "GET /api/admin/code-batches/{batch_id}/codes": json(200, codeBatchCodes()) });
+    const queries = client();
+    const codes = batchCodesQuery(BATCH_ID);
+    const observer = new QueryObserver(queries, codes);
+
+    const stop = observer.subscribe(() => {});
+    await vi.waitFor(() => expect(queries.getQueryData(codes.queryKey)).toBeDefined());
+
+    stop();
+    await vi.waitFor(() => expect(queries.getQueryData(codes.queryKey)).toBeUndefined());
   });
 });

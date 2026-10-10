@@ -10,16 +10,56 @@ describe("QrCode", () => {
 
     const qr = screen.getByRole("img", { name: "Voucher QR code" });
     expect(qr.tagName.toLowerCase()).toBe("svg");
-    expect(qr.parentElement).toHaveClass(
-      "bg-foreground",
-      "text-ink",
-      "rounded-lg",
-      "p-4",
-      "min-w-60",
-    );
+    expect(qr.parentElement).toHaveClass("bg-foreground", "text-ink", "rounded-lg", "min-w-60");
     const fills = Array.from(qr.querySelectorAll("path")).map((path) => path.getAttribute("fill"));
     expect(fills).toEqual(["transparent", "currentColor"]);
   });
+
+  /**
+   * Where the modules of a drawn code lie, in the units of its own grid: the width of the
+   * grid, and the first and the last column and row that hold a dark module.
+   */
+  function modulesOf(qr: Element) {
+    const [, , width] = qr.getAttribute("viewBox")!.split(" ").map(Number);
+    const dark = qr.querySelectorAll("path")[1]!.getAttribute("d")!;
+    const columns: number[] = [];
+    const rows: number[] = [];
+    // Every run of dark modules in a row is drawn from its left end: `M{x} {y}h{length}`,
+    // and `M{x},{y} h{length}` for the run that ends the row.
+    for (const [, x, y, length] of dark.matchAll(/M(\d+)[ ,](\d+) ?h(\d+)/g)) {
+      columns.push(Number(x), Number(x) + Number(length) - 1);
+      rows.push(Number(y));
+    }
+    return {
+      width: width!,
+      left: Math.min(...columns),
+      right: Math.max(...columns),
+      top: Math.min(...rows),
+      bottom: Math.max(...rows),
+    };
+  }
+
+  test.each([
+    ["a voucher code", "7KQ2-M9XA", 21],
+    ["the link of a code card", "https://09.hackathon.ethz.ch/wallet?code=4F7KQ2M9XAB3", 33],
+  ])(
+    "the tile keeps four of the code's own modules free on every side: %s",
+    (_what, value, modules) => {
+      render(<QrCode value={value} label="QR code" />);
+
+      const qr = screen.getByRole("img", { name: "QR code" });
+      const drawn = modulesOf(qr);
+      // The grid is the code and four modules on either side of it, and the code fills
+      // what is between: the margin is counted in modules, whatever size they are drawn at.
+      expect(drawn.width).toBe(modules + 8);
+      expect([drawn.left, drawn.top]).toEqual([4, 4]);
+      expect([drawn.right, drawn.bottom]).toEqual([modules + 3, modules + 3]);
+      // The drawing fills the tile from edge to edge: the tile adds no padding of its own,
+      // so the margin is the tile's light colour and nothing else.
+      expect(qr).toHaveClass("w-full", "h-auto");
+      expect(qr.parentElement!.className).not.toMatch(/(^|\s)p[xytrbl]?-/);
+    },
+  );
 
   test("repeats the code as text below the tile, in groups of four", () => {
     render(<QrCode value="7KQ2M9XA" label="Voucher QR code" code="7KQ2M9XA" />);

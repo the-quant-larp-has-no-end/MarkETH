@@ -1,14 +1,15 @@
 """What a user sees of themselves: `/me` and its lists (SPEC §10, Appendix A.2)."""
 
-from datetime import date, datetime
+from datetime import datetime
 from uuid import UUID
 
 from app.core.enums import (
     DegreeLevel,
     JournalKind,
     MarketStatus,
-    MarketTier,
+    NoticeKind,
     Outcome,
+    ResolutionOutcome,
     TradeSide,
     UserRole,
 )
@@ -23,8 +24,28 @@ from app.schemas.common import (
 from app.schemas.markets import Holding, MarketSummary
 
 
+class NoticeItem(ResponseModel):
+    """Something the user is told once (SPEC §6): the app shows it and marks it seen
+    with `POST /me/notices/{id}/seen`."""
+
+    id: UUID
+    kind: NoticeKind
+    """What happened. `PROPOSAL_APPROVED`: an admin approved the market the user
+    proposed, and it is open."""
+
+    market_id: UUID
+    """The market the notice is about."""
+
+    question: str
+    """That market's question, as it reads now."""
+
+    created_at: datetime
+    """When it happened."""
+
+
 class MeResponse(ResponseModel):
-    """`GET /me`: profile, balance and the next monthly grant."""
+    """`GET /me`: profile, balance, the next monthly grant and what the user has not
+    been told yet."""
 
     id: UUID
     email: str
@@ -39,18 +60,29 @@ class MeResponse(ResponseModel):
     """A label of `degree_level`, as `GET /config` lists it."""
 
     role: UserRole
-    """What the user may do right now. It follows the server's role lists, not the
-    profile."""
+    """What the user may do right now: the role an admin gave them, USER for
+    everybody else, and ADMIN for an address the server names as an admin."""
 
     created_at: datetime
+    policy_accepted_at: datetime
+    """When the user accepted the usage policy: the instant the profile was
+    created."""
+
     balance_cr: CreditAmount
     can_get_voucher: bool
     """Whether the balance covers a voucher for the cheapest product right now
     (SPEC §2). The wallet enables getting one from this."""
 
     monthly_grant_cr: CreditAmount
-    next_monthly_grant_on: date
-    """First day of the next calendar month in the app's timezone (SPEC §2)."""
+    next_monthly_grant_at: datetime
+    """The instant the next monthly grant falls due (SPEC §2). The grants follow the
+    sign-up: each month on the day of the month and at the time of day of
+    `created_at` in the app's timezone, on the last day of a month that has no
+    such day."""
+
+    notices: list[NoticeItem]
+    """The user's notices that are not marked seen, oldest first. Empty when there is
+    nothing to tell."""
 
 
 class PortfolioEntry(ResponseModel):
@@ -133,9 +165,12 @@ class ProposalItem(ResponseModel):
     resolution_criteria: str
     resolution_source: str
     status: MarketStatus
-    """The effective status, as in `MarketSummary`."""
+    """The effective status, as in `MarketSummary`. EXPIRED for a proposal whose
+    `close_at` passed before an admin decided on it: it is out of review."""
 
-    requested_tier: MarketTier
+    outcome: ResolutionOutcome | None
+    """YES or NO once RESOLVED, VOID once VOID, otherwise null."""
+
     close_at: datetime
     resolve_by: datetime
     created_at: datetime

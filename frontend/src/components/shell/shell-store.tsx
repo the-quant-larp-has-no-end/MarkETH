@@ -24,8 +24,12 @@ export type ShellStore = {
   hideTabBar(): () => void;
   /** Marks a route change as under way until the returned function is called. */
   beginNavigation(): () => void;
-  /** Notes the route the app is on, so "back" knows whether it has somewhere to go. */
-  noteRoute(pathname: string): void;
+  /**
+   * Notes the route the app is on, so "back" knows whether it has somewhere to go. Says
+   * whether the app arrived there from another route: false for the route the page was
+   * loaded on, and for the same route noted twice.
+   */
+  noteRoute(pathname: string): boolean;
   /** Whether one step back in the history stays inside the app. */
   canGoBack(): boolean;
 };
@@ -70,8 +74,10 @@ export function createShellStore(): ShellStore {
     beginNavigation: () => hold((by) => (navigating += by)),
     noteRoute(pathname) {
       // The same route noted twice (an effect that ran again) is no move.
-      if (route !== null && route !== pathname) moved = true;
+      const arrived = route !== null && route !== pathname;
+      if (arrived) moved = true;
       route = pathname;
+      return arrived;
     },
     canGoBack() {
       // Where the browser can say whether an earlier entry of this tab belongs to the

@@ -66,8 +66,8 @@ export function RedeemCodeSheet({
   const complete = codeCharacters(code).length === code_length;
 
   /**
-   * An answer is about the code that was sent: once the field is typed in or scanned
-   * into, it no longer applies. The wait after `RATE_LIMITED` is the exception: it
+   * An answer is about the code that was sent: it holds until the field is typed in or
+   * scanned into. The wait after `RATE_LIMITED` is the exception: it
    * belongs to the caller, whatever the code.
    */
   const dropAnswer = () => {

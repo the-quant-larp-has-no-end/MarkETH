@@ -361,7 +361,7 @@ describe("BeanDrop", () => {
     expect(screen.getByText("275")).toBeInTheDocument();
   });
 
-  test("drops a few token icons into the old figure, then shows the new one", async () => {
+  test("drops a few token icons into the figure from before, then shows the one that arrived", async () => {
     setMediaQuery(REDUCED_MOTION_QUERY, false);
     vi.useFakeTimers();
     try {

@@ -134,7 +134,7 @@ async def open_market(portal: Portal, proposer: User, admin: User, clock: Frozen
             "resolution_source": "The menu plan on ethz.ch",
             "close_at": close_at.isoformat(),
             "resolve_by": (close_at + WEEK).isoformat(),
-            "requested_tier": "DEFAULT",
+            "policy_accepted": True,
         },
         status_code=201,
     )

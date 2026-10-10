@@ -1,7 +1,8 @@
 """Free credits by rule: `grants` (SPEC §2, §7).
 
 A grant is unique per (user, period), which makes it idempotent by construction: the
-signup grant has the period `SIGNUP`, a monthly grant its month as `YYYY-MM`.
+signup grant has the period `SIGNUP`, a monthly grant the calendar month it falls due
+in as `YYYY-MM`.
 """
 
 from datetime import datetime

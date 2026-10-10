@@ -24,13 +24,21 @@
 #   5. Two X-User-Id lines are no identity.
 #   6. A request another site makes to the API with a visitor's browser is refused by
 #      the proxy; the visitor's own window opening an API address from there is not.
-#   7. A body above NGINX_CLIENT_MAX_BODY_SIZE is refused by the proxy; one below is not.
-#   8. The proxy's rate limit refuses part of a burst, and counts per caller.
-#   9. With APP_ENV=production: the development identity files are absent, the running
+#   7. The web app's container gets no answer from the API: what it asks the proxy
+#      under /api/ is refused, an event stream included and whatever address it names
+#      as the visitor's, while the same request through the published port is answered.
+#   8. A body above NGINX_CLIENT_MAX_BODY_SIZE is refused by the proxy; one below is not.
+#   9. The proxy's rate limit refuses part of a burst, and counts per caller.
+#  10. With APP_ENV=production: the development identity files are absent, the running
 #      proxy has no trace of them, and nginx is the only container with a published
 #      port, bound to the one address .env names.
+#  14. The running nginx and api have the limits of open files .env names
+#      (NGINX_NOFILE_LIMIT, API_NOFILE_LIMIT), and one process serves the API: what the
+#      API keeps in its own memory, such as the orders it counts per user while Redis
+#      is away (SPEC A.4), is kept once.
 #
-# Needs curl, jq and docker.
+# Needs curl, jq and docker. Check 7 runs node inside the web container, check 14 python
+# inside the api container.
 
 set -eu
 
@@ -72,6 +80,35 @@ bytes_of() {
 request() {
     STATUS=$(curl --silent --show-error --max-time "$REQUEST_SECONDS" --output "$WORK/body" \
         --write-out '%{http_code}' "$@") || fail "no answer to: curl $*"
+}
+
+# from_the_web_app <path> [<address>]: GET http://nginx<path>, sent from inside the web
+# container to the proxy on the network the two share. With <address>, the request
+# names it as the visitor's, the way the portal does. STATUS holds the HTTP status,
+# $WORK/body the body.
+from_the_web_app() {
+    docker compose -f compose.yaml exec -T web node -e '
+        const headers = { accept: "application/json" };
+        if (process.argv[2]) headers["x-original-forwarded-for"] = process.argv[2];
+        fetch("http://nginx" + process.argv[1], { headers, signal: AbortSignal.timeout(10000) }).then(
+            async (answer) => {
+                process.stdout.write(answer.status + "\n" + (await answer.text()));
+            },
+            (error) => {
+                console.error(String(error.cause || error));
+                process.exit(1);
+            },
+        );
+    ' "$@" < /dev/null > "$WORK/inside" \
+        || fail "could not ask the proxy for $1 from inside the web container"
+    STATUS=$(head -n 1 "$WORK/inside")
+    tail -n +2 "$WORK/inside" > "$WORK/body"
+}
+
+# open_files_of <file>: "<soft> <hard>", the limit of open files in what a process says
+# about itself in /proc/<pid>/limits.
+open_files_of() {
+    sed -n 's/^Max open files  *\([^ ][^ ]*\)  *\([^ ][^ ]*\) .*/\1 \2/p' "$1"
 }
 
 # The `code` of the API's error body, or nothing.
@@ -217,7 +254,25 @@ request --header 'Sec-Fetch-Site: cross-site' --header 'Sec-Fetch-Mode: navigate
 [ "$STATUS" = "200" ] || fail "a window that opens an API address from another site: expected 200, got $STATUS $(body_excerpt)"
 passed "a visitor's own window that opens an API address from another site is answered"
 
-# 7. The body limit ------------------------------------------------------------------
+# 7. The web app's container -----------------------------------------------------------
+# The proxy hands a request under /api/ on with the headers it came with, and the web
+# app's container reaches the proxy on the network the two share, past the portal. The
+# proxy therefore refuses that peer under /api/. /api/config is public and the API
+# answers it with 200, so a 403 here is the proxy's; so is the 403 on the stream path
+# (see check 6). The second request names a public address as the visitor's: the proxy
+# has to judge the peer of the connection, not what a request says about it.
+
+request "$BASE/api/config"
+[ "$STATUS" = "200" ] || fail "GET /api/config through the published port: expected 200, got $STATUS $(body_excerpt)"
+from_the_web_app /api/config
+expect 403 FORBIDDEN "the web app's container is refused by the proxy under /api/"
+from_the_web_app /api/config 203.0.113.7
+expect 403 FORBIDDEN "whatever address it names as the visitor's"
+from_the_web_app /api/markets/00000000-0000-0000-0000-000000000000/stream
+expect 403 FORBIDDEN "and it opens no event stream"
+passed "the same /api/config through the published port is answered"
+
+# 8. The body limit ------------------------------------------------------------------
 
 LIMIT=$(bytes_of "$(setting NGINX_CLIENT_MAX_BODY_SIZE)")
 head -c "$((LIMIT + 1024))" /dev/zero > "$WORK/above"
@@ -231,7 +286,7 @@ request --request POST --header "Origin: $ORIGIN" --header 'Content-Type: applic
 [ "$STATUS" != "413" ] || fail "a body of $((LIMIT - 1024)) bytes was refused as too large"
 passed "a body below it reaches the API ($STATUS)"
 
-# 8. The rate limit ------------------------------------------------------------------
+# 9. The rate limit ------------------------------------------------------------------
 # One curl process sends the burst on parallel connections: started one process at a
 # time, the requests would arrive slower than the bucket refills.
 
@@ -259,36 +314,87 @@ request --header "X-User-Id: deploy.other@$DOMAIN" "$BASE/api/config"
 [ "$STATUS" = "200" ] || fail "another caller from the same address got $STATUS right after the burst: the limit is not per caller"
 passed "another caller from the same address is not limited"
 
-# 9. Production only -----------------------------------------------------------------
+# 10. Production only ----------------------------------------------------------------
 
-if [ "$APP_ENV" != "production" ]; then
+if [ "$APP_ENV" = "production" ]; then
+    [ ! -e compose.override.yaml ] || fail "compose.override.yaml exists in a production tree"
+    [ ! -e infra/nginx/dev ] || fail "infra/nginx/dev exists in a production tree"
+    passed "the development overlay and its identity files are absent"
+
+    docker compose -f compose.yaml exec -T nginx nginx -T < /dev/null > "$WORK/nginx.conf" 2> /dev/null \
+        || fail "could not read the configuration of the running nginx"
+    if grep -n -i -E 'dev_user|__dev' "$WORK/nginx.conf" >&2; then
+        fail "the running nginx configuration names a development identity (lines above)"
+    fi
+    passed "the running proxy has no development identity"
+
+    proxy=$(docker compose -f compose.yaml ps --quiet nginx < /dev/null) || fail "could not ask Compose for the nginx container"
+    [ -n "$proxy" ] || fail "no nginx container is running"
+    # The project the running stack belongs to, as Compose labelled its containers.
+    PROJECT=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' "$proxy" < /dev/null) \
+        || fail "could not read the Compose project of the nginx container"
+    [ -n "$PROJECT" ] || fail "the nginx container carries no Compose project"
+    # Every address the port is bound to. The probe from outside asks the public IPv4
+    # address, so a second binding, on IPv6, would be a way in that nothing looks at.
+    published=$(docker port "$proxy" 80/tcp < /dev/null | tr '\n' ' ') || true
+    published=${published% }
+    [ "$published" = "$BIND:$PORT" ] || fail "nginx is published on '$published', not on $BIND:$PORT alone"
+    others=$(docker ps --filter "label=com.docker.compose.project=$PROJECT" \
+        --format '{{.Label "com.docker.compose.service"}} {{.Ports}}' | grep -e '->' | grep -v '^nginx ' || true)
+    [ -z "$others" ] || fail "containers other than nginx publish a port: $others"
+    passed "nginx on $published is the only published port of the stack"
+else
     echo "skipped the checks of a production tree (APP_ENV=$APP_ENV)"
-    echo "All checks passed."
-    exit 0
 fi
 
-[ ! -e compose.override.yaml ] || fail "compose.override.yaml exists in a production tree"
-[ ! -e infra/nginx/dev ] || fail "infra/nginx/dev exists in a production tree"
-passed "the development overlay and its identity files are absent"
+# 14. Open files, and the one API process ---------------------------------------------
+# A limit is read from the process it holds for, in /proc. For nginx that is process 1,
+# the master, whose limit every worker has. For the API it is whatever holds a
+# listening socket in the api container: the python below prints one line per such
+# process, "<pid> <soft> <hard>". One line is one process that serves the API. A command
+# with `--workers`, or a reloader, shows as several: the socket is theirs together.
 
-docker compose -f compose.yaml exec -T nginx nginx -T < /dev/null > "$WORK/nginx.conf" 2> /dev/null \
-    || fail "could not read the configuration of the running nginx"
-if grep -n -i -E 'dev_user|__dev' "$WORK/nginx.conf" >&2; then
-    fail "the running nginx configuration names a development identity (lines above)"
-fi
-passed "the running proxy has no development identity"
+NGINX_FILES=$(setting NGINX_NOFILE_LIMIT)
+API_FILES=$(setting API_NOFILE_LIMIT)
+[ -n "$NGINX_FILES" ] || fail ".env has no NGINX_NOFILE_LIMIT"
+[ -n "$API_FILES" ] || fail ".env has no API_NOFILE_LIMIT"
 
-PROJECT=$(sed -n 's/^name: *//p' compose.yaml)
-proxy=$(docker compose -f compose.yaml ps --quiet nginx < /dev/null) || fail "could not ask Compose for the nginx container"
-[ -n "$proxy" ] || fail "no nginx container is running"
-# Every address the port is bound to. The probe from outside asks the public IPv4
-# address, so a second binding, on IPv6, would be a way in that nothing looks at.
-published=$(docker port "$proxy" 80/tcp < /dev/null | tr '\n' ' ') || true
-published=${published% }
-[ "$published" = "$BIND:$PORT" ] || fail "nginx is published on '$published', not on $BIND:$PORT alone"
-others=$(docker ps --filter "label=com.docker.compose.project=$PROJECT" \
-    --format '{{.Label "com.docker.compose.service"}} {{.Ports}}' | grep -e '->' | grep -v '^nginx ' || true)
-[ -z "$others" ] || fail "containers other than nginx publish a port: $others"
-passed "nginx on $published is the only published port of the stack"
+docker compose -f compose.yaml exec -T nginx cat /proc/1/limits < /dev/null > "$WORK/limits" \
+    || fail "could not read the limits of the running nginx"
+found=$(open_files_of "$WORK/limits")
+[ "$found" = "$NGINX_FILES $NGINX_FILES" ] \
+    || fail "nginx runs with a limit of open files of '$found' (soft, hard), not NGINX_NOFILE_LIMIT=$NGINX_FILES"
+passed "nginx may hold $NGINX_FILES files open (NGINX_NOFILE_LIMIT)"
+
+docker compose -f compose.yaml exec -T api python -c '
+import os
+
+listening = set()
+for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+    try:
+        with open(table) as rows:
+            sockets = [row.split() for row in rows][1:]
+    except OSError:
+        continue
+    listening |= {"socket:[%s]" % socket[9] for socket in sockets if socket[3] == "0A"}
+
+for pid in sorted((name for name in os.listdir("/proc") if name.isdigit()), key=int):
+    try:
+        held = {os.readlink("/proc/%s/fd/%s" % (pid, fd)) for fd in os.listdir("/proc/%s/fd" % pid)}
+        if not held & listening:
+            continue
+        with open("/proc/%s/limits" % pid) as limits:
+            files = [line.split()[3:5] for line in limits if line.startswith("Max open files")]
+        print(pid, *files[0])
+    except OSError:
+        continue
+' < /dev/null > "$WORK/serving" || fail "could not ask the api container which of its processes listen"
+serving=$(grep -c . "$WORK/serving" || true)
+[ "$serving" = "1" ] \
+    || fail "$serving processes of the api container hold its listening socket, not one: $(tr '\n' ';' < "$WORK/serving")"
+read -r pid soft hard < "$WORK/serving"
+[ "$soft $hard" = "$API_FILES $API_FILES" ] \
+    || fail "the API (process $pid) runs with a limit of open files of '$soft $hard' (soft, hard), not API_NOFILE_LIMIT=$API_FILES"
+passed "one process serves the API, and it may hold $API_FILES files open (API_NOFILE_LIMIT)"
 
 echo "All checks passed."

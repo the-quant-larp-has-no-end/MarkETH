@@ -109,7 +109,7 @@ async def trade(
         try:
             return await container.trading.trade(who, market.id, key, request)
         except database.ERROR_FAMILIES as error:
-            if not database.is_lock_timeout(error):
+            if not database.is_transient(error):
                 raise
     raise AssertionError(f"the row of market {market.id} was never free in time")
 

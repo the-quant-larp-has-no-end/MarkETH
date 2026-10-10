@@ -8,8 +8,12 @@ import {
 import { describe, expect, test } from "vitest";
 
 import {
+  adminUser,
+  adminUsers,
+  balanceAdjusted,
   BATCH_ID,
   codeBatch,
+  codeBatchCodes,
   codeBatchCreated,
   ledgerItem,
   leaderboard,
@@ -17,40 +21,62 @@ import {
   marketDetail,
   marketViewerWithPosition,
   me,
+  notice,
+  OTHER_MARKET_ID,
+  OTHER_USER_ID,
   portfolio,
   profileSaved,
   proposal,
   tradeResponse,
+  USER_ID,
   voucherCode,
   voucherIssued,
   voucherItem,
   voucherRedeemed,
   VOUCHER_ID,
 } from "@/test/fixtures";
-import { apiError, deferred, errorPage, json, mockApi, noAnswer } from "@/test/http";
+import { apiError, deferred, errorPage, json, mockApi, noAnswer, type Route } from "@/test/http";
 
 import type { ApiError } from "./errors";
 import { keys } from "./keys";
 import {
   acknowledgeAlertMutation,
+  adjustUserBalanceMutation,
   createCodeBatchMutation,
   issueVoucherMutation,
-  newTradeSubmission,
+  markNoticeSeenMutation,
   proposeMarketMutation,
   redeemCodeMutation,
   redeemVoucherMutation,
+  reinstateUserMutation,
   replaceVoucherCodeMutation,
   resolveMarketMutation,
   revokeCodesMutation,
   saveProfileMutation,
+  setUserRoleMutation,
+  suspendUserMutation,
   tradeMutation,
 } from "./mutations";
-import type { MarketDetailResponse, MeResponse, TradeRequest } from "./schema";
+import type {
+  AdjustBalanceRequest,
+  AdminUserListResponse,
+  MarketDetailResponse,
+  MeResponse,
+  TradeRequest,
+} from "./schema";
+import { newSubmission } from "./submissions";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 const LEADERBOARD = keys.leaderboard.list({ sort: "credits" });
 const OPEN_MARKETS = keys.markets.list(["OPEN", "HALTED"]);
+/** Two lists of users that are on screen or were: everyone, and the suspended alone. */
+const EVERY_USER = keys.admin.users.list({});
+const SUSPENDED_USERS = keys.admin.users.list({ status: "SUSPENDED" });
+const usersIn = (client: QueryClient, key: QueryKey) =>
+  client
+    .getQueryData<{ pages: AdminUserListResponse[] }>(key)
+    ?.pages.flatMap((page) => page.items) ?? [];
 
 /** A cache that holds every read a write could touch, so the test can see which it marked. */
 function seeded(): QueryClient {
@@ -68,6 +94,11 @@ function seeded(): QueryClient {
   client.setQueryData(LEADERBOARD, { pages: [leaderboard()], pageParams: [null] });
   client.setQueryData(keys.admin.batches, { items: [codeBatch()] });
   client.setQueryData(keys.admin.risk, {});
+  client.setQueryData(EVERY_USER, { pages: [adminUsers()], pageParams: [null] });
+  client.setQueryData(SUSPENDED_USERS, {
+    pages: [{ items: [], next_cursor: null }],
+    pageParams: [null],
+  });
   return client;
 }
 
@@ -99,17 +130,161 @@ describe("saving the profile", () => {
       username: "polyterrasse",
       degree_level: "BACHELOR",
       degree_programme: "BSc Physics",
+      policy_accepted: true,
     });
 
+    // The save that creates the profile says that the usage policy is accepted.
     expect(api.lastCall("PUT /api/me/profile")?.body).toEqual({
       username: "polyterrasse",
       degree_level: "BACHELOR",
       degree_programme: "BSc Physics",
+      policy_accepted: true,
     });
     const cached = client.getQueryData<MeResponse>(keys.me);
     expect(cached?.username).toBe("polyterrasse");
     expect(cached).not.toHaveProperty("signup_granted");
     expect(stale(client, LEADERBOARD)).toBe(true);
+  });
+
+  test("a save that changes a profile sends the three fields alone", async () => {
+    const api = mockApi({
+      "PUT /api/me/profile": json(200, profileSaved({ signup_granted: false })),
+    });
+
+    await run(seeded(), saveProfileMutation, {
+      username: "anna_m",
+      degree_level: "MASTER",
+      degree_programme: "MSc Data Science",
+    });
+
+    expect(api.lastCall("PUT /api/me/profile")?.rawBody).toBe(
+      '{"username":"anna_m","degree_level":"MASTER","degree_programme":"MSc Data Science"}',
+    );
+  });
+});
+
+describe("marking a notice seen", () => {
+  const SEEN: Route = "POST /api/me/notices/{notice_id}/seen";
+  const APPROVED = notice();
+  const SECOND = notice({
+    id: "5c1f0b7e-93a4-4d28-b6e1-2a7d9c4f8e13",
+    market_id: OTHER_MARKET_ID,
+    question: "Will the ASVZ open a second climbing wall before the end of the semester?",
+    created_at: "2026-10-06T09:00:00Z",
+  });
+
+  /** Every read of the seeded cache: what a write could mark out of date. */
+  const everyRead = (client: QueryClient) =>
+    client
+      .getQueryCache()
+      .getAll()
+      .map((query) => query.queryKey);
+
+  /** A cache whose profile lists these notices, with the profile on screen. */
+  function told(notices: MeResponse["notices"]) {
+    const client = seeded();
+    client.setQueryData(keys.me, me({ balance_cr: "240", notices }));
+    const reads = { me: 0 };
+    onScreen(client, keys.me, async () => {
+      reads.me += 1;
+      return me({ balance_cr: "240" });
+    });
+    return { client, reads };
+  }
+
+  test("names the notice in the address and sends no body", async () => {
+    const api = mockApi({ [SEEN]: json(200, APPROVED) });
+    const { client } = told([APPROVED]);
+
+    const answer = await run(client, markNoticeSeenMutation, APPROVED.id);
+
+    expect(answer).toEqual(APPROVED);
+    const sent = api.lastCall(SEEN);
+    expect(sent?.path).toBe(`/api/me/notices/${APPROVED.id}/seen`);
+    expect(sent?.rawBody).toBe("");
+  });
+
+  test("on its answer the notice leaves the notices of the cached profile, and nothing else moves", async () => {
+    const api = mockApi({ [SEEN]: json(200, APPROVED) });
+    const { client, reads } = told([APPROVED, SECOND]);
+
+    await run(client, markNoticeSeenMutation, APPROVED.id);
+
+    const cached = client.getQueryData<MeResponse>(keys.me);
+    expect(cached?.notices).toEqual([SECOND]);
+    // The rest of the profile is as it was: the answer is the notice, not the profile.
+    expect(cached).toEqual(me({ balance_cr: "240", notices: [SECOND] }));
+    // The cache says what the next `/me` would say, so nothing is asked for.
+    for (const key of everyRead(client))
+      expect(stale(client, key), JSON.stringify(key)).toBe(false);
+    expect(reads.me).toBe(0);
+    expect(api.requests).toHaveLength(1);
+  });
+
+  test("the second of two notices leaves the list as the first did", async () => {
+    mockApi({
+      [SEEN]: (request) => json(200, request.path.includes(SECOND.id) ? SECOND : APPROVED),
+    });
+    const { client } = told([APPROVED, SECOND]);
+
+    await Promise.all([
+      run(client, markNoticeSeenMutation, APPROVED.id),
+      run(client, markNoticeSeenMutation, SECOND.id),
+    ]);
+
+    expect(client.getQueryData<MeResponse>(keys.me)?.notices).toEqual([]);
+  });
+
+  test.each([
+    ["no response", noAnswer, { kind: "network" }],
+    ["an error page of the proxy", errorPage(502), { kind: "unavailable", status: 502 }],
+    [
+      "an error of the server",
+      apiError(503, "SERVICE_UNAVAILABLE", "This is temporarily unavailable. Try again shortly."),
+      { kind: "api", status: 503 },
+    ],
+  ])("after %s nothing is read and nothing is sent again", async (_name, handler, failure) => {
+    const api = mockApi({ [SEEN]: handler });
+    const { client, reads } = told([APPROVED, SECOND]);
+
+    const error = await run(client, markNoticeSeenMutation, APPROVED.id).catch(
+      (thrown: ApiError) => thrown,
+    );
+    // Whatever would follow by itself has had its turn.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(error).toMatchObject({ ...failure, outcomeUnknown: true });
+    // The notice stays in the list: the server still holds it as unseen.
+    expect(client.getQueryData<MeResponse>(keys.me)?.notices).toEqual([APPROVED, SECOND]);
+    for (const key of everyRead(client))
+      expect(stale(client, key), JSON.stringify(key)).toBe(false);
+    expect(reads.me).toBe(0);
+    expect(api.requests).toHaveLength(1);
+    expect(client.isMutating()).toBe(0);
+  });
+
+  test("a notice the API does not know as the caller's stays in the list, and nothing is read", async () => {
+    const api = mockApi({ [SEEN]: apiError(404, "NOT_FOUND", "Not found.") });
+    const { client, reads } = told([APPROVED]);
+
+    await expect(run(client, markNoticeSeenMutation, APPROVED.id)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      message: "Not found.",
+    });
+
+    expect(client.getQueryData<MeResponse>(keys.me)?.notices).toEqual([APPROVED]);
+    expect(stale(client, keys.me)).toBe(false);
+    expect(reads.me).toBe(0);
+    expect(api.requests).toHaveLength(1);
+  });
+
+  test("a cache without a profile is left without one", async () => {
+    mockApi({ [SEEN]: json(200, APPROVED) });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await run(client, markNoticeSeenMutation, APPROVED.id);
+
+    expect(client.getQueryData(keys.me)).toBeUndefined();
   });
 });
 
@@ -123,20 +298,18 @@ describe("a trade", () => {
   };
 
   test("is serialised once and given one key", () => {
-    const submission = newTradeSubmission(MARKET_ID, request);
+    const submission = newSubmission(MARKET_ID, request);
 
-    expect(submission.marketId).toBe(MARKET_ID);
+    expect(submission.target).toBe(MARKET_ID);
     expect(submission.body).toBe(JSON.stringify(request));
     expect(submission.idempotencyKey).toMatch(UUID);
-    expect(newTradeSubmission(MARKET_ID, request).idempotencyKey).not.toBe(
-      submission.idempotencyKey,
-    );
+    expect(newSubmission(MARKET_ID, request).idempotencyKey).not.toBe(submission.idempotencyKey);
   });
 
   test("goes out as the stored body with the stored key, and again unchanged", async () => {
     const api = mockApi({ "POST /api/markets/{market_id}/trades": errorPage(502) });
     const client = seeded();
-    const submission = newTradeSubmission(MARKET_ID, request);
+    const submission = newSubmission(MARKET_ID, request);
 
     await run(client, tradeMutation, submission).catch(() => {});
     api.on("POST /api/markets/{market_id}/trades", json(201, tradeResponse()));
@@ -169,7 +342,7 @@ describe("a trade", () => {
     });
     const client = seeded();
 
-    await run(client, tradeMutation, newTradeSubmission(MARKET_ID, request));
+    await run(client, tradeMutation, newSubmission(MARKET_ID, request));
 
     expect(client.getQueryData<MeResponse>(keys.me)?.balance_cr).toBe("215");
     const market = client.getQueryData<MarketDetailResponse>(keys.markets.detail(MARKET_ID));
@@ -204,7 +377,7 @@ describe("a trade", () => {
       marketDetail({ p_yes: 0.61, p_no: 0.39, version: 9 }),
     );
 
-    await run(client, tradeMutation, newTradeSubmission(MARKET_ID, request));
+    await run(client, tradeMutation, newSubmission(MARKET_ID, request));
 
     expect(client.getQueryData<MarketDetailResponse>(keys.markets.detail(MARKET_ID))).toMatchObject(
       { p_yes: 0.61, version: 9 },
@@ -221,7 +394,7 @@ describe("a trade", () => {
     });
     const client = seeded();
 
-    await run(client, tradeMutation, newTradeSubmission(MARKET_ID, request)).catch(() => {});
+    await run(client, tradeMutation, newSubmission(MARKET_ID, request)).catch(() => {});
     expect(stale(client, keys.markets.detail(MARKET_ID))).toBe(true);
     expect(stale(client, keys.me)).toBe(false);
 
@@ -229,7 +402,7 @@ describe("a trade", () => {
       "POST /api/markets/{market_id}/trades",
       apiError(422, "INSUFFICIENT_BALANCE", "Not enough tokens for this."),
     );
-    await run(client, tradeMutation, newTradeSubmission(MARKET_ID, request)).catch(() => {});
+    await run(client, tradeMutation, newSubmission(MARKET_ID, request)).catch(() => {});
     expect(stale(client, keys.me)).toBe(true);
     expect(stale(client, keys.positions)).toBe(false);
   });
@@ -240,7 +413,7 @@ describe("a trade", () => {
     });
     const client = seeded();
 
-    await run(client, tradeMutation, newTradeSubmission(MARKET_ID, request)).catch(() => {});
+    await run(client, tradeMutation, newSubmission(MARKET_ID, request)).catch(() => {});
 
     expect(stale(client, keys.markets.detail(MARKET_ID))).toBe(false);
     expect(client.getQueryData<MeResponse>(keys.me)?.balance_cr).toBe("240");
@@ -420,7 +593,7 @@ describe("markets", () => {
       resolution_source: proposed.resolution_source,
       close_at: "2026-12-11T18:00:00+01:00",
       resolve_by: "2026-12-18T18:00:00+01:00",
-      requested_tier: "DEFAULT",
+      policy_accepted: true,
     });
 
     expect(client.getQueryData(keys.markets.detail("new-market"))).toEqual(proposed);
@@ -437,8 +610,8 @@ describe("markets", () => {
           resolution_source: proposed.resolution_source,
           close_at: proposed.close_at,
           resolve_by: proposed.resolve_by,
-          requested_tier: proposed.requested_tier,
           status: "PROPOSED",
+          outcome: null,
           rejection_reason: proposed.rejection_reason,
           created_at: proposed.created_at,
         },
@@ -465,7 +638,7 @@ describe("markets", () => {
       resolution_source: proposed.resolution_source,
       close_at: "2026-12-11T18:00:00+01:00",
       resolve_by: "2026-12-18T18:00:00+01:00",
-      requested_tier: "DEFAULT",
+      policy_accepted: true,
     });
 
     const listed = client.getQueryData<{ items: { id: string }[] }>(keys.proposals);
@@ -537,7 +710,7 @@ describe("codes and alerts", () => {
     expect(stale(client, keys.admin.risk)).toBe(true);
   });
 
-  test("revoking a batch sends no list of codes", async () => {
+  test("revoking a batch sends no list of codes, and forgets the codes that were read of it", async () => {
     const api = mockApi({
       "POST /api/admin/code-batches/{batch_id}/revoke": json(200, {
         batch: codeBatch({ active_count: 0, revoked_count: 14 }),
@@ -545,6 +718,8 @@ describe("codes and alerts", () => {
       }),
     });
     const client = seeded();
+    client.setQueryData(keys.admin.batchCodes(BATCH_ID), codeBatchCodes());
+    client.setQueryData(keys.admin.batchCodes("another-batch"), codeBatchCodes());
 
     await run(client, revokeCodesMutation, { batchId: BATCH_ID });
 
@@ -552,6 +727,25 @@ describe("codes and alerts", () => {
     expect(sent?.path).toBe(`/api/admin/code-batches/${BATCH_ID}/revoke`);
     expect(sent?.body).toEqual({});
     expect(stale(client, keys.admin.batches)).toBe(true);
+    expect(client.getQueryData(keys.admin.batchCodes(BATCH_ID))).toBeUndefined();
+    expect(client.getQueryData(keys.admin.batchCodes("another-batch"))).toEqual(codeBatchCodes());
+  });
+
+  test("marking the batches out of date does not touch codes that were read: every read of them is recorded", async () => {
+    mockApi({ "POST /api/admin/code-batches": json(201, codeBatchCreated()) });
+    const client = seeded();
+    client.setQueryData(keys.admin.batchCodes(BATCH_ID), codeBatchCodes());
+
+    await run(client, createCodeBatchMutation, {
+      label: "Welcome week",
+      count: 2,
+      value_cr: "35",
+      expires_at: "2026-12-31T23:59:00+01:00",
+      one_per_user: true,
+    });
+
+    expect(stale(client, keys.admin.batches)).toBe(true);
+    expect(stale(client, keys.admin.batchCodes(BATCH_ID))).toBe(false);
   });
 
   test("acknowledging an alert marks the risk figures", async () => {
@@ -567,5 +761,216 @@ describe("codes and alerts", () => {
     );
     expect(stale(client, keys.admin.risk)).toBe(true);
     expect(stale(client, keys.admin.batches)).toBe(false);
+  });
+});
+
+describe("users", () => {
+  const SUSPEND: Route = "POST /api/admin/users/{user_id}/suspend";
+  const REINSTATE: Route = "POST /api/admin/users/{user_id}/reinstate";
+  const ROLE: Route = "POST /api/admin/users/{user_id}/role";
+  const ADJUST: Route = "POST /api/admin/users/{user_id}/adjustments";
+
+  test("suspending sends the reason alone, shows the answer as the user's row and marks the lists and the leaderboard", async () => {
+    const suspended = adminUser({ status: "SUSPENDED" });
+    const api = mockApi({ [SUSPEND]: json(200, suspended) });
+    const client = seeded();
+
+    const answer = await run(client, suspendUserMutation, {
+      userId: OTHER_USER_ID,
+      reason: "Traded through another person's account.",
+    });
+
+    expect(answer).toEqual(suspended);
+    expect(api.lastCall(SUSPEND)?.path).toBe(`/api/admin/users/${OTHER_USER_ID}/suspend`);
+    expect(api.lastCall(SUSPEND)?.body).toEqual({
+      reason: "Traded through another person's account.",
+    });
+    // The row is the answer at once, in the place it had; the other row is as it was.
+    expect(usersIn(client, EVERY_USER)).toEqual([suspended, adminUsers().items[1]]);
+    // A list that is filtered may hold other rows from here on: both are read again.
+    expect(stale(client, EVERY_USER)).toBe(true);
+    expect(stale(client, SUSPENDED_USERS)).toBe(true);
+    expect(stale(client, LEADERBOARD)).toBe(true);
+    expect(stale(client, keys.admin.risk)).toBe(false);
+    expect(stale(client, keys.me)).toBe(false);
+  });
+
+  test("reinstating does the same with its own route", async () => {
+    const reinstated = adminUser({ status: "ACTIVE" });
+    const api = mockApi({ [REINSTATE]: json(200, reinstated) });
+    const client = seeded();
+    client.setQueryData(EVERY_USER, {
+      pages: [adminUsers({ items: [adminUser({ status: "SUSPENDED" })] })],
+      pageParams: [null],
+    });
+
+    await run(client, reinstateUserMutation, { userId: OTHER_USER_ID, reason: "Cleared up." });
+
+    expect(api.lastCall(REINSTATE)?.path).toBe(`/api/admin/users/${OTHER_USER_ID}/reinstate`);
+    expect(api.lastCall(REINSTATE)?.body).toEqual({ reason: "Cleared up." });
+    expect(usersIn(client, EVERY_USER)).toEqual([reinstated]);
+    expect(stale(client, EVERY_USER)).toBe(true);
+    expect(stale(client, LEADERBOARD)).toBe(true);
+  });
+
+  test("a role is sent as its key, and the leaderboard is left alone", async () => {
+    const barista = adminUser({ role: "BARISTA" });
+    const api = mockApi({ [ROLE]: json(200, barista) });
+    const client = seeded();
+
+    await run(client, setUserRoleMutation, { userId: OTHER_USER_ID, role: "BARISTA" });
+
+    expect(api.lastCall(ROLE)?.path).toBe(`/api/admin/users/${OTHER_USER_ID}/role`);
+    expect(api.lastCall(ROLE)?.body).toEqual({ role: "BARISTA" });
+    expect(usersIn(client, EVERY_USER)[0]).toEqual(barista);
+    expect(stale(client, EVERY_USER)).toBe(true);
+    expect(stale(client, LEADERBOARD)).toBe(false);
+  });
+
+  test("a row on a later page is found too", async () => {
+    const barista = adminUser({ role: "BARISTA" });
+    mockApi({ [ROLE]: json(200, barista) });
+    const client = seeded();
+    client.setQueryData(EVERY_USER, {
+      pages: [
+        { items: [adminUsers().items[1]], next_cursor: "page-2" },
+        { items: [adminUser()], next_cursor: null },
+      ],
+      pageParams: [null, "page-2"],
+    });
+
+    await run(client, setUserRoleMutation, { userId: OTHER_USER_ID, role: "BARISTA" });
+
+    expect(usersIn(client, EVERY_USER)).toEqual([adminUsers().items[1], barista]);
+  });
+
+  test.each([
+    ["CONFLICT", apiError(409, "CONFLICT", "This account is already suspended.")],
+    ["NOT_FOUND", apiError(404, "NOT_FOUND", "Not found.")],
+  ] as const)("a %s means the list is behind: it is read again", async (_code, refusal) => {
+    mockApi({ [SUSPEND]: refusal });
+    const client = seeded();
+
+    await run(client, suspendUserMutation, { userId: OTHER_USER_ID, reason: "x" }).catch(() => {});
+
+    expect(stale(client, EVERY_USER)).toBe(true);
+    expect(usersIn(client, EVERY_USER)).toEqual(adminUsers().items);
+  });
+
+  test("a refusal that says who may not be changed marks nothing", async () => {
+    mockApi({
+      [ROLE]: apiError(
+        403,
+        "FORBIDDEN",
+        "This account is an admin by the server's configuration. Its role cannot be changed here.",
+      ),
+    });
+    const client = seeded();
+
+    await expect(
+      run(client, setUserRoleMutation, { userId: USER_ID, role: "USER" }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    expect(stale(client, EVERY_USER)).toBe(false);
+  });
+
+  test("without an answer the user may not act again before the list has been read afresh", async () => {
+    const listAnswer = deferred();
+    mockApi({ [SUSPEND]: noAnswer });
+    const client = seeded();
+    onScreen(client, EVERY_USER, () => listAnswer.handler().then((response) => response.json()));
+
+    const observer = new MutationObserver(client, suspendUserMutation);
+    const attempt = observer
+      .mutate({ userId: OTHER_USER_ID, reason: "x" })
+      .catch((error: ApiError) => error);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // The request failed, the list is on its way: still pending.
+    expect(observer.getCurrentResult().isPending).toBe(true);
+
+    const held = adminUsers({ items: [adminUser({ status: "SUSPENDED" })] });
+    listAnswer.resolve(json(200, { pages: [held], pageParams: [null] }));
+    const error = await attempt;
+
+    expect(error).toMatchObject({ kind: "network" });
+    expect(observer.getCurrentResult().isPending).toBe(false);
+    // The row on screen is what the server holds.
+    expect(usersIn(client, EVERY_USER)).toEqual(held.items);
+  });
+
+  describe("an adjustment of tokens", () => {
+    const request: AdjustBalanceRequest = {
+      amount_cr: "-35.5",
+      reason: "Booked twice by mistake.",
+    };
+
+    test("goes out as the stored body with the stored key, and again unchanged", async () => {
+      const api = mockApi({ [ADJUST]: errorPage(502) });
+      const client = seeded();
+      const submission = newSubmission(OTHER_USER_ID, request);
+
+      await run(client, adjustUserBalanceMutation, submission).catch(() => {});
+      api.on(ADJUST, json(201, balanceAdjusted({ amount_cr: "-35.5", balance_cr: "944.5" })));
+      await run(client, adjustUserBalanceMutation, submission);
+
+      const [first, second] = api.calls(ADJUST);
+      expect(first?.path).toBe(`/api/admin/users/${OTHER_USER_ID}/adjustments`);
+      expect(first?.rawBody).toBe('{"amount_cr":"-35.5","reason":"Booked twice by mistake."}');
+      expect(first?.rawBody).toBe(submission.body);
+      expect(first?.headers.get("Idempotency-Key")).toBe(submission.idempotencyKey);
+      expect(first?.headers.get("Idempotency-Key")).toMatch(UUID);
+      expect(first?.headers.get("Content-Type")).toBe("application/json");
+      expect(second?.rawBody).toBe(first?.rawBody);
+      expect(second?.headers.get("Idempotency-Key")).toBe(submission.idempotencyKey);
+    });
+
+    test("puts the answer's balance into the user's row and marks what the tokens changed", async () => {
+      mockApi({ [ADJUST]: json(201, balanceAdjusted({ balance_cr: "1015" })) });
+      const client = seeded();
+
+      await run(client, adjustUserBalanceMutation, newSubmission(OTHER_USER_ID, request));
+
+      const [adjusted, other] = usersIn(client, EVERY_USER);
+      // The balance is the string of the answer; the rest of the row is as it was.
+      expect(adjusted).toEqual({ ...adminUser(), balance_cr: "1015" });
+      expect(other).toEqual(adminUsers().items[1]);
+      expect(stale(client, keys.admin.risk)).toBe(true);
+      expect(stale(client, LEADERBOARD)).toBe(true);
+      // The row is the answer: the list is not asked for again.
+      expect(stale(client, EVERY_USER)).toBe(false);
+      expect(client.getQueryData<MeResponse>(keys.me)?.balance_cr).toBe("240");
+    });
+
+    test("a removal of more than the account holds reads the list again", async () => {
+      mockApi({
+        [ADJUST]: apiError(
+          409,
+          "INSUFFICIENT_BALANCE",
+          "This account holds fewer tokens than that.",
+          { balance_cr: "20", required_cr: "35.5" },
+        ),
+      });
+      const client = seeded();
+
+      await run(client, adjustUserBalanceMutation, newSubmission(OTHER_USER_ID, request)).catch(
+        () => {},
+      );
+
+      expect(stale(client, EVERY_USER)).toBe(true);
+      expect(stale(client, keys.admin.risk)).toBe(false);
+    });
+
+    test("without an answer nothing is read again: the same request is what is sent again", async () => {
+      mockApi({ [ADJUST]: noAnswer });
+      const client = seeded();
+
+      await run(client, adjustUserBalanceMutation, newSubmission(OTHER_USER_ID, request)).catch(
+        () => {},
+      );
+
+      expect(stale(client, EVERY_USER)).toBe(false);
+      expect(stale(client, keys.admin.risk)).toBe(false);
+    });
   });
 });

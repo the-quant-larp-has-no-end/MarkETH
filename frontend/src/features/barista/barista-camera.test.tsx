@@ -72,7 +72,7 @@ async function passes(milliseconds: number) {
 }
 
 const tabBar = () => screen.queryByRole("navigation", { name: "Main" });
-const result = (verdict: "accepted" | "rejected") =>
+const result = (verdict: "accepted" | "repeat" | "rejected") =>
   document.querySelector<HTMLElement>(`[data-verdict=${verdict}]`);
 
 describe("with a camera", () => {
@@ -132,6 +132,98 @@ describe("with a camera", () => {
     await waitFor(() => expect(result("accepted")).toHaveTextContent("Mate"));
     expect(api.calls(REDEEM)).toHaveLength(2);
     expect(api.lastCall(REDEEM)?.body).toEqual({ code: "B4T8-WN3C" });
+  });
+
+  test("one voucher held in view for thirty seconds is one redemption, and no red result", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    camera(working);
+    const { api } = renderBarista(json(200, voucherRedeemed({ product_name: "Coffee" })));
+    await screen.findByLabelText("Camera");
+
+    inSight = "7KQ2-M9XA";
+    await act(() => vi.advanceTimersByTimeAsync(600));
+    await waitFor(() => expect(result("accepted")).toHaveTextContent("Coffee"));
+
+    // From here on the API would refuse the voucher: it is used up.
+    api.on(REDEEM, apiError(400, "CODE_INVALID", "This code is not valid."));
+    const seen = { rejected: false, repeat: false };
+    for (let held = 0; held < 30_000; held += 250) {
+      await act(() => vi.advanceTimersByTimeAsync(250));
+      seen.rejected ||= result("rejected") !== null;
+      seen.repeat ||= result("repeat") !== null;
+    }
+
+    expect(api.calls(REDEEM)).toHaveLength(1);
+    expect(seen).toEqual({ rejected: false, repeat: false });
+  });
+
+  test("a voucher that is lost for a few seconds and shown again is asked about again, and the API's `repeat` is the third result", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    camera(working);
+    const { api } = renderBarista(json(200, voucherRedeemed({ product_name: "Coffee" })));
+    await screen.findByLabelText("Camera");
+
+    inSight = "7KQ2-M9XA";
+    await act(() => vi.advanceTimersByTimeAsync(600));
+    await waitFor(() => expect(result("accepted")).toHaveTextContent("Coffee"));
+    await passes(BARISTA_RESULT_MS + 1_000);
+    expect(api.calls(REDEEM)).toHaveLength(1);
+
+    // Out of the camera's sight for four seconds: a hand that moved, a phone that turned.
+    inSight = null;
+    await passes(4_000);
+    api.on(
+      REDEEM,
+      json(
+        200,
+        voucherRedeemed({
+          product_name: "Coffee",
+          redeemed_at: "2026-10-05T16:02:00Z",
+          repeat: true,
+        }),
+      ),
+    );
+    inSight = "7KQ2-M9XA";
+    await passes(1_000);
+
+    const shown = await waitFor(() => {
+      const element = result("repeat");
+      expect(element).not.toBeNull();
+      return element!;
+    });
+    expect(shown).toHaveTextContent("Redeemed a moment ago at this bar");
+    expect(shown).toHaveTextContent("18:02");
+    expect(shown).toHaveClass("bg-raised", "text-foreground");
+    expect(result("rejected")).toBeNull();
+    expect(result("accepted")).toBeNull();
+    expect(api.calls(REDEEM)).toHaveLength(2);
+
+    // It stays under the camera after that: nothing more is asked.
+    await passes(BARISTA_RESULT_MS + 8_000);
+    expect(api.calls(REDEEM)).toHaveLength(2);
+    expect(result("rejected")).toBeNull();
+  });
+
+  test("a voucher shown again after the time in which the API answers its redemption again is refused", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    camera(working);
+    const { api } = renderBarista(json(200, voucherRedeemed()));
+    await screen.findByLabelText("Camera");
+
+    inSight = "7KQ2-M9XA";
+    await act(() => vi.advanceTimersByTimeAsync(600));
+    await waitFor(() => expect(result("accepted")).not.toBeNull());
+    inSight = null;
+    await passes(BARISTA_RESULT_MS + 3_000);
+
+    // Later, or at another bar: the API's answer is the one for any used voucher.
+    api.on(REDEEM, apiError(400, "CODE_INVALID", "This code is not valid."));
+    inSight = "7KQ2-M9XA";
+    await passes(1_000);
+
+    await waitFor(() => expect(result("rejected")).toHaveTextContent("Voucher not valid"));
+    expect(result("repeat")).toBeNull();
+    expect(api.calls(REDEEM)).toHaveLength(2);
   });
 
   test("a rejected voucher returns to the scanner, which reads the next one", async () => {

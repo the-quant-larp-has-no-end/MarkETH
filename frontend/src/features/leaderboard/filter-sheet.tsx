@@ -1,10 +1,10 @@
 "use client";
 
 import { useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, useId, useRef, useState } from "react";
+import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 
 import { ErrorBanner, InlineError, RetryCountdown } from "@/components/feedback";
-import { Field } from "@/components/form";
+import { AmountField, Field, revealFirstInvalid } from "@/components/form";
 import { ResponsiveSheet, SheetBody, SheetFooter } from "@/components/sheet";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,26 +12,24 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { type ApiError, isApiError, placeError } from "@/lib/api/errors";
 import { leaderboardQuery } from "@/lib/api/queries";
 import { useConfig } from "@/lib/api/session";
-import { TIMES } from "@/lib/format";
+import { TIMES, typedDecimal } from "@/lib/format";
 import { useRetryAfter } from "@/lib/hooks";
 
 import {
   type BoundKind,
-  cleanBound,
   type Draft,
   draftOf,
   FILTER_NAMES,
   type FilterName,
   type Filters,
   filtersOf,
-  finishDraft,
   type Measure,
   MEASURES,
   requestOf,
   type View,
 } from "./view";
 
-/* The unit a bound is typed in, shown at the end of its field and said with its row. */
+/* The unit a bound is typed in, shown inside the end of its field and said with its group. */
 const UNITS: Record<BoundKind, { shown: string; said: string } | null> = {
   amount: null,
   percent: { shown: "%", said: "in percent" },
@@ -54,16 +52,18 @@ export type FilterSheetProps = {
 };
 
 /**
- * The filter sheet of the leaderboard (DESIGN.md §13): a Level and a Programme select
- * from `/config` `degrees`, then one row per measure with a "from" and a "to" field, a
- * primary "Show results" and a ghost "Clear all".
+ * The filter sheet of the leaderboard (DESIGN.md §13): the bottom sheet below 768 px and
+ * the dialog from 768 px, with the title "Filter" and the close cross. The part that
+ * scrolls holds a Level and a Programme select from `/config` `degrees`, then one group
+ * per measure with a "From" and a "To" field in two equal columns. The foot is pinned
+ * under its line: a primary "Show results" and a ghost "Clear all".
  *
  * The API is the judge of every value. "Show results" asks it for the list with these
  * filters; only when it answers does the address change, so a value it rejects
- * (`VALIDATION_ERROR`) is marked on its field with its message while the list behind the
- * sheet keeps its last result. Nothing is checked here: a "from" is not compared with a
- * "to", and a figure goes out as the digits that were typed (a percentage as the fraction
- * the API takes, by moving its point in the string).
+ * (`VALIDATION_ERROR`) is marked on the field the answer names, with the API's sentence,
+ * while the list behind the sheet keeps its last result. Nothing is checked here: a
+ * "from" is not compared with a "to", and a figure goes out with the characters that were
+ * typed (a percentage as the fraction the API takes, by moving its point in the string).
  *
  * The fields are kept outside the sheet's content, which is mounted afresh when a phone
  * is turned across 768 px.
@@ -78,6 +78,15 @@ export function FilterSheet({ open, onOpenChange, view, rejected, onApply }: Fil
   /** Counts what the sheet has asked and given up on: an answer nobody waits for changes nothing. */
   const asked = useRef(0);
   const wait = useRetryAfter(problem);
+
+  // The fields scroll under the buttons: a field the API refused is brought into view,
+  // with its message. Only an answer to "Show results" does this; a sheet that opens on
+  // a filter the address already held leaves the focus where the sheet put it.
+  const form = useRef<HTMLFormElement>(null);
+  const [refusals, setRefusals] = useState(0);
+  useEffect(() => {
+    if (refusals > 0) revealFirstInvalid(form.current);
+  }, [refusals]);
 
   // Every opening starts from what the list shows.
   if (open !== wasOpen) {
@@ -98,7 +107,7 @@ export function FilterSheet({ open, onOpenChange, view, rejected, onApply }: Fil
     asked.current += 1;
   };
 
-  /** An answer is about what was sent: once a field changes, it no longer applies. */
+  /** An answer is about what was sent: it holds until a field changes. */
   const change = (name: FilterName, text: string) => {
     giveUp();
     setChecking(false);
@@ -114,12 +123,9 @@ export function FilterSheet({ open, onOpenChange, view, rejected, onApply }: Fil
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (wait > 0) return;
-    // The fields then show what is sent: `1,204.5` as `1204.5`, `62,5` as `62.5`.
-    const finished = finishDraft(draft);
-    const filters = filtersOf(finished);
+    const filters = filtersOf(draft);
     asked.current += 1;
     const mine = asked.current;
-    setDraft(finished);
     setChecking(true);
     setProblem(null);
     try {
@@ -129,6 +135,7 @@ export function FilterSheet({ open, onOpenChange, view, rejected, onApply }: Fil
       if (asked.current !== mine) return;
       setChecking(false);
       setProblem(isApiError(error) ? error : null);
+      setRefusals((count) => count + 1);
       return;
     }
     if (asked.current !== mine) return;
@@ -146,7 +153,7 @@ export function FilterSheet({ open, onOpenChange, view, rejected, onApply }: Fil
       }}
       title="Filter"
     >
-      <form noValidate onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
+      <form ref={form} noValidate onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
         <SheetBody>
           <ChoiceField
             label="Level"
@@ -264,8 +271,10 @@ function ChoiceField({
 }
 
 /**
- * The row of one measure: its name, and a "from" and a "to" field side by side. The unit
- * the two are typed in stands at the end of each field and is said with the row's name.
+ * The group of one measure: its name, and a "From" and a "To" field side by side in two
+ * equal columns, 12 px apart. The two are aligned at their tops, so an error under one
+ * does not move the other. The unit the two are typed in stands inside each field and is
+ * said with the group's name.
  */
 function BoundRow({
   measure,
@@ -275,19 +284,32 @@ function BoundRow({
 }: {
   measure: Measure;
   draft: Draft;
-  /** The API's message for each field it rejected. */
+  /** The API's sentence for each field it refused. */
   errors: Partial<Record<FilterName, string>> | undefined;
   onChange: (name: FilterName, text: string) => void;
 }) {
   const nameId = useId();
+  const partsId = useId();
   const unit = UNITS[measure.kind];
 
   return (
-    <div role="group" aria-labelledby={nameId} className="flex flex-col gap-2">
-      <p id={nameId} className="type-label">
-        {measure.name}
-        {unit !== null && <span className="sr-only">, {unit.said}</span>}
-      </p>
+    <div
+      role="group"
+      aria-labelledby={nameId}
+      aria-describedby={measure.parts === undefined ? undefined : partsId}
+      className="flex flex-col gap-2"
+    >
+      <div className="flex flex-wrap items-baseline gap-x-2">
+        <p id={nameId} className="type-label">
+          {measure.name}
+          {unit !== null && <span className="sr-only">, {unit.said}</span>}
+        </p>
+        {measure.parts !== undefined && (
+          <p id={partsId} className="type-caption text-muted-foreground">
+            {measure.parts}
+          </p>
+        )}
+      </div>
       <div className="grid grid-cols-2 items-start gap-3">
         <BoundField
           label="From"
@@ -310,7 +332,12 @@ function BoundRow({
   );
 }
 
-/** One end of a measure's range: a field that keeps the characters a figure can have. */
+/**
+ * One end of a measure's range: a field for a figure (DESIGN.md §12), which keeps digits
+ * and one decimal point, or digits alone for a whole number, and holds what is sent. A
+ * field typed in percent or as a ratio shows its unit inside its right end, and its text
+ * ends 36 px before that end: what is typed never runs under the unit.
+ */
 function BoundField({
   label,
   name,
@@ -328,6 +355,19 @@ function BoundField({
 }) {
   const unit = UNITS[kind];
 
+  if (unit === null) {
+    return (
+      <AmountField
+        label={label}
+        name={name}
+        value={value}
+        onChange={onChange}
+        whole={kind === "count"}
+        error={error}
+      />
+    );
+  }
+
   return (
     <Field label={label} error={error}>
       {(control) => (
@@ -336,19 +376,17 @@ function BoundField({
             {...control}
             name={name}
             value={value}
-            onChange={(event) => onChange(cleanBound(kind, event.target.value))}
-            inputMode={kind === "count" ? "numeric" : "decimal"}
+            onChange={(event) => onChange(typedDecimal(event.target.value))}
+            inputMode="decimal"
             autoComplete="off"
-            className={unit === null ? undefined : "pr-9"}
+            className="pr-9"
           />
-          {unit !== null && (
-            <span
-              aria-hidden
-              className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 type-body text-muted-foreground"
-            >
-              {unit.shown}
-            </span>
-          )}
+          <span
+            aria-hidden
+            className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 type-body text-muted-foreground"
+          >
+            {unit.shown}
+          </span>
         </div>
       )}
     </Field>

@@ -26,8 +26,10 @@ export function useConfig(): PublicConfigResponse {
  *
  * It follows the cache: a write that changes the balance updates it, and so does the
  * window getting the focus back. It does not ask the API again just because a component
- * mounted; a screen that must show a fresh balance when it opens (the Wallet) uses
- * `useQuery(meQuery)` itself.
+ * mounted. `/me` is read again on every navigation from one screen to another, which the
+ * app shell sees to (DESIGN.md §14, "Live data"), so the balance in the top bar follows
+ * payouts, refunds and monthly tokens; a screen whose figures depend on it as it opens
+ * (the Wallet, the trade ticket) uses `useQuery(meQuery)` itself.
  */
 export function useMe(): MeResponse {
   const { data } = useQuery({ ...meQuery, refetchOnMount: false });

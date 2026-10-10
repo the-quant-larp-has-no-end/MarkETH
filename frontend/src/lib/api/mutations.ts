@@ -1,10 +1,17 @@
-import { mutationOptions, type QueryClient, type QueryKey } from "@tanstack/react-query";
+import {
+  type InfiniteData,
+  mutationOptions,
+  type QueryClient,
+  type QueryKey,
+} from "@tanstack/react-query";
 
-import { newUuid } from "../uuid";
 import { call } from "./client";
 import type { ApiError } from "./errors";
 import { keys } from "./keys";
 import type {
+  AdjustBalanceRequest,
+  AdminUserItem,
+  AdminUserListResponse,
   ApproveMarketRequest,
   CloseMarketRequest,
   CreateCodeBatchRequest,
@@ -20,13 +27,18 @@ import type {
   ResumeMarketRequest,
   SaveProfileRequest,
   TradeRequest,
+  UserRole,
   VoidMarketRequest,
 } from "./schema";
+import type { Serialised, Submission } from "./submissions";
 
 /**
  * Every write of the product, each with what it does to the cache. This file is the
- * invalidation table: a screen passes one of these to `useMutation` and adds only what
- * is its own (a toast, closing a sheet) in the callbacks of `mutate()`.
+ * invalidation table: a screen passes one of these to `useSubmit` (`lib/api/submit.ts`,
+ * which also stops a second submit) and adds only what is its own (a toast, closing a
+ * sheet) in the callbacks of `mutate()`. The two writes that carry an Idempotency-Key, the
+ * trade and the adjustment of a user's tokens, are sent by the store that keeps their
+ * body and key (`lib/api/submissions.ts`).
  *
  * After its answer, a write sets what the answer holds and marks out of date what it
  * changed. After no answer (no response, or an error of the server: DESIGN.md §14,
@@ -36,6 +48,9 @@ import type {
  * | ---------------------------- | ----------------------------------- | ---------------------- |
  * | `saveProfileMutation`        | `me` is the answer; leaderboard     | nothing: saving again  |
  * |                              |                                     | is safe                |
+ * | `markNoticeSeenMutation`     | the notice leaves the notices of    | nothing: the notice is |
+ * |                              | `me`                                | told once more by a    |
+ * |                              |                                     | later page             |
  * | `tradeMutation`              | balance and market from the answer; | nothing: the sheet     |
  * |                              | the market, its history, all under  | sends the same request |
  * |                              | `me`, market lists, leaderboard     | again                  |
@@ -53,8 +68,18 @@ import type {
  * |                              | history, market lists, risk, all    | lists, risk            |
  * |                              | under `me`, leaderboard             |                        |
  * | `createCodeBatchMutation`    | batches, risk                       | batches                |
- * | `revokeCodesMutation`        | batches, risk                       | batches, risk          |
+ * | `revokeCodesMutation`        | batches, risk; the codes of the     | batches, risk          |
+ * |                              | batch are forgotten                 |                        |
  * | `acknowledgeAlertMutation`   | risk                                | risk                   |
+ * | `suspendUserMutation`,       | the user's row is the answer, in    | the lists of users     |
+ * | `reinstateUserMutation`      | every list of users; the lists of   |                        |
+ * |                              | users, leaderboard                  |                        |
+ * | `setUserRoleMutation`        | the user's row is the answer, in    | the lists of users     |
+ * |                              | every list of users; the lists of   |                        |
+ * |                              | users                               |                        |
+ * | `adjustUserBalanceMutation`  | the user's balance from the answer, | nothing: the dialog    |
+ * |                              | in every list of users; risk,       | sends the same request |
+ * |                              | leaderboard                         | again                  |
  *
  * "After no answer" is awaited before the mutation stops being pending. A button that is
  * disabled while its mutation is pending therefore stays disabled until the screen shows
@@ -76,11 +101,32 @@ function setBalance(client: QueryClient, balance_cr: string): void {
   client.setQueryData<MeResponse>(keys.me, (me) => (me === undefined ? me : { ...me, balance_cr }));
 }
 
+/**
+ * What goes out for a stored body (DESIGN.md §14): the string as it was serialised on the
+ * confirming tap. It is not built or serialised a second time.
+ */
+function stored<Request>(body: Serialised<Request>) {
+  return {
+    body: body as unknown as Request,
+    bodySerializer: (serialised: Request) => serialised as unknown as string,
+  };
+}
+
 /* ---- Profile ---------------------------------------------------------------------- */
+
+/**
+ * What a save of the profile states: the username and the degree. `policy_accepted: true`
+ * goes with the save that creates the profile and with no other; a save that changes a
+ * profile leaves the field out (DESIGN.md §13).
+ */
+export type ProfileSave = Omit<SaveProfileRequest, "policy_accepted"> & { policy_accepted?: true };
 
 /** `PUT /me/profile`: creates the profile, or changes the username and the degree. */
 export const saveProfileMutation = mutationOptions({
-  mutationFn: (body: SaveProfileRequest) => call((api) => api.PUT("/api/me/profile", { body })),
+  mutationFn: (body: ProfileSave) =>
+    // The contract lets `policy_accepted` be left out. The generated type lists it all the
+    // same, because it has a default, which is how an answer would carry it.
+    call((api) => api.PUT("/api/me/profile", { body: body as SaveProfileRequest })),
   onSuccess: (saved: ProfileSavedResponse, _body, _result, { client }) => {
     // `signup_granted` describes this save, not the profile; it stays out of the cache.
     const { signup_granted, ...me } = saved;
@@ -89,37 +135,49 @@ export const saveProfileMutation = mutationOptions({
   },
 });
 
+/* ---- Notices ---------------------------------------------------------------------- */
+
+/**
+ * `POST /me/notices/{notice_id}/seen`: the notice was shown to its user. The answer is the
+ * notice. It leaves the notices of `/me` at once, so that nothing reads it as unseen from
+ * the cache; the next `/me` says the same. The API takes the same notice any number of
+ * times.
+ *
+ * This is the one write no tap sends: the screen sends it when it has shown the notice
+ * (`features/session`). After no answer nothing is read again and nothing is sent again:
+ * the notice stays unseen on the server, and a later page tells it once more.
+ */
+export const markNoticeSeenMutation = mutationOptions({
+  mutationFn: (noticeId: string) =>
+    call((api) =>
+      api.POST("/api/me/notices/{notice_id}/seen", { params: { path: { notice_id: noticeId } } }),
+    ),
+  onSuccess: (_notice, noticeId, _result, { client }) => {
+    client.setQueryData<MeResponse>(keys.me, (me) =>
+      me === undefined
+        ? me
+        : { ...me, notices: me.notices.filter((notice) => notice.id !== noticeId) },
+    );
+  },
+});
+
 /* ---- Trading ---------------------------------------------------------------------- */
 
 /**
- * A trade as it is sent: the body serialised once, and the one Idempotency-Key that
- * belongs to it. Both are kept until an answer says what became of the request
- * (`keepsTradeRequest`), and sent again unchanged by "Try again" (DESIGN.md §14).
+ * `POST /markets/{market_id}/trades` with the stored body and key. A trade goes out as a
+ * `Submission` whose `target` is the market: the body serialised once and the one
+ * Idempotency-Key that belongs to it, kept and sent again unchanged as
+ * `lib/api/submissions.ts` says (DESIGN.md §14).
  */
-export type TradeSubmission = {
-  marketId: string;
-  /** The JSON of a `TradeRequest`, exactly as it goes out. */
-  body: string;
-  idempotencyKey: string;
-};
-
-/** Serialises a trade once and gives it its key. Call it on Confirm, never on "Try again". */
-export function newTradeSubmission(marketId: string, request: TradeRequest): TradeSubmission {
-  return { marketId, body: JSON.stringify(request), idempotencyKey: newUuid() };
-}
-
-/** `POST /markets/{market_id}/trades` with the stored body and key. */
 export const tradeMutation = mutationOptions({
-  mutationFn: ({ marketId, body, idempotencyKey }: TradeSubmission) =>
+  mutationFn: ({ target, body, idempotencyKey }: Submission<TradeRequest>) =>
     call((api) =>
       api.POST("/api/markets/{market_id}/trades", {
-        params: { path: { market_id: marketId }, header: { "Idempotency-Key": idempotencyKey } },
-        // The body is the stored string; it is not built or serialised a second time.
-        body: body as unknown as TradeRequest,
-        bodySerializer: (serialised) => serialised as unknown as string,
+        params: { path: { market_id: target }, header: { "Idempotency-Key": idempotencyKey } },
+        ...stored(body),
       }),
     ),
-  onSuccess: (trade, { marketId }, _result, { client }) => {
+  onSuccess: (trade, { target: marketId }, _result, { client }) => {
     setBalance(client, trade.balance_cr);
     client.setQueryData<MarketDetailResponse>(keys.markets.detail(marketId), (market) => {
       if (market === undefined) return market;
@@ -147,7 +205,7 @@ export const tradeMutation = mutationOptions({
       keys.leaderboard.all,
     );
   },
-  onError: (error: ApiError, { marketId }, _result, { client }) => {
+  onError: (error: ApiError, { target: marketId }, _result, { client }) => {
     // A refusal that means the screen is behind: show the market as it is now.
     switch (error.code) {
       case "INSUFFICIENT_BALANCE":
@@ -229,8 +287,8 @@ function asProposal(market: MarketDetailResponse): ProposalItem {
     resolution_source: market.resolution_source,
     close_at: market.close_at,
     resolve_by: market.resolve_by,
-    requested_tier: market.requested_tier,
     status: market.status,
+    outcome: market.outcome,
     rejection_reason: market.rejection_reason,
     created_at: market.created_at,
   };
@@ -384,7 +442,10 @@ export const voidMarketMutation = mutationOptions({
 
 /* ---- Admin: codes and risk -------------------------------------------------------- */
 
-/** `POST /admin/code-batches`. The answer is the one place the plain codes appear. */
+/**
+ * `POST /admin/code-batches`. The answer carries the batch and its codes; `batchCodesQuery`
+ * reads those of them that can be redeemed again.
+ */
 export const createCodeBatchMutation = mutationOptions({
   mutationFn: (body: CreateCodeBatchRequest) =>
     call((api) => api.POST("/api/admin/code-batches", { body })),
@@ -408,7 +469,9 @@ export const revokeCodesMutation = mutationOptions({
         body: codes === undefined ? {} : { codes },
       }),
     ),
-  onSuccess: (_revoked, _variables, _result, { client }) => {
+  onSuccess: (_revoked, { batchId }, _result, { client }) => {
+    // Codes that were read before the revocation are codes that work no more.
+    client.removeQueries({ queryKey: keys.admin.batchCodes(batchId) });
     void refresh(client, keys.admin.batches, keys.admin.risk);
   },
   onError: (error: ApiError, _variables, _result, { client }) => {
@@ -427,5 +490,124 @@ export const acknowledgeAlertMutation = mutationOptions({
   },
   onError: (error: ApiError, _alertId, _result, { client }) => {
     if (error.outcomeUnknown) return refresh(client, keys.admin.risk);
+  },
+});
+
+/* ---- Admin: users ----------------------------------------------------------------- */
+
+/** Puts what an answer says about one user into every list of users the cache holds. */
+function setUser(
+  client: QueryClient,
+  userId: string,
+  change: (user: AdminUserItem) => AdminUserItem,
+): void {
+  client.setQueriesData<InfiniteData<AdminUserListResponse>>(
+    { queryKey: keys.admin.users.all },
+    (list) =>
+      list === undefined
+        ? list
+        : {
+            ...list,
+            pages: list.pages.map((page) => ({
+              ...page,
+              items: page.items.map((user) => (user.id === userId ? change(user) : user)),
+            })),
+          },
+  );
+}
+
+/**
+ * What suspending, reinstating and changing a role share: the answer is the user's row.
+ * It is shown at once in every list, and the lists are read again, because a list that is
+ * filtered by status or role may hold other rows from here on. After no answer the lists
+ * are read before the mutation settles: the row then shows what the server holds.
+ */
+const userAction = {
+  onError: (
+    error: ApiError,
+    _variables: unknown,
+    _result: unknown,
+    { client }: { client: QueryClient },
+  ) => {
+    if (error.outcomeUnknown) return refresh(client, keys.admin.users.all);
+    // The row is not what the dialog thought it was, or it is gone: show the list as it is.
+    if (error.code === "CONFLICT" || error.code === "NOT_FOUND") {
+      void refresh(client, keys.admin.users.all);
+    }
+  },
+};
+
+/** `POST /admin/users/{user_id}/suspend`, with the reason for the audit log. */
+export const suspendUserMutation = mutationOptions({
+  mutationFn: ({ userId, reason }: { userId: string; reason: string }) =>
+    call((api) =>
+      api.POST("/api/admin/users/{user_id}/suspend", {
+        params: { path: { user_id: userId } },
+        body: { reason },
+      }),
+    ),
+  onSuccess: (user, _variables, _result, { client }) => {
+    setUser(client, user.id, () => user);
+    // A suspended account is on no leaderboard.
+    void refresh(client, keys.admin.users.all, keys.leaderboard.all);
+  },
+  ...userAction,
+});
+
+/** `POST /admin/users/{user_id}/reinstate`, with the reason for the audit log. */
+export const reinstateUserMutation = mutationOptions({
+  mutationFn: ({ userId, reason }: { userId: string; reason: string }) =>
+    call((api) =>
+      api.POST("/api/admin/users/{user_id}/reinstate", {
+        params: { path: { user_id: userId } },
+        body: { reason },
+      }),
+    ),
+  onSuccess: (user, _variables, _result, { client }) => {
+    setUser(client, user.id, () => user);
+    void refresh(client, keys.admin.users.all, keys.leaderboard.all);
+  },
+  ...userAction,
+});
+
+/** `POST /admin/users/{user_id}/role`: USER, BARISTA or ADMIN. */
+export const setUserRoleMutation = mutationOptions({
+  mutationFn: ({ userId, role }: { userId: string; role: UserRole }) =>
+    call((api) =>
+      api.POST("/api/admin/users/{user_id}/role", {
+        params: { path: { user_id: userId } },
+        body: { role },
+      }),
+    ),
+  onSuccess: (user, _variables, _result, { client }) => {
+    setUser(client, user.id, () => user);
+    void refresh(client, keys.admin.users.all);
+  },
+  ...userAction,
+});
+
+/**
+ * `POST /admin/users/{user_id}/adjustments` with the stored body and key. An adjustment
+ * goes out as a `Submission` whose `target` is the user, kept and sent again unchanged
+ * exactly as a trade is (`lib/api/submissions.ts`, DESIGN.md §14). `amount_cr` is the
+ * amount as it was typed, with a minus sign in front of it for a removal.
+ */
+export const adjustUserBalanceMutation = mutationOptions({
+  mutationFn: ({ target, body, idempotencyKey }: Submission<AdjustBalanceRequest>) =>
+    call((api) =>
+      api.POST("/api/admin/users/{user_id}/adjustments", {
+        params: { path: { user_id: target }, header: { "Idempotency-Key": idempotencyKey } },
+        ...stored(body),
+      }),
+    ),
+  onSuccess: (adjusted, _submission, _result, { client }) => {
+    setUser(client, adjusted.user_id, (user) => ({ ...user, balance_cr: adjusted.balance_cr }));
+    void refresh(client, keys.admin.risk, keys.leaderboard.all);
+  },
+  onError: (error: ApiError, _submission, _result, { client }) => {
+    // The balance in the row is behind, or the row is gone: show the list as it is.
+    if (error.code === "INSUFFICIENT_BALANCE" || error.code === "NOT_FOUND") {
+      void refresh(client, keys.admin.users.all);
+    }
   },
 });

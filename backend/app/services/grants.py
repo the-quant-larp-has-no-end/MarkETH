@@ -4,14 +4,24 @@ Both are booked from `vis:issuance` to the user. What makes each grant happen on
 its `grants` row: unique per (user, period), inserted with ON CONFLICT DO
 NOTHING. Only the caller that gets a row back books the credit.
 
+A user's monthly grants follow their sign-up. The first falls due one calendar month
+after it, the second two months after it, and so on, each on the day of the month and
+at the time of day of the sign-up in `APP_TIMEZONE` (`monthly_grant`). So every user
+has a grant day of their own, and each calendar month after the one of the sign-up
+brings exactly one grant.
+
 Monthly grants need no cron job: they are booked lazily when a user makes a request
-(`UserUpkeepService`), and an admin can book everything owed at once.
+(`UserUpkeepService`), and an admin can book everything that has fallen due at once.
 """
 
 import logging
-from datetime import date, datetime
+from collections.abc import Iterator
+from dataclasses import dataclass
+from datetime import datetime
+from itertools import count
+from zoneinfo import ZoneInfo
 
-from app.core.clock import Clock, first_of_next_month, local_date, month_period
+from app.core.clock import Clock, add_months, local_date, month_period, months_later
 from app.core.config import Settings
 from app.core.enums import SIGNUP_GRANT_PERIOD, AccountKind, JournalKind, UserStatus
 from app.core.identity import AuthenticatedUser
@@ -33,6 +43,43 @@ from app.services.ledger import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class MonthlyGrant:
+    """One monthly grant of a user's schedule: which it is, and when it falls due."""
+
+    number: int
+    """1 for the first grant after the sign-up, 2 for the one after that."""
+
+    period: str
+    """Its `grants.period`: the `YYYY-MM` of the calendar month it falls due in."""
+
+    due_at: datetime
+    """The instant from which it is owed, in UTC."""
+
+
+def monthly_grant(signed_up_at: datetime, number: int, timezone: ZoneInfo) -> MonthlyGrant:
+    """The `number`-th monthly grant of somebody who signed up at `signed_up_at`.
+
+    It falls due `number` calendar months after the sign-up on the calendar of
+    `timezone`: on the same day of the month, at the same time of day
+    (`app.core.clock.months_later`). A month that has no such day takes its last day
+    instead, and the month after that is back on the day of the sign-up: signed up on
+    31 January, the grants fall due on 28 February, 31 March, 30 April. On a day the
+    clocks change, a time of day they skip falls due an hour later on the clock, and
+    one they show twice the first time they show it.
+
+    Its period is the `number`-th calendar month after the one of the sign-up, which
+    is the month the due instant lies in. Grant 1 is in the month after the sign-up,
+    grant 2 in the month after that: no month has two grants and none is left out.
+    """
+    signed_up_on = local_date(signed_up_at, timezone)
+    return MonthlyGrant(
+        number=number,
+        period=month_period(add_months(signed_up_on, number)),
+        due_at=months_later(signed_up_at, number, timezone),
+    )
 
 
 class GrantService:
@@ -83,20 +130,22 @@ class GrantService:
         return True
 
     async def grant_owed_months(self, uow: UnitOfWork, user: User, account: Account) -> int:
-        """Book every monthly grant the user is owed and return how many that was.
+        """Book every monthly grant of the user that has fallen due and is not booked,
+        and return how many that was.
 
         Runs inside the caller's transaction; the caller holds the lock on `account`.
 
-        A user is owed one grant for every calendar month in `APP_TIMEZONE` after the
-        month of `user.created_at`, up to and including the month of `clock.now()`
-        (A.3: from the month after signup, including months missed in between).
+        The grants of a user are `monthly_grant(user.created_at, number,
+        APP_TIMEZONE)` for number 1, 2, 3 and so on. One has fallen due when its
+        `due_at` is not after `clock.now()`. Every one that has is owed, also those of
+        months in which the user never came by (A.3).
 
-        1. Compute those periods with `local_date` and `month_period` and drop the ones
-           in `grants.list_periods(user.id)`.
-        2. For each remaining period, oldest first: `insert_if_absent(user.id, period,
-           now)`; if a row comes back, post `MONTHLY_GRANT` (`vis:issuance` -g, user
-           +g, g = `MONTHLY_GRANT_CR`, `LedgerRef.GRANT`, the grant row's id,
-           `monthly_grant_key(user.id, period)`) and `set_entry`.
+        1. `granted = grants.list_periods(user.id)`.
+        2. For each grant that has fallen due, oldest first, whose period is not in
+           `granted`: `insert_if_absent(user.id, period, now)`; if a row comes back,
+           post `MONTHLY_GRANT` (`vis:issuance` -g, user +g, g = `MONTHLY_GRANT_CR`,
+           `LedgerRef.GRANT`, the grant row's id, `monthly_grant_key(user.id,
+           period)`) and `set_entry`.
 
         A repeated call inserts and books nothing. With `MONTHLY_GRANT_CR=0` rows are
         inserted and nothing is posted; the result counts the rows.
@@ -104,10 +153,12 @@ class GrantService:
         now = self._clock.now()
         granted = frozenset(await uow.grants.list_periods(user.id))
         booked = 0
-        for period in self._periods_owed(user.created_at, now):
-            if period in granted:
+        for due in self._schedule(user):
+            if due.due_at > now:
+                break
+            if due.period in granted:
                 continue
-            grant = await uow.grants.insert_if_absent(user.id, period, now)
+            grant = await uow.grants.insert_if_absent(user.id, due.period, now)
             if grant is None:
                 continue
             await self._book(
@@ -116,14 +167,15 @@ class GrantService:
                 account,
                 kind=JournalKind.MONTHLY_GRANT,
                 amount_micro=self._grants.monthly_grant_micro,
-                idempotency_key=monthly_grant_key(user.id, period),
+                idempotency_key=monthly_grant_key(user.id, due.period),
                 at=now,
             )
             booked += 1
         return booked
 
     async def run_monthly(self, actor: AuthenticatedUser) -> MonthlyGrantRunResponse:
-        """Book every owed monthly grant of every ACTIVE user (SPEC §2, A.2).
+        """Book every monthly grant that has fallen due, for every ACTIVE user
+        (SPEC §2, A.2).
 
         1. Read all users in one transaction (`users.list_all()`), keeping those with
            status ACTIVE.
@@ -133,17 +185,20 @@ class GrantService:
            id, counted, and the run goes on. Nothing is half-booked, because that
            user's transaction rolled back.
 
-           A lock that was not granted within `POSTGRES_LOCK_TIMEOUT_MS`
-           (`database.is_lock_timeout`) is such a failure too. Postgres is up; what
-           was busy for too long is that user's account, held by a trade or a
-           settlement, or `vis:issuance`. The user is counted as failed, a warning
+           A transaction that did not get through while Postgres is up
+           (`database.is_transient`) is such a failure too: a lock that was not
+           granted within `POSTGRES_LOCK_TIMEOUT_MS`, because that user's account,
+           held by a trade or a settlement, or `vis:issuance` was busy for too long;
+           a transaction Postgres ended as the victim of a deadlock or for a
+           concurrent update; a pool with no connection free for
+           `POSTGRES_POOL_TIMEOUT_SECONDS`. The user is counted as failed, a warning
            says so, and the run goes on with the next one.
 
            The one failure that is not a user's is Postgres itself: everything else
            `database.is_unavailable` recognises (a lost connection, a server that
            does not serve) is raised again and ends the run with the API's 503,
            instead of being counted once per user. The two are asked in this order,
-           because a lock timeout is one of the errors `is_unavailable` recognises.
+           because a transient error is one of those `is_unavailable` recognises.
         3. In a final transaction write the audit row: `AuditAction.MONTHLY_GRANT_RUN`,
            target `AuditService.target(AuditTarget.GRANTS, "monthly")`, `after =
            {"users_checked", "users_failed", "grants_booked", "total_micro"}`. This
@@ -172,10 +227,10 @@ class GrantService:
                         raise LookupError(f"user {user.id} has no ledger account")
                     booked = await self.grant_owed_months(uow, user, account)
             except Exception as error:
-                if database.is_lock_timeout(error):
+                if database.is_transient(error):
                     logger.warning(
-                        "Monthly grants of user %s left for the next run, a lock was not "
-                        "granted in time: %r",
+                        "Monthly grants of user %s left for the next run, their "
+                        "transaction did not get through this time: %r",
                         user.id,
                         error,
                     )
@@ -210,26 +265,20 @@ class GrantService:
             total_cr=to_cr(total_micro),
         )
 
-    def next_grant_date(self) -> date:
-        """When the next monthly grant falls due: the first day of the month after
-        `clock.now()` in `APP_TIMEZONE` (`first_of_next_month(local_date(now, tz))`).
+    def next_grant_at(self, user: User) -> datetime:
+        """The instant the next monthly grant of `user` falls due: the `due_at` of
+        their first grant that lies after `clock.now()`.
 
-        The current month's grant is booked by the lazy upkeep, at the latest
-        `UPKEEP_INTERVAL_SECONDS` after the user's first request in that month, so it
+        A grant that has fallen due is booked by the lazy upkeep, at the latest
+        `UPKEEP_INTERVAL_SECONDS` after the user's first request from then on, so it
         is never the "next" one.
         """
-        return first_of_next_month(local_date(self._clock.now(), self._timezone))
+        now = self._clock.now()
+        return next(due.due_at for due in self._schedule(user) if due.due_at > now)
 
-    def _periods_owed(self, created_at: datetime, now: datetime) -> list[str]:
-        """The `YYYY-MM` of every month after the one of `created_at`, up to and
-        including the one of `now`, oldest first. Months are those of `APP_TIMEZONE`."""
-        today = local_date(now, self._timezone)
-        day = first_of_next_month(local_date(created_at, self._timezone))
-        periods: list[str] = []
-        while day <= today:
-            periods.append(month_period(day))
-            day = first_of_next_month(day)
-        return periods
+    def _schedule(self, user: User) -> Iterator[MonthlyGrant]:
+        """The monthly grants of `user`, the first one first, without an end."""
+        return (monthly_grant(user.created_at, number, self._timezone) for number in count(1))
 
     async def _book(
         self,

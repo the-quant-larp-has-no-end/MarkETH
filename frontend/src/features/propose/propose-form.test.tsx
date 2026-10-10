@@ -19,13 +19,14 @@ type User = ReturnType<typeof renderWithProviders>["user"];
 
 const field = (label: string) => screen.getByLabelText(label);
 const submit = () => screen.getByRole("button", { name: "Submit for review" });
-const tier = (name: string) => screen.getByRole("radio", { name });
+const policy = () => screen.getByRole("checkbox", { name: "I accept the usage policy" });
 
 async function write(user: User, label: string, text: string) {
   await user.click(field(label));
   await user.paste(text);
 }
 
+/** Fills in the seven fields and accepts the usage policy. */
 async function fillIn(user: User) {
   await write(user, "Question", QUESTION);
   await write(user, "YES means", YES);
@@ -34,6 +35,7 @@ async function fillIn(user: User) {
   await write(user, "Source", SOURCE);
   await user.type(field("Trading closes"), "2026-12-11T18:00");
   await user.type(field("Decided by"), "2026-12-18T18:00");
+  await user.click(policy());
 }
 
 const proposed = () => marketDetail({ status: "PROPOSED", trading_open: false, tier: null });
@@ -55,7 +57,6 @@ describe("the form", () => {
       "Source",
       "Trading closes",
       "Decided by",
-      "Liquidity",
     ]);
   });
 
@@ -105,63 +106,59 @@ describe("the form", () => {
     );
   });
 
-  test("the tiers are the radio cards of /config, each with its name and its line, and Default is chosen", () => {
+  test("asks nothing about how the market is priced: no tier, no figure of one", () => {
     renderWithProviders(<ProposeForm />);
 
-    const group = screen.getByRole("radiogroup", { name: "Liquidity" });
-    expect(
-      within(group)
-        .getAllByRole("radio")
-        .map((radio) => radio.getAttribute("value")),
-    ).toEqual(["TIGHT", "DEFAULT", "MEDIUM"]);
-    expect(tier("Tight")).toHaveAccessibleDescription(
-      "The price moves fast. For a question few people will trade.",
-    );
-    expect(tier("Default")).toHaveAccessibleDescription("Right for most questions.");
-    expect(tier("Medium")).toHaveAccessibleDescription(
-      "The price moves slowly. For a question many people will trade.",
-    );
-    expect(tier("Default")).toBeChecked();
-    expect(tier("Tight")).not.toBeChecked();
-  });
-
-  test("a proposal cannot ask for a custom tier, and shows no figure of a tier", () => {
-    renderWithProviders(<ProposeForm />, {
-      config: config({
-        tiers: [
-          { tier: "MEDIUM", b_cr: "2000", max_loss_cr: "1386.294362" },
-          { tier: "CUSTOM", b_cr: "1", max_loss_cr: "1" },
-          { tier: "TIGHT", b_cr: "500", max_loss_cr: "346.573591" },
-        ],
-      }),
-    });
-
-    expect(screen.getAllByRole("radio").map((radio) => radio.getAttribute("value"))).toEqual([
-      "MEDIUM",
-      "TIGHT",
-    ]);
-    // Without Default among them none is chosen, and the proposer has to choose.
-    expect(screen.queryByRole("radio", { checked: true })).not.toBeInTheDocument();
+    expect(screen.queryByRole("radiogroup")).not.toBeInTheDocument();
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+    expect(screen.queryByText(/liquidity|tier/i)).not.toBeInTheDocument();
     expect(document.querySelector("[data-slot=propose-form] [data-slot=amount]")).toBeNull();
-    expect(screen.queryByText(/1386\.29|346\.57/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/1386\.29|693\.14|346\.57/)).not.toBeInTheDocument();
   });
 
-  test("the content rules and the two notes stand above the button", () => {
+  test("ends with the usage-policy checkbox, unticked, whose link opens the policy in a tab of its own", async () => {
+    const { user } = renderWithProviders(<ProposeForm />);
+
+    expect(policy()).not.toBeChecked();
+    const link = screen.getByRole("link", { name: "usage policy" });
+    expect(link).toHaveAttribute("href", "/policy");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAccessibleDescription("Opens in another tab.");
+
+    // A tap on the text ticks the box; the link is a target of its own.
+    await user.click(screen.getByText("I accept the"));
+    expect(policy()).toBeChecked();
+  });
+
+  test("the two notes stand between the fields and the checkbox, and the daily limit is the one of /config", () => {
     renderWithProviders(<ProposeForm />, { config: config({ max_proposals_per_day: 5 }) });
 
-    const rules = screen.getByRole("list", { name: "Content rules" });
-    expect(
-      within(rules)
-        .getAllByRole("listitem")
-        .map((item) => item.textContent),
-    ).toEqual([
-      "No private matters of named people",
-      "No grades",
-      "No outcomes one trader can decide",
-      "No party politics or religion",
+    const notes = document.querySelector<HTMLElement>("[data-slot=propose-notes]")!;
+    expect(Array.from(notes.children).map((note) => note.textContent)).toEqual([
+      "You cannot trade a market you propose.",
+      "You can propose 5 markets a day.",
     ]);
-    expect(screen.getByText("You cannot trade a market you propose.")).toBeInTheDocument();
-    expect(screen.getByText("You can propose 5 markets a day.")).toBeInTheDocument();
+    expect(notes).toHaveClass("type-body-sm", "text-muted-foreground");
+    const after = (earlier: Element, later: Element) =>
+      (earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    expect(after(field("Decided by"), notes)).toBe(true);
+    expect(after(notes, policy())).toBe(true);
+    expect(after(policy(), submit())).toBe(true);
+  });
+
+  test("states no content rules: what a market may be about is said in the usage policy alone", () => {
+    renderWithProviders(<ProposeForm />);
+
+    const form = document.querySelector<HTMLElement>("[data-slot=propose-form]")!;
+    expect(within(form).queryByRole("list")).not.toBeInTheDocument();
+    expect(within(form).queryByText(/content rules/i)).not.toBeInTheDocument();
+    expect(form).not.toHaveTextContent(/grades|politics|religion|private matters/i);
+    // The one way to them is the link of the checkbox.
+    expect(within(form).getAllByRole("link")).toHaveLength(1);
+    expect(within(form).getByRole("link", { name: "usage policy" })).toHaveAttribute(
+      "href",
+      "/policy",
+    );
   });
 
   test("one proposal a day is one market", () => {
@@ -170,7 +167,7 @@ describe("the form", () => {
     expect(screen.getByText("You can propose 1 market a day.")).toBeInTheDocument();
   });
 
-  test("the button is disabled until every field is filled", async () => {
+  test("the button is disabled until every field is filled and the box is ticked", async () => {
     const { user } = renderWithProviders(<ProposeForm />);
 
     expect(submit()).toBeDisabled();
@@ -182,7 +179,12 @@ describe("the form", () => {
     await user.type(field("Trading closes"), "2026-12-11T18:00");
     expect(submit()).toBeDisabled();
     await user.type(field("Decided by"), "2026-12-18T18:00");
+    expect(submit()).toBeDisabled();
+    await user.click(policy());
     expect(submit()).toBeEnabled();
+
+    await user.click(policy());
+    expect(submit()).toBeDisabled();
   });
 
   test("a field of blanks is not filled", async () => {
@@ -197,14 +199,13 @@ describe("the form", () => {
 });
 
 describe("submitting", () => {
-  test("sends the wording without the blanks around it, the times with the zone's offset and the tier's key", async () => {
+  test("sends the wording without the blanks around it, the times with the zone's offset, and that the policy is accepted", async () => {
     const api = mockApi({ [PROPOSE]: json(201, proposed()) });
     const onSent = vi.fn();
     const { user } = renderWithProviders(<ProposeForm onSent={onSent} />);
 
     await fillIn(user);
     await write(user, "Question", "  ");
-    await user.click(tier("Tight"));
     await user.click(submit());
 
     await waitFor(() => expect(onSent).toHaveBeenCalledTimes(1));
@@ -216,9 +217,48 @@ describe("submitting", () => {
       resolution_source: SOURCE,
       close_at: "2026-12-11T18:00:00+01:00",
       resolve_by: "2026-12-18T18:00:00+01:00",
-      requested_tier: "TIGHT",
+      policy_accepted: true,
     });
-    expect(await screen.findByText("Proposal sent")).toBeInTheDocument();
+    // A JSON true, not a word for it, and nothing about how the market is priced.
+    expect(api.lastCall(PROPOSE)?.rawBody).toContain('"policy_accepted":true');
+    expect(api.lastCall(PROPOSE)?.rawBody).not.toMatch(/tier|budget/);
+  });
+
+  test("a proposal that was sent is told with a toast, which has its close cross, and with no dialog", async () => {
+    mockApi({ [PROPOSE]: json(201, proposed()) });
+    const { user } = renderWithProviders(<ProposeForm />);
+
+    await fillIn(user);
+    await user.click(submit());
+
+    const toast = (
+      await screen.findByText("Proposal sent. VIS reviews it before it opens.")
+    ).closest("[data-sonner-toast]");
+    expect(toast).not.toBeNull();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+
+    await user.click(within(toast as HTMLElement).getByRole("button", { name: "Close" }));
+    await waitFor(() =>
+      expect(
+        screen.queryByText("Proposal sent. VIS reviews it before it opens."),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  test("a refused proposal raises no toast", async () => {
+    mockApi({
+      [PROPOSE]: apiError(422, "VALIDATION_ERROR", "Trading has to close in the future.", {
+        field: "close_at",
+      }),
+    });
+    const { user } = renderWithProviders(<ProposeForm />);
+
+    await fillIn(user);
+    await user.click(submit());
+
+    await screen.findByRole("alert");
+    expect(document.querySelector("[data-sonner-toast]")).toBeNull();
   });
 
   test("the button is disabled and shows a spinner until the answer arrives: two taps are one request", async () => {
@@ -237,6 +277,49 @@ describe("submitting", () => {
 
     answer.resolve(json(201, proposed()));
     await waitFor(() => expect(submit()).not.toHaveAttribute("aria-busy"));
+  });
+
+  test("two submits in one moment are one request: the second is stopped before the screen has drawn anything", async () => {
+    const answer = deferred();
+    const api = mockApi({ [PROPOSE]: answer.handler });
+    const onSent = vi.fn();
+    const { user } = renderWithProviders(<ProposeForm onSent={onSent} />);
+    await fillIn(user);
+    const form = document.querySelector("[data-slot=propose-form]")!;
+
+    // Enter and a click, or a tap that lands twice: no render lies between the two.
+    act(() => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+
+    await waitFor(() => expect(submit()).toHaveAttribute("aria-busy", "true"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(api.calls(PROPOSE)).toHaveLength(1);
+
+    answer.resolve(json(201, proposed()));
+    await screen.findByText("Proposal sent. VIS reviews it before it opens.");
+    // One proposal, one toast: a second request would have used up another of the day.
+    expect(onSent).toHaveBeenCalledTimes(1);
+    expect(api.calls(PROPOSE)).toHaveLength(1);
+    expect(document.querySelectorAll("[data-sonner-toast]")).toHaveLength(1);
+  });
+
+  test("a submit that slips past the button sends nothing while the box is not ticked", async () => {
+    const api = mockApi({ [PROPOSE]: json(201, proposed()) });
+    const { user } = renderWithProviders(<ProposeForm />);
+    await fillIn(user);
+    await user.click(policy());
+    expect(policy()).not.toBeChecked();
+
+    act(() => {
+      document
+        .querySelector("[data-slot=propose-form]")!
+        .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(api.calls(PROPOSE)).toHaveLength(0);
   });
 
   test("a rule the service checks appears on the field it names, with the API's message, and the input stays", async () => {
@@ -272,9 +355,9 @@ describe("submitting", () => {
             type: "string_too_short",
           },
           {
-            loc: ["body", "requested_tier"],
-            msg: "Value error, a proposal asks for TIGHT, DEFAULT or MEDIUM; CUSTOM is set by VIS",
-            type: "value_error",
+            loc: ["body", "policy_accepted"],
+            msg: "Accept the usage policy to propose a market.",
+            type: "not_accepted",
           },
         ],
       }),
@@ -290,9 +373,9 @@ describe("submitting", () => {
     );
     // Of several refused fields the first one takes the focus.
     expect(field("Question")).toHaveFocus();
-    const group = screen.getByRole("radiogroup", { name: "Liquidity" });
-    expect(group).toBeInvalid();
-    expect(group).toHaveAccessibleDescription(/a proposal asks for TIGHT, DEFAULT or MEDIUM/);
+    // The one that names `policy_accepted` stands under the checkbox, in the API's words.
+    expect(policy()).toBeInvalid();
+    expect(policy()).toHaveAccessibleDescription("Accept the usage policy to propose a market.");
     // Both errors sit on their fields; nothing is repeated above the button.
     expect(screen.queryByText("The request is not valid.")).not.toBeInTheDocument();
   });
@@ -333,7 +416,7 @@ describe("submitting", () => {
     await user.click(submit());
     await screen.findByRole("alert");
 
-    await user.click(tier("Medium"));
+    await write(user, "Source", " and the ASVZ app");
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(field("Trading closes")).not.toBeInvalid();

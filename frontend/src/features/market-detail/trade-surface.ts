@@ -2,7 +2,7 @@
 
 import { useEffect, useEffectEvent, useState } from "react";
 
-import type { TradeIntent } from "@/features/trade";
+import { type TradeIntent, useTradeOut } from "@/features/trade";
 import type { MarketDetailResponse, MarketViewer, Outcome } from "@/lib/api/schema";
 
 import { sameIntent, useTradeAddress } from "./trade-address";
@@ -44,6 +44,11 @@ export function grant(
 export type TradeSurface = {
   /** The trade sheet is open. Never from 1024 px, where the ticket is the sticky panel. */
   sheetOpen: boolean;
+  /**
+   * A trade the open sheet sent is on its way. Until its answer the sheet cannot be
+   * closed: its cross is disabled, and dragging, the scrim and Escape do nothing.
+   */
+  sheetLocked: boolean;
   /** What the ticket in the sheet is set to. It keeps its last value while the sheet closes. */
   sheetIntent: TradeIntent;
   /** What the ticket in the sticky panel is set to. */
@@ -69,10 +74,15 @@ export type TradeSurface = {
  * stays open when the market changes behind it (a halt, a sale of the last shares): the
  * ticket has something to say then, and only the user or the ticket closes it.
  *
+ * A sheet whose trade is on its way stays open until the answer is there (DESIGN.md §13),
+ * so that the verdict is seen where the trade was made. That holds for the phone's Back
+ * as well: it takes the request out of the address, and the request is put back.
+ *
  * `market` is undefined until it has been read; `panel` says that the sticky panel is in
  * place.
  */
 export function useTradeSurface(
+  marketId: string,
   market: MarketDetailResponse | undefined,
   { desktop, panel }: { desktop: boolean; panel: boolean },
 ): TradeSurface {
@@ -80,19 +90,29 @@ export function useTradeSurface(
   const { requested } = address;
   const [admitted, setAdmitted] = useState(false);
   const [last, setLast] = useState<TradeIntent>(START);
+  // Looked at while the sheet is open only: a closed sheet shows no ticket.
+  const locked = useTradeOut(marketId, !desktop && admitted);
 
   const granted =
     market === undefined || requested === null ? null : grant(market.viewer, requested, panel);
   const asAsked = requested !== null && granted !== null && sameIntent(granted, requested);
 
-  // The request is let in once and then stays, until the address drops it.
+  // The request is let in once and then stays, until the address drops it. While the
+  // sheet's trade is on its way, the sheet stays although the address dropped it.
+  const held = requested === null && admitted && locked;
   if (requested === null) {
-    if (admitted) setAdmitted(false);
+    if (admitted && !locked) setAdmitted(false);
   } else if (asAsked && !admitted) {
     setAdmitted(true);
   }
   const current = requested !== null && admitted ? requested : null;
   if (current !== null && !sameIntent(current, last)) setLast(current);
+
+  // Back took the request away under a trade that is on its way: it goes back in.
+  const putBack = useEffectEvent(() => address.open(last));
+  useEffect(() => {
+    if (held) putBack();
+  }, [held]);
 
   // A request that is not let in as it stands: show the trade it leads to, or drop it.
   const refused = market !== undefined && requested !== null && !admitted && !asAsked;
@@ -111,7 +131,8 @@ export function useTradeSurface(
   };
 
   return {
-    sheetOpen: !desktop && current !== null,
+    sheetOpen: !desktop && (current !== null || held),
+    sheetLocked: locked,
     sheetIntent: current ?? last,
     panelIntent: current ?? START,
     buy: (outcome) => ask({ side: "BUY", outcome }),

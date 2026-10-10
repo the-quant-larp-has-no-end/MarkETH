@@ -6,7 +6,7 @@ import { navigation } from "@/test/navigation";
 import { renderWithProviders } from "@/test/render";
 
 import { MarketCard } from "./market-card";
-import { StatusBadge, statusName } from "./status-badge";
+import { isProposal, StatusBadge, statusName } from "./status-badge";
 
 const QUESTION = "Will the Polybahn run without interruption during the exam session?";
 
@@ -112,6 +112,22 @@ describe("MarketCard", () => {
     expect(screen.queryByText("20.0%")).not.toBeInTheDocument();
   });
 
+  test("says nothing about how its market is priced: no tier, no liquidity figure, no loss bound", () => {
+    vi.useFakeTimers({ now: new Date("2026-10-11T10:00:00Z"), toFake: ["Date"] });
+    try {
+      const { container } = renderWithProviders(<MarketCard market={marketSummary()} />);
+
+      // All a card says: the question, the chance (once for the eye, once for a screen
+      // reader), Yes and No, the volume (likewise twice) and the deadline.
+      expect(container.textContent).toBe(
+        `${QUESTION}54.8%chanceYES 54.8 percentYesNo1,250.51,250.5 tokensVol.Closes in 3 days`,
+      );
+      expect(container.textContent).not.toMatch(/tier|liquidity|loss|budget/i);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("shows the deadline relative when it is near, and the date alone when trading is over", () => {
     vi.useFakeTimers({ now: new Date("2026-10-11T10:00:00Z"), toFake: ["Date"] });
     try {
@@ -147,6 +163,7 @@ describe("StatusBadge", () => {
     ["VOID", "VOID", "Voided", "bg-raised text-muted-foreground"],
     ["PROPOSED", null, "In review", "bg-raised text-foreground"],
     ["REJECTED", null, "Not approved", "bg-raised text-muted-foreground"],
+    ["EXPIRED", null, "Expired", "bg-raised text-muted-foreground"],
   ] as const)("%s (%s) reads %s", (status, outcome, label, classes) => {
     renderWithProviders(<StatusBadge status={status} outcome={outcome} />);
 
@@ -155,11 +172,45 @@ describe("StatusBadge", () => {
   });
 
   test("green and red are for a resolved outcome only", () => {
-    for (const status of ["OPEN", "CLOSED", "HALTED", "VOID", "PROPOSED", "REJECTED"] as const) {
+    for (const status of [
+      "OPEN",
+      "CLOSED",
+      "HALTED",
+      "VOID",
+      "PROPOSED",
+      "REJECTED",
+      "EXPIRED",
+    ] as const) {
       const { container, unmount } = renderWithProviders(<StatusBadge status={status} />);
       expect(container.innerHTML).not.toMatch(/yes|bg-no|text-no/);
       unmount();
     }
+  });
+
+  test("an expired proposal has the quiet look of a finished state: no icon, no outline, muted text", () => {
+    const { container } = renderWithProviders(<StatusBadge status="EXPIRED" />);
+
+    const badge = screen.getByText("Expired");
+    expect(badge).toHaveAttribute("data-slot", "badge");
+    expect(badge).toHaveAttribute("data-variant", "muted");
+    expect(badge).not.toHaveClass("border");
+    expect(container.querySelector("svg")).not.toBeInTheDocument();
+    // The look of the other states that are over: closed, voided, not approved.
+    for (const over of ["CLOSED", "VOID", "REJECTED"] as const) {
+      const other = renderWithProviders(<StatusBadge status={over} />);
+      expect(other.container.querySelector("[data-slot=badge]")).toHaveAttribute(
+        "data-variant",
+        "muted",
+      );
+      other.unmount();
+    }
+  });
+
+  test("an outcome does not colour a status that has none", () => {
+    renderWithProviders(<StatusBadge status="EXPIRED" outcome="YES" />);
+
+    expect(screen.getByText("Expired")).toHaveClass("bg-raised", "text-muted-foreground");
+    expect(screen.queryByText(/YES/)).not.toBeInTheDocument();
   });
 
   test("a paused market carries a pause icon beside the word", () => {
@@ -172,6 +223,7 @@ describe("StatusBadge", () => {
     for (const status of [
       "PROPOSED",
       "REJECTED",
+      "EXPIRED",
       "OPEN",
       "HALTED",
       "CLOSED",
@@ -185,5 +237,22 @@ describe("StatusBadge", () => {
     expect(statusName("PROPOSED")).toBe("In review");
     expect(statusName("HALTED")).toBe("Paused");
     expect(statusName("VOID")).toBe("Voided");
+    expect(statusName("EXPIRED")).toBe("Expired");
   });
+});
+
+describe("isProposal", () => {
+  test.each(["PROPOSED", "REJECTED", "EXPIRED"] as const)(
+    "a %s market was never opened for trading",
+    (status) => {
+      expect(isProposal(status)).toBe(true);
+    },
+  );
+
+  test.each(["OPEN", "HALTED", "CLOSED", "RESOLVED", "VOID"] as const)(
+    "a %s market was opened for trading",
+    (status) => {
+      expect(isProposal(status)).toBe(false);
+    },
+  );
 });

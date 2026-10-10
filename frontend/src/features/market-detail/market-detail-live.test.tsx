@@ -5,8 +5,10 @@ import { page } from "@/lib/browser";
 import { REDUCED_MOTION_QUERY } from "@/lib/design";
 import { sizeCharts } from "@/test/charts";
 import { installFakeEventSource } from "@/test/fake-event-source";
+import { keys } from "@/lib/api/keys";
 import {
   config,
+  history,
   holdings,
   MARKET_ID,
   marketDetail,
@@ -15,6 +17,7 @@ import {
   me,
   quoteEvent,
   statusEvent,
+  TODAY,
 } from "@/test/fixtures";
 import { json, noAnswer, portal401 } from "@/test/http";
 import { setMediaQuery } from "@/test/media";
@@ -69,6 +72,8 @@ beforeEach(() => {
   navigation.go(PATH);
   followHistoryWrites();
   sizeCharts();
+  // The screen sets a timer for the market's close time: the tests stand on one day.
+  vi.useFakeTimers({ now: TODAY, toFake: ["Date"] });
 });
 
 afterEach(() => {
@@ -310,6 +315,255 @@ describe("MarketDetailScreen, live", () => {
       await act(() => vi.advanceTimersByTimeAsync(4_000));
 
       expect(reload).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("when the market's close time passes", () => {
+    /** Twenty seconds before the market of the fixtures closes, at 16:00 UTC. */
+    const BEFORE_CLOSE = new Date("2026-10-14T15:59:40Z");
+
+    /** The market as the API answers it once its close time has passed. */
+    const afterClose = () =>
+      marketDetail({
+        status: "CLOSED",
+        trading_open: false,
+        viewer: marketViewer({
+          can_trade: false,
+          cannot_trade_reason: "MARKET_NOT_OPEN",
+          buy_slider: null,
+        }),
+      });
+
+    beforeEach(() => {
+      vi.useFakeTimers({ now: BEFORE_CLOSE, shouldAdvanceTime: true });
+    });
+
+    test("asks for the market and its chart again at that moment, and shows what the answer says", async () => {
+      const { api } = await follow();
+      await waitFor(() => expect(api.calls(HISTORY)).toHaveLength(1));
+      expect(screen.getByRole("button", { name: "YES 54.8%" })).toBeEnabled();
+      expect(screen.getByText("Closes today, 18:00")).toBeInTheDocument();
+      api.on(MARKET, json(200, afterClose()));
+      api.on(HISTORY, json(200, history({ until: "2026-10-14T16:00:00Z" })));
+
+      // Not before its time: no event and no clock makes the screen ask.
+      await act(() => vi.advanceTimersByTimeAsync(15_000));
+      expect(api.calls(MARKET)).toHaveLength(1);
+      expect(api.calls(HISTORY)).toHaveLength(1);
+
+      await act(() => vi.advanceTimersByTimeAsync(5_500));
+
+      // The badge, the banner, the buttons and the deadline all follow the answer.
+      expect(await screen.findByText(/^Trading is over\./)).toBeInTheDocument();
+      expect(screen.getByText("Closed")).toHaveAttribute("data-slot", "badge");
+      expect(screen.queryByRole("button", { name: /^(YES|NO) / })).not.toBeInTheDocument();
+      expect(document.querySelector("[data-slot=deadline]")).toHaveTextContent(/^14 Oct 2026$/);
+      expect(screen.queryByText("Closes today, 18:00")).not.toBeInTheDocument();
+      expect(api.calls(MARKET)).toHaveLength(2);
+      await waitFor(() => expect(api.calls(HISTORY)).toHaveLength(2));
+      // The chart is read again with the market: it says "closed at", and ends where the
+      // server says trading ended.
+      expect(await screen.findByText("Opened at 50.0%, closed at 54.8%.")).toBeInTheDocument();
+      const dates = [...document.querySelectorAll(".recharts-xAxis-tick-labels text")];
+      expect(dates.at(-1)).toHaveTextContent("14 Oct 2026");
+
+      // With the answer the wait is over: nothing is asked again.
+      await act(() => vi.advanceTimersByTimeAsync(60_000));
+      expect(api.calls(MARKET)).toHaveLength(2);
+      expect(api.calls(HISTORY)).toHaveLength(2);
+    });
+
+    test("the timer decides nothing: while the API still says open, the screen shows it open and asks again every live_poll_fallback_seconds", async () => {
+      // The clock of the device runs ahead of the server's.
+      const { api } = await follow(marketDetail(), 4);
+      await waitFor(() => expect(api.calls(HISTORY)).toHaveLength(1));
+
+      await act(() => vi.advanceTimersByTimeAsync(20_500));
+      await waitFor(() => expect(api.calls(MARKET)).toHaveLength(2));
+
+      // By the device the close time has passed. What is shown is what the server said.
+      expect(screen.getByText("Open")).toHaveAttribute("data-slot", "badge");
+      expect(screen.getByRole("button", { name: "YES 54.8%" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "NO 45.2%" })).toBeEnabled();
+      expect(screen.queryByText(/^Trading is over\./)).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+      await act(() => vi.advanceTimersByTimeAsync(4_000));
+      await waitFor(() => expect(api.calls(MARKET)).toHaveLength(3));
+
+      api.on(MARKET, json(200, afterClose()));
+      await act(() => vi.advanceTimersByTimeAsync(4_000));
+
+      expect(await screen.findByText(/^Trading is over\./)).toBeInTheDocument();
+      const asked = api.calls(MARKET).length;
+      await act(() => vi.advanceTimersByTimeAsync(20_000));
+      expect(api.calls(MARKET)).toHaveLength(asked);
+    });
+
+    test("an answer that does not arrive is asked for again at the same pace, and shows no error", async () => {
+      const { api } = await follow(marketDetail(), 4);
+      await waitFor(() => expect(api.calls(HISTORY)).toHaveLength(1));
+      api.on(MARKET, noAnswer);
+      api.on(HISTORY, noAnswer);
+
+      await act(() => vi.advanceTimersByTimeAsync(20_500));
+      await waitFor(() => expect(api.calls(MARKET)).toHaveLength(2));
+      expect(screen.getByRole("heading", { level: 1, name: QUESTION })).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+      api.on(MARKET, json(200, afterClose()));
+      api.on(HISTORY, json(200, history({ until: "2026-10-14T16:00:00Z" })));
+      await act(() => vi.advanceTimersByTimeAsync(4_000));
+
+      expect(await screen.findByText(/^Trading is over\./)).toBeInTheDocument();
+    });
+
+    test("a market that is not shown as open for trading waits for nothing", async () => {
+      const { api } = await follow(
+        marketDetail({
+          status: "HALTED",
+          trading_open: false,
+          viewer: marketViewer({ can_trade: false, cannot_trade_reason: "MARKET_NOT_OPEN" }),
+        }),
+      );
+      await waitFor(() => expect(api.calls(HISTORY)).toHaveLength(1));
+
+      await act(() => vi.advanceTimersByTimeAsync(60_000));
+
+      expect(api.calls(MARKET)).toHaveLength(1);
+      expect(api.calls(HISTORY)).toHaveLength(1);
+    });
+
+    /** A proposal, as its proposer and admins are shown it. Nobody trades it. */
+    const proposal = (status: "PROPOSED" | "REJECTED" | "EXPIRED") =>
+      marketDetail({
+        status,
+        trading_open: false,
+        opened_at: null,
+        rejection_reason: status === "REJECTED" ? "The source is not public." : null,
+        viewer: marketViewer({
+          can_trade: false,
+          cannot_trade_reason: "MARKET_NOT_OPEN",
+          buy_slider: null,
+        }),
+      });
+
+    test("a proposal in review is asked for again at its close time, and shows that it expired", async () => {
+      const { api, streams } = await follow(proposal("PROPOSED"));
+      expect(screen.getByText("In review")).toHaveAttribute("data-slot", "badge");
+      api.on(MARKET, json(200, proposal("EXPIRED")));
+
+      // Not before its time.
+      await act(() => vi.advanceTimersByTimeAsync(15_000));
+      expect(api.calls(MARKET)).toHaveLength(1);
+
+      await act(() => vi.advanceTimersByTimeAsync(5_500));
+
+      expect(await screen.findByText("Expired")).toHaveAttribute("data-slot", "badge");
+      expect(screen.queryByText("In review")).not.toBeInTheDocument();
+      expect(api.calls(MARKET)).toHaveLength(2);
+      // A proposal has no chart and no stream, at its close time as before it.
+      expect(api.calls(HISTORY)).toHaveLength(0);
+      expect(streams.instances).toHaveLength(0);
+
+      // With the answer the wait is over: nothing is asked again.
+      await act(() => vi.advanceTimersByTimeAsync(60_000));
+      expect(api.calls(MARKET)).toHaveLength(2);
+    });
+
+    test("the timer does not expire a proposal: while the API still says in review, the screen says so and asks again", async () => {
+      // The clock of the device runs ahead of the server's.
+      const { api } = await follow(proposal("PROPOSED"), 4);
+
+      await act(() => vi.advanceTimersByTimeAsync(20_500));
+      await waitFor(() => expect(api.calls(MARKET)).toHaveLength(2));
+      expect(screen.getByText("In review")).toHaveAttribute("data-slot", "badge");
+      expect(screen.queryByText("Expired")).not.toBeInTheDocument();
+
+      api.on(MARKET, json(200, proposal("EXPIRED")));
+      await act(() => vi.advanceTimersByTimeAsync(4_000));
+
+      expect(await screen.findByText("Expired")).toHaveAttribute("data-slot", "badge");
+      const asked = api.calls(MARKET).length;
+      await act(() => vi.advanceTimersByTimeAsync(20_000));
+      expect(api.calls(MARKET)).toHaveLength(asked);
+    });
+
+    test.each(["REJECTED", "EXPIRED"] as const)(
+      "a proposal that is %s waits for nothing: its close time ends nothing",
+      async (status) => {
+        const { api } = await follow(proposal(status));
+
+        await act(() => vi.advanceTimersByTimeAsync(60_000));
+
+        expect(api.calls(MARKET)).toHaveLength(1);
+      },
+    );
+
+    test("is set again when the close time is another one", async () => {
+      const { api, client } = await follow();
+      await waitFor(() => expect(api.calls(HISTORY)).toHaveLength(1));
+
+      // The market was read again and closes two minutes later than it said before.
+      act(() =>
+        client.setQueryData(
+          keys.markets.detail(MARKET_ID),
+          marketDetail({ close_at: "2026-10-14T16:02:00Z" }),
+        ),
+      );
+      await act(() => vi.advanceTimersByTimeAsync(60_000));
+      expect(api.calls(MARKET)).toHaveLength(1);
+
+      api.on(MARKET, json(200, afterClose()));
+      await act(() => vi.advanceTimersByTimeAsync(81_000));
+
+      await waitFor(() => expect(api.calls(MARKET)).toHaveLength(2));
+      expect(await screen.findByText(/^Trading is over\./)).toBeInTheDocument();
+    });
+
+    test("a status event that ends trading before the close time ends the wait", async () => {
+      const { api, streams } = await follow();
+      await waitFor(() => expect(api.calls(HISTORY)).toHaveLength(1));
+      api.on(
+        MARKET,
+        json(
+          200,
+          marketDetail({
+            status: "HALTED",
+            trading_open: false,
+            viewer: marketViewer({ can_trade: false, cannot_trade_reason: "MARKET_NOT_OPEN" }),
+          }),
+        ),
+      );
+
+      act(() => streams.latest().emit("status", statusEvent({ status: "HALTED" })));
+      expect(await screen.findByText("Trading is paused.")).toBeInTheDocument();
+      const asked = api.calls(MARKET).length;
+
+      await act(() => vi.advanceTimersByTimeAsync(60_000));
+
+      expect(api.calls(MARKET)).toHaveLength(asked);
+    });
+
+    test("is cleared when the screen goes away", async () => {
+      const { api, unmount } = await follow();
+      await waitFor(() => expect(api.calls(HISTORY)).toHaveLength(1));
+
+      unmount();
+      await act(() => vi.advanceTimersByTimeAsync(60_000));
+
+      expect(api.calls(MARKET)).toHaveLength(1);
+    });
+
+    test("days before the close time nothing is asked", async () => {
+      vi.setSystemTime(TODAY);
+      const { api } = await follow();
+      await waitFor(() => expect(api.calls(HISTORY)).toHaveLength(1));
+
+      await act(() => vi.advanceTimersByTimeAsync(10 * 60_000));
+
+      expect(api.calls(MARKET)).toHaveLength(1);
+      expect(api.calls(HISTORY)).toHaveLength(1);
     });
   });
 

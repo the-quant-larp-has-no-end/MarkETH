@@ -123,7 +123,7 @@ class Desk:
                 "resolution_source": "The menu plan on ethz.ch",
                 "close_at": close_at.isoformat(),
                 "resolve_by": (close_at + WEEK).isoformat(),
-                "requested_tier": "DEFAULT",
+                "policy_accepted": True,
             },
         )
         assert proposed.status_code == 201, proposed.text

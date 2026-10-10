@@ -4,19 +4,13 @@ import { useEffect, useRef } from "react";
 
 import { SegmentedControl } from "@/components/controls";
 import { ErrorBanner, InlineError, RetryCountdown } from "@/components/feedback";
-import {
-  OutcomeToggle,
-  QuotePanel,
-  SellPresets,
-  StakeLeftLine,
-  StakePresets,
-} from "@/components/market";
+import { OutcomeToggle, QuotePanel, SellPresets, StakeEntry } from "@/components/market";
 import { Amount } from "@/components/money";
 import { SheetBody, SheetFooter } from "@/components/sheet";
 import { Button } from "@/components/ui/button";
-import { messageOf, stakeLeft, staleQuote } from "@/lib/api/errors";
+import { type ApiError, messageOf, placeError, stakeLeft, staleQuote } from "@/lib/api/errors";
 import type { QuoteRequest } from "@/lib/api/keys";
-import type { MarketDetailResponse, Outcome, TradeSide } from "@/lib/api/schema";
+import type { ErrorCode, MarketDetailResponse, Outcome, TradeSide } from "@/lib/api/schema";
 import { useRetryAfter } from "@/lib/hooks";
 
 import { confirmLabel, otherOutcome, type TradeIntent } from "./intent";
@@ -35,13 +29,53 @@ export type TradeFormProps = {
 };
 
 /**
- * The form of the trade ticket (DESIGN.md §13), top to bottom: the question, Buy / Sell,
- * the outcome, the presets, the quote, the balance and Confirm.
+ * What the quote of a buy says about the amount (DESIGN.md §13): the stake limit, the
+ * balance, the smallest trade, or a text that is no amount. It is said with the stake
+ * entry, which is where the amount is.
+ */
+const ABOUT_THE_AMOUNT: readonly ErrorCode[] = [
+  "LIMIT_EXCEEDED",
+  "INSUFFICIENT_BALANCE",
+  "TRADE_TOO_SMALL",
+  "VALIDATION_ERROR",
+];
+
+/**
+ * What a quote says about the viewer and the market: trading ended, the holding changed,
+ * or the viewer proposed the market. The market on screen is then behind the market as it
+ * is, so it is read again, and the message stands above the button as a trade's does.
+ */
+const ABOUT_THE_MARKET: readonly ErrorCode[] = [
+  "MARKET_NOT_OPEN",
+  "INSUFFICIENT_SHARES",
+  "FORBIDDEN",
+];
+
+/** Where a quote that could not be had is said: with the stake, above the button, or as the banner. */
+function placeOfFailure(error: ApiError, side: TradeSide): "stake" | "button" | "banner" {
+  if (error.code === null) return "banner";
+  if (side === "BUY" && ABOUT_THE_AMOUNT.includes(error.code)) return "stake";
+  return ABOUT_THE_MARKET.includes(error.code) ? "button" : "banner";
+}
+
+/**
+ * The sentence the API has for the amount: the one it wrote for the field `amount_cr`
+ * where it names that field, otherwise its `message` (DESIGN.md §14).
+ */
+function aboutTheAmount(error: ApiError): string {
+  return placeError(error, ["amount_cr"]).fields.amount_cr ?? messageOf(error);
+}
+
+/**
+ * The form of the trade ticket (DESIGN.md §13), top to bottom: Buy / Sell, the outcome,
+ * the stake entry or the sell presets, the quote, the balance and Confirm. The question
+ * stands above it, in the header of the surface the ticket is on.
  *
- * It decides nothing about amounts. Which chip can be chosen is `allowed` of the preset,
- * whether selling is offered is `allowed` of the sell presets, and whether the viewer may
- * trade is `can_trade`. A chip is sent as the string it arrived as, and the quote on
- * screen goes along as the guard.
+ * It decides nothing about amounts. The amount of a buy is the text of the amount field,
+ * sent as it stands; whether it can be traded is the server's answer to the quote. Which
+ * preset can be chosen is its `allowed`, whether selling is offered is `allowed` of the
+ * sell presets, and whether the viewer may trade is `can_trade`. The quote on screen goes
+ * along as the guard of the trade.
  *
  * While a trade waits for its verdict (DESIGN.md §14) the form shows that trade as it was
  * sent, with everything disabled, and offers nothing but "Try again".
@@ -59,19 +93,18 @@ export function TradeForm({
 
   const waiting = attempt !== null;
   const { side, outcome } = attempt?.intent ?? intent;
+  // While a trade waits, the controls are those it was made from.
   const stakePresets = attempt?.stakePresets ?? viewer.stake_presets;
+  const buySlider = attempt === null ? viewer.buy_slider : attempt.buySlider;
   const sellPresets = attempt?.sellPresets ?? viewer.sell_presets;
+  const stake = attempt?.request.side === "BUY" ? attempt.request.amount_cr : choice.stake;
 
   const sellable: Record<Outcome, boolean> = {
     YES: viewer.sell_presets.some((preset) => preset.outcome === "YES" && preset.allowed),
     NO: viewer.sell_presets.some((preset) => preset.outcome === "NO" && preset.allowed),
   };
 
-  // A chip stays chosen for as long as the server allows it.
-  const stake =
-    stakePresets.find(
-      (preset) => preset.amount_cr === choice.stake && (waiting || preset.allowed),
-    ) ?? null;
+  // A sell preset stays chosen for as long as the server allows it.
   const sale =
     sellPresets.find(
       (preset) =>
@@ -80,17 +113,23 @@ export function TradeForm({
         (waiting || preset.allowed),
     ) ?? null;
 
-  // What a quote is asked for: the chosen chip, as the string it arrived as. While a
-  // trade waits, the chips are those it was made from, so this is what was sent.
-  const request: QuoteRequest | null =
+  // What a quote is asked for. Buying: the text of the amount field, as it stands. An
+  // empty field asks for nothing, and neither does one that ends in its decimal point:
+  // that amount is not finished. Selling: the chosen preset's shares, as they arrived.
+  const finished = stake !== "" && !stake.endsWith(".");
+  const entered: QuoteRequest | null =
     side === "BUY"
-      ? stake && { side, outcome, amount_cr: stake.amount_cr }
+      ? finished
+        ? { side, outcome, amount_cr: stake }
+        : null
       : sale && { side, outcome, shares: sale.shares };
+  // A trade that waits was made from a request: that one is what was sent.
+  const request = attempt?.request ?? entered;
 
   const read = useQuote(market.id, request);
-  // A trade that waits keeps the quote it was confirmed with on screen.
-  const quote = attempt?.quote ?? read.quote;
-  const quoteFailure = waiting ? null : read.error;
+  // A trade that waits keeps the quote it was confirmed with on screen. Otherwise a quote
+  // counts for as long as the server lets the viewer trade.
+  const quote = attempt?.quote ?? (viewer.can_trade ? read.quote : null);
 
   const unanswered = attempt !== null && !attempt.sending ? attempt.error : null;
   const wait = useRetryAfter(unanswered);
@@ -98,11 +137,21 @@ export function TradeForm({
     ticket.refusal !== null && ticket.refusal.choiceKey === choiceKey({ side, outcome }, choice)
       ? ticket.refusal.error
       : null;
-  const stakeLimit = (refused === null ? null : stakeLeft(refused)) ?? viewer;
 
-  // DESIGN.md §14: these two say the market on screen is not the market as it is.
-  const marketBehind =
-    quoteFailure?.code === "MARKET_NOT_OPEN" || quoteFailure?.code === "INSUFFICIENT_SHARES";
+  // Why there is no quote. While the refusal of a trade stands above the button, a quote
+  // that gives the same verdict for the same input says nothing more, and is not said twice.
+  const said = refused !== null && read.error?.code === refused.code;
+  const quoteFailure = waiting || said ? null : read.error;
+  const place = quoteFailure === null ? null : placeOfFailure(quoteFailure, side);
+  const amountRefused = place === "stake" ? quoteFailure : null;
+  // A `LIMIT_EXCEEDED`, of the trade or of the quote, says what is left as of its answer.
+  const stakeLimit =
+    (refused === null ? null : stakeLeft(refused)) ??
+    (amountRefused === null ? null : stakeLeft(amountRefused)) ??
+    viewer;
+
+  // DESIGN.md §14: such an answer says the market on screen is not the market as it is.
+  const marketBehind = place === "button";
   useEffect(() => {
     if (marketBehind) onMarketBehind();
   }, [marketBehind, quoteFailure, onMarketBehind]);
@@ -137,6 +186,7 @@ export function TradeForm({
         request,
         quote,
         stakePresets: viewer.stake_presets,
+        buySlider: viewer.buy_slider,
         sellPresets: viewer.sell_presets,
       });
     }
@@ -145,9 +195,6 @@ export function TradeForm({
   return (
     <>
       <SheetBody>
-        {/* Room on the right for the close button of the sheet this may stand in. */}
-        <p className="truncate pr-8 type-body-sm text-muted-foreground">{market.question}</p>
-
         <SegmentedControl
           label="Buy or sell"
           value={side}
@@ -166,18 +213,16 @@ export function TradeForm({
         />
 
         {side === "BUY" ? (
-          <div className="flex flex-col gap-2">
-            <StakePresets
-              presets={stakePresets}
-              value={stake?.amount_cr ?? null}
-              onChange={(amount_cr) => store.choose(market.id, { stake: amount_cr })}
-              disabled={waiting}
-            />
-            <StakeLeftLine
-              stakeLeftCr={stakeLimit.stake_left_cr}
-              stakeLimitCr={stakeLimit.stake_limit_cr}
-            />
-          </div>
+          <StakeEntry
+            value={stake}
+            onChange={(text) => store.choose(market.id, { stake: text })}
+            slider={buySlider}
+            presets={stakePresets}
+            stakeLeftCr={stakeLimit.stake_left_cr}
+            stakeLimitCr={stakeLimit.stake_limit_cr}
+            refusal={amountRefused === null ? null : aboutTheAmount(amountRefused)}
+            disabled={waiting || !viewer.can_trade}
+          />
         ) : (
           <SellPresets
             presets={sellPresets}
@@ -188,8 +233,8 @@ export function TradeForm({
           />
         )}
 
-        {/* Before a chip is chosen, and when the quote could not be read, nothing is on
-            its way: the rows stand without figures instead of pulsing for ever. */}
+        {/* With nothing to quote, nothing is on its way: the rows stand without figures
+            instead of pulsing for ever. */}
         <div ref={quotePlace}>
           <QuotePanel
             side={side}
@@ -214,11 +259,14 @@ export function TradeForm({
         )}
         {refused !== null && (
           // The price moved: a notice, not a fault of the user's. It is announced the same.
-          <InlineError tone={priceMoved ? "notice" : "error"}>
-            {messageOf(refused)}
-          </InlineError>
+          <InlineError tone={priceMoved ? "notice" : "error"}>{messageOf(refused)}</InlineError>
         )}
-        {quoteFailure !== null && <ErrorBanner error={quoteFailure} onRetry={read.retry} />}
+        {quoteFailure !== null && place === "button" && (
+          <InlineError>{messageOf(quoteFailure)}</InlineError>
+        )}
+        {quoteFailure !== null && place === "banner" && (
+          <ErrorBanner error={quoteFailure} onRetry={read.retry} />
+        )}
 
         <Button
           size="confirm"

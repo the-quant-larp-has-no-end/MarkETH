@@ -77,6 +77,18 @@ class CodeRepository(BaseRepository[Code]):
         statement = select(Code).where(Code.code_hash == code_hash)
         return await self._session.scalar(self._locked(statement, for_update))
 
+    async def list_active_codes(self, batch_id: UUID) -> Sequence[str]:
+        """The codes of a batch that are still ACTIVE, as stored, in the order they
+        were created. Every ACTIVE row holds its code and no other row does
+        (`ck_codes_code_iff_active`). Whether the batch has expired is the caller's
+        to ask."""
+        statement = (
+            select(Code.code)
+            .where(Code.batch_id == batch_id, Code.status == CodeStatus.ACTIVE)
+            .order_by(Code.id)
+        )
+        return [code for code in await self._session.scalars(statement) if code is not None]
+
     async def user_has_redeemed_in_batch(self, user_id: UUID, batch_id: UUID) -> bool:
         statement = select(
             exists().where(
@@ -92,6 +104,8 @@ class CodeRepository(BaseRepository[Code]):
 
         `code_hashes` narrows it to those codes; None means the whole batch. A code that
         is redeemed, also by a redemption committing while this waits, stays redeemed.
+        The same statement clears the code of each row it revokes: only an ACTIVE row
+        keeps one (`ck_codes_code_iff_active`).
         """
         statement = (
             update(Code)
@@ -99,7 +113,7 @@ class CodeRepository(BaseRepository[Code]):
                 Code.batch_id == batch_id,
                 Code.status == CodeStatus.ACTIVE,
             )
-            .values(status=CodeStatus.REVOKED)
+            .values(status=CodeStatus.REVOKED, code=None)
             .returning(Code.id)
             .execution_options(**MATCHED_BY_DATABASE)
         )

@@ -36,7 +36,10 @@ async def _market_events(
 MarketEvents = Annotated[AsyncIterator[LiveEvent], Depends(_market_events)]
 
 
-@router.get("/{market_id}/history", summary="Chart data: the price after every trade")
+@router.get(
+    "/{market_id}/history",
+    summary="Chart data: the price after a market's trades, thinned to a bounded size",
+)
 async def get_market_history(market_id: UUID, history: HistoryServiceDep) -> HistoryResponse:
     return await history.history(market_id)
 

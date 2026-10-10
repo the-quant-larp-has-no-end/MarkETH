@@ -88,3 +88,25 @@ export function formatShares(
     ? `${figure} ${shareWord(shares)}`
     : `${figure} ${outcome} ${shareWord(shares)}`;
 }
+
+/* ---- Typing a figure (DESIGN.md §12, Form fields) ---------------------------------- */
+
+/**
+ * What a field for an amount keeps of what was typed: digits and one decimal point. A
+ * comma is a decimal point on many keypads and becomes one; a second point and every
+ * other character are not taken. The result is what the field shows and what is sent.
+ *
+ * This works on characters. Nothing is read as a number, completed or rounded: `.5`, `5.`
+ * and `007` stay as they were typed, and the API says what it takes.
+ */
+export function typedDecimal(text: string): string {
+  const kept = text.replaceAll(",", ".").replace(/[^0-9.]/g, "");
+  const point = kept.indexOf(".");
+  if (point === -1) return kept;
+  return kept.slice(0, point + 1) + kept.slice(point + 1).replaceAll(".", "");
+}
+
+/** The same for a whole number: the digits of what was typed, and nothing else. */
+export function typedWhole(text: string): string {
+  return text.replace(/[^0-9]/g, "");
+}

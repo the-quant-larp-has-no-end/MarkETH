@@ -33,6 +33,8 @@ import {
   sent,
   sideSegment,
   stakeChip,
+  stakeField,
+  stakeSlider,
   type TicketOptions,
   ticketFrame,
   TRADE,
@@ -47,7 +49,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const BUY_25 =
   '{"side":"BUY","outcome":"YES","amount_cr":"25","min_shares":"45.12","quote_version":7}';
 
-/** Opens the ticket on Buy YES, chooses 25, waits for the quote and taps Confirm. */
+/** Opens the ticket on Buy YES, sets 25 with its preset, waits for the quote and taps Confirm. */
 async function confirmBuy(options: TicketOptions = {}) {
   const ticket = openTicket({
     ...options,
@@ -68,7 +70,7 @@ beforeEach(() => {
 });
 
 describe("Confirm", () => {
-  test("sends the chip as it arrived with the quote as its guard, under one Idempotency-Key", async () => {
+  test("sends the amount the field holds with the quote as its guard, under one Idempotency-Key", async () => {
     const { api } = await confirmBuy({ routes: { [TRADE]: deferred().handler } });
 
     await waitFor(() => expect(api.calls(TRADE)).toHaveLength(1));
@@ -94,8 +96,12 @@ describe("Confirm", () => {
     expect(outcomeSegment("YES")).toBeDisabled();
     expect(outcomeSegment("NO")).toBeDisabled();
     for (const amount of ["25", "50", "100"]) expect(stakeChip(amount)).toBeDisabled();
-    // What is being sent stays on screen: the chip, and the quote it was confirmed with.
+    expect(stakeField()).toBeDisabled();
+    expect(document.querySelector("[data-slot=slider]")).toHaveAttribute("data-disabled");
+    // What is being sent stays on screen: the amount, and the quote it was confirmed with.
+    expect(stakeField()).toHaveValue("25");
     expect(stakeChip("25")).toHaveAttribute("aria-pressed", "true");
+    expect(stakeSlider()).toHaveAttribute("aria-valuenow", "25");
     expect(row("Shares")).toHaveTextContent("45.12");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 
@@ -173,6 +179,8 @@ describe.each(NO_VERDICT)("after %s", (_name, answer, message) => {
     expect(outcomeSegment("YES")).toBeDisabled();
     expect(outcomeSegment("NO")).toBeDisabled();
     for (const amount of ["25", "50", "100"]) expect(stakeChip(amount)).toBeDisabled();
+    expect(stakeField()).toBeDisabled();
+    expect(stakeField()).toHaveValue("25");
     expect(stakeChip("25")).toHaveAttribute("aria-pressed", "true");
     expect(row("Shares")).toHaveTextContent("45.12");
 
@@ -342,7 +350,7 @@ describe("an unanswered trade survives the sheet", () => {
     expect(wire(api)[1]).toEqual(wire(api)[0]);
   });
 
-  test("keeps the stakes it was made from, also when the market offers others by now", async () => {
+  test("keeps the presets and the range it was made from, also when the market offers others by now", async () => {
     const { user, api } = await confirmBuy({ routes: { [TRADE]: noAnswer } });
     await screen.findByRole("alert");
     await user.click(button("Close the sheet"));
@@ -360,6 +368,7 @@ describe("an unanswered trade survives the sheet", () => {
               { amount_cr: "20", allowed: true },
               { amount_cr: "40", allowed: true },
             ],
+            buy_slider: { min: 1, max: 20, step: 1 },
           }),
         }),
       ),
@@ -371,6 +380,11 @@ describe("an unanswered trade survives the sheet", () => {
     expect(stakeChip("25")).toBeDisabled();
     expect(stakeChip("50")).toBeDisabled();
     expect(screen.queryByRole("button", { name: "10 tokens" })).not.toBeInTheDocument();
+    // The slider is the one the trade was made on, standing on what was sent.
+    expect(stakeSlider()).toHaveAttribute("aria-valuemax", "100");
+    expect(stakeSlider()).toHaveAttribute("aria-valuenow", "25");
+    expect(stakeField()).toHaveValue("25");
+    expect(stakeField()).toBeDisabled();
     expect(button("Try again")).toBeEnabled();
   });
 
@@ -544,16 +558,16 @@ describe("turning the phone makes the sheet a dialog, which mounts the ticket af
     expect(within(dialog).getByRole("button", { name: "Done" })).toBeInTheDocument();
   });
 
-  test("the chosen chip and its quote are still there", async () => {
+  test("the amount that was entered and its quote are still there", async () => {
     const { user } = openTicket({ surface: "sheet", routes: { [QUOTE]: json(200, quote()) } });
-    await user.click(stakeChip("50"));
+    await user.type(stakeField(), "37.5");
     await waitFor(() => expect(button("Buy YES")).toBeEnabled());
 
     act(() => setViewport("wide"));
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     expect(screen.getByRole("dialog")).toHaveAttribute("data-slot", "dialog-content");
-    expect(stakeChip("50")).toHaveAttribute("aria-pressed", "true");
+    expect(stakeField()).toHaveValue("37.5");
     await waitFor(() => expect(button("Buy YES")).toBeEnabled());
     expect(row("Shares")).toHaveTextContent("45.12");
   });
@@ -721,12 +735,18 @@ describe("a refusal", () => {
     expect(screen.queryByText("100 of 100 tokens left in this market")).not.toBeInTheDocument();
   });
 
-  test("LIMIT_EXCEEDED keeps its message when the market that is read again disallows the chip", async () => {
+  test("LIMIT_EXCEEDED keeps its message when the market that is read again disallows the preset, and Confirm waits for another amount", async () => {
+    const limit = {
+      limit: "MAX_STAKE_PER_USER_MARKET",
+      stake_limit_cr: "100",
+      stake_left_cr: "12.5",
+    };
     const { user, api } = openTicket({ routes: { [QUOTE]: json(200, quote()) } });
     await user.click(stakeChip("25"));
     await waitFor(() => expect(button("Buy YES")).toBeEnabled());
 
-    // The market as it is read again after the refusal: the limit leaves room for no chip.
+    // The market as it is read again after the refusal: the limit leaves room for no
+    // preset. The quote is about the same viewer, so it says what the trade said.
     api.on(
       MARKET,
       json(
@@ -739,24 +759,85 @@ describe("a refusal", () => {
               { amount_cr: "50", allowed: false },
               { amount_cr: "100", allowed: false },
             ],
+            buy_slider: { min: 1, max: 12, step: 1 },
           }),
         }),
       ),
     );
-    api.on(
-      TRADE,
-      apiError(409, "LIMIT_EXCEEDED", "This would exceed a limit.", {
-        limit: "MAX_STAKE_PER_USER_MARKET",
-        stake_limit_cr: "100",
-        stake_left_cr: "12.5",
-      }),
-    );
+    api.on(QUOTE, apiError(409, "LIMIT_EXCEEDED", "This would exceed a limit.", limit));
+    api.on(TRADE, apiError(409, "LIMIT_EXCEEDED", "This would exceed a limit.", limit));
     await user.click(button("Buy YES"));
 
     await waitFor(() => expect(stakeChip("25")).toBeDisabled());
+    // The quote for this amount was asked for again: the one on screen did not hold.
+    await waitFor(() => expect(api.calls(QUOTE)).toHaveLength(2));
+    await waitFor(() => expect(button("Buy YES")).toBeDisabled());
+    // Said once, where the trade's refusal stands: above the button.
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
     expect(screen.getByRole("alert")).toHaveTextContent("This would exceed a limit.");
+    expect(ticketFrame()!.querySelector("[data-slot=sheet-footer]")).toContainElement(
+      screen.getByRole("alert"),
+    );
     expect(screen.getByText("12.5 of 100 tokens left in this market")).toBeInTheDocument();
-    expect(button("Buy YES")).toBeDisabled();
+    // The amount is the user's: it stays, and no trade goes out for it again.
+    expect(stakeField()).toHaveValue("25");
+    await user.click(button("Buy YES"));
+    expect(api.calls(TRADE)).toHaveLength(1);
+
+    // Another amount is judged afresh.
+    api.on(QUOTE, json(200, quote({ amount_cr: "12" })));
+    await user.clear(stakeField());
+    await user.type(stakeField(), "12");
+    await waitFor(() => expect(button("Buy YES")).toBeEnabled());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  test.each([
+    [409, "INSUFFICIENT_BALANCE", "Not enough tokens for this."],
+    [409, "LIMIT_EXCEEDED", "This would exceed a limit."],
+  ] as const)(
+    "after a %i %s the quote on screen is asked for again, and Confirm waits for it",
+    async (status, code, message) => {
+      const verdict = deferred();
+      const { user, api } = await confirmBuy({ routes: { [TRADE]: verdict.handler } });
+      const again = deferred();
+      api.on(QUOTE, again.handler);
+      verdict.resolve(apiError(status, code, message));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(message);
+      await waitFor(() => expect(api.calls(QUOTE)).toHaveLength(2));
+      expect([...api.lastCall(QUOTE)!.query.entries()]).toEqual([
+        ["side", "BUY"],
+        ["outcome", "YES"],
+        ["amount_cr", "25"],
+      ]);
+      // On its way: the figures that guarded the refused trade count for nothing.
+      await waitFor(() => expect(button("Buy YES")).toBeDisabled());
+      expect(row("Shares").querySelector("[data-slot=skeleton]")).toBeInTheDocument();
+      await user.click(button("Buy YES"));
+      expect(api.calls(TRADE)).toHaveLength(1);
+
+      again.resolve(json(200, quote({ shares: "44.9", quote_version: 9 })));
+
+      await waitFor(() => expect(button("Buy YES")).toBeEnabled());
+      expect(row("Shares")).toHaveTextContent("44.9");
+      // The refusal is still to read.
+      expect(screen.getByRole("alert")).toHaveTextContent(message);
+    },
+  );
+
+  test("a refusal that is not about what the ticket showed leaves the quote as it is", async () => {
+    const { api } = await confirmBuy({
+      routes: {
+        [TRADE]: apiError(422, "TRADE_TOO_SMALL", "This trade is below the minimum size."),
+      },
+    });
+
+    await screen.findByRole("alert");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(api.calls(QUOTE)).toHaveLength(1);
+    expect(button("Buy YES")).toBeEnabled();
   });
 
   test("INSUFFICIENT_SHARES reads the market again, so the sell presets are current", async () => {
@@ -866,5 +947,299 @@ describe("a refusal", () => {
     expect(ticketFrame()).toContainElement(alert);
     expect(ticketFrame()).toHaveAttribute("data-view", "form");
     expect(stakeChip("25")).toHaveAttribute("aria-pressed", "true");
+  });
+});
+
+describe("a typed amount", () => {
+  const BUY_TYPED =
+    '{"side":"BUY","outcome":"YES","amount_cr":"37.50","min_shares":"67.4","quote_version":7}';
+  const forTyped = quote({ amount_cr: "37.5", shares: "67.4" });
+
+  /** Opens the ticket on Buy YES, types 37.50, waits for the quote and taps Confirm. */
+  async function confirmTyped(options: TicketOptions = {}) {
+    const ticket = openTicket({
+      ...options,
+      routes: { [QUOTE]: json(200, forTyped), ...options.routes },
+    });
+    await ticket.user.type(stakeField(), "37.50");
+    await waitFor(() => expect(button("Buy YES")).toBeEnabled());
+    await ticket.user.click(button("Buy YES"));
+    return ticket;
+  }
+
+  test("is sent as it was typed, with the quote as its guard, under one Idempotency-Key", async () => {
+    const { api } = await confirmTyped({ routes: { [TRADE]: deferred().handler } });
+
+    await waitFor(() => expect(api.calls(TRADE)).toHaveLength(1));
+    // The zero that was typed is in the body: the text is not rewritten on its way.
+    expect(sent(api.lastCall(TRADE))).toEqual({
+      key: expect.stringMatching(UUID),
+      body: BUY_TYPED,
+    });
+  });
+
+  test("while the trade is on its way the field shows what was sent and takes nothing", async () => {
+    const answer = deferred();
+    const { user } = await confirmTyped({ routes: { [TRADE]: answer.handler } });
+
+    expect(stakeField()).toBeDisabled();
+    expect(stakeField()).toHaveValue("37.50");
+    expect(document.querySelector("[data-slot=slider]")).toHaveAttribute("data-disabled");
+    await user.type(stakeField(), "9");
+    expect(stakeField()).toHaveValue("37.50");
+
+    answer.resolve(json(201, tradeResponse()));
+    await screen.findByRole("heading", { name: /^Bought/ });
+  });
+
+  test("without a verdict, Try again sends the stored body with the stored key: the field cannot have changed it", async () => {
+    const { user, api } = await confirmTyped({ routes: { [TRADE]: noAnswer } });
+    await screen.findByRole("alert");
+
+    expect(stakeField()).toBeDisabled();
+    expect(stakeField()).toHaveValue("37.50");
+    // A later quote must not find its way into the request.
+    api.on(QUOTE, json(200, quote({ amount_cr: "37.5", shares: "60", quote_version: 11 })));
+    api.on(TRADE, json(201, tradeResponse()));
+    await user.click(button("Try again"));
+    await screen.findByRole("heading", { name: /^Bought/ });
+
+    const [first, second] = wire(api);
+    expect(wire(api)).toHaveLength(2);
+    expect(first).toEqual({ key: expect.stringMatching(UUID), body: BUY_TYPED });
+    expect(second).toEqual(first);
+  });
+
+  test("an unanswered trade is there again after the ticket left the screen, with the amount that was sent", async () => {
+    const { user, api } = await confirmTyped({ routes: { [TRADE]: errorPage(504) } });
+    await screen.findByRole("alert");
+
+    await user.click(button("Close the sheet"));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await user.click(button("Open on Buy NO"));
+
+    expect(ticketFrame()).toHaveAttribute("data-outcome", "YES");
+    expect(stakeField()).toHaveValue("37.50");
+    expect(stakeField()).toBeDisabled();
+    expect(row("Shares")).toHaveTextContent("67.4");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(api.calls(TRADE)).toHaveLength(1);
+
+    api.on(TRADE, deferred().handler);
+    await user.click(button("Try again"));
+    await waitFor(() => expect(api.calls(TRADE)).toHaveLength(2));
+    expect(wire(api)[1]).toEqual(wire(api)[0]);
+  });
+
+  test("after a refusal the amount can be changed, and the next Confirm is another body with another key", async () => {
+    const { user, api } = await confirmTyped({
+      routes: { [TRADE]: apiError(409, "LIMIT_EXCEEDED", "This would exceed a limit.") },
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("This would exceed a limit.");
+    expect(stakeField()).toBeEnabled();
+    expect(stakeField()).toHaveValue("37.50");
+
+    api.on(QUOTE, json(200, quote({ amount_cr: "30", shares: "54" })));
+    await user.clear(stakeField());
+    await user.type(stakeField(), "30");
+    // The refusal was about what was sent.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await waitFor(() => expect(button("Buy YES")).toBeEnabled());
+    api.on(TRADE, deferred().handler);
+    await user.click(button("Buy YES"));
+
+    await waitFor(() => expect(api.calls(TRADE)).toHaveLength(2));
+    const [first, second] = wire(api);
+    expect(first?.body).toBe(BUY_TYPED);
+    expect(second?.body).toBe(
+      '{"side":"BUY","outcome":"YES","amount_cr":"30","min_shares":"54","quote_version":7}',
+    );
+    expect(second?.key).toMatch(UUID);
+    expect(second?.key).not.toBe(first?.key);
+  });
+
+  test("QUOTE_STALE keeps the amount: the next Confirm sends it again, guarded by the quote that was reviewed", async () => {
+    const moved = quote({ amount_cr: "37.5", shares: "66.9", quote_version: 8 });
+    const { user, api } = await confirmTyped({
+      routes: {
+        [TRADE]: apiError(
+          409,
+          "QUOTE_STALE",
+          "The price moved. Review the new quote and confirm again.",
+          {
+            quote: moved,
+          },
+        ),
+      },
+    });
+    const asked = api.calls(QUOTE).length;
+    await screen.findByRole("alert");
+
+    expect(stakeField()).toHaveValue("37.50");
+    expect(row("Shares")).toHaveTextContent("66.9");
+    // The quote came with the answer: nothing was asked for.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(api.calls(QUOTE)).toHaveLength(asked);
+    api.on(TRADE, deferred().handler);
+    await user.click(button("Buy YES"));
+
+    await waitFor(() => expect(api.calls(TRADE)).toHaveLength(2));
+    const [first, second] = wire(api);
+    expect(second?.body).toBe(
+      '{"side":"BUY","outcome":"YES","amount_cr":"37.50","min_shares":"66.9","quote_version":8}',
+    );
+    expect(second?.key).not.toBe(first?.key);
+  });
+
+  test("tapped twice before the screen has drawn the spinner is still one request", async () => {
+    const { user, api } = openTicket({
+      routes: { [QUOTE]: json(200, forTyped), [TRADE]: deferred().handler },
+    });
+    await user.type(stakeField(), "37.50");
+    await waitFor(() => expect(button("Buy YES")).toBeEnabled());
+    const confirm = button("Buy YES");
+
+    act(() => {
+      confirm.click();
+      confirm.click();
+    });
+
+    await waitFor(() => expect(api.calls(TRADE)).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(api.calls(TRADE)).toHaveLength(1);
+  });
+
+  test("an amount that changed after its quote cannot be confirmed with that quote", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      // No route for a trade: a request that went out with a guard for another amount
+      // fails the test.
+      const { user, api } = openTicket({
+        routes: { [QUOTE]: json(200, forTyped) },
+        tunables: { quote_debounce_ms: 60_000 },
+      });
+      await user.type(stakeField(), "37.5");
+      await act(() => vi.advanceTimersByTimeAsync(61_000));
+      await waitFor(() => expect(button("Buy YES")).toBeEnabled());
+
+      // One more digit. What is on screen was quoted for 37.5, not for 37.55.
+      await user.type(stakeField(), "5");
+
+      expect(stakeField()).toHaveValue("37.55");
+      expect(button("Buy YES")).toBeDisabled();
+      expect(row("Shares")).not.toHaveTextContent("67.4");
+      await user.click(button("Buy YES"));
+      expect(api.calls(TRADE)).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("the sheet while its trade is on its way", () => {
+  const cross = () => screen.getByRole("button", { name: "Close" });
+
+  test("cannot be closed: the cross stays, disabled, and Escape does nothing", async () => {
+    const answer = deferred();
+    const { user, api } = await confirmBuy({
+      surface: "sheet",
+      routes: { [TRADE]: answer.handler },
+    });
+    await waitFor(() => expect(api.calls(TRADE)).toHaveLength(1));
+
+    expect(cross()).toBeDisabled();
+    await user.keyboard("{Escape}");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(button("Buy YES")).toHaveAttribute("aria-busy", "true");
+
+    // The verdict is seen where the trade was made.
+    answer.resolve(json(201, tradeResponse()));
+    expect(await screen.findByRole("heading", { name: /^Bought/ })).toBeInTheDocument();
+  });
+
+  test("the receipt keeps the cross, which closes it as Done does", async () => {
+    const { user, changes } = await confirmBuy({
+      surface: "sheet",
+      routes: { [TRADE]: json(201, tradeResponse()) },
+    });
+    await screen.findByRole("heading", { name: /^Bought/ });
+
+    await waitFor(() => expect(cross()).toBeEnabled());
+    await user.click(cross());
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    // The next opening is an empty form.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await user.click(button("Open on Buy YES"));
+    await waitFor(() => expect(ticketFrame()).toHaveAttribute("data-view", "form"));
+    expect(stakeField()).toHaveValue("");
+    expect(changes).toEqual([]);
+  });
+
+  test("can be closed again once the trade was refused", async () => {
+    const { user } = await confirmBuy({
+      surface: "sheet",
+      routes: { [TRADE]: apiError(409, "INSUFFICIENT_BALANCE", "Not enough tokens for this.") },
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Not enough tokens for this.");
+
+    await waitFor(() => expect(cross()).toBeEnabled());
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  test("a trade without an answer can be put away, and is locked in again while Try again is on its way", async () => {
+    const { user, api } = await confirmBuy({ surface: "sheet", routes: { [TRADE]: noAnswer } });
+    await screen.findByRole("alert");
+
+    // Nothing is on its way while it waits for a tap.
+    await waitFor(() => expect(cross()).toBeEnabled());
+
+    const replay = deferred();
+    api.on(TRADE, replay.handler);
+    await user.click(button("Try again"));
+    await waitFor(() => expect(api.calls(TRADE)).toHaveLength(2));
+
+    expect(cross()).toBeDisabled();
+    await user.keyboard("{Escape}");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    replay.resolve(json(201, tradeResponse()));
+    await screen.findByRole("heading", { name: /^Bought/ });
+    await waitFor(() => expect(cross()).toBeEnabled());
+  });
+
+  test("the same holds for the dialog from 768 px", async () => {
+    setViewport("wide");
+    const answer = deferred();
+    const { user, api } = await confirmBuy({
+      surface: "sheet",
+      routes: { [TRADE]: answer.handler },
+    });
+    await waitFor(() => expect(api.calls(TRADE)).toHaveLength(1));
+
+    expect(screen.getByRole("dialog")).toHaveAttribute("data-slot", "dialog-content");
+    expect(cross()).toBeDisabled();
+    await user.keyboard("{Escape}");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    answer.resolve(apiError(409, "INSUFFICIENT_BALANCE", "Not enough tokens for this."));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Not enough tokens for this.");
+    await waitFor(() => expect(cross()).toBeEnabled());
+  });
+
+  test("a sheet with a form in it closes as ever", async () => {
+    const { user } = openTicket({ surface: "sheet", routes: { [QUOTE]: json(200, quote()) } });
+    await user.click(stakeChip("25"));
+    await waitFor(() => expect(button("Buy YES")).toBeEnabled());
+
+    expect(cross()).toBeEnabled();
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 });

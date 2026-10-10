@@ -8,7 +8,8 @@ from app.schemas.common import CreditAmount, ResponseModel, ShareAmount
 
 
 class TierConfig(ResponseModel):
-    """A fixed liquidity tier of SPEC §4. CUSTOM is not listed: it has no fixed b."""
+    """A fixed liquidity tier of SPEC §4: what an admin picks from when approving a
+    market. CUSTOM is not listed: it has no fixed b."""
 
     tier: MarketTier
     b_cr: CreditAmount
@@ -42,6 +43,10 @@ class PublicConfigResponse(ResponseModel):
 
     max_stake_per_market_cr: CreditAmount
     stake_presets_cr: list[CreditAmount]
+    stake_step_cr: CreditAmount
+    """The step of the slider of a buy on the trade sheet: a whole number of credits.
+    Where the slider runs for one viewer of one market is `MarketViewer.buy_slider`."""
+
     min_trade_cr: CreditAmount
     min_trade_shares: ShareAmount
     price_display_decimals: int
@@ -76,6 +81,12 @@ class PublicConfigResponse(ResponseModel):
     code_max_value_cr: CreditAmount
     code_default_value_cr: CreditAmount
     max_code_issuance_per_month_cr: CreditAmount
+    code_batch_max_count: int
+    """The most codes one batch may have: the upper bound of `count` in
+    `POST /admin/code-batches`."""
+
+    code_label_max_length: int
+    """Characters the label of a batch may have at most."""
 
     voucher_code_length: int
     voucher_expiry_days: int

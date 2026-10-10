@@ -1,17 +1,15 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
 
-import { keys } from "@/lib/api/keys";
 import type { MarketDetailResponse } from "@/lib/api/schema";
-import { MARKET_ID, marketDetail, marketViewer, me, risk, riskMarketRow } from "@/test/fixtures";
+import { adminMarketDetail, MARKET_ID, marketViewer, me } from "@/test/fixtures";
 import { apiError, deferred, json, mockApi, noAnswer, type Route } from "@/test/http";
-import { createTestQueryClient, renderWithProviders } from "@/test/render";
+import { renderWithProviders } from "@/test/render";
 
 import { AdminMarketScreen } from "./admin-market-screen";
 
 const MARKET: Route = "GET /api/markets/{market_id}";
 const ME: Route = "GET /api/me";
-const RISK: Route = "GET /api/admin/risk";
 const APPROVE: Route = "POST /api/admin/markets/{market_id}/approve";
 const REJECT: Route = "POST /api/admin/markets/{market_id}/reject";
 const HALT: Route = "POST /api/admin/markets/{market_id}/halt";
@@ -25,19 +23,13 @@ const NOT_POSSIBLE = "This is not possible in the current state.";
 
 const adminUser = me({ role: "ADMIN" });
 
-function adminMarket(overrides: Partial<MarketDetailResponse> = {}): MarketDetailResponse {
-  return marketDetail({
-    proposer_email: "bea.beispiel@ethz.ch",
-    viewer: marketViewer({ can_settle: true }),
-    ...overrides,
-  });
-}
+/** A market as an admin who did not trade it reads it. */
+const adminMarket = adminMarketDetail;
 
 const proposed = (overrides: Partial<MarketDetailResponse> = {}) =>
   adminMarket({
     status: "PROPOSED",
     trading_open: false,
-    requested_tier: "MEDIUM",
     tier: null,
     b_cr: "0",
     max_loss_cr: "0",
@@ -73,6 +65,13 @@ async function openDialog(
   return screen.findByRole(role, { name });
 }
 
+/** Opens the approval of a proposal and picks the tier the admin gives it. */
+async function openApproval(user: User, tier = "Medium") {
+  const dialog = await openDialog(user, "Approve", "dialog", "Approve market");
+  await user.click(within(dialog).getByRole("radio", { name: tier }));
+  return dialog;
+}
+
 const gone = (role: "dialog" | "alertdialog") =>
   waitFor(() => expect(screen.queryByRole(role)).not.toBeInTheDocument());
 
@@ -83,17 +82,19 @@ const bar = () =>
     .map((button) => button.textContent);
 
 describe("Approve", () => {
-  test("offers the tiers of /config with their figures as sent, and Custom; the tier that was asked for is chosen", async () => {
+  test("offers the tiers of /config with their figures as sent, and Custom; the admin picks one, and none is chosen to begin with", async () => {
     const { user } = show(proposed());
     const dialog = await openDialog(user, "Approve", "dialog", "Approve market");
 
-    const group = within(dialog).getByRole("radiogroup", { name: "Liquidity" });
+    const group = within(dialog).getByRole("radiogroup", { name: "Tier" });
     expect(
       within(group)
         .getAllByRole("radio")
         .map((radio) => radio.getAttribute("value")),
     ).toEqual(["TIGHT", "DEFAULT", "MEDIUM", "CUSTOM"]);
-    expect(within(group).getByRole("radio", { name: "Medium" })).toBeChecked();
+    expect(within(group).queryByRole("radio", { checked: true })).not.toBeInTheDocument();
+    // Nothing can be approved before a tier is picked.
+    expect(within(dialog).getByRole("button", { name: "Approve" })).toBeDisabled();
     expect(within(group).getByRole("radio", { name: "Tight" })).toHaveAccessibleDescription(
       "Liquidity b 500 tokens Loss budget 346.57 tokens",
     );
@@ -108,7 +109,7 @@ describe("Approve", () => {
   test("sends the tier alone when nothing was changed, and the screen updates from the answer", async () => {
     const opened = adminMarket({ status: "OPEN", tier: "MEDIUM", b_cr: "2000" });
     const { api, user } = show(proposed(), { [APPROVE]: json(200, opened) });
-    const dialog = await openDialog(user, "Approve", "dialog", "Approve market");
+    const dialog = await openApproval(user);
 
     await user.click(within(dialog).getByRole("button", { name: "Approve" }));
 
@@ -155,7 +156,7 @@ describe("Approve", () => {
 
   test("the wording and the two times can be changed, and only what was changed is sent", async () => {
     const { api, user } = show(proposed(), { [APPROVE]: json(200, adminMarket()) });
-    const dialog = await openDialog(user, "Approve", "dialog", "Approve market");
+    const dialog = await openApproval(user);
 
     const edit = within(dialog).getByRole("button", { name: "Edit wording and times" });
     expect(edit).toHaveAttribute("aria-expanded", "false");
@@ -174,11 +175,11 @@ describe("Approve", () => {
     expect(within(dialog).getByLabelText("Trading closes")).toHaveValue("2026-10-14T18:00");
     expect(within(dialog).getByLabelText("Decided by")).toHaveValue("2026-10-21T18:00");
 
+    // Each text goes in with one paste: the test is about what is sent, not about typing.
     await user.clear(question);
-    await user.click(question);
     await user.paste("Will the Polybahn run without a break during the exam session?");
     await user.clear(within(dialog).getByLabelText("Trading closes"));
-    await user.type(within(dialog).getByLabelText("Trading closes"), "2026-10-15T12:00");
+    await user.paste("2026-10-15T12:00");
     await user.click(within(dialog).getByRole("button", { name: "Approve" }));
 
     await gone("dialog");
@@ -191,7 +192,7 @@ describe("Approve", () => {
 
   test("a time that was entered again as it was is no change", async () => {
     const { api, user } = show(proposed(), { [APPROVE]: json(200, adminMarket()) });
-    const dialog = await openDialog(user, "Approve", "dialog", "Approve market");
+    const dialog = await openApproval(user);
     await user.click(within(dialog).getByRole("button", { name: "Edit wording and times" }));
 
     await user.clear(within(dialog).getByLabelText("Decided by"));
@@ -204,7 +205,7 @@ describe("Approve", () => {
 
   test("folding the fields away drops what was changed in them, and an emptied field cannot be sent", async () => {
     const { api, user } = show(proposed(), { [APPROVE]: json(200, adminMarket()) });
-    const dialog = await openDialog(user, "Approve", "dialog", "Approve market");
+    const dialog = await openApproval(user);
     const edit = within(dialog).getByRole("button", { name: "Edit wording and times" });
     const approve = within(dialog).getByRole("button", { name: "Approve" });
 
@@ -230,7 +231,7 @@ describe("Approve", () => {
         { limit: "MAX_OPEN_MARKETS" },
       ),
     });
-    const dialog = await openDialog(user, "Approve", "dialog", "Approve market");
+    const dialog = await openApproval(user);
 
     await user.click(within(dialog).getByRole("button", { name: "Approve" }));
 
@@ -274,7 +275,7 @@ describe("Approve", () => {
         field: "close_at",
       }),
     });
-    const dialog = await openDialog(user, "Approve", "dialog", "Approve market");
+    const dialog = await openApproval(user);
 
     await user.click(within(dialog).getByRole("button", { name: "Approve" }));
 
@@ -523,16 +524,20 @@ describe("Void", () => {
         resolved_at: "2026-10-15T08:30:00Z",
       },
     });
-  const costing = (void_cost_cr: string) =>
-    json(200, risk({ markets: [riskMarketRow({ id: MARKET_ID, void_cost_cr })] }));
+  /** The market as the read of an opening answers it, with what a void costs right now. */
+  const costing = (void_cost_cr: string | null, overrides: Partial<MarketDetailResponse> = {}) =>
+    json(200, closed({ void_cost_cr, ...overrides }));
 
-  test("states the market's void rule and what a void costs VIS now, and sends the reason", async () => {
-    const { api, user } = show(closed(), { [VOID]: json(200, voided()), [RISK]: costing("12.5") });
+  test("states the market's void rule and what a void costs VIS now, from the market itself, and sends the reason", async () => {
+    const { api, user } = show(closed({ void_cost_cr: "12.5" }), { [VOID]: json(200, voided()) });
     const dialog = await openDialog(user, "Void", "alertdialog", "Void market");
 
     expect(dialog).toHaveAccessibleDescription(VOID_RULE);
     const cost = within(dialog).getByText("What a void costs VIS now").parentElement!;
     expect(await within(cost).findByText("12.5 tokens")).toBeInTheDocument();
+    // The figure is the market's own: the dialog asked for the market, and for nothing else.
+    expect(api.calls(MARKET)).toHaveLength(2);
+    expect(api.requests.map((request) => request.path)).not.toContain("/api/admin/risk");
     const confirm = within(dialog).getByRole("button", { name: "Void" });
     expect(confirm).toHaveAttribute("data-variant", "destructive");
     expect(confirm).toBeDisabled();
@@ -550,26 +555,16 @@ describe("Void", () => {
     expect(screen.queryByRole("region", { name: "Actions" })).not.toBeInTheDocument();
   });
 
-  test("the cost is read afresh when the dialog opens: a figure from an earlier read is not shown, and nothing can be confirmed meanwhile", async () => {
+  test("the market is read afresh when the dialog opens: a figure from the read before is not shown, and nothing can be confirmed meanwhile", async () => {
     const fresh = deferred();
-    const api = mockApi({
-      [MARKET]: json(200, closed()),
-      [ME]: json(200, adminUser),
-      [RISK]: fresh.handler,
-    });
-    const client = createTestQueryClient();
-    client.setQueryData(
-      keys.admin.risk,
-      risk({ markets: [riskMarketRow({ id: MARKET_ID, void_cost_cr: "999" })] }),
-    );
-    const { user } = renderWithProviders(<AdminMarketScreen marketId={MARKET_ID} />, {
-      me: adminUser,
-      client,
-    });
+    const { api, user } = show(closed({ void_cost_cr: "999" }));
+    await screen.findByRole("button", { name: "Void" });
+    api.on(MARKET, fresh.handler);
+
     const dialog = await openDialog(user, "Void", "alertdialog", "Void market");
     await user.type(within(dialog).getByLabelText("Reason"), "The source was discontinued.");
 
-    await waitFor(() => expect(api.calls(RISK)).toHaveLength(1));
+    await waitFor(() => expect(api.calls(MARKET)).toHaveLength(2));
     const cost = within(dialog).getByText("What a void costs VIS now").parentElement!;
     expect(within(cost).queryByText(/999/)).not.toBeInTheDocument();
     expect(cost.querySelector("[data-slot=skeleton]")).toBeInTheDocument();
@@ -583,31 +578,32 @@ describe("Void", () => {
   });
 
   test("a cost the API sends with a minus sign keeps it", async () => {
-    const { user } = show(closed(), { [RISK]: costing("-130.752819") });
+    const { user } = show(closed({ void_cost_cr: "-130.752819" }));
     const dialog = await openDialog(user, "Void", "alertdialog", "Void market");
 
     const cost = within(dialog).getByText("What a void costs VIS now").parentElement!;
     expect(await within(cost).findByText("−130.75 tokens")).toBeInTheDocument();
   });
 
-  test("when the cost cannot be read, the dialog shows the banner and cannot be confirmed", async () => {
-    const { api, user } = show(closed(), {
-      [RISK]: apiError(
-        503,
-        "SERVICE_UNAVAILABLE",
-        "This is temporarily unavailable. Try again shortly.",
-      ),
-    });
+  test("when the market cannot be read, the dialog shows the banner and cannot be confirmed", async () => {
+    const { api, user } = show(closed({ void_cost_cr: "999" }));
+    await screen.findByRole("button", { name: "Void" });
+    api.on(
+      MARKET,
+      apiError(503, "SERVICE_UNAVAILABLE", "This is temporarily unavailable. Try again shortly."),
+    );
     const dialog = await openDialog(user, "Void", "alertdialog", "Void market");
     await user.type(within(dialog).getByLabelText("Reason"), "The source was discontinued.");
 
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
       "This is temporarily unavailable. Try again shortly.",
     );
+    // The figure of the read before is no figure for this opening.
+    expect(within(dialog).queryByText(/999/)).not.toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Void" })).toBeDisabled();
     expect(api.calls(VOID)).toHaveLength(0);
 
-    api.on(RISK, costing("12.5"));
+    api.on(MARKET, costing("12.5"));
     await user.click(within(dialog).getByRole("button", { name: "Try again" }));
 
     expect(await within(dialog).findByText("12.5 tokens")).toBeInTheDocument();
@@ -615,15 +611,21 @@ describe("Void", () => {
     expect(within(dialog).getByRole("button", { name: "Void" })).toBeEnabled();
   });
 
-  test("a market that is missing from the risk figures was settled meanwhile: nothing can be confirmed and the market is read again", async () => {
-    const { api, user } = show(closed(), { [RISK]: json(200, risk({ markets: [] })) });
+  test("a market the API has no figure for was settled meanwhile: nothing can be confirmed, and the screen behind shows it as it is", async () => {
+    const { api, user } = show(closed({ void_cost_cr: "999" }));
+    await screen.findByRole("button", { name: "Void" });
+    api.on(MARKET, json(200, { ...voided(), void_cost_cr: null }));
+
     const dialog = await openDialog(user, "Void", "alertdialog", "Void market");
     await user.type(within(dialog).getByLabelText("Reason"), "The source was discontinued.");
 
     const cost = within(dialog).getByText("What a void costs VIS now").parentElement!;
     expect(await within(cost).findByText("none yet")).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Void" })).toBeDisabled();
-    await waitFor(() => expect(api.calls(MARKET)).toHaveLength(2));
+    expect(api.calls(VOID)).toHaveLength(0);
+    // Behind the dialog the market is what the read says it is.
+    expect(screen.getByRole("status", { hidden: true })).toHaveTextContent("Voided");
+    expect(screen.queryByRole("region", { name: "Actions", hidden: true })).not.toBeInTheDocument();
   });
 });
 
@@ -671,10 +673,45 @@ describe("every dialog", () => {
     expect(halt).toBeDisabled();
     expect(halt).toHaveAttribute("aria-busy", "true");
     expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
-    expect(within(dialog).queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
+    // The close cross stays in its place, disabled: it is never taken away.
+    expect(within(dialog).getByRole("button", { name: "Close" })).toBeDisabled();
     await user.keyboard("{Escape}");
     expect(screen.getByRole("dialog", { name: "Halt market" })).toBeInTheDocument();
     expect(api.calls(HALT)).toHaveLength(1);
+
+    answer.resolve(json(200, halted()));
+    await gone("dialog");
+    expect(api.calls(HALT)).toHaveLength(1);
+  });
+
+  test("two submits in one moment are one action: the second is stopped where it is made", async () => {
+    const answer = deferred();
+    const api = mockApi({
+      [MARKET]: json(200, adminMarket()),
+      [ME]: json(200, adminUser),
+      [HALT]: answer.handler,
+    });
+    const { user } = renderWithProviders(<AdminMarketScreen marketId={MARKET_ID} />, {
+      me: adminUser,
+    });
+    const dialog = await openDialog(user, "Halt", "dialog", "Halt market");
+    await user.type(within(dialog).getByLabelText("Reason"), "The source is offline.");
+    const form = dialog.querySelector("form")!;
+
+    // Enter and a click, or a tap that lands twice: no render lies between the two, so
+    // the button was not disabled for the second.
+    act(() => {
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+
+    await waitFor(() => expect(api.calls(HALT)).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(api.calls(HALT)).toHaveLength(1);
+    expect(within(dialog).getByRole("button", { name: "Halt" })).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
 
     answer.resolve(json(200, halted()));
     await gone("dialog");

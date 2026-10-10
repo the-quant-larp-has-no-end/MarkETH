@@ -5,7 +5,7 @@ import { type ReactNode, useId, useState } from "react";
 
 import { QueryState } from "@/components/feedback";
 import { Field } from "@/components/form";
-import { StatusBadge, statusName } from "@/components/market";
+import { StatusBadge, statusName, useAskAtClose } from "@/components/market";
 import { Amount } from "@/components/money";
 import { Screen } from "@/components/shell";
 import { DateTime } from "@/components/time";
@@ -91,18 +91,34 @@ function Section({
 
 /**
  * Admin: the proposal queue and the markets (`/admin`, DESIGN.md §13). First the
- * proposals that wait for a decision, from `GET /markets` with `status` PROPOSED; then
- * all markets, with a status select. Each choice of the select sends its one `status`,
- * and "All" sends all seven, because a request without `status` leaves PROPOSED and
- * REJECTED out. A row opens the admin view of its market.
+ * proposals that wait for a decision, from `GET /markets` with `status` PROPOSED: the
+ * API lists there what an admin can still decide on, and a proposal whose close time has
+ * passed is reported EXPIRED and is not among them. Then all markets, with a status
+ * select. Each choice of the select sends its one `status`, and "All" sends every status
+ * by name, because a request without `status` leaves PROPOSED, EXPIRED and REJECTED out.
+ * A row opens the admin view of its market.
  *
- * The rows stand in the API's order. Nothing is live: the lists are read when the screen
- * opens and when the window gets the focus back.
+ * The rows stand in the API's order. The lists are read when the screen opens and when the
+ * window gets the focus back. One thing happens to them without anybody acting: a proposal
+ * in review reaches its `close_at` and expires, and no event says so. So both lists are
+ * read again at the earliest close time among the rows they show as PROPOSED, and after
+ * the answer at the earliest one that is left (`useAskAtClose`): the proposal leaves the
+ * queue, and the table shows it as the API reports it.
  */
 export function AdminMarketsScreen() {
   const [status, setStatus] = useState<MarketStatus | typeof ALL>(ALL);
   const proposals = useQuery(marketsQuery(PROPOSED));
   const markets = useQuery(marketsQuery(status === ALL ? ALL_STATUSES : [status]));
+  const { refetch: readProposals } = proposals;
+  const { refetch: readMarkets } = markets;
+
+  const closeTimes = [...(proposals.data?.items ?? []), ...(markets.data?.items ?? [])]
+    .filter((market) => market.status === "PROPOSED")
+    .map((market) => market.close_at);
+  useAskAtClose(closeTimes, () => {
+    void readProposals({ cancelRefetch: false });
+    void readMarkets({ cancelRefetch: false });
+  });
 
   return (
     <Screen top="main" title="Admin">

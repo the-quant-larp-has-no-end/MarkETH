@@ -60,6 +60,10 @@ x-needs-schema: &needs-schema
 # Each service has a hard memory limit from .env: the VM has 7.6 GiB and no swap, and a
 # leak should restart one container instead of starving the host.
 #
+# nginx and api also have their limit of open files from .env, the two containers whose
+# open connections grow with the number of people in the room. Without the line a
+# container has whatever the Docker daemon of its host hands out.
+#
 # Each service also names its networks (they are at the end of this file): nginx is on
 # both, the web app on `edge` alone, everything else on `core` alone.
 services:
@@ -69,6 +73,12 @@ services:
     image: nginx:1.30-alpine
     restart: unless-stopped
     mem_limit: ${NGINX_MEMORY_LIMIT:?}
+    # A request the proxy passes on is two connections it holds, one to the client and
+    # one upstream, and an open event stream holds its two for as long as it lasts.
+    ulimits:
+      nofile:
+        soft: ${NGINX_NOFILE_LIMIT:?}
+        hard: ${NGINX_NOFILE_LIMIT:?}
     logging: *logging
     networks:
       - edge
@@ -85,6 +95,10 @@ services:
       NGINX_SSE_READ_TIMEOUT: ${NGINX_SSE_READ_TIMEOUT:?}
       NGINX_SSE_STREAMS_PER_CALLER: ${NGINX_SSE_STREAMS_PER_CALLER:?}
       NGINX_CONTENT_SECURITY_POLICY: ${NGINX_CONTENT_SECURITY_POLICY:?}
+      # The `edge` network as it is defined at the end of this file. The proxy answers
+      # nothing under /api/ to a peer on it other than its gateway.
+      NGINX_EDGE_SUBNET: ${EDGE_SUBNET:?}
+      NGINX_EDGE_GATEWAY: ${EDGE_GATEWAY:?}
     volumes:
       # infra/nginx/conf.d is rendered to /etc/nginx/conf.d, which the image's nginx.conf
       # loads. The directory is mounted, never a single file: a mounted file stays the
@@ -132,6 +146,10 @@ services:
     # The image's command plus a limit on how long a stop waits for requests in flight.
     # An open event stream never ends by itself: without the limit every restart would
     # last until Docker kills the process.
+    #
+    # uvicorn writes no access log. Its line holds the whole request line, query string
+    # included, and a query can hold a name an admin searches for. The access log of the
+    # stack is the proxy's, which leaves the query out.
     command:
       - uvicorn
       - app.main:create_app
@@ -143,10 +161,17 @@ services:
       - --proxy-headers
       - --forwarded-allow-ips
       - "*"
+      - --no-access-log
       - --timeout-graceful-shutdown
       - "${API_SHUTDOWN_TIMEOUT_SECONDS:?}"
     restart: unless-stopped
     mem_limit: ${API_MEMORY_LIMIT:?}
+    # One process serves the API, and every open event stream is a socket it holds,
+    # beside its connections to Postgres and the requests in flight.
+    ulimits:
+      nofile:
+        soft: ${API_NOFILE_LIMIT:?}
+        hard: ${API_NOFILE_LIMIT:?}
     networks:
       - core
     depends_on: *needs-schema
@@ -239,9 +264,22 @@ services:
       retries: 5
 
   # 2026.1 is ScyllaDB's long-term-support line; the image is built for arm64 and amd64.
-  # The flags are SPEC §9's. SCYLLA_MEMORY is what ScyllaDB itself is told to use; the
-  # container limit sits well above it, for the processes around it and for the Python
-  # process each cqlsh check starts.
+  # The four flags are the ones SPEC §9 names; how many shards and how much memory is
+  # for .env to say.
+  #
+  # SCYLLA_MEMORY is what ScyllaDB itself is told to use, in its own spelling: 2G or
+  # 2048M, capital letter. It does not start with 2g. SCYLLA_MEMORY_LIMIT is the
+  # container's limit and has to leave room for it. Of what the container may use,
+  # ScyllaDB sets 1.5 GiB aside for everything that is not its own, and on top of that
+  # what the kernel of the host keeps free (vm.min_free_kbytes: 44 MiB under Docker
+  # Desktop, 66 MiB on the VM). It refuses to start unless what remains is at least
+  # SCYLLA_MEMORY: "insufficient physical memory". The share set aside is where the
+  # processes around it live, and the Python process each cqlsh check starts.
+  # backend/tests/unit/test_stack_files.py holds the two values to that rule.
+  #
+  # A ScyllaDB that refused does not end its container. The image's supervisor gives up on
+  # it and keeps running, so Docker restarts nothing and shows the container as
+  # "unhealthy"; the reason is in its log.
   scylla:
     image: scylladb/scylla:2026.1
     restart: unless-stopped
@@ -276,9 +314,21 @@ volumes:
 # Two networks, so that the web app shares one with the proxy and with nothing else. It
 # serves the same pages to everybody and needs neither the API nor a store, so it cannot
 # open a connection to any of them: Redis and ScyllaDB ask for no password, and the API
-# takes its caller from two request headers. The proxy is all the web app reaches.
+# takes its caller from two request headers.
+#
+# The networks alone do not keep the web app from the API. The proxy listens on `edge`
+# as well, and under /api/ it hands a request on with the two headers it came with. So
+# the proxy itself refuses /api/ to a peer on `edge`: that is why this network has a
+# fixed address range, which the proxy is told (infra/nginx/conf.d). The gateway, the
+# address the host has on the network, is not refused. Depending on how Docker passes
+# on what arrives on the published port, the proxy sees it coming from the gateway of
+# one of its two networks, and which of the two is Docker's choice.
 networks:
   # nginx and web.
   edge:
+    ipam:
+      config:
+        - subnet: ${EDGE_SUBNET:?}
+          gateway: ${EDGE_GATEWAY:?}
   # nginx, the API and what the API works with.
   core:

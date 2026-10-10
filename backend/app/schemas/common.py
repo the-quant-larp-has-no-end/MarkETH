@@ -18,6 +18,19 @@ Error details. `ErrorResponse` lists what `details` holds for each code. An amou
 there is named `*_cr` and written like every other amount: pass `to_cr(micro)` or
 `format_cr(micro)`, both arrive as `"0.25"`. What a `LIMIT_EXCEEDED` ran into is
 named by a `Limit` member under `details.limit`.
+
+What a field says when it is filled in wrongly. A 422 shows a person one sentence per
+field, and a form puts it under that field as it is. `app/api/validation.py` makes
+that sentence from the rule that was broken. A field whose rule needs words of its own
+says them here, with three helpers:
+
+    said(kind, sentence)                 an error in the field's own words
+    in_its_own_words(type=sentence)      the same, for rules a `Field(...)` states
+    on_field(field, kind, sentence)      a rule about several fields, shown on one
+
+A sentence is short, says what to do and ends with a full stop. On screen a credit is
+a token: no sentence says "credit" or "CR". No validator of a request model raises a
+bare `ValueError`: its text would reach the screen as the framework frames it.
 """
 
 import re
@@ -27,12 +40,18 @@ from enum import StrEnum
 from typing import Annotated, Any, Final
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
     GetCoreSchemaHandler,
     GetJsonSchemaHandler,
     SerializerFunctionWrapHandler,
+    StrictBool,
+    ValidationError,
+    ValidatorFunctionWrapHandler,
+    WithJsonSchema,
+    WrapValidator,
     field_serializer,
 )
 from pydantic.json_schema import JsonSchemaValue
@@ -56,6 +75,76 @@ DEFAULT_PAGE_SIZE: Final[int] = 50
 MAX_PAGE_SIZE: Final[int] = 200
 
 _PLAIN_DECIMAL: Final[re.Pattern[str]] = re.compile(r"-?[0-9]+(\.[0-9]+)?")
+
+SENTENCE: Final[str] = "sentence"
+"""Key under which an error carries the sentence of its field, in its context (`said`).
+`app/api/validation.py` shows that sentence as the error's `msg`."""
+
+NOT_AN_AMOUNT_MESSAGE: Final[str] = "Enter an amount, for example 12.5."
+TOO_MANY_PLACES_MESSAGE: Final[str] = f"Use at most {DECIMAL_PLACES} decimal places."
+AMOUNT_TOO_LARGE_MESSAGE: Final[str] = "Enter a smaller amount."
+AMOUNT_NOT_POSITIVE_MESSAGE: Final[str] = "Enter an amount above 0."
+AMOUNT_NEGATIVE_MESSAGE: Final[str] = "Enter an amount of 0 or more."
+AMOUNT_ZERO_MESSAGE: Final[str] = "Enter an amount other than 0."
+"""What an amount field says for each rule an amount can break (`_DecimalString`)."""
+
+ACCEPT_THE_POLICY_MESSAGE: Final[str] = "Accept the usage policy to continue."
+"""What a request says that has to state the acceptance of the usage policy and does
+not (`Accepted`)."""
+
+
+def said(kind: str, sentence: str) -> PydanticCustomError:
+    """A validation error in the words of the field that raises it.
+
+    `sentence` is written for the person who filled the field in and is shown under
+    it as it is. `kind` is the `type` the error is reported with: the framework's own
+    name of the rule where it has one (`string_pattern_mismatch`, `less_than_equal`),
+    so that a `type` names the same rule whoever worded the message, and a name of
+    ours for a rule of ours (`decimal_places`).
+    """
+    return PydanticCustomError(kind, "{sentence}", {SENTENCE: sentence})
+
+
+def in_its_own_words(**sentences: str) -> WrapValidator:
+    """Lets a field answer a broken rule in its own words.
+
+    It goes last in the `Annotated[...]` of a field, after the `Field(...)` whose rules
+    it speaks for:
+
+        Annotated[str, Field(pattern=...), in_its_own_words(string_pattern_mismatch="...")]
+
+    Each keyword is the `type` of an error those rules raise, and the sentence to say
+    for it. An error of any other type passes as it is and gets the sentence of the
+    table. The rules themselves are not touched, so the JSON schema of the field
+    keeps its pattern and its bounds.
+    """
+
+    def validate(value: Any, handler: ValidatorFunctionWrapHandler) -> Any:
+        try:
+            return handler(value)
+        except ValidationError as refused:
+            (first, *_) = refused.errors(
+                include_url=False, include_context=False, include_input=False
+            )
+            sentence = sentences.get(first["type"])
+            if sentence is None:
+                raise
+            raise said(first["type"], sentence) from None
+
+    return WrapValidator(validate)
+
+
+def on_field(field: str, kind: str, sentence: str) -> ValidationError:
+    """A rule about several fields of a request, reported on one of them.
+
+    Raise it from a `model_validator(mode="after")`. The error then names `field` in
+    its `loc`, like an error of that field's own rules, so a form shows `sentence`
+    under it. Raising `said(...)` there instead reports the rule on the request as a
+    whole, which no field of a form shows.
+    """
+    return ValidationError.from_exception_data(
+        "request", [{"type": said(kind, sentence), "loc": (field,), "input": None}]
+    )
 
 
 class RequestModel(BaseModel):
@@ -87,12 +176,15 @@ class _DecimalString:
 
     Input accepts a plain decimal string (`"1"`, `"0.25"`), an integer, or a `Decimal`
     built by a service. A JSON float, a boolean, an exponent, a blank or a seventh
-    decimal place is rejected. Output trims trailing zeros (`"0.5"`, `"2"`). The JSON
-    schema is `string` in both directions.
+    decimal place is rejected. So is a number of any length that is no amount: one
+    with a million digits is too large, and one with a million decimal places has
+    too many, like any other. Output trims trailing zeros (`"0.5"`, `"2"`). The
+    JSON schema is `string` in both directions.
     """
 
     signed: bool = False
     positive: bool = False
+    non_zero: bool = False
     integer_digits: int = AMOUNT_INTEGER_DIGITS
 
     def __get_pydantic_core_schema__(
@@ -119,24 +211,22 @@ class _DecimalString:
 
     def _parse(self, value: object) -> Decimal:
         amount = _to_decimal(value)
+        # The size first, read off the exponent: no arithmetic is done with a number
+        # of a million digits. Arithmetic on one either gives up (`decimal.Overflow`
+        # in the default context) or takes seconds (the exact conversion below).
+        # `adjusted()` is the power of ten of the first digit that is not zero.
+        if amount and amount.adjusted() >= self.integer_digits:
+            raise said("decimal_too_large", AMOUNT_TOO_LARGE_MESSAGE)
         try:
             to_micro(amount)
         except PrecisionError as exc:
-            raise PydanticCustomError(
-                "decimal_places",
-                "Input should have at most {places} decimal places",
-                {"places": DECIMAL_PLACES},
-            ) from exc
+            raise said("decimal_places", TOO_MANY_PLACES_MESSAGE) from exc
         if self.positive and amount <= 0:
-            raise PydanticCustomError("decimal_not_positive", "Input should be greater than 0")
+            raise said("decimal_not_positive", AMOUNT_NOT_POSITIVE_MESSAGE)
         if not self.signed and amount < 0:
-            raise PydanticCustomError("decimal_negative", "Input should not be negative")
-        if abs(amount) >= Decimal(10) ** self.integer_digits:
-            raise PydanticCustomError(
-                "decimal_too_large",
-                "Input should have at most {digits} digits before the decimal point",
-                {"digits": self.integer_digits},
-            )
+            raise said("decimal_negative", AMOUNT_NEGATIVE_MESSAGE)
+        if self.non_zero and amount == 0:
+            raise said("decimal_zero", AMOUNT_ZERO_MESSAGE)
         return amount
 
 
@@ -148,7 +238,7 @@ def _to_decimal(value: object) -> Decimal:
         return Decimal(value)
     if isinstance(value, str) and _PLAIN_DECIMAL.fullmatch(value):
         return Decimal(value)
-    raise PydanticCustomError("decimal_string", 'Input should be a decimal string such as "0.25"')
+    raise said("decimal_string", NOT_AN_AMOUNT_MESSAGE)
 
 
 def _to_string(value: Decimal) -> str:
@@ -182,6 +272,12 @@ PositiveCreditAmount = Annotated[
 SignedCreditAmount = Annotated[Decimal, _DecimalString(signed=True)]
 """Credits (CR) that may be negative: a ledger line, a market account, VIS's exposure."""
 
+NonZeroCreditAmount = Annotated[
+    Decimal, _DecimalString(signed=True, non_zero=True, integer_digits=REQUEST_INTEGER_DIGITS)
+]
+"""Credits (CR) a request moves one way or the other: above zero to add, below zero to
+take away, never zero, and between -10^9 and 10^9."""
+
 ShareAmount = Annotated[Decimal, _DecimalString()]
 """Shares, zero or more. One winning share pays 1 CR."""
 
@@ -192,6 +288,23 @@ PositiveShareAmount = Annotated[
 
 Probability = Annotated[float, Field(ge=0, le=1)]
 """A price in [0, 1], rounded to `PRICE_DISPLAY_DECIMALS + 2` places (Appendix A.2)."""
+
+
+def _accepted(value: bool) -> bool:
+    if not value:
+        raise said("not_accepted", ACCEPT_THE_POLICY_MESSAGE)
+    return value
+
+
+Accepted = Annotated[
+    StrictBool,
+    AfterValidator(_accepted),
+    in_its_own_words(bool_type=ACCEPT_THE_POLICY_MESSAGE),
+    WithJsonSchema({"type": "boolean", "const": True}),
+]
+"""The acceptance of the usage policy, which a request has to state: the JSON `true`
+and nothing that merely counts as true. `false`, a number and a string are rejected
+on the field."""
 
 
 class Limit(StrEnum):
@@ -208,6 +321,24 @@ class Limit(StrEnum):
     ONE_CODE_PER_USER = "ONE_CODE_PER_USER"
     """The user already redeemed a code of a batch that allows one per user (SPEC §2)."""
 
+    MAX_ADMIN_ADJUSTMENT_CR = "MAX_ADMIN_ADJUSTMENT_CR"
+    """An admin's adjustment would add more to a balance than one adjustment may."""
+
+    PROGRAMME_CHANGE_COOLDOWN_DAYS = "PROGRAMME_CHANGE_COOLDOWN_DAYS"
+    """The degree programme of the profile changed fewer days ago than a change waits."""
+
+    DISCUSSION_MAX_WAITING_PER_USER = "DISCUSSION_MAX_WAITING_PER_USER"
+    """The user has that many questions waiting for an answer in the market."""
+
+    DISCUSSION_MAX_QUESTIONS_PER_MARKET = "DISCUSSION_MAX_QUESTIONS_PER_MARKET"
+    """The market holds as many questions as one market may."""
+
+    MAX_LIVE_BROADCASTS = "MAX_LIVE_BROADCASTS"
+    """As many live streams run as may run at once."""
+
+    MAX_BROADCAST_REQUESTS_PER_USER_PER_DAY = "MAX_BROADCAST_REQUESTS_PER_USER_PER_DAY"
+    """The user asked to go live as often today as one user may."""
+
 
 class ErrorResponse(ResponseModel):
     """The body of every non-2xx response (SPEC §10, Appendix A.2).
@@ -216,8 +347,14 @@ class ErrorResponse(ResponseModel):
     object, empty unless the code is one of these:
 
     * `VALIDATION_ERROR`. A request that does not match its schema: `errors`, a list
-      of `{loc, msg, type}`, one per field. A rule a service checks: `field`, the name
-      of the offending field.
+      of `{loc, msg, type}`, one per field. `loc` ends with the name of the field,
+      `msg` is a sentence for the person who filled it in, to be shown under the
+      field as it is ("Use at most 200 characters."), and `type` names the rule
+      that was broken. A rule a service checks: `field`, the name of the offending
+      field, and `message` is the sentence for it. A profile created without
+      `policy_accepted: true` is such a rule, and its `field` is `policy_accepted`;
+      so is a filter of the leaderboard whose `min_…` is above its `max_…`, with
+      the `min_…` as its `field`.
     * `FORBIDDEN`, when the portal's id is not an address MarkETH is open to:
       `allowed_domains`, a list of the domains it is open to.
     * `PROFILE_REQUIRED`: `name` and `email`, who the portal says is calling. `name`
@@ -228,13 +365,22 @@ class ErrorResponse(ResponseModel):
     * `QUOTE_STALE`: `quote`, a fresh `QuoteResponse` for the same trade.
     * `LIMIT_EXCEEDED`: `limit`, which names the limit: `MAX_STAKE_PER_USER_MARKET`,
       `MAX_PROPOSALS_PER_USER_PER_DAY`, `MAX_OPEN_MARKETS`, `MAX_MARKET_BUDGET`,
-      `MAX_AGGREGATE_LOSS_BUDGET`, `MAX_CODE_ISSUANCE_PER_MONTH` or
-      `ONE_CODE_PER_USER`. With `MAX_STAKE_PER_USER_MARKET` also `stake_limit_cr` and
-      `stake_left_cr`; with `MAX_CODE_ISSUANCE_PER_MONTH` also `issued_cr`,
-      `requested_cr` and `cap_cr`.
-    * `INSUFFICIENT_BALANCE`: `balance_cr` and `required_cr`.
+      `MAX_AGGREGATE_LOSS_BUDGET`, `MAX_CODE_ISSUANCE_PER_MONTH`,
+      `ONE_CODE_PER_USER` or `MAX_ADMIN_ADJUSTMENT_CR`. With
+      `MAX_STAKE_PER_USER_MARKET` also `stake_limit_cr` and `stake_left_cr`; with
+      `MAX_CODE_ISSUANCE_PER_MONTH` also `issued_cr`, `requested_cr` and `cap_cr`;
+      with `MAX_ADMIN_ADJUSTMENT_CR` also `requested_cr`, what the adjustment would
+      add, and `cap_cr`, the most one adjustment may add.
+    * `INSUFFICIENT_BALANCE`: `balance_cr` and `required_cr`. Where an admin debits
+      somebody's balance, they are what that account holds and what the debit takes.
     * `SERVICE_UNAVAILABLE`, from `GET /health` only: `postgres`, `redis` and
       `scylla`, each `up` or `down`.
+
+    A quote is answered like its trade. `GET /markets/{id}/quote` gives a buy the
+    caller could not make the error the trade would get, with the same details:
+    `LIMIT_EXCEEDED` with `MAX_STAKE_PER_USER_MARKET`, `stake_limit_cr` and
+    `stake_left_cr` above the stake left, `INSUFFICIENT_BALANCE` with `balance_cr`
+    and `required_cr` above the balance.
 
     Amounts in `details` are decimal strings like every `*_cr` field.
     """

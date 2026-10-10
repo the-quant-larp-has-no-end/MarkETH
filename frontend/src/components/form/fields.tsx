@@ -6,7 +6,13 @@ import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
 import { useConfig } from "@/lib/api/session";
-import { formatCode, fromDateTimeInput, toDateTimeInput } from "@/lib/format";
+import {
+  formatCode,
+  fromDateTimeInput,
+  toDateTimeInput,
+  typedDecimal,
+  typedWhole,
+} from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 import { Field, type FieldProps } from "./field";
@@ -145,6 +151,11 @@ export type DateTimeFieldProps = FieldProps &
  * A date and a time (DESIGN.md §10): entered and shown in the `timezone` of `/config`,
  * whatever the device is set to, and handed on as ISO 8601 with that zone's offset,
  * ready to be sent.
+ *
+ * While it holds no value the browser fills the field itself, with the format of a date
+ * and a time or with today's date. That is a placeholder and has the colour of one
+ * (DESIGN.md §12): a browser that derives the colour of what it puts there from the
+ * colour of the field's text derives it from `--muted-foreground`.
  */
 export function DateTimeField({
   label,
@@ -167,10 +178,66 @@ export function DateTimeField({
           {...input}
           {...control}
           type="datetime-local"
+          className={cn(value === null && "text-muted-foreground")}
           value={value === null ? "" : toDateTimeInput(value, timezone)}
           min={min === undefined ? undefined : toDateTimeInput(min, timezone)}
           max={max === undefined ? undefined : toDateTimeInput(max, timezone)}
           onChange={(event) => onChange(fromDateTimeInput(event.target.value, timezone))}
+        />
+      )}
+    </Field>
+  );
+}
+
+export type AmountFieldProps = FieldProps &
+  Omit<
+    ComponentProps<"input">,
+    Wired | "className" | "type" | "value" | "onChange" | "inputMode"
+  > & {
+    /** What the field holds: the characters that were typed, exactly as they are sent. */
+    value: string;
+    onChange: (value: string) => void;
+    /** A whole number: digits alone, on the numeric keypad. */
+    whole?: boolean;
+    inputClassName?: string;
+  };
+
+/**
+ * A number the user types (DESIGN.md §12): an amount of tokens, a bound of a filter, a
+ * number of codes. A text field that opens the decimal keypad, or the numeric one for a
+ * whole number, and keeps the characters a figure can have: digits and one decimal point.
+ * A comma becomes a point as it is typed, and any other character is not taken, so the
+ * field shows what is sent.
+ *
+ * What it holds stays a string (DESIGN.md §10). The field reads it as no number and
+ * measures it against nothing: whether an amount is one the API takes is the API's to say.
+ */
+export function AmountField({
+  label,
+  help,
+  error,
+  counter,
+  className,
+  value,
+  onChange,
+  whole = false,
+  inputClassName,
+  ...input
+}: AmountFieldProps) {
+  return (
+    <Field label={label} help={help} error={error} counter={counter} className={className}>
+      {(control) => (
+        <Input
+          autoComplete="off"
+          {...input}
+          {...control}
+          type="text"
+          inputMode={whole ? "numeric" : "decimal"}
+          value={value}
+          onChange={(event) =>
+            onChange(whole ? typedWhole(event.target.value) : typedDecimal(event.target.value))
+          }
+          className={inputClassName}
         />
       )}
     </Field>

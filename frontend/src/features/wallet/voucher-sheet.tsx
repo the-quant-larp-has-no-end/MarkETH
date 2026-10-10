@@ -58,8 +58,8 @@ export function VoucherSheet({
   const days = config.voucher_expiry_days;
 
   /**
-   * A refusal is about the product that was asked for: with another choice it no longer
-   * applies. The wait after `RATE_LIMITED` is the exception: it belongs to the caller.
+   * A refusal is about the product that was asked for: it holds for that choice alone.
+   * The wait after `RATE_LIMITED` is the exception: it belongs to the caller.
    */
   const dropRefusal = () => {
     if (wait === 0) issue.forget();

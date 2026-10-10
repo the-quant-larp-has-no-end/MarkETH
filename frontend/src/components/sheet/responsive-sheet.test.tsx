@@ -11,10 +11,14 @@ import { ResponsiveSheet, SheetBody, SheetFooter } from "./responsive-sheet";
 function Example({
   dismissible,
   hideTitle,
+  header,
+  dialog,
   onOpenChange,
 }: {
   dismissible?: boolean;
   hideTitle?: boolean;
+  header?: string;
+  dialog?: boolean;
   onOpenChange?: (open: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -32,7 +36,9 @@ function Example({
         onOpenChange={change}
         title="Redeem code"
         hideTitle={hideTitle}
+        header={header}
         dismissible={dismissible}
+        dialog={dialog}
       >
         <SheetBody>
           <label>
@@ -62,11 +68,63 @@ describe.each([
     expect(sheet).toHaveAttribute("data-slot", slot);
     expect(sheet).toHaveClass("bg-card");
     expect(screen.getByRole("heading", { name: "Redeem code" })).toBeInTheDocument();
+    // The title keeps 8 px of its own below it and the body starts that much higher: what
+    // scrolls is cut below the title, and title and content are 16 px apart.
+    expect(screen.getByRole("heading", { name: "Redeem code" }).parentElement).toHaveClass("pb-2");
+    expect(sheet).toHaveClass("[--sheet-body-top:0.5rem]");
+    expect(document.querySelector("[data-slot=sheet-body]")).toHaveClass(
+      "px-4",
+      "pb-4",
+      "pt-[var(--sheet-body-top,1rem)]",
+    );
     expect(screen.getByLabelText("Code")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Redeem" })).toBeInTheDocument();
   });
 
-  test("closes with the close button and with Escape", async () => {
+  test("has the close cross at its top right: 24 px in a 44 px target, 4 px from the top and the right edge", async () => {
+    setViewport(viewport);
+    const { user } = renderWithProviders(<Example />);
+
+    await user.click(screen.getByRole("button", { name: "Redeem code" }));
+    const sheet = await screen.findByRole("dialog");
+
+    const cross = screen.getByRole("button", { name: "Close" });
+    expect(sheet).toContainElement(cross);
+    expect(cross).toBeEnabled();
+    expect(cross).toHaveClass("absolute", "top-1", "right-1", "size-11", "text-foreground");
+    expect(cross.querySelector("svg")).toHaveClass("size-6");
+    // The cross is the last stop of the Tab key: what opens first is not a way out.
+    expect(Array.from(sheet.querySelectorAll("button")).at(-1)).toBe(cross);
+  });
+
+  test("the title ends 48 px before the right edge, where the cross stands", async () => {
+    setViewport(viewport);
+    const { user } = renderWithProviders(<Example />);
+
+    await user.click(screen.getByRole("button", { name: "Redeem code" }));
+    await screen.findByRole("dialog");
+
+    const header = screen.getByRole("heading", { name: "Redeem code" }).parentElement;
+    // 16 px of padding and 32 px more, or 48 px of padding: the same 48 px either way.
+    expect(header?.className).toMatch(
+      viewport === "wide" ? /\bpx-4\b.*\bmr-8\b|\bmr-8\b.*\bpx-4\b/ : /\bpr-12\b/,
+    );
+    expect(header).toHaveClass("shrink-0");
+  });
+
+  test("the pinned buttons stand under a 1 px line that shows where the scrolling part ends", async () => {
+    setViewport(viewport);
+    const { user } = renderWithProviders(<Example />);
+
+    await user.click(screen.getByRole("button", { name: "Redeem code" }));
+    await screen.findByRole("dialog");
+
+    const footer = document.querySelector("[data-slot=sheet-footer]");
+    expect(footer).toHaveClass("border-t", "shrink-0");
+    expect(footer).toContainElement(screen.getByRole("button", { name: "Redeem" }));
+  });
+
+  test("closes with the close cross and with Escape", async () => {
     setViewport(viewport);
     const onOpenChange = vi.fn();
     const { user } = renderWithProviders(<Example onOpenChange={onOpenChange} />);
@@ -82,26 +140,60 @@ describe.each([
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
-  test("stays when it is told that it must: no close button, and Escape does nothing", async () => {
+  test("stays when it is told that it must: the close cross is there but disabled, and Escape does nothing", async () => {
     setViewport(viewport);
-    const { user } = renderWithProviders(<Example dismissible={false} />);
+    const onOpenChange = vi.fn();
+    const { user } = renderWithProviders(
+      <Example dismissible={false} onOpenChange={onOpenChange} />,
+    );
 
     await user.click(screen.getByRole("button", { name: "Redeem code" }));
     await screen.findByRole("dialog");
+    onOpenChange.mockClear();
 
-    expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
+    // Never taken away: it stays in its place, in the look of a disabled button.
+    const cross = screen.getByRole("button", { name: "Close" });
+    expect(cross).toBeDisabled();
+    expect(cross).toHaveClass("absolute", "top-1", "right-1", "disabled:text-subtle");
+    await user.click(cross);
     await user.keyboard("{Escape}");
     expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(onOpenChange).not.toHaveBeenCalled();
   });
 
-  test("can keep its title for screen readers only", async () => {
+  test("can keep its title for screen readers only: the header row still stands, as tall as the cross", async () => {
     setViewport(viewport);
     const { user } = renderWithProviders(<Example hideTitle />);
 
     await user.click(screen.getByRole("button", { name: "Redeem code" }));
 
-    expect(await screen.findByRole("dialog", { name: "Redeem code" })).toBeInTheDocument();
+    const sheet = await screen.findByRole("dialog", { name: "Redeem code" });
     expect(screen.getByRole("heading", { name: "Redeem code" })).toHaveClass("sr-only");
+    // Nothing lies under the cross and nothing scrolls under it: the row above the body
+    // does not scroll, and reaches down as far as the cross does.
+    const row = sheet.querySelector("[data-slot=sheet-header]");
+    expect(row).toHaveClass("shrink-0", "pr-12", viewport === "wide" ? "min-h-12" : "min-h-9");
+    expect(row).toBeEmptyDOMElement();
+    expect(row?.compareDocumentPosition(document.querySelector("[data-slot=sheet-body]")!)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(screen.getByRole("button", { name: "Close" })).toBeEnabled();
+  });
+
+  test("with a hidden title, what says what the sheet is about stands in the header row beside the cross", async () => {
+    setViewport(viewport);
+    const { user } = renderWithProviders(
+      <Example hideTitle header="Will the Polybahn run without interruption?" />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Redeem code" }));
+    const sheet = await screen.findByRole("dialog", { name: "Redeem code" });
+
+    const row = sheet.querySelector("[data-slot=sheet-header]");
+    expect(row).toHaveTextContent("Will the Polybahn run without interruption?");
+    // It ends 48 px before the right edge, and gives way before it reaches the cross.
+    expect(row).toHaveClass("pr-12");
+    expect(row?.firstElementChild).toHaveClass("min-w-0", "flex-1");
   });
 
   test("takes the focus when it opens, keeps the Tab key inside, and gives the focus back to what opened it", async () => {
@@ -200,4 +292,42 @@ test("the bottom sheet carries its handle; the dialog does not", async () => {
   await wide.user.click(screen.getByRole("button", { name: "Redeem code" }));
   await screen.findByRole("dialog");
   expect(document.querySelector("[data-slot=drawer-handle]")).not.toBeInTheDocument();
+});
+
+test("can be a dialog at every width: on a phone it is the centred dialog, with its cross and its footer line", async () => {
+  const { user } = renderWithProviders(<Example dialog />);
+
+  await user.click(screen.getByRole("button", { name: "Redeem code" }));
+
+  const dialog = await screen.findByRole("dialog", { name: "Redeem code" });
+  expect(dialog).toHaveAttribute("data-slot", "dialog-content");
+  // 420 px wide, never wider than the viewport less 16 px on each side, at most 90% tall.
+  expect(dialog).toHaveClass("max-w-[26.25rem]", "w-[calc(100%-2rem)]", "max-h-[90dvh]");
+  expect(document.querySelector("[data-slot=drawer-handle]")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Close" })).toBeEnabled();
+  expect(document.querySelector("[data-slot=sheet-footer]")).toHaveClass("border-t");
+  // The dialog takes the focus to its first control.
+  await waitFor(() => expect(screen.getByLabelText("Code")).toHaveFocus());
+});
+
+test("a dialog that must stay does not close on a tap beside it either", async () => {
+  setViewport("wide");
+  const { user } = renderWithProviders(<Example dismissible={false} />);
+  await user.click(screen.getByRole("button", { name: "Redeem code" }));
+  await screen.findByRole("dialog");
+
+  await user.click(document.querySelector("[data-slot=dialog-overlay]")!);
+
+  expect(screen.getByRole("dialog")).toBeInTheDocument();
+});
+
+test("a dialog that may go closes on a tap beside it", async () => {
+  setViewport("wide");
+  const { user } = renderWithProviders(<Example />);
+  await user.click(screen.getByRole("button", { name: "Redeem code" }));
+  await screen.findByRole("dialog");
+
+  await user.click(document.querySelector("[data-slot=dialog-overlay]")!);
+
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
 });

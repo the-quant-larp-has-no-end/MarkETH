@@ -3,7 +3,8 @@
 #
 # The stack runs in Docker (compose.yaml plus compose.override.yaml, both fed by .env).
 # Tests, linters and the API client generator run on the host through uv and npm; the
-# integration tests start their own databases with Testcontainers.
+# integration tests start their own databases with Testcontainers. The browser suite
+# (`make e2e`) starts nothing: it drives Chrome against the stack that is up.
 #
 # The deploy-* targets act on the VM named in .env (DEPLOY_SSH_HOST, DEPLOY_PATH) over
 # SSH; docs/SERVER_INFRASTRUCTURE.md §14 walks through them.
@@ -20,14 +21,14 @@ BACKEND := cd backend &&
 FRONTEND := cd frontend && { cmp -s package-lock.json node_modules/.installed-lock \
 	|| { npm ci && cp package-lock.json node_modules/.installed-lock; }; } &&
 
-.PHONY: help up down logs migrate seed test test-backend test-frontend test-scylla \
+.PHONY: help up down logs migrate seed test test-backend test-frontend test-scylla e2e \
         lint fmt api-client psql redis-cli cqlsh reset \
         deploy deploy-guard deploy-backup deploy-sync deploy-env deploy-build deploy-pull \
         deploy-migrate deploy-stop-template deploy-up deploy-check deploy-smoke deploy-wipe \
         deploy-rollback deploy-status deploy-logs
 
 help: ## List these commands
-	@awk 'BEGIN { FS = ":.*## " } /^[a-z-]+:.*## / { printf "  make %-21s %s\n", $$1, $$2 }' Makefile
+	@awk 'BEGIN { FS = ":.*## " } /^[a-z0-9-]+:.*## / { printf "  make %-21s %s\n", $$1, $$2 }' Makefile
 
 # --- Stack --------------------------------------------------------------------
 
@@ -64,6 +65,12 @@ test-scylla: ## The slow ScyllaDB tests
 
 test-frontend: ## Frontend tests
 	$(FRONTEND) npm test
+
+# No part of `make test`: it needs the stack. Where that stack is, and how the suite
+# names a person to it, is the runner's to read from its environment (E2E_BASE_URL,
+# E2E_IDENTITY; frontend/e2e/support/runner.ts lists what it reads).
+e2e: ## The browser suite, in Chrome against the stack that is up
+	$(FRONTEND) npm run e2e
 
 # --- Code quality -------------------------------------------------------------
 
@@ -102,17 +109,17 @@ DEPLOY_PATH = $(call deploy_setting,DEPLOY_PATH)
 # The Compose project, which prefixes the names of its images and volumes.
 STACK = $(shell sed -n 's/^name: *//p' compose.yaml)
 DATABASE_VOLUME = $(STACK)_postgres-data
-# What only the VM knows (two passwords, who is admin and barista): a file beside the tree.
+# What only the VM knows (two passwords and the bootstrap admins): a file beside the tree.
 VM_OWN_ENV = $$HOME/$(DEPLOY_PATH).env
 # The organizers' template, the other project that publishes the port the portal
 # forwards to. It is stopped and started, its files are never touched.
 TEMPLATE_PATH := template
 ON_VM = ssh -o BatchMode=yes $(DEPLOY_SSH_HOST)
 VM_COMPOSE = cd $(DEPLOY_PATH) && docker compose -f compose.yaml
-# ADMIN_EMAILS=... and BARISTA_EMAILS=... given to make set the role lists on the VM;
-# left out, the VM keeps the lists it has.
-ROLE_LISTS = $(if $(findstring command line,$(origin ADMIN_EMAILS)),--admins "$(ADMIN_EMAILS)") \
-             $(if $(findstring command line,$(origin BARISTA_EMAILS)),--baristas "$(BARISTA_EMAILS)")
+# ADMIN_EMAILS=... given to make names the bootstrap admins on the VM; left out, the VM
+# keeps the ones it has. Every other admin and every barista is appointed in the admin
+# panel of the running app.
+BOOTSTRAP_ADMINS = $(if $(findstring command line,$(origin ADMIN_EMAILS)),--admins "$(ADMIN_EMAILS)")
 
 # The sync deletes whatever the VM's directory holds beyond this tree, so the directory
 # must be one of its own: a plain name, not the home directory, not the template.
@@ -148,11 +155,11 @@ deploy-sync: deploy-guard ## Make ~/DEPLOY_PATH on the VM a mirror of this tree
 		--exclude-from=infra/deploy/rsync-exclude ./ '$(DEPLOY_SSH_HOST):$(DEPLOY_PATH)/'
 	$(ON_VM) 'rm -rf $(DEPLOY_PATH)/compose.override.yaml $(DEPLOY_PATH)/infra/nginx/dev'
 
-deploy-env: deploy-guard ## Render the VM's .env there: [ADMIN_EMAILS=<id>,<id>] [BARISTA_EMAILS=<id>]
+deploy-env: deploy-guard ## Render the VM's .env there: [ADMIN_EMAILS=<id>,<id>] names the bootstrap admins
 	@echo "==> $(DEPLOY_SSH_HOST): render ~/$(DEPLOY_PATH)/.env from .example.env, infra/deploy/env.production and ~/$(DEPLOY_PATH).env"
 	$(ON_VM) 'cd $(DEPLOY_PATH)/backend && python3 -B -m scripts.production_env \
 		--example ../.example.env --production ../infra/deploy/env.production \
-		--own "$(VM_OWN_ENV)" --output ../.env --postgres-volume $(DATABASE_VOLUME) $(strip $(ROLE_LISTS))'
+		--own "$(VM_OWN_ENV)" --output ../.env --postgres-volume $(DATABASE_VOLUME) $(BOOTSTRAP_ADMINS)'
 	$(ON_VM) '$(VM_COMPOSE) config --quiet'
 
 deploy-build: deploy-guard ## Build the images on the VM; the ones in use stay tagged "previous"
@@ -189,7 +196,7 @@ deploy-check: deploy-guard ## Check the stack on the VM, and from here that its 
 
 deploy-smoke: deploy-guard ## Walk an empty database on the VM from sign-up to a redeemed voucher: CONFIRM=smoke
 	@test "$(CONFIRM)" = "smoke" || { \
-		echo "This registers made-up people and the first admin and writes a market, trades and a voucher into the VM's database."; \
+		echo "This registers made-up people and the first bootstrap admin, makes one of the made-up people a barista and writes a market, a trade, a voucher and a code into the VM's database."; \
 		echo "Run it on an empty database and wipe it afterwards: make deploy-smoke CONFIRM=smoke"; exit 1; }
 	@echo "==> $(DEPLOY_SSH_HOST): walk the stack through infra/deploy/smoke.sh; this writes test data"
 	$(ON_VM) 'cd $(DEPLOY_PATH) && sh infra/deploy/smoke.sh'

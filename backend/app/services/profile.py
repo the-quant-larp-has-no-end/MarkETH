@@ -2,8 +2,9 @@
 
 The portal says who somebody is; the profile is what that person adds. Saving it for
 the first time is what makes them a user: the `users` row, their ledger account and the
-signup grant are written together or not at all. Saving it again changes the username
-and the degree, as often as they like.
+signup grant are written together or not at all, and only for somebody who accepts the
+usage policy with that save. Saving it again changes the username and the degree, as
+often as they like.
 """
 
 from typing import Final
@@ -11,7 +12,7 @@ from typing import Final
 from app.core import degrees
 from app.core.clock import Clock
 from app.core.config import Settings
-from app.core.enums import UserStatus
+from app.core.enums import UserRole, UserStatus
 from app.core.errors import (
     SUSPENDED_MESSAGE,
     ForbiddenError,
@@ -32,9 +33,14 @@ UNKNOWN_PROGRAMME_MESSAGE: Final[str] = "Pick a programme of the degree level yo
 """Message of the `ValidationFailedError` that refuses a degree the catalogue does not
 list as a pair."""
 
+POLICY_NOT_ACCEPTED_MESSAGE: Final[str] = "Accept the usage policy to set up your profile."
+"""Message of the `ValidationFailedError` that refuses to create a profile for somebody
+who did not accept the usage policy."""
+
 USERNAME_FIELD: Final[str] = "username"
 PROGRAMME_FIELD: Final[str] = "degree_programme"
-"""`details.field` of the two fields a save can be refused for."""
+POLICY_FIELD: Final[str] = "policy_accepted"
+"""`details.field` of the three fields a save can be refused for."""
 
 
 class ProfileService:
@@ -80,29 +86,37 @@ class ProfileService:
         2. `uow.advisory_lock(f"username:{request.username}")`: the lock is on the
            name itself, which has one spelling. Two people who want one name run one
            after the other too.
-        3. `holder = users.get_by_username(request.username)`, an exact match. A
+        3. `user = users.get_by_email(identity.email, for_update=True)`. No row means
+           this save creates the profile, and that takes the usage policy: unless
+           `request.policy_accepted` is true, `ValidationFailedError` (422,
+           `POLICY_NOT_ACCEPTED_MESSAGE`) with `details.field = "policy_accepted"`.
+        4. `holder = users.get_by_username(request.username)`, an exact match. A
            holder whose `email` is not `identity.email` raises `UsernameTakenError`
            (409, `details.field = "username"`). Saving the name one already holds is
            no clash.
-        4. `user = users.get_by_email(identity.email, for_update=True)`.
-        5. No row, so this save creates the profile: `users.add(User(email=
-           identity.email, name=identity.name, username, degree_level,
-           degree_programme, status=ACTIVE, created_at=now))`, then
+        5. No row: `users.add(User(email=identity.email, name=identity.name, username,
+           degree_level, degree_programme, role=USER, status=ACTIVE,
+           policy_accepted_at=now, created_at=now))`, then
            `account = accounts.create_user_account(user.id)` and
-           `signup_granted = GrantService.grant_signup(uow, user, account)`.
+           `signup_granted = GrantService.grant_signup(uow, user, account)`. Everybody
+           starts as a plain user, a bootstrap admin too: that one is an admin by its
+           address, not by its row.
         6. A row, so this save edits it. A status other than ACTIVE raises
            `ForbiddenError(SUSPENDED_MESSAGE)` (403). Otherwise set `username`,
            `degree_level` and `degree_programme`, and `name` when `identity.name` is
-           not empty. `signup_granted = False`; nothing is booked.
+           not empty. `signup_granted = False`; nothing is booked, the role and
+           `policy_accepted_at` stay what they are, and `request.policy_accepted` is
+           not looked at.
 
         After the commit the answer is built the way `GET /me` builds it:
         `AccountService.me(AuthenticatedUser(id=user.id, email=user.email,
-        name=user.name, username=user.username, role=identity.role,
+        name=user.name, username=user.username,
+        degree_programme=user.degree_programme, role=identity.role,
         status=user.status))`, returned as a `ProfileSavedResponse` with
-        `signup_granted`. The role is the identity's: it is in no column. That read
-        is a transaction of its own. If Postgres is lost between the two, the save
-        stands and the request is answered 503; sending it again edits the profile
-        and says `signup_granted: false`.
+        `signup_granted`. The role is the identity's: the one this request was
+        let in with. That read is a transaction of its own. If Postgres is lost
+        between the two, the save stands and the request is answered 503; sending it
+        again edits the profile and says `signup_granted: false`.
 
         Both locks last until the transaction ends, so the second of two racers reads
         what the first one committed: one person ends with one row, one account and
@@ -134,11 +148,16 @@ class ProfileService:
         async with self._uow_factory() as uow:
             await uow.advisory_lock(f"profile:{identity.email}")
             await uow.advisory_lock(f"username:{username}")
+            user = await uow.users.get_by_email(identity.email, for_update=True)
+            if user is None and not request.policy_accepted:
+                raise ValidationFailedError(
+                    POLICY_NOT_ACCEPTED_MESSAGE, details={"field": POLICY_FIELD}
+                )
             holder = await uow.users.get_by_username(username)
             if holder is not None and holder.email != identity.email:
                 raise UsernameTakenError
-            user = await uow.users.get_by_email(identity.email, for_update=True)
             if user is None:
+                now = self._clock.now()
                 user = await uow.users.add(
                     User(
                         email=identity.email,
@@ -146,8 +165,10 @@ class ProfileService:
                         username=username,
                         degree_level=request.degree_level,
                         degree_programme=request.degree_programme,
+                        role=UserRole.USER,
                         status=UserStatus.ACTIVE,
-                        created_at=self._clock.now(),
+                        policy_accepted_at=now,
+                        created_at=now,
                     )
                 )
                 account = await uow.accounts.create_user_account(user.id)
@@ -168,6 +189,7 @@ class ProfileService:
                 email=user.email,
                 name=user.name,
                 username=user.username,
+                degree_programme=user.degree_programme,
                 role=identity.role,
                 status=user.status,
             )

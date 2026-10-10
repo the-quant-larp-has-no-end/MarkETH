@@ -100,17 +100,66 @@ describe("Tabs", () => {
     expect(history).not.toHaveAttribute("data-by-pointer");
   });
 
+  test("a press that focuses nothing leaves no trace: the keyboard still finds the tab with its ring", async () => {
+    const user = userEvent.setup();
+    render(<Views />);
+    const history = screen.getByRole("tab", { name: "History" });
+
+    // The other mouse button: the primitive neither focuses nor chooses the tab.
+    fireEvent.mouseDown(history, { button: 2 });
+    expect(history).not.toHaveFocus();
+    expect(history).toHaveAttribute("aria-selected", "false");
+
+    await user.tab();
+    await user.keyboard("{ArrowRight}");
+
+    expect(history).toHaveFocus();
+    expect(history).not.toHaveAttribute("data-by-pointer");
+  });
+
+  test("a row wider than the screen keeps the active tab in sight, when it appears and when another becomes active", async () => {
+    // The row ends at 200 px; the History tab lies beyond it, the Positions tab inside.
+    const box = (left: number, right: number) =>
+      ({ left, right, top: 0, bottom: 48, width: right - left, height: 48 }) as DOMRect;
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element,
+    ) {
+      if (this.getAttribute("role") === "tablist") return box(16, 200);
+      if (this.textContent === "History") return box(260, 340);
+      if (this.textContent === "Positions") return box(40, 140);
+      return box(0, 0);
+    });
+    const intoView = vi.spyOn(Element.prototype, "scrollIntoView");
+    const user = userEvent.setup();
+    render(<Views />);
+    const row = screen.getByRole("tablist", { name: "Portfolio" });
+    expect(row).toHaveClass("overflow-x-auto");
+    // The active tab is in sight: nothing moves.
+    expect(row.scrollLeft).toBe(0);
+
+    screen.getByRole("tab", { name: "Positions" }).focus();
+    await user.keyboard("{ArrowRight}");
+
+    await vi.waitFor(() => expect(row.scrollLeft).toBe(140));
+    // Only the row moved, never the page.
+    expect(intoView).not.toHaveBeenCalled();
+  });
+
   test("handlers of the screen still run", async () => {
     const user = userEvent.setup();
-    const onPointerDown = vi.fn();
+    const onMouseDown = vi.fn();
+    const onFocus = vi.fn();
     const onKeyDown = vi.fn();
     const onBlur = vi.fn();
-    render(<Views onPointerDown={onPointerDown} onKeyDown={onKeyDown} onBlur={onBlur} />);
+    render(
+      <Views onMouseDown={onMouseDown} onFocus={onFocus} onKeyDown={onKeyDown} onBlur={onBlur} />,
+    );
 
     await user.click(screen.getByRole("tab", { name: "History" }));
     await user.keyboard("{ArrowLeft}");
 
-    expect(onPointerDown).toHaveBeenCalledTimes(1);
+    expect(onMouseDown).toHaveBeenCalledTimes(1);
+    expect(onFocus).toHaveBeenCalledTimes(1);
     expect(onKeyDown).toHaveBeenCalledTimes(1);
     expect(onBlur).toHaveBeenCalledTimes(1);
   });

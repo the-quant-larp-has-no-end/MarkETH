@@ -20,15 +20,18 @@ import { MEASURES, ORDER_NAMES } from "./view";
 
 /**
  * The rows of the leaderboard below 768 px (DESIGN.md §13): every row that is not on the
- * podium as a leaderboard row of 56 px, with the figure of the measure the list is
- * sorted by. The rows stand in the order they were handed in, which is the API's.
+ * podium as a leaderboard row of at least 56 px, with the figure of the measure the list
+ * is sorted by. The rows stand in the order they were handed in, which is the API's.
+ * Each row is a button that selects its player.
  */
 export function RankingRows({
   rows,
   sort,
+  onSelect,
 }: {
   rows: readonly LeaderboardEntry[];
   sort: LeaderboardSort;
+  onSelect: (entry: LeaderboardEntry) => void;
 }) {
   return (
     <RowList>
@@ -39,6 +42,7 @@ export function RankingRows({
           key={index}
           entry={entry}
           sort={sort}
+          onSelect={() => onSelect(entry)}
           className={entry.is_viewer ? VIEWER_ROW : undefined}
         />
       ))}
@@ -46,10 +50,20 @@ export function RankingRows({
   );
 }
 
+/* The cells of the ranking stand 16 px apart: 8 px at either side of each. */
+const CELL = "px-2";
+
 /**
- * The same rows from 768 px: a table with all four measures as columns. A tap on a
- * column heading sorts by it, a second tap flips the order, and the heading carries
- * `aria-sort`. Sorting is a request: the heading only says what to ask for.
+ * The same rows from 768 px: a table of 56 px rows with all four measures as columns.
+ * "Rank" is 56 px wide, "Player" takes what the others leave and cuts the username and
+ * the programme with an ellipsis, one line each; the four figures are right aligned,
+ * each as wide as its widest figure.
+ *
+ * A tap on the heading of a measure sorts by it, a second tap flips the order, and the
+ * heading carries `aria-sort`. Sorting is a request: the heading only says what to ask for.
+ *
+ * A tap anywhere on a row selects its player. The username is the row's button, which is
+ * what the keyboard and a screen reader reach: its click is the row's.
  */
 export function RankingTable({
   rows,
@@ -57,12 +71,14 @@ export function RankingTable({
   order,
   onSort,
   onFlip,
+  onSelect,
 }: {
   rows: readonly LeaderboardEntry[];
   sort: LeaderboardSort;
   order: SortOrder;
   onSort: (sort: LeaderboardSort) => void;
   onFlip: () => void;
+  onSelect: (entry: LeaderboardEntry) => void;
 }) {
   const Arrow = order === "desc" ? ArrowDownIcon : ArrowUpIcon;
 
@@ -70,27 +86,32 @@ export function RankingTable({
     <Table aria-label="Ranking">
       <TableHeader>
         <TableRow className="hover:bg-transparent">
-          <TableHead scope="col" className="w-12 text-right">
+          {/* 56 px, also beside a column that asks for all the width there is. */}
+          <TableHead scope="col" numeric className={cn("w-14 min-w-14", CELL)}>
             Rank
           </TableHead>
-          <TableHead scope="col">Player</TableHead>
+          <TableHead scope="col" className={CELL}>
+            Player
+          </TableHead>
           {MEASURES.map((measure) => {
             const sorted = measure.sort === sort;
             return (
               <TableHead
                 key={measure.sort}
                 scope="col"
+                numeric
                 aria-sort={sorted ? (order === "desc" ? "descending" : "ascending") : "none"}
-                // The heading is its button: 44 px tall, 8 px from the next one, its text
-                // in line with the figures below it.
-                className="px-1 text-right"
+                // The heading is its button, 44 px tall, which brings the 8 px at either
+                // side itself: its text ends in line with the figures below it.
+                className="px-0"
               >
                 <button
                   type="button"
                   title={sorted ? ORDER_NAMES[order] : undefined}
                   onClick={() => (sorted ? onFlip() : onSort(measure.sort))}
                   className={cn(
-                    "inline-flex h-11 w-full items-center justify-end gap-1 rounded-sm px-2",
+                    "inline-flex h-11 w-full items-center justify-end gap-1 rounded-sm",
+                    CELL,
                     "transition-colors duration-(--duration-fast) hover:text-foreground",
                     // The table scrolls sideways and cuts off what stands outside it: the
                     // focus outline is drawn inside the button.
@@ -110,17 +131,25 @@ export function RankingTable({
         {rows.map((entry, index) => (
           <TableRow
             key={index}
-            className={cn("h-14", entry.is_viewer && [VIEWER_ROW, "bg-raised"])}
+            tall
+            onClick={() => onSelect(entry)}
+            className={cn("cursor-pointer", entry.is_viewer && [VIEWER_ROW, "bg-raised"])}
           >
-            <TableCell className="text-right type-number text-muted-foreground">
+            <TableCell numeric className={cn(CELL, "text-muted-foreground")}>
               {formatCount(entry.rank)}
             </TableCell>
-            <TableCell className="w-full max-w-0">
-              <span className="flex min-w-0 flex-col gap-0.5">
-                <span className="truncate type-body">
-                  {entry.username}
+            <TableCell className={cn("w-full max-w-0", CELL)}>
+              <button
+                type="button"
+                aria-haspopup="dialog"
+                className="flex w-full min-w-0 flex-col rounded-sm text-left focus-visible:-outline-offset-2"
+              >
+                <span className="flex min-w-0 items-baseline gap-2">
+                  <span title={entry.username} className="truncate type-body">
+                    {entry.username}
+                  </span>
                   {entry.is_viewer && (
-                    <span className="ml-2 type-caption text-muted-foreground">You</span>
+                    <span className="shrink-0 type-caption text-muted-foreground">You</span>
                   )}
                 </span>
                 <span
@@ -129,10 +158,10 @@ export function RankingTable({
                 >
                   {entry.degree_programme}
                 </span>
-              </span>
+              </button>
             </TableCell>
             {MEASURES.map((measure) => (
-              <TableCell key={measure.sort} className="text-right">
+              <TableCell key={measure.sort} numeric className={CELL}>
                 <LeaderboardFigure entry={entry} sort={measure.sort} />
               </TableCell>
             ))}

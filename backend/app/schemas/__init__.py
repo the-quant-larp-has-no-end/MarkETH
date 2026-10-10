@@ -14,4 +14,8 @@ Conventions (Appendix A.2):
 * Instants are timezone-aware and travel as ISO 8601 strings; calendar dates as
   `YYYY-MM-DD`.
 * A response field is never optional: what can be missing is nullable and always sent.
+* What a request model refuses, it refuses in a sentence a form can show under the
+  field. `app/api/validation.py` words the rules the framework checks; a rule that
+  needs words of its own says them with `said`, `in_its_own_words` or `on_field`
+  (`app.schemas.common`). No validator raises a bare `ValueError`.
 """

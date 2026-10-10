@@ -72,7 +72,8 @@ jobs:
   # deployment is made of fit together: the scripts parse cleanly, both compose variants
   # resolve with the development environment and keep the web app and the owner role's
   # password where they belong, the production environment renders from the committed
-  # layers, and compose.yaml resolves with it.
+  # layers, compose.yaml resolves with it, and nginx accepts the proxy configuration of
+  # each of the three.
   stack:
     name: Stack
     runs-on: ubuntu-24.04
@@ -111,6 +112,25 @@ jobs:
             --postgres-volume ci-has-no-database \
             --admins first.admin@ethz.ch,second.admin@ethz.ch
           docker compose --env-file "$RUNNER_TEMP/production.env" -f ../compose.yaml config --quiet
+      # nginx's own verdict. A container of the stack's nginx image is handed what
+      # Compose resolves for the nginx service, its environment and its mounts, renders
+      # the templates as the stack does and tests the result. It has no network and
+      # starts no server.
+      - name: nginx accepts the proxy configuration of compose.yaml alone, with the overlay, and in production
+        run: |
+          nginx_test() {
+            docker compose "$@" config --format json > "$RUNNER_TEMP/stack.json"
+            jq --raw-output '.services.nginx.environment | to_entries[] | "\(.key)=\(.value)"' \
+              "$RUNNER_TEMP/stack.json" > "$RUNNER_TEMP/nginx.env"
+            set -- --rm --network none --env-file "$RUNNER_TEMP/nginx.env"
+            while read -r mount; do
+              set -- "$@" --volume "$mount:ro"
+            done < <(jq --raw-output '.services.nginx.volumes[] | "\(.source):\(.target)"' "$RUNNER_TEMP/stack.json")
+            docker run "$@" "$(jq --raw-output '.services.nginx.image' "$RUNNER_TEMP/stack.json")" nginx -t
+          }
+          nginx_test --file compose.yaml
+          nginx_test --file compose.yaml --file compose.override.yaml
+          nginx_test --env-file "$RUNNER_TEMP/production.env" --file compose.yaml
 
   # backend/openapi.json and the frontend's generated types are committed. This job
   # regenerates both and fails when the commit does not already contain the result.

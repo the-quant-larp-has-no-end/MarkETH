@@ -1,10 +1,11 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 
 import { Link } from "@/components/shell/link";
 import { activeTabClasses, tabClasses, tabListClasses } from "@/components/ui/tabs";
+import { keepInSight } from "@/lib/keep-in-sight";
 import { cn } from "@/lib/utils";
 
 export type LinkTab = {
@@ -18,6 +19,9 @@ export type LinkTab = {
  * Tabs that are links (DESIGN.md §13, Admin): the look of `Tabs`, each tab a route of
  * its own, the current one marked with `aria-current`. Use `Tabs` when the views share
  * one route (Portfolio: Positions and History).
+ *
+ * A row that is wider than the screen scrolls sideways and keeps the current tab in
+ * sight (DESIGN.md §12): only the row moves, never the page.
  */
 export function LinkTabs({
   label,
@@ -33,9 +37,19 @@ export function LinkTabs({
   children?: ReactNode;
 }) {
   const pathname = usePathname();
+  const row = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    keepInSight(row.current, row.current?.querySelector('[aria-current="page"]'));
+  }, [pathname]);
 
   return (
-    <nav aria-label={label} data-slot="link-tabs" className={cn(tabListClasses, className)}>
+    <nav
+      ref={row}
+      aria-label={label}
+      data-slot="link-tabs"
+      className={cn(tabListClasses, className)}
+    >
       {tabs.map((tab) => {
         const active = tab.matches ? tab.matches(pathname) : pathname === tab.href;
         return (

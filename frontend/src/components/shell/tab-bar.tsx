@@ -17,6 +17,10 @@ import { tabsFor } from "./tabs";
  * is `--foreground`, the others `--muted-foreground`, and there is no coloured
  * indicator. From 768 px the tabs sit in the top bar instead (`TopTabs`), so this
  * renders nothing there.
+ *
+ * The tabs share the width of the screen in equal parts, and a label stands on one line
+ * inside its part. No label is cut from 320 px on, with five tabs: a tab whose name is
+ * longer than that shows its `short` word here.
  */
 export function TabBar() {
   const pathname = usePathname();
@@ -48,7 +52,9 @@ export function TabBar() {
                 )}
               >
                 <tab.icon aria-hidden className="size-6 shrink-0" />
-                <span className="max-w-full truncate">{tab.label}</span>
+                <span data-slot="tab-label" className="max-w-full truncate">
+                  {tab.short ?? tab.label}
+                </span>
               </Link>
             </li>
           );

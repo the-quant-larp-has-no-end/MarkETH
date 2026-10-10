@@ -15,7 +15,9 @@ import type { ErrorCode, paths } from "@/lib/api/schema";
  *     expect(api.lastCall("POST /api/codes/redeem")?.body).toEqual({ code: "ABCD-EFGH-JKMN" });
  *
  * A route is a method and a path of `backend/openapi.json`, so a typo does not compile.
- * `{market_id}` in a route matches any id. A request no route answers fails the test.
+ * `{market_id}` in a route matches any id. A request no route answers fails the test, and
+ * so does one of a test that never calls `mockApi`: the set-up starts every test with no
+ * route at all (`src/test/setup.ts`), so nothing a test asks ever leaves for the network.
  */
 
 type Method = "get" | "put" | "post" | "delete" | "patch";

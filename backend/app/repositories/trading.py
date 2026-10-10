@@ -53,6 +53,29 @@ class PositionRepository(BaseRepository[Position]):
         )
         return (await self._session.scalars(statement)).all()
 
+    async def exists_for_user_market(self, user_id: UUID, market_id: UUID) -> bool:
+        """Whether a user holds a position row in a market, whatever its shares.
+
+        The first buy of an outcome inserts the row and nothing deletes it, so this is
+        true for everybody who ever bought there, also after they sold everything.
+        """
+        statement = select(
+            exists().where(Position.user_id == user_id, Position.market_id == market_id)
+        )
+        return (await self._session.execute(statement)).scalar_one()
+
+    async def market_ids_of_user(self, user_id: UUID, *, among: Collection[UUID]) -> set[UUID]:
+        """The markets of `among` a user holds a position row in, in one query. None
+        is asked for an empty `among`."""
+        if not among:
+            return set()
+        statement = (
+            select(Position.market_id)
+            .where(Position.user_id == user_id, Position.market_id.in_(among))
+            .distinct()
+        )
+        return set((await self._session.scalars(statement)).all())
+
     async def sum_shares_by_outcome(self, market_id: UUID) -> dict[Outcome, int]:
         """Shares held per outcome; must equal the market's q (SPEC §5 circuit breaker)."""
         statement = (
@@ -112,22 +135,44 @@ class TradeRepository(BaseRepository[Trade]):
         limit: int,
         since: datetime | None = None,
         after_version: int | None = None,
-        newest_first: bool = False,
     ) -> Sequence[Trade]:
         """A market's trades in the order they happened, oldest first.
 
         `since` bounds `created_at` from below (inclusive); `after_version` continues
         after the last `market_version` seen. With more matching trades than `limit`,
-        the oldest `limit` are returned; `newest_first=True` returns the newest `limit`
-        instead, newest first, which is what a chart must not lose.
+        the oldest `limit` are returned.
         """
-        order = Trade.market_version.desc() if newest_first else Trade.market_version
-        statement = select(Trade).where(Trade.market_id == market_id).order_by(order).limit(limit)
+        statement = (
+            select(Trade)
+            .where(Trade.market_id == market_id)
+            .order_by(Trade.market_version)
+            .limit(limit)
+        )
         if since is not None:
             statement = statement.where(Trade.created_at >= since)
         if after_version is not None:
             statement = statement.where(Trade.market_version > after_version)
         return (await self._session.scalars(statement)).all()
+
+    async def list_price_points(
+        self, market_id: UUID, *, after_version: int, limit: int
+    ) -> Sequence[tuple[int, datetime, int]]:
+        """The price a market's trades left it at, as a chart reads them from the record
+        (SPEC §9): `(market_version, created_at, p_yes_after_micro)` of the trades after
+        `after_version`, the newest first.
+
+        With more such trades than `limit`, the newest `limit` are returned: a chart
+        may lose its oldest points, never the latest price. Three columns and no
+        `Trade` rows, because a chart of a busy market reads `limit` of them with
+        every request.
+        """
+        statement = (
+            select(Trade.market_version, Trade.created_at, Trade.p_yes_after_micro)
+            .where(Trade.market_id == market_id, Trade.market_version > after_version)
+            .order_by(Trade.market_version.desc())
+            .limit(limit)
+        )
+        return (await self._session.execute(statement)).all()
 
     async def exists_for_user_market(self, user_id: UUID, market_id: UUID) -> bool:
         """Whether a user ever traded a market (A.4: such an admin may not resolve it)."""

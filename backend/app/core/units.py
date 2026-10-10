@@ -10,7 +10,16 @@ Naming rule used across the codebase:
 The scale is a constant, not a setting: changing it would silently re-value every row.
 """
 
-from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_EVEN, Decimal
+from decimal import (
+    MAX_EMAX,
+    MAX_PREC,
+    MIN_EMIN,
+    ROUND_CEILING,
+    ROUND_FLOOR,
+    ROUND_HALF_EVEN,
+    Context,
+    Decimal,
+)
 from typing import Final
 
 MICRO: Final[int] = 1_000_000
@@ -21,18 +30,31 @@ DECIMAL_PLACES: Final[int] = 6
 _MICRO_DECIMAL: Final[Decimal] = Decimal(MICRO)
 _QUANTUM: Final[Decimal] = Decimal(1).scaleb(-DECIMAL_PLACES)
 
+_EXACT: Final[Context] = Context(prec=MAX_PREC, Emax=MAX_EMAX, Emin=MIN_EMIN)
+"""Arithmetic that rounds nothing, however many digits a number has. The default
+context keeps 28 digits and turns a number below 10^-1000026 into zero: with it, a
+thirtieth decimal place would pass for none at all, and an amount with a million
+zeros after the point for nothing."""
+
 
 class PrecisionError(ValueError):
     """A CR amount carries more decimal places than a micro-unit can hold."""
 
 
 def to_micro(value_cr: Decimal | int | str) -> int:
-    """Convert an exact CR amount to µCR. Rejects anything finer than one micro-unit."""
+    """Convert an exact CR amount to µCR. Rejects anything finer than one micro-unit.
+
+    The conversion is exact for a number of any length: nothing is rounded on the
+    way, so a digit beyond the sixth place is refused wherever it stands, and what
+    comes back is the amount and nothing near it. A caller that takes numbers from
+    outside bounds their size before it asks: turning a number of a million digits
+    into an integer takes seconds.
+    """
     amount = value_cr if isinstance(value_cr, Decimal) else Decimal(value_cr)
     if not amount.is_finite():
         raise PrecisionError(f"not a finite amount: {value_cr!r}")
-    scaled = amount * _MICRO_DECIMAL
-    if scaled != scaled.to_integral_value():
+    scaled = _EXACT.multiply(amount, _MICRO_DECIMAL)
+    if scaled != _EXACT.to_integral_value(scaled):
         raise PrecisionError(f"more than {DECIMAL_PLACES} decimal places: {value_cr!r}")
     return int(scaled)
 
@@ -48,6 +70,36 @@ def format_cr(value_micro: int) -> str:
     if "." in text:
         text = text.rstrip("0").rstrip(".")
     return text or "0"
+
+
+def format_tokens(value_micro: int) -> str:
+    """An amount as a sentence on screen says it: "1 token", "35 tokens", "0.5 tokens",
+    "7,000 tokens". The figure is the whole amount, its digits before the point grouped
+    in threes, and the unit is called a token there (never a credit).
+
+    For the message of an error that names a limit or a balance. An amount a client
+    formats itself travels as `format_cr`.
+    """
+    text = format_cr(value_micro)
+    sign = "-" if text.startswith("-") else ""
+    whole, point, fraction = text.removeprefix("-").partition(".")
+    word = "token" if text == "1" else "tokens"
+    return f"{sign}{int(whole):,}{point}{fraction} {word}"
+
+
+def format_shares(value_micro: int) -> str:
+    """A number of shares as a sentence on screen says it: "1 share", "0.5 shares",
+    "1,250 shares". The figure is the whole number, its digits before the point grouped
+    in threes.
+
+    For the message of an error that names a size in shares. A number of shares a
+    client formats itself travels as `format_cr`: shares have the scale of credits.
+    """
+    text = format_cr(value_micro)
+    sign = "-" if text.startswith("-") else ""
+    whole, point, fraction = text.removeprefix("-").partition(".")
+    word = "share" if text == "1" else "shares"
+    return f"{sign}{int(whole):,}{point}{fraction} {word}"
 
 
 def ceil_micro(value: Decimal) -> int:

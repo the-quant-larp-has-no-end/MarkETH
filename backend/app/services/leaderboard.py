@@ -4,6 +4,12 @@ Nothing is stored for it and nothing is cached. Every request computes the ranki
 the accounts, trades, positions and resolutions as they are, in one statement
 (`LeaderboardRepository.rank`), so the ranks of an answer agree with each other.
 
+Credits are what a user has: the balance of their account plus what their open
+positions are worth right now. The prices for that come from `MarketView`, which asks
+`app.pricing.lmsr`: one price per market that is not settled and of which somebody
+holds shares, computed once per request and handed to the statement as values. The
+statement multiplies, rounds down per holding and adds; it computes no price.
+
 The frontend ranks, sorts, filters and rounds nothing (golden rule 6): what it sends is
 the query, and what it shows is the answer in the order it arrives.
 """
@@ -18,8 +24,14 @@ from app.core.errors import ValidationFailedError
 from app.core.identity import AuthenticatedUser
 from app.core.units import MICRO, ceil_micro, display_probability, floor_micro, to_cr, to_micro
 from app.repositories.leaderboard import LeaderboardFilter, LeaderboardRow
-from app.schemas.leaderboard import LeaderboardEntry, LeaderboardQuery, LeaderboardResponse
+from app.schemas.leaderboard import (
+    MEASURES_WITH_BOUNDS,
+    LeaderboardEntry,
+    LeaderboardQuery,
+    LeaderboardResponse,
+)
 from app.services import UowFactory
+from app.services.market_view import SETTLED_STATUSES, MarketView
 
 PAYOUT_RATIO_PLACES: Final[int] = 2
 """Decimal places of `avg_payout_ratio` on the wire. A ratio is cut to them, never
@@ -42,11 +54,16 @@ _MILLIONTHS_PER_RATIO_STEP: Final[int] = MICRO // _RATIO_STEPS_PER_UNIT
 _NUL: Final[str] = "\x00"
 """The one character Postgres holds in no text, and so in nobody's degree programme."""
 
+BOUNDS_OUT_OF_ORDER_MESSAGE: Final[str] = "Enter a lower bound that is not above the upper one."
+"""Message of the `ValidationFailedError` that refuses a filter whose `min_…` is above
+its `max_…`. It is shown under the field of the lower bound."""
+
 
 class LeaderboardService:
-    def __init__(self, uow_factory: UowFactory, settings: Settings) -> None:
+    def __init__(self, uow_factory: UowFactory, settings: Settings, view: MarketView) -> None:
         self._uow_factory = uow_factory
         self._display_decimals = settings.pricing.price_display_decimals
+        self._view = view
 
     async def ranking(
         self, viewer: AuthenticatedUser, query: LeaderboardQuery
@@ -58,7 +75,14 @@ class LeaderboardService:
 
         The measures of a user:
 
-        * Credits: the balance of their account, `accounts.balance_micro`.
+        * Credits: what the user has, in two parts that are added up.
+          `balance_micro` is the balance of their account. `positions_value_micro` is
+          what their open positions are worth: over every market whose row does not
+          say RESOLVED or VOID, each holding at the current price of its outcome,
+          rounded down (`MarketView.holding_value_micro`), and the sum of them. It is
+          the `total_value_cr` of that user's `AccountService.portfolio`: the
+          portfolio and the leaderboard value a holding by the same rule at the same
+          price. A user who holds nothing has 0 there.
         * Trades: the number of their rows in `trades`, over every market and
           whatever became of it; 0 for someone who never traded.
         * `settled_markets`: the number n of markets that are RESOLVED and into which
@@ -82,7 +106,8 @@ class LeaderboardService:
           not fit a BIGINT; the win rate is a quotient of two counts.
         * A user with n = 0 has no rate: both are null.
 
-        What the API sends: `credits_cr = to_cr(credits_micro)`; `win_rate =
+        What the API sends: `credits_cr = to_cr(credits_micro)`, with its two parts
+        as `balance_cr` and `positions_value_cr`; `win_rate =
         display_probability(win_rate_micro, PRICE_DISPLAY_DECIMALS)`, the rounding of
         every probability; `avg_payout_ratio` cut to `PAYOUT_RATIO_PLACES` places,
         which for two places is `float(Decimal(avg_payout_ratio_micro // 10_000) /
@@ -97,8 +122,8 @@ class LeaderboardService:
           gives an empty list. So does a programme with a NUL character in it: a
           query string can carry one, no column holds one, and Postgres refuses even
           to compare with it, so that list is answered without asking the database.
-        * `min_credits_cr` and `max_credits_cr`: against `credits_micro`, through
-          `to_micro`.
+        * `min_credits_cr` and `max_credits_cr`: against `credits_micro`, the sum of
+          the two parts, through `to_micro`.
         * `min_trades` and `max_trades`: against the number of trades.
         * `min_win_rate`, `max_win_rate`, `min_avg_payout_ratio` and
           `max_avg_payout_ratio`: against the unrounded millionths, not against what a
@@ -107,6 +132,11 @@ class LeaderboardService:
           and an upper bound down (`floor_micro`), so the comparison of integers says
           what the comparison of the exact numbers would.
         * A bound on either rate leaves out every user who has none.
+        * A `min_…` above the `max_…` of the same measure raises
+          `ValidationFailedError` (422, `BOUNDS_OUT_OF_ORDER_MESSAGE`) with
+          `details={"field": "min_…"}`: the lower of the two fields is the one a form
+          marks. The measures are asked in the order of `MEASURES_WITH_BOUNDS`, and
+          the first pair that is out of order is the one named. Nothing is read.
 
         Order: by the measure of `query.sort`, `desc` or `asc` as `query.order` says.
         Users without a value for it (a rate, with n = 0) come last in both
@@ -124,9 +154,16 @@ class LeaderboardService:
         else: a sign, an underscore or a digit of another script is refused, although
         `int()` would read it. With `after` the cursor's number:
 
-        1. One read transaction, one statement: `leaderboard.rank(sort=query.sort,
-           order=query.order, filters=LeaderboardFilter(...), after_rank=after,
-           limit=query.limit + 1, viewer_id=viewer.id)`.
+        1. One read transaction, two statements. `markets.list_held_outside(
+           SETTLED_STATUSES)` reads the markets that are not settled and of which
+           somebody holds shares, and `MarketView.open_prices_micro` prices each of
+           them once. Then `leaderboard.rank(sort=query.sort, order=query.order,
+           filters=LeaderboardFilter(...), after_rank=after, limit=query.limit + 1,
+           viewer_id=viewer.id, p_yes_micro=<those prices>)`. The ranking is one
+           statement and one snapshot; the prices were read just before it, so a
+           trade that commits in between is valued at the price before it, and a
+           market settled in between is left out by the statement itself, until the
+           next request.
         2. `items` are the rows ranked `after + 1` to `after + query.limit`.
            `next_cursor` is `str(after + query.limit)` when a row ranked `after +
            query.limit + 1` came back, else null.
@@ -139,12 +176,14 @@ class LeaderboardService:
         requests can shift a user across a page boundary; the client shows what it
         gets.
         """
+        _check_bounds(query)
         after = _after_rank(query.cursor)
         filters = _filters(query)
         if filters.degree_programme is not None and _NUL in filters.degree_programme:
             return LeaderboardResponse(items=[], next_cursor=None, viewer=None)
 
         async with self._uow_factory() as uow:
+            held = await uow.markets.list_held_outside(SETTLED_STATUSES)
             rows = await uow.leaderboard.rank(
                 sort=query.sort,
                 order=query.order,
@@ -152,6 +191,7 @@ class LeaderboardService:
                 after_rank=after,
                 limit=query.limit + 1,
                 viewer_id=viewer.id,
+                p_yes_micro=self._view.open_prices_micro(held),
             )
 
         last = after + query.limit
@@ -164,14 +204,17 @@ class LeaderboardService:
         )
 
     def _entry(self, row: LeaderboardRow, viewer_id: UUID) -> LeaderboardEntry:
-        """A row of the ranking as the API sends it: credits as an amount, the win rate
-        rounded like a probability, the payout ratio cut to its places."""
+        """A row of the ranking as the API sends it: credits and their two parts as
+        amounts, the win rate rounded like a probability, the payout ratio cut to its
+        places."""
         return LeaderboardEntry(
             rank=row.rank,
             username=row.username,
             degree_level=row.degree_level,
             degree_programme=row.degree_programme,
             credits_cr=to_cr(row.credits_micro),
+            balance_cr=to_cr(row.balance_micro),
+            positions_value_cr=to_cr(row.positions_value_micro),
             trades=row.trades,
             settled_markets=row.settled_markets,
             win_rate=(
@@ -186,6 +229,17 @@ class LeaderboardService:
             ),
             is_viewer=row.user_id == viewer_id,
         )
+
+
+def _check_bounds(query: LeaderboardQuery) -> None:
+    """Refuse a query in which the lower bound of a measure is above its upper bound."""
+    for measure in MEASURES_WITH_BOUNDS:
+        lowest = getattr(query, f"min_{measure}")
+        highest = getattr(query, f"max_{measure}")
+        if lowest is not None and highest is not None and lowest > highest:
+            raise ValidationFailedError(
+                BOUNDS_OUT_OF_ORDER_MESSAGE, details={"field": f"min_{measure}"}
+            )
 
 
 def _after_rank(cursor: str | None) -> int:

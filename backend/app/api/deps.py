@@ -37,6 +37,7 @@ from app.core.errors import (
 )
 from app.core.identity import AuthenticatedUser, Caller, PortalIdentity, display_name
 from app.services.account import AccountService
+from app.services.admin_users import AdminUserService
 from app.services.codes import CodeService
 from app.services.grants import GrantService
 from app.services.health import HealthService
@@ -45,6 +46,7 @@ from app.services.leaderboard import LeaderboardService
 from app.services.live_quotes import LiveQuoteService
 from app.services.market_lifecycle import MarketLifecycleService
 from app.services.markets import MarketService
+from app.services.notices import NoticeService
 from app.services.profile import ProfileService
 from app.services.public_config import PublicConfigService
 from app.services.quotes import QuoteService
@@ -121,8 +123,16 @@ def _risk(container: ContainerDep) -> RiskService:
     return container.risk
 
 
+def _notices(container: ContainerDep) -> NoticeService:
+    return container.notices
+
+
 def _grants(container: ContainerDep) -> GrantService:
     return container.grants
+
+
+def _admin_users(container: ContainerDep) -> AdminUserService:
+    return container.admin_users
 
 
 SettingsDep = Annotated[Settings, Depends(_settings)]
@@ -140,7 +150,9 @@ CodeServiceDep = Annotated[CodeService, Depends(_codes)]
 VoucherServiceDep = Annotated[VoucherService, Depends(_vouchers)]
 LeaderboardServiceDep = Annotated[LeaderboardService, Depends(_leaderboard)]
 RiskServiceDep = Annotated[RiskService, Depends(_risk)]
+NoticeServiceDep = Annotated[NoticeService, Depends(_notices)]
 GrantServiceDep = Annotated[GrantService, Depends(_grants)]
+AdminUserServiceDep = Annotated[AdminUserService, Depends(_admin_users)]
 
 
 def _sent_once(request: Request, header: str) -> str | None:

@@ -19,15 +19,18 @@ function isGone(error: ApiError): boolean {
  * `POST /vouchers/{voucher_id}/code` for a fresh code, and the code the voucher had
  * before stops working. The sheet opens with the tap and shows the voucher view:
  *
- * - while the code is on its way, with a skeleton where the QR tile will be;
- * - then with the answer's `code` and `expires_at`.
+ * - while the code is on its way, with a skeleton where the QR tile will be, under the
+ *   name the row that was tapped has;
+ * - then with the answer's `product_name` as its title, its `code` and its `expires_at`.
  * - `CONFLICT` and `NOT_FOUND` show the API's message instead; the list behind the sheet
  *   is read again and says what became of the voucher.
  * - Any other failure shows the banner of DESIGN.md §14 with "Try again": asking for a
  *   code once more is harmless.
  *
- * The code is in the answer the Wallet holds while this sheet is open, and nowhere else.
- * The sheet can be closed at any time; a code that arrives after that is shown to nobody.
+ * The close cross is there in each of these states. The code is in the answer the Wallet
+ * holds while this sheet is open, and nowhere else. The sheet can be closed at any time; a
+ * code that arrives after that is shown to nobody, and the Wallet asks for no other one
+ * until that request has answered: the code on screen is always the one the voucher has.
  */
 export function VoucherQrSheet({
   open,
@@ -52,7 +55,7 @@ export function VoucherQrSheet({
       onOpenChange={(next) => {
         if (!next) onClose();
       }}
-      title={voucher?.product_name ?? "Voucher"}
+      title={answer?.product_name ?? voucher?.product_name ?? "Voucher"}
     >
       {failure === null ? (
         <VoucherView voucher={answer} onDone={onClose} />

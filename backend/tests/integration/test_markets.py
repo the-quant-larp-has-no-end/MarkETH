@@ -3,7 +3,8 @@
 
 Three things are proven here: what a proposal has to state and how many a day may be
 made, which markets a list holds and when it comes from the cache, and what one market
-tells the person looking at it.
+tells the person looking at it, which for its liquidity is nothing unless that person
+is an admin.
 
 Every expected status, price, stake and payout is what `MarketView` and
 `app.pricing.lmsr` make of the rows; every limit is read from the test settings. Trades
@@ -24,11 +25,14 @@ import pytest
 from hypothesis import HealthCheck, given
 from hypothesis import settings as hypothesis_settings
 from hypothesis import strategies as st
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.container import Container
 from app.core.clock import local_date
 from app.core.config import Settings
 from app.core.enums import (
+    AccountKind,
     JournalKind,
     MarketStatus,
     MarketTier,
@@ -61,6 +65,7 @@ from app.pricing import lmsr
 from app.repositories.market import MarketRepository
 from app.schemas.admin.markets import (
     ApproveMarketRequest,
+    CloseMarketRequest,
     HaltMarketRequest,
     RejectMarketRequest,
     ResolveMarketRequest,
@@ -75,17 +80,19 @@ from app.schemas.markets import (
     TradeBlockReason,
 )
 from app.services.ledger import LedgerRef, PostingLine, trade_key
-from app.services.market_view import HIDDEN_STATUSES, SETTLED_STATUSES
+from app.services.market_view import HIDDEN_STATUSES, SETTLED_STATUSES, UNSETTLED_STATUSES
 from app.services.markets import (
     PROPOSAL_LIMIT_MESSAGE,
     PUBLIC_STATUSES,
     UNSTORABLE_TEXT_MESSAGE,
     VOID_RULE,
+    MarketService,
 )
 from tests.support.books import assert_books_balance, count_rows
 from tests.support.clock import FrozenClock
 from tests.support.factories import ActAs, Factory, identity_of
 from tests.support.settings import load_base_settings
+from tests.support.units_of_work import CountedUnitsOfWork
 
 pytestmark = pytest.mark.integration
 
@@ -93,6 +100,9 @@ BASE: Final[Settings] = load_base_settings()
 PRECISION: Final[int] = BASE.pricing.decimal_precision
 PRESETS: Final[tuple[int, ...]] = tuple(BASE.pricing.stake_presets_micro)
 """TRADE_STAKE_PRESETS_CR in µCR: the buy buttons, in the order they are offered."""
+
+STAKE_STEP: Final[int] = BASE.pricing.stake_step_micro
+"""TRADE_STAKE_STEP_CR in µCR: what lies between two positions of the buy slider."""
 
 STAKE_LIMIT: Final[int] = BASE.pricing.max_stake_per_user_market_micro
 MIN_SHARES: Final[int] = BASE.pricing.min_trade_shares_micro
@@ -149,7 +159,7 @@ def proposal(now: datetime, **overrides: Any) -> ProposeMarketRequest:
         "resolution_source": "ethz.ch/menu",
         "close_at": now + timedelta(days=7),
         "resolve_by": now + timedelta(days=9),
-        "requested_tier": MarketTier.DEFAULT,
+        "policy_accepted": True,
     }
     return ProposeMarketRequest(**(values | overrides))
 
@@ -271,7 +281,7 @@ async def test_a_proposal_becomes_a_proposed_market_that_states_what_was_asked(
     container: Container, factory: Factory, clock: FrozenClock
 ) -> None:
     alice = await factory.user()
-    request = proposal(clock.now(), requested_tier=MarketTier.MEDIUM)
+    request = proposal(clock.now())
 
     answer = await container.markets.propose(factory.identity(alice), request)
 
@@ -291,10 +301,10 @@ async def test_a_proposal_becomes_a_proposed_market_that_states_what_was_asked(
         request.resolution_source,
     )
     assert (row.close_at, row.resolve_by) == (request.close_at, request.resolve_by)
-    assert (row.requested_tier, row.tier) == (MarketTier.MEDIUM, None)
     assert (row.created_by, row.created_at) == (alice.id, clock.now())
-    # Liquidity comes with approval, and nobody has traded.
-    assert (row.budget_micro, row.b_micro) == (0, 0)
+    # A proposal names no liquidity: the tier, the budget and b come with the approval,
+    # and nobody has traded.
+    assert (row.tier, row.budget_micro, row.b_micro) == (None, 0, 0)
     assert (row.q_yes_micro, row.q_no_micro, row.version, row.volume_micro) == (0, 0, 0, 0)
     assert (row.approved_by, row.opened_at, row.closed_at, row.rejection_reason) == (
         None,
@@ -307,21 +317,116 @@ async def test_a_proposal_becomes_a_proposed_market_that_states_what_was_asked(
 async def test_the_answer_to_a_proposal_is_its_detail_as_the_proposer_sees_it(
     container: Container, factory: Factory, clock: FrozenClock
 ) -> None:
+    """The answer is built in the transaction that files the proposal, and it is what
+    the proposer reads of it a moment later: field for field, and character for
+    character as it travels, whatever offset the form wrote its two times with."""
     alice = factory.identity(await factory.user(balance_micro=WALLET))
+    zurich = container.settings.app.timezone
+    close_at = (clock.now() + timedelta(days=7)).astimezone(zurich)
+    request = proposal(clock.now(), close_at=close_at, resolve_by=close_at + timedelta(days=2))
+    assert request.close_at.utcoffset() == timedelta(hours=2)
 
-    answer = await container.markets.propose(alice, proposal(clock.now()))
+    answer = await container.markets.propose(alice, request)
 
-    assert answer == await container.markets.detail(alice, answer.id)
-    assert (answer.status, answer.trading_open, answer.tier) == (
+    afterwards = await container.markets.detail(alice, answer.id)
+    assert answer == afterwards
+    assert answer.model_dump_json() == afterwards.model_dump_json()
+    assert answer.close_at.utcoffset() == timedelta(0), "as the database keeps it"
+    assert (answer.status, answer.trading_open, answer.volume_cr) == (
         MarketStatus.PROPOSED,
         False,
-        None,
+        NOTHING,
     )
-    assert (answer.b_cr, answer.max_loss_cr, answer.volume_cr) == (NOTHING, NOTHING, NOTHING)
+    # How much liquidity the market gets is not the proposer's to know, then or later.
+    assert (answer.tier, answer.b_cr, answer.max_loss_cr) == (None, None, None)
     # A market that was never opened has no price of its own.
     assert (answer.p_yes, answer.p_no) == (0.5, 0.5)
     assert answer.viewer.balance_cr == to_cr(WALLET)
     assert answer.viewer.can_trade is False
+
+
+async def test_a_proposal_opens_exactly_one_unit_of_work(
+    container: Container, factory: Factory, clock: FrozenClock
+) -> None:
+    """Filing it and building its answer are one transaction: nothing is read once
+    that has committed."""
+    alice = factory.identity(await factory.user(balance_micro=WALLET))
+    units = CountedUnitsOfWork(container.uow_factory)
+    markets = MarketService(
+        units, container.settings, container.clock, container.market_view, container.market_cache
+    )
+
+    answer = await markets.propose(alice, proposal(clock.now()))
+
+    assert units.opened == 1
+    assert answer == await container.markets.detail(alice, answer.id)
+    assert await count_rows(container.uow_factory, Market) == 1
+
+
+async def test_a_proposal_that_was_filed_is_answered_even_with_no_connection_left_afterwards(
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pool gives the request its one connection and has none after that. A read
+    after the commit would be answered 503 for a proposal that was filed, and the
+    form's second attempt would file it again and use up the day's limit. No such
+    read exists: the request is answered 201, and the proposal exists once."""
+    alice = await factory.user(balance_micro=WALLET)
+    units = CountedUnitsOfWork(container.uow_factory, at_most=1)
+    monkeypatch.setattr(
+        container,
+        "markets",
+        MarketService(
+            units,
+            container.settings,
+            container.clock,
+            container.market_view,
+            container.market_cache,
+        ),
+    )
+    as_user(alice)
+
+    response = await client.post(MARKETS, json=proposal(clock.now()).model_dump(mode="json"))
+
+    assert response.status_code == 201, response.text
+    assert (units.opened, units.refused) == (1, 0)
+    assert response.json()["status"] == "PROPOSED"
+    assert response.json()["viewer"]["balance_cr"] == format_cr(WALLET)
+    row = await market_row(container, UUID(response.json()["id"]))
+    assert row.created_by == alice.id
+    assert await count_rows(container.uow_factory, Market) == 1
+    # The stand-in is dry: reading the proposal back now is what would have failed.
+    read = await client.get(f"{MARKETS}/{row.id}")
+    assert (read.status_code, read.json()["code"]) == (503, "SERVICE_UNAVAILABLE")
+    assert units.refused == 1
+
+
+async def test_a_proposal_is_answered_whatever_redis_does(
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A proposal drops no list and publishes nothing, so nothing of Redis stands
+    between its commit and its answer, not even an error no adapter expects."""
+
+    async def fails(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("Redis failed in a way of its own")
+
+    for command in ("delete", "publish", "hash_get", "hash_set"):
+        monkeypatch.setattr(container.redis, command, fails)
+    as_user(await factory.user())
+
+    response = await client.post(MARKETS, json=proposal(clock.now()).model_dump(mode="json"))
+
+    assert response.status_code == 201, response.text
+    assert await count_rows(container.uow_factory, Market) == 1
 
 
 async def test_a_proposal_is_not_public_so_it_opens_no_account_and_tells_nobody(
@@ -621,6 +726,7 @@ async def test_the_route_takes_a_proposal_and_answers_201_with_the_market(
     assert response.status_code == 201
     answer = MarketDetailResponse.model_validate(response.json())
     assert answer == await container.markets.detail(factory.identity(alice), answer.id)
+    assert response.json() == (await client.get(f"{MARKETS}/{answer.id}")).json()
     assert response.json()["status"] == "PROPOSED"
     assert response.json()["close_at"] == "2026-10-16T12:00:00Z"
     assert response.json()["viewer"]["balance_cr"] == format_cr(WALLET)
@@ -659,11 +765,19 @@ async def test_the_route_answers_a_rule_of_the_service_with_422_and_the_field(
 @pytest.mark.parametrize(
     ("field", "written"),
     [
-        ("requested_tier", lambda now: "CUSTOM"),
-        ("resolve_by", lambda now: (now + timedelta(days=1)).isoformat()),
+        ("requested_tier", lambda now: "DEFAULT"),
+        ("tier", lambda now: "TIGHT"),
         ("budget_cr", lambda now: "50"),
+        ("resolve_by", lambda now: (now + timedelta(days=1)).isoformat()),
+        ("leverage", lambda now: "10"),
     ],
-    ids=["the-tier-of-vis", "decided-before-the-close", "a-field-nobody-asked-for"],
+    ids=[
+        "a-tier-it-would-like",
+        "the-tier-of-vis",
+        "a-budget",
+        "decided-before-the-close",
+        "a-field-nobody-asked-for",
+    ],
 )
 async def test_the_route_refuses_what_the_request_model_refuses_and_writes_nothing(
     client: httpx.AsyncClient,
@@ -683,6 +797,69 @@ async def test_the_route_refuses_what_the_request_model_refuses_and_writes_nothi
     assert response.json()["code"] == "VALIDATION_ERROR"
     assert response.json()["details"]["errors"]
     assert await count_rows(container.uow_factory, Market) == 0
+
+
+@pytest.mark.parametrize(
+    "liquidity", ["requested_tier", "tier", "b_cr", "budget_cr", "max_loss_cr"]
+)
+async def test_a_proposal_cannot_say_how_much_liquidity_its_market_should_get(
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    liquidity: str,
+) -> None:
+    """The request has no such field: naming one is refused on it, whoever proposes."""
+    body = proposal(clock.now()).model_dump(mode="json") | {liquidity: "DEFAULT"}
+
+    for proposer in (await factory.user(), await factory.admin()):
+        as_user(proposer)
+        response = await client.post(MARKETS, json=body)
+
+        assert response.status_code == 422, response.text
+        assert [
+            (error["loc"], error["type"]) for error in response.json()["details"]["errors"]
+        ] == [(["body", liquidity], "extra_forbidden")]
+    assert await count_rows(container.uow_factory, Market) == 0
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [{"policy_accepted": False}, {"policy_accepted": "true"}, {"policy_accepted": 1}, None],
+    ids=["declined", "a-word", "a-number", "left-out"],
+)
+async def test_a_proposal_without_the_usage_policy_accepted_is_422_on_that_field(
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    policy: dict[str, object] | None,
+) -> None:
+    """Every proposal accepts the policy again, with the JSON `true` and nothing that
+    merely counts as true. Anything else writes no market and counts against no limit."""
+    as_user(await factory.user())
+    body = proposal(clock.now()).model_dump(mode="json")
+    if policy is None:
+        del body["policy_accepted"]
+    else:
+        body |= policy
+
+    response = await client.post(MARKETS, json=body)
+
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "VALIDATION_ERROR"
+    assert [error["loc"] for error in response.json()["details"]["errors"]] == [
+        ["body", "policy_accepted"]
+    ]
+    assert await count_rows(container.uow_factory, Market) == 0
+
+    accepted = await client.post(MARKETS, json=body | {"policy_accepted": True})
+
+    assert accepted.status_code == 201, accepted.text
+    assert "policy_accepted" not in accepted.json(), "nothing of it is kept with the market"
+    assert await count_rows(container.uow_factory, Market) == 1
 
 
 async def test_the_route_answers_the_daily_limit_with_409_and_the_limit(
@@ -730,6 +907,10 @@ class World:
     past_deadline: Market
     """Stored OPEN, and reported CLOSED: its `close_at` has passed (A.4)."""
 
+    expired: Market
+    """Stored PROPOSED, and reported EXPIRED: nobody decided on it before its
+    `close_at` (A.4)."""
+
     @property
     def markets(self) -> tuple[Market, ...]:
         return tuple(getattr(self, field.name) for field in fields(self))
@@ -750,7 +931,14 @@ async def world(factory: Factory) -> World:
         closed=await factory.market(status=MarketStatus.CLOSED, close_in=day),
         closes_first=await factory.market(close_in=day / 2),
         past_deadline=await factory.market(close_in=-2 * timedelta(hours=1)),
+        expired=await factory.market(
+            status=MarketStatus.PROPOSED, close_in=-3 * timedelta(hours=1)
+        ),
     )
+
+
+FOR_ADMINS: Final[frozenset[MarketStatus]] = HIDDEN_STATUSES | {MarketStatus.EXPIRED}
+"""The statuses only an admin may list: what a proposal can be reported as."""
 
 
 @pytest.fixture
@@ -902,12 +1090,21 @@ async def test_no_status_at_all_lists_nothing(
     [
         [MarketStatus.PROPOSED],
         [MarketStatus.REJECTED],
+        [MarketStatus.EXPIRED],
         [MarketStatus.OPEN, MarketStatus.PROPOSED],
+        [MarketStatus.OPEN, MarketStatus.EXPIRED],
         list(MarketStatus),
     ],
-    ids=["proposed", "rejected", "proposed-with-a-public-status", "every-status"],
+    ids=[
+        "proposed",
+        "rejected",
+        "expired",
+        "proposed-with-a-public-status",
+        "expired-with-a-public-status",
+        "every-status",
+    ],
 )
-async def test_proposed_and_rejected_markets_are_listed_for_admins_and_403_for_everyone_else(
+async def test_proposed_expired_and_rejected_markets_are_listed_for_admins_and_403_for_the_rest(
     container: Container,
     factory: Factory,
     world: World,
@@ -955,12 +1152,12 @@ async def test_any_set_of_statuses_lists_exactly_the_markets_in_them_to_whoever_
 ) -> None:
     """Whatever is asked for, in any order and however often: an admin gets the markets
     whose effective status was named, soonest close first. A plain user gets the same
-    list, or 403 as soon as PROPOSED or REJECTED is among them. Lists come from the
-    cache or from Postgres as it happens; the answer is the same."""
+    list, or 403 as soon as PROPOSED, EXPIRED or REJECTED is among them. Lists come
+    from the cache or from Postgres as it happens; the answer is the same."""
     expected = listed(container, world.markets, statuses)
 
     assert ids(await container.markets.list_markets(admin, statuses)) == expected
-    if HIDDEN_STATUSES.isdisjoint(statuses):
+    if FOR_ADMINS.isdisjoint(statuses):
         assert ids(await container.markets.list_markets(viewer, statuses)) == expected
     else:
         with pytest.raises(ForbiddenError):
@@ -1001,6 +1198,94 @@ async def test_the_route_lists_markets_with_amounts_as_strings_and_403_for_a_hid
     for_admins = await client.get(MARKETS, params={"status": "PROPOSED"})
     assert [item["id"] for item in for_admins.json()["items"]] == [str(world.proposed.id)]
     await assert_books_balance(container.uow_factory)
+
+
+# --- Expired proposals in the lists ------------------------------------------------------
+
+
+async def test_an_expired_proposal_is_listed_under_expired_and_not_under_proposed(
+    container: Container, world: World, admin: AuthenticatedUser
+) -> None:
+    """The review queue of the admins is the list of PROPOSED: it holds what they can
+    still decide on. What nobody decided on in time is found under EXPIRED."""
+    queue = await container.markets.list_markets(admin, [MarketStatus.PROPOSED])
+    expired = await container.markets.list_markets(admin, [MarketStatus.EXPIRED])
+    both = await container.markets.list_markets(
+        admin, [MarketStatus.PROPOSED, MarketStatus.EXPIRED]
+    )
+
+    assert [(item.id, item.status) for item in queue.items] == [
+        (world.proposed.id, MarketStatus.PROPOSED)
+    ]
+    assert [(item.id, item.status) for item in expired.items] == [
+        (world.expired.id, MarketStatus.EXPIRED)
+    ]
+    assert ids(both) == [world.expired.id, world.proposed.id]
+    assert (await market_row(container, world.expired.id)).status is MarketStatus.PROPOSED
+
+
+async def test_a_proposal_moves_from_the_proposed_list_to_the_expired_one_at_its_deadline(
+    container: Container, factory: Factory, clock: FrozenClock, admin: AuthenticatedUser
+) -> None:
+    """At the instant of `close_at` itself, and without a write: the row says PROPOSED
+    before and after."""
+    proposal = await factory.market(status=MarketStatus.PROPOSED, close_in=timedelta(hours=1))
+
+    async def lists() -> tuple[list[UUID], list[UUID]]:
+        proposed = await container.markets.list_markets(admin, [MarketStatus.PROPOSED])
+        expired = await container.markets.list_markets(admin, [MarketStatus.EXPIRED])
+        return ids(proposed), ids(expired)
+
+    clock.set(proposal.close_at - TICK)
+    assert await lists() == ([proposal.id], [])
+    clock.set(proposal.close_at)
+    assert await lists() == ([], [proposal.id])
+    clock.set(proposal.close_at + 30 * timedelta(days=1))
+    assert await lists() == ([], [proposal.id])
+    assert (await market_row(container, proposal.id)).status is MarketStatus.PROPOSED
+
+
+async def test_an_expired_proposal_is_in_no_list_a_user_may_ask_for(
+    container: Container, world: World, viewer: AuthenticatedUser
+) -> None:
+    """Not in the list without a filter, and under no public status."""
+    everything = await container.markets.list_markets(viewer, None)
+    by_status = [
+        await container.markets.list_markets(viewer, [status]) for status in PUBLIC_STATUSES
+    ]
+
+    assert world.expired.id not in ids(everything)
+    assert all(world.expired.id not in ids(answer) for answer in by_status)
+    assert MarketStatus.EXPIRED not in PUBLIC_STATUSES
+
+
+async def test_the_route_lists_expired_proposals_for_an_admin_and_refuses_everyone_else(
+    client: httpx.AsyncClient, as_user: ActAs, factory: Factory, world: World
+) -> None:
+    """`?status=EXPIRED` is a filter like any other: the admin's list, and 403 for a
+    plain user, a barista and the proposer of the expired proposal."""
+    proposer = await factory.user()
+    own = await factory.market(
+        status=MarketStatus.PROPOSED, created_by=proposer, close_in=-timedelta(minutes=1)
+    )
+
+    for refused in (await factory.user(), await factory.barista(), proposer):
+        as_user(refused)
+        response = await client.get(MARKETS, params={"status": "EXPIRED"})
+        assert response.status_code == 403
+        assert (response.json()["code"], response.json()["details"]) == ("FORBIDDEN", {})
+
+    as_user(await factory.admin())
+    expired = await client.get(MARKETS, params={"status": "EXPIRED"})
+    queue = await client.get(MARKETS, params={"status": "PROPOSED"})
+
+    assert expired.status_code == 200
+    assert [(item["id"], item["status"]) for item in expired.json()["items"]] == [
+        (str(world.expired.id), "EXPIRED"),
+        (str(own.id), "EXPIRED"),
+    ]
+    assert [item["trading_open"] for item in expired.json()["items"]] == [False, False]
+    assert [item["id"] for item in queue.json()["items"]] == [str(world.proposed.id)]
 
 
 # --- The list cache ----------------------------------------------------------------------
@@ -1073,10 +1358,22 @@ async def test_each_set_of_statuses_is_cached_on_its_own_and_all_are_dropped_tog
 
 @pytest.mark.parametrize(
     "statuses",
-    [[MarketStatus.PROPOSED], [MarketStatus.OPEN, MarketStatus.REJECTED], list(MarketStatus)],
-    ids=["proposed", "rejected-with-a-public-status", "every-status"],
+    [
+        [MarketStatus.PROPOSED],
+        [MarketStatus.OPEN, MarketStatus.REJECTED],
+        [MarketStatus.EXPIRED],
+        [MarketStatus.CLOSED, MarketStatus.EXPIRED],
+        list(MarketStatus),
+    ],
+    ids=[
+        "proposed",
+        "rejected-with-a-public-status",
+        "expired",
+        "expired-with-a-public-status",
+        "every-status",
+    ],
 )
-async def test_a_list_with_proposed_or_rejected_markets_is_never_cached(
+async def test_a_list_with_proposed_expired_or_rejected_markets_is_never_cached(
     container: Container,
     factory: Factory,
     admin: AuthenticatedUser,
@@ -1084,10 +1381,14 @@ async def test_a_list_with_proposed_or_rejected_markets_is_never_cached(
 ) -> None:
     """Such a list is for admins. Out of a shared cache it could reach somebody else,
     and a proposal just made would be missing from it."""
-    hidden = next(status for status in statuses if status in HIDDEN_STATUSES)
+    hidden = next(status for status in statuses if status in FOR_ADMINS)
     await factory.market()
     before = await container.markets.list_markets(admin, statuses)
-    late = await factory.market(status=hidden)
+    late = await (
+        factory.market(status=MarketStatus.PROPOSED, close_in=-timedelta(hours=1))
+        if hidden is MarketStatus.EXPIRED
+        else factory.market(status=hidden)
+    )
 
     after = await container.markets.list_markets(admin, statuses)
 
@@ -1185,6 +1486,62 @@ async def test_a_proposed_or_rejected_market_is_404_to_all_but_its_proposer_and_
     assert (own.rejection_reason is not None) == (status is MarketStatus.REJECTED)
 
 
+async def test_the_detail_reports_a_proposal_as_expired_from_its_deadline_on(
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    viewer: AuthenticatedUser,
+    admin: AuthenticatedUser,
+) -> None:
+    """To its proposer and to an admin, from the instant of `close_at` itself. To
+    everybody else it stays 404: expiring makes nothing public. The row is not
+    touched."""
+    proposer = await factory.user()
+    proposal = await factory.market(
+        status=MarketStatus.PROPOSED, created_by=proposer, close_in=timedelta(hours=1)
+    )
+
+    async def reported() -> set[MarketStatus]:
+        own = await container.markets.detail(factory.identity(proposer), proposal.id)
+        seen = await container.markets.detail(admin, proposal.id)
+        with pytest.raises(NotFoundError):
+            await container.markets.detail(viewer, proposal.id)
+        assert (own.trading_open, own.outcome, own.rejection_reason) == (False, None, None)
+        assert (own.viewer.can_trade, own.viewer.cannot_trade_reason) == (
+            False,
+            TradeBlockReason.MARKET_NOT_OPEN,
+        )
+        assert (seen.tier, seen.b_cr, seen.max_loss_cr) == (None, NOTHING, NOTHING)
+        return {own.status, seen.status}
+
+    clock.set(proposal.close_at - TICK)
+    assert await reported() == {MarketStatus.PROPOSED}
+    clock.set(proposal.close_at)
+    assert await reported() == {MarketStatus.EXPIRED}
+    clock.set(proposal.close_at + 90 * timedelta(days=1))
+    assert await reported() == {MarketStatus.EXPIRED}
+    assert (await market_row(container, proposal.id)).status is MarketStatus.PROPOSED
+
+
+async def test_the_route_shows_an_expired_proposal_to_its_proposer_and_to_nobody_else(
+    client: httpx.AsyncClient, as_user: ActAs, factory: Factory
+) -> None:
+    proposer = await factory.user()
+    expired = await factory.market(
+        status=MarketStatus.PROPOSED, created_by=proposer, close_in=-timedelta(seconds=1)
+    )
+
+    as_user(proposer)
+    own = await client.get(f"{MARKETS}/{expired.id}")
+    as_user(await factory.user())
+    foreign = await client.get(f"{MARKETS}/{expired.id}")
+
+    assert own.status_code == 200
+    assert (own.json()["status"], own.json()["trading_open"]) == ("EXPIRED", False)
+    assert foreign.status_code == 404
+    assert (foreign.json()["code"], foreign.json()["details"]) == ("NOT_FOUND", {})
+
+
 @pytest.mark.parametrize("status", PUBLIC_STATUSES)
 async def test_every_other_market_is_for_everybody(
     container: Container, factory: Factory, viewer: AuthenticatedUser, status: MarketStatus
@@ -1209,7 +1566,7 @@ async def test_who_proposed_a_market_is_told_to_admins_only(
 # --- One market: its rules ---------------------------------------------------------------
 
 
-async def test_a_market_shows_its_wording_its_liquidity_and_the_void_rule_before_anyone_trades(
+async def test_a_market_shows_its_wording_and_the_void_rule_before_anyone_trades(
     container: Container, factory: Factory, viewer: AuthenticatedUser
 ) -> None:
     market = await factory.market(tier=MarketTier.TIGHT)
@@ -1225,12 +1582,205 @@ async def test_a_market_shows_its_wording_its_liquidity_and_the_void_rule_before
         detail.resolution_criteria,
         detail.resolution_source,
     ) == (market.yes_def, market.no_def, market.resolution_criteria, market.resolution_source)
-    assert (detail.requested_tier, detail.tier) == (MarketTier.TIGHT, MarketTier.TIGHT)
-    assert detail.b_cr == to_cr(container.settings.pricing.tier_b_micro(MarketTier.TIGHT))
-    assert detail.max_loss_cr == to_cr(market.budget_micro)
     assert detail.void_rule == VOID_RULE
     assert (detail.created_at, detail.opened_at, detail.closed_at) == (now, now, None)
     assert (detail.rejection_reason, detail.resolution) == (None, None)
+
+
+async def test_how_much_liquidity_a_market_has_is_told_to_admins_only(
+    container: Container, factory: Factory, viewer: AuthenticatedUser, admin: AuthenticatedUser
+) -> None:
+    """The tier, b and the loss budget: to an admin by the address and to one by the
+    row, and to nobody else, whatever they are to the market."""
+    proposer = await factory.user()
+    barista = factory.identity(await factory.barista())
+    appointed = factory.identity(await factory.user(role=UserRole.ADMIN))
+    trader = await factory.user(balance_micro=WALLET)
+    market = await factory.market(tier=MarketTier.TIGHT, created_by=proposer)
+    await factory.position(trader, market, Outcome.YES, shares_micro=40 * MICRO)
+    b_micro = container.settings.pricing.tier_b_micro(MarketTier.TIGHT)
+
+    for one_of_vis in (admin, appointed):
+        told = await container.markets.detail(one_of_vis, market.id)
+        assert (told.tier, told.b_cr, told.max_loss_cr) == (
+            MarketTier.TIGHT,
+            to_cr(b_micro),
+            to_cr(market.budget_micro),
+        )
+        assert market.budget_micro == lmsr.max_loss_micro(b_micro, precision=PRECISION)
+    for someone in (viewer, barista, factory.identity(proposer), factory.identity(trader)):
+        kept = await container.markets.detail(someone, market.id)
+        assert (kept.tier, kept.b_cr, kept.max_loss_cr) == (None, None, None)
+    await assert_books_balance(container.uow_factory)
+
+
+@pytest.mark.parametrize("status", sorted(HIDDEN_STATUSES))
+async def test_a_market_that_was_never_opened_has_no_liquidity_to_tell_an_admin_of(
+    container: Container,
+    factory: Factory,
+    admin: AuthenticatedUser,
+    status: MarketStatus,
+) -> None:
+    """To an admin: no tier yet, and a b and a budget of nothing. To its proposer the
+    three are as blank as for any market."""
+    proposer = await factory.user()
+    market = await factory.market(status=status, created_by=proposer)
+
+    for_the_admin = await container.markets.detail(admin, market.id)
+    own = await container.markets.detail(factory.identity(proposer), market.id)
+
+    assert (for_the_admin.tier, for_the_admin.b_cr, for_the_admin.max_loss_cr) == (
+        None,
+        NOTHING,
+        NOTHING,
+    )
+    assert (own.tier, own.b_cr, own.max_loss_cr) == (None, None, None)
+
+
+async def sold_out_of_at_a_gain(container: Container, factory: Factory) -> tuple[Market, int]:
+    """A market out of which somebody took more than they put in: Alice buys, Bob's
+    buy moves the price up, Alice sells at a gain. Returns it with that gain, which is
+    what a void would cost VIS: Bob gets his whole stake back, and the account holds
+    that minus what Alice took."""
+    alice = await factory.user(balance_micro=WALLET)
+    bob = await factory.user(balance_micro=WALLET)
+    market = await factory.market()
+    alice_held = await factory.position(alice, market, Outcome.YES, shares_micro=150 * MICRO)
+    await factory.position(bob, market, Outcome.YES, shares_micro=150 * MICRO)
+    received_micro = await sell(container, alice, market, Outcome.YES, 150 * MICRO)
+    gain_micro = received_micro - alice_held.cost_micro
+    assert gain_micro > 0
+    return market, gain_micro
+
+
+async def test_what_voiding_a_market_would_cost_is_told_to_admins_only(
+    container: Container, factory: Factory, viewer: AuthenticatedUser, admin: AuthenticatedUser
+) -> None:
+    """To an admin by the address and to one by the row, and to nobody else: not to a
+    trader of the market, not to a barista."""
+    market, gain_micro = await sold_out_of_at_a_gain(container, factory)
+    barista = factory.identity(await factory.barista())
+    appointed = factory.identity(await factory.user(role=UserRole.ADMIN))
+    async with container.uow_factory() as uow:
+        traders = {held.user_id for held in await uow.positions.list_for_market(market.id)}
+        a_trader = await uow.users.get(next(iter(traders)))
+    assert a_trader is not None
+
+    for one_of_vis in (admin, appointed):
+        told = await container.markets.detail(one_of_vis, market.id)
+        assert told.void_cost_cr == to_cr(gain_micro)
+    for someone in (viewer, barista, factory.identity(a_trader)):
+        kept = await container.markets.detail(someone, market.id)
+        assert kept.void_cost_cr is None
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_the_void_cost_of_a_market_is_the_one_its_row_on_the_risk_page_shows(
+    container: Container, factory: Factory, admin: AuthenticatedUser
+) -> None:
+    """One function gives both (`MarketView.void_cost_micro`), from the same two
+    readings: the page an admin voids a market from says what the risk page says."""
+    market, gain_micro = await sold_out_of_at_a_gain(container, factory)
+    untraded = await factory.market()
+    held = await factory.market()
+    await factory.position(
+        await factory.user(balance_micro=WALLET), held, Outcome.NO, shares_micro=40 * MICRO
+    )
+
+    page = await container.risk.snapshot()
+
+    on_the_risk_page = {row.id: row.void_cost_cr for row in page.markets}
+    for listed in (market, untraded, held):
+        detail = await container.markets.detail(admin, listed.id)
+        assert detail.void_cost_cr == on_the_risk_page[listed.id]
+    assert on_the_risk_page == {
+        market.id: to_cr(gain_micro),
+        untraded.id: NOTHING,
+        held.id: NOTHING,
+    }
+    await assert_books_balance(container.uow_factory)
+
+
+@pytest.mark.parametrize("status", sorted(UNSETTLED_STATUSES))
+async def test_a_market_that_is_not_settled_tells_an_admin_its_void_cost_also_when_it_is_nothing(
+    container: Container, factory: Factory, admin: AuthenticatedUser, status: MarketStatus
+) -> None:
+    """Open, halted or closed: such a market can be voided, and the risk page lists it.
+    Nothing is not the same as no figure."""
+    market = await factory.market(status=status)
+
+    detail = await container.markets.detail(admin, market.id)
+
+    assert detail.void_cost_cr == NOTHING
+    assert detail.void_cost_cr is not None
+
+
+@pytest.mark.parametrize("status", sorted(HIDDEN_STATUSES | SETTLED_STATUSES))
+async def test_a_market_with_nothing_to_void_tells_an_admin_no_void_cost(
+    container: Container, factory: Factory, admin: AuthenticatedUser, status: MarketStatus
+) -> None:
+    """One that was never opened has no account and nobody's stake, and one that is
+    settled has paid out. The risk page lists neither."""
+    market = await factory.market(status=status)
+
+    detail = await container.markets.detail(admin, market.id)
+
+    assert detail.void_cost_cr is None
+    assert market.id not in {row.id for row in (await container.risk.snapshot()).markets}
+
+
+async def test_an_expired_proposal_tells_an_admin_no_void_cost(
+    container: Container, factory: Factory, admin: AuthenticatedUser
+) -> None:
+    """Its row says PROPOSED: it was never opened."""
+    expired = await factory.market(status=MarketStatus.PROPOSED, close_in=-timedelta(days=1))
+
+    detail = await container.markets.detail(admin, expired.id)
+
+    assert (detail.status, detail.void_cost_cr) == (MarketStatus.EXPIRED, None)
+
+
+async def test_a_voided_market_cost_what_its_detail_said_beforehand_and_says_nothing_after(
+    container: Container, factory: Factory, admin: AuthenticatedUser
+) -> None:
+    """The figure an admin read before deciding is what `vis:mm_pnl` then added."""
+    market, gain_micro = await sold_out_of_at_a_gain(container, factory)
+    before = await container.markets.detail(admin, market.id)
+    async with container.uow_factory() as uow:
+        pnl_before = (await uow.accounts.get_system_account(AccountKind.VIS_MM_PNL)).balance_micro
+
+    await container.market_lifecycle.close(admin, market.id, CloseMarketRequest())
+    closed = await container.markets.detail(admin, market.id)
+    voided = await container.market_lifecycle.void(
+        admin, market.id, VoidMarketRequest(reason="The mensa was closed that day.")
+    )
+
+    async with container.uow_factory() as uow:
+        pnl_after = (await uow.accounts.get_system_account(AccountKind.VIS_MM_PNL)).balance_micro
+    assert before.void_cost_cr == closed.void_cost_cr == to_cr(gain_micro)
+    assert pnl_before - pnl_after == gain_micro
+    assert voided.void_cost_cr is None
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_market_that_can_be_voided_and_has_no_account_is_a_broken_book_to_an_admin(
+    container: Container,
+    factory: Factory,
+    viewer: AuthenticatedUser,
+    admin: AuthenticatedUser,
+    owner_engine: AsyncEngine,
+) -> None:
+    """Approval opens the account with the market. The page fails loudly for whoever
+    is shown the figure, as the risk page does, and nobody else is read it for."""
+    market = await factory.market()
+    async with owner_engine.begin() as connection:
+        await connection.execute(
+            text("DELETE FROM accounts WHERE market_id = :id"), {"id": market.id}
+        )
+
+    with pytest.raises(LookupError, match="has no account"):
+        await container.markets.detail(admin, market.id)
+    assert (await container.markets.detail(viewer, market.id)).void_cost_cr is None
 
 
 @pytest.mark.parametrize(
@@ -1433,6 +1983,74 @@ async def test_selling_gives_stake_back_and_buttons_with_it(
     await assert_books_balance(container.uow_factory)
 
 
+# --- One market: the slider of a buy -----------------------------------------------------
+
+
+def slider_of(detail: MarketDetailResponse) -> tuple[int, int, int] | None:
+    """`(min, max, step)` of the viewer's slider, in whole credits; None for none."""
+    slider = detail.viewer.buy_slider
+    return None if slider is None else (slider.min, slider.max, slider.step)
+
+
+async def test_the_buy_slider_runs_from_the_smallest_buy_to_the_stake_limit_for_a_fresh_trader(
+    container: Container, factory: Factory
+) -> None:
+    """In whole credits, a step of TRADE_STAKE_STEP_CR apart, and it is `MarketView`'s."""
+    alice = factory.identity(await factory.user(balance_micro=WALLET))
+    market = await factory.market()
+
+    detail = await container.markets.detail(alice, market.id)
+
+    assert (STAKE_STEP, STAKE_LIMIT % STAKE_STEP) == (MICRO, 0), "the settings step by one credit"
+    assert BASE.pricing.min_trade_micro == MICRO
+    assert slider_of(detail) == (1, STAKE_LIMIT // MICRO, 1)
+    assert detail.viewer.buy_slider == container.market_view.buy_slider(STAKE_LIMIT, WALLET, True)
+
+
+async def test_the_buy_slider_ends_where_the_balance_does(
+    container: Container, factory: Factory
+) -> None:
+    """Seventeen and a half credits buy for seventeen; less than the smallest buy, and
+    there is no slider."""
+    with_some = factory.identity(await factory.user(balance_micro=17 * MICRO + MICRO // 2))
+    with_one = factory.identity(await factory.user(balance_micro=MICRO))
+    nearly_one = factory.identity(await factory.user(balance_micro=MICRO - 1))
+    broke = factory.identity(await factory.user())
+    market = await factory.market()
+
+    assert slider_of(await container.markets.detail(with_some, market.id)) == (1, 17, 1)
+    assert slider_of(await container.markets.detail(with_one, market.id)) == (1, 1, 1)
+    assert slider_of(await container.markets.detail(nearly_one, market.id)) is None
+    assert slider_of(await container.markets.detail(broke, market.id)) is None
+
+
+async def test_the_buy_slider_ends_where_the_stake_limit_does_and_selling_moves_it_back(
+    container: Container, factory: Factory
+) -> None:
+    """With 30.25 credits of the limit left the slider ends at 30, at the limit there is
+    none, and what a sale brings back can be staked again, down to a whole credit."""
+    alice = await factory.user(balance_micro=WALLET)
+    market = await factory.market()
+    left = 30 * MICRO + MICRO // 4
+    await factory.position(
+        alice, market, Outcome.YES, shares_micro=120 * MICRO, cost_micro=STAKE_LIMIT - left
+    )
+    with_some_left = await container.markets.detail(factory.identity(alice), market.id)
+    await factory.position(alice, market, Outcome.NO, shares_micro=30 * MICRO, cost_micro=left)
+    at_the_limit = await container.markets.detail(factory.identity(alice), market.id)
+
+    received_micro = await sell(container, alice, market, Outcome.YES, 120 * MICRO)
+    after = await container.markets.detail(factory.identity(alice), market.id)
+
+    assert with_some_left.viewer.stake_left_cr == to_cr(left)
+    assert slider_of(with_some_left) == (1, 30, 1)
+    assert (at_the_limit.viewer.stake_left_cr, slider_of(at_the_limit)) == (NOTHING, None)
+    assert after.viewer.stake_left_cr == to_cr(received_micro)
+    assert received_micro % MICRO, "what the sale brought back is no whole number of credits"
+    assert slider_of(after) == (1, received_micro // MICRO, 1)
+    await assert_books_balance(container.uow_factory)
+
+
 # --- One market: the sell buttons --------------------------------------------------------
 
 
@@ -1540,9 +2158,12 @@ async def test_whether_the_viewer_may_trade_and_the_first_reason_why_not(
     block = (await container.markets.detail(factory.identity(alice), market.id)).viewer
 
     assert (block.can_trade, block.cannot_trade_reason) == (reason is None, reason)
-    if reason is not None:
+    if reason is None:
+        assert block.buy_slider is not None
+    else:
         assert not any(preset.allowed for preset in block.stake_presets)
         assert not any(preset.allowed for preset in block.sell_presets)
+        assert block.buy_slider is None
 
 
 async def test_a_halted_market_offers_no_button_to_somebody_with_shares_tokens_and_stake_left(
@@ -1559,9 +2180,11 @@ async def test_a_halted_market_offers_no_button_to_somebody_with_shares_tokens_a
     paused = await container.markets.detail(factory.identity(alice), market.id)
 
     assert any(preset.allowed for preset in trading.viewer.stake_presets)
+    assert trading.viewer.buy_slider is not None
     assert [preset.allowed for preset in trading.viewer.sell_presets[:2]] == [True, True]
     assert paused.viewer.cannot_trade_reason is TradeBlockReason.MARKET_NOT_OPEN
     assert not any(preset.allowed for preset in paused.viewer.stake_presets)
+    assert paused.viewer.buy_slider is None
     assert not any(preset.allowed for preset in paused.viewer.sell_presets)
     # What is offered changed; what the viewer holds did not.
     assert [preset.shares for preset in paused.viewer.sell_presets] == [
@@ -1736,9 +2359,55 @@ async def test_the_route_answers_a_market_with_the_viewers_side_and_amounts_as_s
         "allowed": True,
     }
     assert (body["viewer"]["payout_cr"], body["viewer"]["refund_cr"]) == (None, None)
+    # Whole credits as JSON integers: the stake that is left ends the slider.
+    assert body["viewer"]["buy_slider"] == {
+        "min": 1,
+        "max": (STAKE_LIMIT - paid_micro) // MICRO,
+        "step": 1,
+    }
+    assert all(type(value) is int for value in body["viewer"]["buy_slider"].values())
     assert body["proposer_email"] is None
+    # Nothing about its liquidity reaches somebody who is no admin.
+    assert (body["tier"], body["b_cr"], body["max_loss_cr"]) == (None, None, None)
+    assert "requested_tier" not in body
     assert body["void_rule"] == VOID_RULE
     await assert_books_balance(container.uow_factory)
+
+
+async def test_the_route_tells_an_admin_the_liquidity_of_a_market_as_strings(
+    client: httpx.AsyncClient, as_user: ActAs, container: Container, factory: Factory
+) -> None:
+    market = await factory.market(tier=MarketTier.MEDIUM)
+    as_user(await factory.admin())
+
+    body = (await client.get(f"{MARKETS}/{market.id}")).json()
+
+    assert (body["tier"], body["b_cr"], body["max_loss_cr"]) == (
+        "MEDIUM",
+        format_cr(container.settings.pricing.tier_b_micro(MarketTier.MEDIUM)),
+        format_cr(market.budget_micro),
+    )
+    assert "requested_tier" not in body
+
+
+async def test_the_route_tells_an_admin_the_void_cost_of_a_market_as_the_risk_route_does(
+    client: httpx.AsyncClient, as_user: ActAs, container: Container, factory: Factory
+) -> None:
+    """A signed decimal string to an admin, the one `GET /admin/risk` carries in the
+    market's row, and null to everybody else."""
+    market, gain_micro = await sold_out_of_at_a_gain(container, factory)
+    as_user(await factory.admin())
+
+    for_the_admin = (await client.get(f"{MARKETS}/{market.id}")).json()
+    risk = (await client.get("/api/admin/risk")).json()
+    as_user(await factory.user())
+    for_a_user = (await client.get(f"{MARKETS}/{market.id}")).json()
+
+    (row,) = risk["markets"]
+    assert for_the_admin["void_cost_cr"] == row["void_cost_cr"] == format_cr(gain_micro)
+    assert isinstance(for_the_admin["void_cost_cr"], str)
+    assert "void_cost_cr" in for_a_user
+    assert for_a_user["void_cost_cr"] is None
 
 
 async def test_the_route_answers_404_for_an_unknown_market_and_for_somebody_elses_proposal(
@@ -1817,12 +2486,19 @@ async def test_whatever_a_viewer_traded_their_side_is_what_market_view_makes_of_
     assert block.stake_presets == view.stake_presets(
         view.stake_left_micro(stake_micro), balance_micro, True
     )
+    assert block.buy_slider == view.buy_slider(
+        view.stake_left_micro(stake_micro), balance_micro, True
+    )
     assert block.sell_presets == view.sell_presets(rows, True)
     assert (block.can_trade, block.can_settle) == (True, False)
     for stake in block.stake_presets:
         if stake.allowed:
             assert stake.amount_cr <= block.balance_cr
             assert stake.amount_cr <= block.stake_left_cr
+    if block.buy_slider is not None:
+        assert 0 < block.buy_slider.min <= block.buy_slider.max
+        assert block.buy_slider.max <= block.balance_cr
+        assert block.buy_slider.max <= block.stake_left_cr
     shares = {held.outcome: held.shares for held in block.holdings}
     for offer in block.sell_presets:
         assert offer.shares <= shares[offer.outcome]

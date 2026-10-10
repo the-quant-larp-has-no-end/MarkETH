@@ -1,4 +1,4 @@
-import type { MarketStatus, operations, Outcome } from "./schema";
+import type { MarketStatus, operations, Outcome, UserRole, UserStatus } from "./schema";
 
 /** What a quote is asked for: a budget when buying, a number of shares when selling. */
 export type QuoteRequest =
@@ -31,9 +31,21 @@ export type LeaderboardParams = Omit<LeaderboardQuery, "limit" | "cursor" | Sent
 };
 
 /**
+ * The search and the filters of `GET /admin/users`, under the names the API uses. A value
+ * that is left out is not sent: an empty search and "all" send nothing. No `limit` (the
+ * page size is the API's) and no `cursor` (the query pages itself).
+ */
+export type AdminUsersParams = {
+  /** Part of a username, a name or an email address. */
+  q?: string;
+  role?: UserRole;
+  status?: UserStatus;
+};
+
+/**
  * The key of every query. A key that is a prefix of others invalidates them with it:
  * `["me"]` covers the profile and the five lists under it, `["markets"]` every market
- * read, `["leaderboard"]` every sort and filter.
+ * read, `["leaderboard"]` every sort and filter, `["admin", "users"]` every list of users.
  */
 export const keys = {
   config: ["config"],
@@ -66,6 +78,16 @@ export const keys = {
   admin: {
     all: ["admin"],
     batches: ["admin", "code-batches"],
+    /**
+     * The codes of one batch that can be redeemed. Not under `batches`: the API records
+     * every read of them, so marking the batches out of date must not ask for them again.
+     */
+    batchCodes: (batchId: string) => ["admin", "batch-codes", batchId] as const,
     risk: ["admin", "risk"],
+    users: {
+      /** Every list of users, whatever its search and filters. */
+      all: ["admin", "users"],
+      list: (params: AdminUsersParams) => ["admin", "users", params] as const,
+    },
   },
 } as const;

@@ -1,8 +1,10 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { usePathname } from "next/navigation";
 import { createContext, type ReactNode, useContext, useEffect, useState } from "react";
 
+import { PolicyForVisitor } from "@/features/policy";
 import { portalIdentity } from "@/lib/api/errors";
 import { configQuery, meQuery } from "@/lib/api/queries";
 import type { ProfileSavedResponse } from "@/lib/api/schema";
@@ -10,10 +12,14 @@ import { confirmPortalSession } from "@/lib/session-recovery";
 
 import { BootScreen } from "./boot-screen";
 import { NoticeScreen } from "./notice-screen";
+import { Notices } from "./notices";
 import { ProfileSetupScreen } from "./profile-setup-screen";
 import { WelcomeDialog } from "./welcome-dialog";
 
 const WelcomeContext = createContext(false);
+
+/** The usage policy: a visitor without a profile reads it before accepting it. */
+const POLICY_ROUTE = "/policy";
 
 /**
  * True while the welcome dialog is open. A sheet a route would open by itself (the
@@ -24,6 +30,20 @@ export function useWelcomeOpen(): boolean {
 }
 
 /**
+ * What a visitor without a profile sees in place of the route they opened: the profile
+ * set-up, on every route but one. `/policy` is the route the set-up does not stand in
+ * front of (DESIGN.md §11): the usage policy is read before it is accepted.
+ *
+ * The address is read here and not in the gate, which is also what the server renders:
+ * this is shown only once `/me` has answered, which happens in the browser.
+ */
+function WithoutProfile(props: Parameters<typeof ProfileSetupScreen>[0]) {
+  const pathname = usePathname();
+  if (pathname === POLICY_ROUTE) return <PolicyForVisitor />;
+  return <ProfileSetupScreen {...props} />;
+}
+
+/**
  * Start-up (DESIGN.md §13): what stands in front of every route until the app knows who
  * is looking. The portal has signed the visitor in before the page loaded; `/config` and
  * `/me` are asked together, and the answer of `/me` decides what is shown:
@@ -31,7 +51,9 @@ export function useWelcomeOpen(): boolean {
  * | `/me` answers                   | Shown                                              |
  * | ------------------------------- | -------------------------------------------------- |
  * | the profile                     | the route that was opened (`children`)             |
- * | `PROFILE_REQUIRED`              | profile set-up, in place of the route              |
+ * | `PROFILE_REQUIRED`              | profile set-up, in place of the route; on          |
+ * |                                 | `/policy` the usage policy, so that it can be read |
+ * |                                 | before it is accepted                              |
  * | `FORBIDDEN`                     | the full-screen message with the API's text        |
  * | `UNAUTHENTICATED`               | the same, with "Try again"                         |
  * | the portal's 401                | the page reloads once; then "Your ETH sign-in has  |
@@ -44,6 +66,9 @@ export function useWelcomeOpen(): boolean {
  *
  * Everything inside `children` may call `useMe()` and `useConfig()`: nobody is signed
  * out, and nobody past this gate is without a profile.
+ *
+ * `/me` also lists what its user has not been told yet (`notices`): each is shown once as
+ * a toast over whatever route is open, and marked seen (`Notices`).
  */
 export function AppGate({ children }: { children: ReactNode }) {
   const config = useQuery(configQuery);
@@ -78,7 +103,7 @@ export function AppGate({ children }: { children: ReactNode }) {
 
   if (me.error?.code === "PROFILE_REQUIRED") {
     return (
-      <ProfileSetupScreen
+      <WithoutProfile
         identity={portalIdentity(me.error)}
         onCreated={(saved) => {
           if (saved.signup_granted) setWelcome({ saved, open: true });
@@ -91,6 +116,7 @@ export function AppGate({ children }: { children: ReactNode }) {
     return (
       <WelcomeContext.Provider value={welcome?.open ?? false}>
         {children}
+        <Notices notices={me.data.notices} />
         <WelcomeDialog
           saved={welcome?.saved ?? null}
           open={welcome?.open ?? false}

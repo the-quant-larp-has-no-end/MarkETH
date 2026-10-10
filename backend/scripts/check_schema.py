@@ -33,7 +33,9 @@ async def stored_fingerprint(settings: Settings) -> str | None:
 
     None where it left none: the database is empty, or something else built it.
     """
-    engine = create_async_engine(settings.postgres.owner_url, poolclass=NullPool)
+    engine = create_async_engine(
+        settings.postgres.owner_url, poolclass=NullPool, hide_parameters=True
+    )
     try:
         async with engine.connect() as connection:
             stored: str | None = await connection.scalar(text(READ_FINGERPRINT))

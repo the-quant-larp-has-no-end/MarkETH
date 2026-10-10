@@ -7,6 +7,7 @@ npm run dev            # next dev; in the stack it sits behind nginx at http://l
 npm run lint           # eslint, with prettier as a rule; `npm run lint -- --fix` formats
 npm run typecheck      # next typegen, then tsc --noEmit
 npm test               # vitest run (jsdom, Testing Library)
+npm run e2e            # playwright test: the specs of e2e/ in Chrome, against the stack that is up; `make e2e`
 npm run build          # next build -> .next/standalone
 npm run generate:api   # backend/openapi.json -> src/lib/api/schema.d.ts; use `make api-client`
 ```
@@ -79,7 +80,7 @@ Imports only point downwards. ESLint fails the build otherwise.
 
 Two lengths of the shell are CSS variables, for what has to keep clear of the bars: `--top-bar-space` and `--tab-bar-space` (which is `0px` from 768 px). `bottom-(--tab-bar-space)` is "right above the tab bar".
 
-`ResponsiveSheet` does the focus of DESIGN §15 itself: it notes what had the focus when it opened and gives the focus back to that when it has closed, and below 768 px it takes the focus to the sheet (not to a field, which would slide a keyboard up). A screen opens it by state and does nothing else about focus. `SheetBody` scrolls and its blocks keep their height; `SheetFooter` stays pinned.
+`ResponsiveSheet` does the focus of DESIGN §15 itself: it notes what had the focus when it opened and gives the focus back to that when it has closed, and below 768 px it takes the focus to the sheet (not to a field, which would slide a keyboard up). A screen opens it by state and does nothing else about focus. `SheetBody` scrolls and its blocks keep their height; `SheetFooter` stays pinned. A surface of its own that puts a title over a `SheetBody` (the admin dialogs) takes `sheetHeaderClasses` and gives its header `pb-2`, as the sheet does: what scrolls is then cut below the title, not at its foot. After a refused submit, a form whose button stands below its fields calls `revealFirstInvalid`.
 
 `Button` decides its own width: as wide as its column below 768 px, as wide as its label from there, also inside a column that stretches its children. `width="full"` (the buttons of a sheet, a pair that shares a row) and `width="fit"` (a button beside text, in a banner or a table) say otherwise. An icon button takes no width.
 
@@ -132,6 +133,12 @@ The ticket's state is in `features/trade/ticket-store.ts`: one state per market 
 - The cache tells its observers a moment after it changed: after an event or a `setQueryData`, wait with `findBy` or `waitFor` before looking at the screen.
 - Assert on what the user sees and on what was sent. An expected amount is the string of the fixture, never arithmetic in the test.
 - `src/test/design-rules.test.ts` fails on a forbidden class, colour, word or call in any file under `src/`.
+
+**The browser suite.** `npm run e2e` runs the specs of `e2e/` (`*.spec.ts`) in the Chrome that is installed, each at the projects "phone" (375 × 667) and "desktop" (1024 × 768), one after the other. It starts no stack: it drives the one at `E2E_BASE_URL` (`http://localhost:8080` when left out), which has to be up and seeded. `E2E_IDENTITY=cookies` (when left out) names a person with the cookies `dev_user_id` and `dev_user_name` of the development proxy; `E2E_IDENTITY=headers` sends `X-User-Id` and `X-User-Name` itself, for a stack of `compose.yaml` alone. `e2e/support/runner.ts` lists every variable the runner reads. vitest sees `src/**/*.test.{ts,tsx}` and nothing of `e2e/`.
+
+- A spec imports from `./support` only: `test` with the fixture `people`, `STUDENTS`, `expect`, `expectLayoutHolds` and `screenshot`. `people.as(STUDENTS.anna)` is a browser context of a student of the seed; `people.join(degree?)` makes a person up (`e2e.<run>.<n>@ethz.ch`) who sets up their own profile.
+- A spec reads the seeded people and markets and changes only what it made itself, so it passes again on the same database.
+- A spec ends with `expectLayoutHolds(page)` and `screenshot(page, testInfo, screen)` for each of its screens: nothing lies over anything else, the page does not scroll sideways, and the picture lies in the directory `E2E_SCREENSHOTS` names (`test-results/screens` when left out) as `<spec>.<screen>.<project>.png`. What the layout check measures and leaves out stands at the top of `e2e/support/layout.ts`.
 
 ## Recipes
 

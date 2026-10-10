@@ -12,10 +12,9 @@ import {
 import type { HistoryPoint, MarketDetailResponse } from "@/lib/api/schema";
 import { useConfig } from "@/lib/api/session";
 import { formatDate, formatDateTime, formatPercent, spokenPercent } from "@/lib/format";
-import { useNow } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 
-import { buildSeries, chartEnd, type SeriesPoint } from "./chart-series";
+import { buildSeries, type SeriesPoint } from "./chart-series";
 
 /** The one series. Its colour is the token `--chart-1`, which is `--yes`. */
 const CHART = { p_yes: { label: "YES", color: "var(--chart-1)" } } satisfies ChartConfig;
@@ -25,9 +24,6 @@ const AXIS = [0, 1] as const;
 const AXIS_LABELS = [0, 0.25, 0.5, 0.75, 1];
 const GRIDLINES = [0.25, 0.5, 0.75];
 
-/** How often the right edge of an open market's chart moves on. */
-const CLOCK_STEP_MS = 60_000;
-
 /** A label of the fixed axis: a whole percentage, whatever `price_display_decimals` is. */
 const axisLabel = (fraction: number) => formatPercent(fraction, 0);
 
@@ -36,8 +32,13 @@ const iso = (at: number) => new Date(at).toISOString();
 export type ProbabilityChartProps = {
   /** `points` of `GET /markets/{market_id}/history`, as sent: oldest first. */
   points: readonly HistoryPoint[];
-  /** The market the history belongs to: its price now, and until when to draw it. */
-  market: Pick<MarketDetailResponse, "p_yes" | "status" | "close_at" | "closed_at">;
+  /**
+   * `until` of the same answer: the right edge of the chart. It is the server's now while
+   * the market can still trade, otherwise the moment trading ended.
+   */
+  until: string;
+  /** The market the history belongs to: its price now, and whether it can still move. */
+  market: Pick<MarketDetailResponse, "p_yes" | "status">;
   className?: string;
 };
 
@@ -48,19 +49,19 @@ export type ProbabilityChartProps = {
  * 280 px from 768 px.
  *
  * It draws what `marketHistoryQuery` holds, so a stream event that appended a point
- * extends the line, and nothing is animated in from zero. Touching or hovering shows a
- * vertical guide and the percentage and time of the nearest point; the arrow keys do the
- * same for a keyboard.
+ * extends the line, and nothing is animated in from zero. The last price holds as a flat
+ * line up to `until`, and the last date of the x axis is that moment: the chart ends
+ * where the server says it does and reads no clock of the device. Touching or hovering
+ * shows a vertical guide and the percentage and time of the nearest point; the arrow keys
+ * do the same for a keyboard.
  *
  * The chart is labelled with a summary, and the same two figures stand under it as text
  * (DESIGN.md §15): what the market opened at, and what it stands at now. For a market
  * whose trading is over that second figure is what it closed at.
  */
-export function ProbabilityChart({ points, market, className }: ProbabilityChartProps) {
+export function ProbabilityChart({ points, until, market, className }: ProbabilityChartProps) {
   const { timezone, price_display_decimals } = useConfig();
-  const now = useNow(CLOCK_STEP_MS);
   // The chart is drawn afresh only when a point arrived or its right edge moved on.
-  const until = chartEnd(market, now);
   const series = useMemo(() => buildSeries(points, until), [points, until]);
   const opened = points[0];
 

@@ -44,6 +44,16 @@ function Route() {
   );
 }
 
+type User = ReturnType<typeof userEvent.setup>;
+
+/** Fills in the set-up screen: the three fields, and the usage policy accepted. */
+async function setUp(user: User) {
+  await user.type(await screen.findByLabelText("Username"), "anna_m");
+  await user.selectOptions(screen.getByLabelText("Level"), "Bachelor");
+  await user.selectOptions(screen.getByLabelText("Programme"), "BSc Computer Science");
+  await user.click(screen.getByRole("checkbox", { name: "I accept the usage policy" }));
+}
+
 function renderApp(children: ReactNode = <Route />) {
   const client = createTestQueryClient();
   const view = render(
@@ -151,18 +161,18 @@ describe("a caller without a profile", () => {
     });
     const { user, client } = renderApp();
 
-    await user.type(await screen.findByLabelText("Username"), "anna_m");
-    await user.selectOptions(screen.getByLabelText("Level"), "Bachelor");
-    await user.selectOptions(screen.getByLabelText("Programme"), "BSc Computer Science");
+    await setUp(user);
     await user.click(screen.getByRole("button", { name: "Create profile" }));
 
     // The route that was opened takes the place of the set-up screen.
     expect(await screen.findByText(/The wallet/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Create profile" })).not.toBeInTheDocument();
+    // The save that creates the profile says that the usage policy is accepted.
     expect(api.lastCall(SAVE)?.body).toEqual({
       username: "anna_m",
       degree_level: "BACHELOR",
       degree_programme: "BSc Computer Science",
+      policy_accepted: true,
     });
 
     // The welcome dialog opens over it. Its amount is the answer's balance, not a tunable.
@@ -192,9 +202,7 @@ describe("a caller without a profile", () => {
     });
     const { user } = renderApp();
 
-    await user.type(await screen.findByLabelText("Username"), "anna_m");
-    await user.selectOptions(screen.getByLabelText("Level"), "Bachelor");
-    await user.selectOptions(screen.getByLabelText("Programme"), "BSc Computer Science");
+    await setUp(user);
     await user.click(screen.getByRole("button", { name: "Create profile" }));
 
     expect(await screen.findByText("The wallet")).toBeInTheDocument();
@@ -208,9 +216,7 @@ describe("a caller without a profile", () => {
       [SAVE]: apiError(403, "FORBIDDEN", "MarkETH is open to ETH addresses only."),
     });
     const { user } = renderApp();
-    await user.type(await screen.findByLabelText("Username"), "anna_m");
-    await user.selectOptions(screen.getByLabelText("Level"), "Bachelor");
-    await user.selectOptions(screen.getByLabelText("Programme"), "BSc Computer Science");
+    await setUp(user);
     // What the API now says about the caller, wherever it is asked.
     api.on(ME, apiError(403, "FORBIDDEN", "MarkETH is open to ETH addresses only."));
 
@@ -221,6 +227,136 @@ describe("a caller without a profile", () => {
     );
     expect(screen.getByRole("alert")).toHaveTextContent("MarkETH is open to ETH addresses only.");
     expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+  });
+});
+
+describe("the usage policy, for a caller without a profile", () => {
+  test("on /policy the policy is shown, not the set-up: it is read before it is accepted", async () => {
+    const api = mockApi({
+      [CONFIG]: json(200, config({ signup_grant_cr: "750" })),
+      [ME]: PROFILE_REQUIRED,
+    });
+    navigation.go("/policy");
+
+    renderApp();
+
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Usage policy" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "What MarkETH is" })).toBeInTheDocument();
+    // Its figures are those of /config.
+    expect(screen.getByText(/You get 750 welcome tokens/)).toBeInTheDocument();
+    // The frame of the boot screen: the logo, nothing on its right, no tab bar.
+    expect(screen.queryByRole("button", { name: "Create profile" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Wallet/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("The wallet")).not.toBeInTheDocument();
+    // It asked for nothing beyond start-up.
+    expect(api.requests.map((request) => request.path).sort()).toEqual(["/api/config", "/api/me"]);
+  });
+
+  test("its logo leads to the profile set-up", async () => {
+    mockApi({ [CONFIG]: json(200, config()), [ME]: PROFILE_REQUIRED });
+    navigation.go("/policy");
+    const { user } = renderApp();
+
+    await user.click(await screen.findByRole("link", { name: "MarkETH" }));
+
+    expect(navigation.pathname).toBe("/");
+    expect(await screen.findByRole("button", { name: "Create profile" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Usage policy" })).not.toBeInTheDocument();
+  });
+
+  test("every other route still shows the set-up, with the checkbox that links to the policy", async () => {
+    mockApi({ [CONFIG]: json(200, config()), [ME]: PROFILE_REQUIRED });
+    navigation.go("/policy/print");
+
+    renderApp();
+
+    expect(await screen.findByRole("button", { name: "Create profile" })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "I accept the usage policy" })).not.toBeChecked();
+    expect(screen.getByRole("link", { name: "usage policy" })).toHaveAttribute("href", "/policy");
+  });
+
+  test("an account the API refuses gets the full-screen message on /policy as on every route", async () => {
+    mockApi({
+      [CONFIG]: json(200, config()),
+      [ME]: apiError(403, "FORBIDDEN", "This account is suspended."),
+    });
+    navigation.go("/policy");
+
+    renderApp();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("This account is suspended.");
+    expect(screen.queryByRole("heading", { name: "Usage policy" })).not.toBeInTheDocument();
+  });
+
+  test("with a profile /policy is the route that was opened, inside the shell", async () => {
+    mockApi({ [CONFIG]: json(200, config()), [ME]: json(200, me()) });
+    navigation.go("/policy");
+
+    renderApp();
+
+    expect(await screen.findByText("The wallet")).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Main" })).toBeInTheDocument();
+  });
+});
+
+describe("the welcome dialog", () => {
+  async function welcomed() {
+    const api = mockApi({
+      [CONFIG]: json(200, config()),
+      [ME]: PROFILE_REQUIRED,
+      [SAVE]: json(200, profileSaved({ balance_cr: "500", signup_granted: true })),
+    });
+    const app = renderApp();
+    await setUp(app.user);
+    await app.user.click(screen.getByRole("button", { name: "Create profile" }));
+    const dialog = await screen.findByRole("dialog", { name: "You got 500 tokens" });
+    // From here on the caller has a profile, whoever asks.
+    api.on(ME, json(200, me({ balance_cr: "500" })));
+    return { ...app, api, dialog };
+  }
+
+  test("is a dialog at every width with the 64 px token icon, the amount, and one primary button under the footer line", async () => {
+    const { dialog } = await welcomed();
+
+    expect(dialog).toHaveAttribute("data-slot", "dialog-content");
+    expect(dialog.querySelector("[data-slot=token-icon]")).toHaveClass("size-16");
+    // The headline is in sight once, and names the dialog once.
+    expect(within(dialog).getByText("You got 500 tokens", { selector: "p" })).toHaveClass(
+      "type-h2",
+    );
+    expect(within(dialog).getAllByRole("heading")).toHaveLength(1);
+    const start = within(dialog).getByRole("button", { name: "Start trading" });
+    expect(start).toHaveAttribute("data-variant", "primary");
+    expect(start.closest("[data-slot=sheet-footer]")).toHaveClass("border-t");
+    await waitFor(() => expect(start).toHaveFocus());
+  });
+
+  test("has the close cross, which closes it as Start trading does", async () => {
+    const { dialog, user } = await welcomed();
+
+    const cross = within(dialog).getByRole("button", { name: "Close" });
+    expect(cross).toBeEnabled();
+    await user.click(cross);
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    // What waited for the dialog goes on.
+    expect(screen.getByText("The wallet")).toBeInTheDocument();
+  });
+
+  test("closes with Escape too, and does not come back", async () => {
+    const { user, client } = await welcomed();
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    // A later read of the profile is no second welcome.
+    await client.invalidateQueries({ queryKey: keys.me, exact: true });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.getByText("The wallet")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });
 

@@ -21,10 +21,13 @@ type Action = "approve" | "reject" | "halt" | "resume" | "close" | "resolve" | "
 
 /**
  * The actions a market's status allows (SPEC §6, DESIGN.md §13), in the order the bar
- * shows them. A market that is rejected, resolved or voided has reached its end.
+ * shows them. A market that is rejected, resolved or voided has reached its end, and so
+ * has a proposal that expired: its close time passed before an admin decided on it, and
+ * the API takes neither an approval nor a rejection of it.
  */
 const ALLOWED: Record<MarketStatus, readonly Action[]> = {
   PROPOSED: ["approve", "reject"],
+  EXPIRED: [],
   OPEN: ["halt", "close"],
   HALTED: ["resume", "close"],
   CLOSED: ["resolve", "void"],
@@ -65,8 +68,8 @@ const TRADED_MESSAGE = "You traded this market, so another admin has to settle i
  * are disabled, and a banner above the bar says why in the API's own sentence.
  *
  * A dialog that is open stays open when the market changes behind it, so that the API's
- * message for a refused action can be read: a `CONFLICT` means the market is no longer
- * what the dialog thought, and the bar behind it already shows what it is now.
+ * message for a refused action can be read: a `CONFLICT` means the market is not what
+ * the dialog thought, and the bar behind it shows what it is.
  */
 export function MarketActions({
   market,
@@ -79,7 +82,7 @@ export function MarketActions({
    */
   returnFocusTo: RefObject<HTMLElement | null>;
 }) {
-  // `round` gives every opening a dialog of its own, with empty fields and no old answer.
+  // `round` gives every opening a dialog of its own, with empty fields and no answer in it.
   const [dialog, setDialog] = useState<{ action: Action; round: number } | null>(null);
   const [open, setOpen] = useState(false);
   const opener = useRef<HTMLButtonElement | null>(null);

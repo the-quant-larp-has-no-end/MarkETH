@@ -12,7 +12,7 @@ import { queryOf, readView, type View } from "./view";
  *
  * The address is written with the browser's own History API, which the router follows
  * (`useSearchParams` sees the change) without asking the server for the route again. A
- * chip answers at once, and the page does not scroll: the sort row stays under the finger.
+ * chip answers at once, and the page does not scroll: the chip stays under the finger.
  */
 export function useLeaderboardView(): { view: View; show: (next: View) => void } {
   const search = useSearchParams();

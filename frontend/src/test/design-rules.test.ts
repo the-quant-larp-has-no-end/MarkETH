@@ -197,6 +197,25 @@ describe("one door to the API, and nothing kept in the browser", () => {
   });
 });
 
+describe("a second submit is stopped where it is made (DESIGN.md §14)", () => {
+  /** Everything that puts something on a screen: the layers above `lib`, tests included. */
+  const screens = sources.filter((source) => /^(app|components|features)\//.test(source.path));
+
+  test("a write is sent through useSubmit or a kept submission, never through useMutation", () => {
+    expect(screens.length).toBeGreaterThan(50);
+    check(screens, {
+      why: "useMutation stops no second submit: a write goes through useSubmit (lib/api/submit.ts) or useSubmissions (lib/api/submissions.ts).",
+      pattern: /\buseMutation\s*(<.*>)?\s*\(/,
+      except: [
+        // The one write no tap sends. Each notice is its own request, sent once as the
+        // notice is told, and what was told is remembered for the page: a guard of one
+        // request at a time would hold back the second of two notices.
+        "features/session/notices.tsx",
+      ],
+    });
+  });
+});
+
 describe("words (DESIGN.md §3, Voice)", () => {
   const SENTENCE = String.raw`[^"'\`<>{}]*`;
 
@@ -224,8 +243,8 @@ describe("words (DESIGN.md §3, Voice)", () => {
 
   test("code and comments describe what is, not what was", () => {
     check(sources, {
-      why: "No 'legacy', 'v2' or 'deprecated' wording: the code is written in the present tense.",
-      pattern: /\b(legacy|v2|deprecated)\b/i,
+      why: "No 'legacy', 'v2', 'deprecated', 'formerly', 'previously' or 'no longer': say what is.",
+      pattern: /\b(legacy|v2|deprecated|formerly|previously|no longer)\b/i,
       comments: true,
       except: ["test/design-rules.test.ts"],
     });

@@ -1,8 +1,12 @@
-"""`EmailPolicy`: whom the portal's id stands for, and with which role (SPEC §3, A.3).
+"""`EmailPolicy`: whom the portal's id stands for, and who is an admin from the start
+(SPEC §3, A.3).
 
 The id is an identifier another system asserts, so it is read strictly: what is not
 exactly an allowed address is refused, never read as the nearest known one. An accepted
 id is the account, in lower case and at the domain it came with.
+
+A role is kept with the account. The addresses of `ADMIN_EMAILS` are the exception: each
+is an admin whatever its account says.
 """
 
 import pytest
@@ -14,7 +18,7 @@ from app.services.email_policy import EmailPolicy
 from tests.support.settings import EXAMPLE_ENV_FILE
 
 ADMIN = "admin@ethz.ch"
-BARISTA = "barista@ethz.ch"
+STUDENT = "student@ethz.ch"
 
 # Characters that look like, or fold onto, the ASCII ones of dokwak@ethz.ch. A request
 # header is decoded as Latin-1, so the first two can arrive in one for certain.
@@ -36,8 +40,8 @@ def policy_with(base_settings: Settings, **identity: object) -> EmailPolicy:
 
 @pytest.fixture
 def policy(base_settings: Settings) -> EmailPolicy:
-    """The policy of `.example.env`: one allowed domain."""
-    return policy_with(base_settings, admin_emails=[ADMIN], barista_emails=[BARISTA])
+    """The policy of `.example.env`: one allowed domain, one bootstrap admin."""
+    return policy_with(base_settings, admin_emails=[ADMIN])
 
 
 @pytest.fixture
@@ -47,7 +51,6 @@ def two_domains(base_settings: Settings) -> EmailPolicy:
         base_settings,
         allowed_email_domains=["ethz.ch", "student.ethz.ch"],
         admin_emails=[ADMIN],
-        barista_emails=[BARISTA],
     )
 
 
@@ -100,12 +103,11 @@ def test_with_two_allowed_domains_one_local_part_is_two_different_ids(
     assert two_domains.identify("DOKWAK@Student.ETHZ.ch") == at_student
 
 
-def test_a_role_at_one_domain_is_no_role_at_the_other(two_domains: EmailPolicy) -> None:
+def test_a_bootstrap_admin_at_one_domain_is_none_at_the_other(two_domains: EmailPolicy) -> None:
     """`admin@ethz.ch` is in ADMIN_EMAILS; whoever the portal names
     `admin@student.ethz.ch` is somebody else."""
-    assert two_domains.role_for(two_domains.identify("admin@ethz.ch")) is UserRole.ADMIN
-    assert two_domains.role_for(two_domains.identify("admin@student.ethz.ch")) is UserRole.USER
-    assert two_domains.role_for(two_domains.identify("barista@student.ethz.ch")) is UserRole.USER
+    assert two_domains.is_bootstrap_admin(two_domains.identify("admin@ethz.ch"))
+    assert not two_domains.is_bootstrap_admin(two_domains.identify("admin@student.ethz.ch"))
 
 
 @pytest.mark.parametrize(
@@ -228,53 +230,61 @@ def test_a_malformed_id_and_a_foreign_domain_get_the_same_answer(policy: EmailPo
     assert answers[0] == answers[1]
 
 
-# --- role_for -----------------------------------------------------------------------
+# --- Bootstrap admins and the role in effect -----------------------------------------
 
 
-def test_roles_come_from_the_two_lists(policy: EmailPolicy) -> None:
-    assert policy.role_for(ADMIN) is UserRole.ADMIN
-    assert policy.role_for(BARISTA) is UserRole.BARISTA
-    assert policy.role_for("student@ethz.ch") is UserRole.USER
+def test_an_address_of_admin_emails_is_a_bootstrap_admin_and_nobody_else_is(
+    policy: EmailPolicy,
+) -> None:
+    assert policy.is_bootstrap_admin(ADMIN)
+    assert not policy.is_bootstrap_admin(STUDENT)
+    assert policy.bootstrap_admins == frozenset({ADMIN})
 
 
-def test_every_address_of_the_configured_lists_gets_its_role(base_settings: Settings) -> None:
-    """The lists of `.example.env`, and the ones the tests run with in their place, are
+@pytest.mark.parametrize("stored", list(UserRole))
+def test_a_bootstrap_admin_is_an_admin_whatever_its_row_says(
+    policy: EmailPolicy, stored: UserRole
+) -> None:
+    """Also before it has a row: USER is what is passed for somebody without one."""
+    assert policy.effective_role(ADMIN, stored) is UserRole.ADMIN
+
+
+@pytest.mark.parametrize("stored", list(UserRole))
+def test_everybody_else_has_the_role_of_their_row(policy: EmailPolicy, stored: UserRole) -> None:
+    """An admin the panel made is one by the row alone, and so is a barista."""
+    assert policy.effective_role(STUDENT, stored) is stored
+
+
+def test_every_address_of_the_configured_list_is_a_bootstrap_admin(base_settings: Settings) -> None:
+    """The list of `.example.env`, and the one the tests run with in its place, are
     written so that the policy can read them."""
     for settings in (Settings.load(EXAMPLE_ENV_FILE), base_settings):
         identity = settings.identity
         policy = EmailPolicy(settings)
 
         assert identity.admin_emails, "an admin is named"
+        assert policy.bootstrap_admins == frozenset(identity.admin_emails)
         for address in identity.admin_emails:
-            assert policy.role_for(policy.identify(address)) is UserRole.ADMIN
-        for address in set(identity.barista_emails) - set(identity.admin_emails):
-            assert policy.role_for(policy.identify(address)) is UserRole.BARISTA
-        assert policy.role_for(policy.identify("nobody.special@ethz.ch")) is UserRole.USER
-
-
-def test_an_address_in_both_lists_is_an_admin(base_settings: Settings) -> None:
-    both = policy_with(base_settings, admin_emails=[ADMIN], barista_emails=[ADMIN, BARISTA])
-
-    assert both.role_for(ADMIN) is UserRole.ADMIN
-    assert both.role_for(BARISTA) is UserRole.BARISTA
+            assert policy.is_bootstrap_admin(policy.identify(address))
+            assert policy.effective_role(policy.identify(address), UserRole.USER) is UserRole.ADMIN
+        nobody_special = policy.identify("nobody.special@ethz.ch")
+        assert not policy.is_bootstrap_admin(nobody_special)
+        assert policy.effective_role(nobody_special, UserRole.USER) is UserRole.USER
 
 
 def test_a_list_entry_is_read_the_way_an_id_is(base_settings: Settings) -> None:
     """An entry written with capitals names the id the portal sends in any case."""
-    written = policy_with(
-        base_settings, admin_emails=["Ada@ETHZ.ch"], barista_emails=["BOB@ethz.ch"]
-    )
+    written = policy_with(base_settings, admin_emails=["Ada@ETHZ.ch"])
 
-    assert written.role_for(written.identify("ada@ethz.ch")) is UserRole.ADMIN
-    assert written.role_for(written.identify("Bob@ethz.ch")) is UserRole.BARISTA
-    assert written.role_for(written.identify("carol@ethz.ch")) is UserRole.USER
+    assert written.bootstrap_admins == frozenset({"ada@ethz.ch"})
+    assert written.is_bootstrap_admin(written.identify("ada@ethz.ch"))
+    assert written.is_bootstrap_admin(written.identify("ADA@ethz.ch"))
+    assert not written.is_bootstrap_admin(written.identify("carol@ethz.ch"))
 
 
-def test_a_role_belongs_to_the_id_whichever_case_the_portal_sends_it_in(
-    policy: EmailPolicy,
-) -> None:
+def test_an_admin_is_one_whichever_case_the_portal_sends_the_id_in(policy: EmailPolicy) -> None:
     for raw in ("admin@ethz.ch", "ADMIN@ethz.ch", "Admin@ETHZ.CH"):
-        assert policy.role_for(policy.identify(raw)) is UserRole.ADMIN
+        assert policy.effective_role(policy.identify(raw), UserRole.USER) is UserRole.ADMIN
 
 
 @pytest.mark.parametrize(
@@ -302,33 +312,33 @@ def test_a_role_belongs_to_the_id_whichever_case_the_portal_sends_it_in(
         "empty",
     ],
 )
-@pytest.mark.parametrize("variable", ["ADMIN_EMAILS", "BARISTA_EMAILS"])
-def test_a_role_entry_the_rule_refuses_stops_the_policy_from_being_built(
-    base_settings: Settings, variable: str, entry: str
+def test_an_entry_the_rule_refuses_stops_the_policy_from_being_built(
+    base_settings: Settings, entry: str
 ) -> None:
-    """Such an entry would give its role to nobody. The process does not start on it:
+    """Such an entry would make nobody an admin. The process does not start on it:
     `Container.build` constructs the policy."""
-    lists: dict[str, object] = {"admin_emails": [ADMIN], "barista_emails": [BARISTA]}
-    lists[variable.lower()] = [ADMIN, entry]
-
-    with pytest.raises(ValueError, match=variable) as refused:
-        policy_with(base_settings, **lists)
+    with pytest.raises(ValueError, match="ADMIN_EMAILS") as refused:
+        policy_with(base_settings, admin_emails=[ADMIN, entry])
 
     assert repr(entry) in str(refused.value)
 
 
-def test_empty_lists_make_everybody_a_user(base_settings: Settings) -> None:
-    nobody = policy_with(base_settings, admin_emails=[], barista_emails=[])
+def test_an_empty_list_makes_nobody_an_admin(base_settings: Settings) -> None:
+    nobody = policy_with(base_settings, admin_emails=[])
 
-    assert nobody.role_for(ADMIN) is UserRole.USER
-    assert nobody.role_for(BARISTA) is UserRole.USER
+    assert nobody.bootstrap_admins == frozenset()
+    assert not nobody.is_bootstrap_admin(ADMIN)
+    assert nobody.effective_role(ADMIN, UserRole.USER) is UserRole.USER
+    assert nobody.effective_role(ADMIN, UserRole.ADMIN) is UserRole.ADMIN, "the row still counts"
 
 
-def test_the_role_is_derived_and_stored_nowhere(base_settings: Settings) -> None:
-    """The same address under another list is another role: nothing remembers the first."""
-    before = policy_with(base_settings, admin_emails=[ADMIN], barista_emails=[])
-    after = policy_with(base_settings, admin_emails=["grace@ethz.ch"], barista_emails=[ADMIN])
+def test_an_address_taken_off_the_list_has_the_role_of_its_row(base_settings: Settings) -> None:
+    """Nothing remembers that it was a bootstrap admin: under another list the same
+    address is whatever its row says."""
+    before = policy_with(base_settings, admin_emails=[ADMIN])
+    after = policy_with(base_settings, admin_emails=["grace@ethz.ch"])
 
-    assert before.role_for(ADMIN) is UserRole.ADMIN
-    assert after.role_for(ADMIN) is UserRole.BARISTA
-    assert after.role_for("grace@ethz.ch") is UserRole.ADMIN
+    assert before.effective_role(ADMIN, UserRole.USER) is UserRole.ADMIN
+    assert after.effective_role(ADMIN, UserRole.USER) is UserRole.USER
+    assert after.effective_role(ADMIN, UserRole.BARISTA) is UserRole.BARISTA
+    assert after.effective_role("grace@ethz.ch", UserRole.USER) is UserRole.ADMIN

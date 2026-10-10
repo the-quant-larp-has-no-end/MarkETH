@@ -38,6 +38,7 @@ test("a first visit through a code card: set-up, the welcome dialog, then the re
           })
         : json(200, profile),
     "PUT /api/me/profile": () => {
+      // A profile made a moment ago: nobody has anything to tell it yet.
       profile = me({ username: "anna_m", balance_cr: "500" });
       return json(200, { ...profile, signup_granted: true });
     },
@@ -60,6 +61,7 @@ test("a first visit through a code card: set-up, the welcome dialog, then the re
   await user.type(await screen.findByLabelText("Username"), "anna_m");
   await user.selectOptions(screen.getByLabelText("Level"), "BACHELOR");
   await user.selectOptions(screen.getByLabelText("Programme"), "BSc Computer Science");
+  await user.click(screen.getByRole("checkbox", { name: "I accept the usage policy" }));
   expect(address()).toBe("/wallet?code=4F7KQ2M9XAB3");
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 

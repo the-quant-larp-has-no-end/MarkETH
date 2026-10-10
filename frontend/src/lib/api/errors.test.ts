@@ -5,7 +5,7 @@ import { quote } from "@/test/fixtures";
 import {
   ApiError,
   fieldErrors,
-  keepsTradeRequest,
+  keepsSubmission,
   limitName,
   placeError,
   portalIdentity,
@@ -67,20 +67,20 @@ describe("what an error says about the request", () => {
     expect(ApiError.portal().retryable).toBe(false);
   });
 
-  test("a trade request is dropped only after a 2xx or a 4xx other than 429", () => {
+  test("a body and its Idempotency-Key are dropped only after a 2xx or a 4xx other than 429", () => {
     // Refused, nothing was booked: the next Confirm builds another body with another key.
-    expect(keepsTradeRequest(api(409, "QUOTE_STALE", "The price moved."))).toBe(false);
-    expect(keepsTradeRequest(api(422, "INSUFFICIENT_BALANCE", "Not enough tokens."))).toBe(false);
-    expect(keepsTradeRequest(api(409, "IDEMPOTENCY_KEY_REUSED", "Reused."))).toBe(false);
-    expect(keepsTradeRequest(api(403, "FORBIDDEN", "Not allowed."))).toBe(false);
-    // Says nothing about the trade: the same body goes out again with the same key.
-    expect(keepsTradeRequest(api(429, "RATE_LIMITED", "Too many attempts."))).toBe(true);
-    expect(keepsTradeRequest(api(500, "INTERNAL_ERROR", "Something went wrong."))).toBe(true);
-    expect(keepsTradeRequest(api(503, "SERVICE_UNAVAILABLE", "Unavailable."))).toBe(true);
-    expect(keepsTradeRequest(toApiError(502, "<html>"))).toBe(true);
-    expect(keepsTradeRequest(ApiError.portal())).toBe(true);
-    expect(keepsTradeRequest(ApiError.network())).toBe(true);
-    expect(keepsTradeRequest(ApiError.unavailable(0))).toBe(true);
+    expect(keepsSubmission(api(409, "QUOTE_STALE", "The price moved."))).toBe(false);
+    expect(keepsSubmission(api(422, "INSUFFICIENT_BALANCE", "Not enough tokens."))).toBe(false);
+    expect(keepsSubmission(api(409, "IDEMPOTENCY_KEY_REUSED", "Reused."))).toBe(false);
+    expect(keepsSubmission(api(403, "FORBIDDEN", "Not allowed."))).toBe(false);
+    // Says nothing about the write: the same body goes out again with the same key.
+    expect(keepsSubmission(api(429, "RATE_LIMITED", "Too many attempts."))).toBe(true);
+    expect(keepsSubmission(api(500, "INTERNAL_ERROR", "Something went wrong."))).toBe(true);
+    expect(keepsSubmission(api(503, "SERVICE_UNAVAILABLE", "Unavailable."))).toBe(true);
+    expect(keepsSubmission(toApiError(502, "<html>"))).toBe(true);
+    expect(keepsSubmission(ApiError.portal())).toBe(true);
+    expect(keepsSubmission(ApiError.network())).toBe(true);
+    expect(keepsSubmission(ApiError.unavailable(0))).toBe(true);
   });
 });
 

@@ -1,10 +1,16 @@
-"""The price history in ScyllaDB (SPEC §9, A.10). Slow to start: run with `-m scylla`."""
+"""The price history in ScyllaDB (SPEC §9, A.10). Slow to start: run with `-m scylla`.
+
+What the store sends for a read, day by day, is proven without a node in
+`tests/unit/test_quote_history_read.py`. Here the same reads run against the node
+itself, which has the last word on what the statement returns.
+"""
 
 import asyncio
 import time
-from datetime import UTC, datetime, timedelta
+from collections.abc import Sequence
+from datetime import UTC, date, datetime, timedelta
 from itertools import batched
-from typing import Self
+from typing import Any, Final, Self
 from uuid import UUID, uuid7
 
 import pytest
@@ -12,6 +18,7 @@ import pytest
 from app.core.config import ScyllaSettings, Settings
 from app.integrations.scylla.client import (
     CONNECT_RETRY_SECONDS,
+    Row,
     ScyllaClient,
     ScyllaUnavailableError,
 )
@@ -22,6 +29,10 @@ from tests.support.network import SilentServer, SwitchableProxy
 pytestmark = [pytest.mark.integration, pytest.mark.scylla]
 
 MIDNIGHT = datetime(2026, 10, 10, tzinfo=UTC)
+
+EVERYTHING: Final[int] = 10_000
+"""A limit above what any test here writes for one market: a read that names it returns
+every point of its range."""
 
 
 class LoopWatch:
@@ -105,7 +116,8 @@ async def test_writing_the_same_point_twice_yields_one_row(
     await history.write(trade)
 
     stored = trade.ts.replace(microsecond=123_000)
-    assert await history.read(market_id, MIDNIGHT, MIDNIGHT + timedelta(days=1)) == [
+    whole_day = (MIDNIGHT, MIDNIGHT + timedelta(days=1))
+    assert await history.read(market_id, *whole_day, limit=EVERYTHING) == [
         QuotePoint(market_id, stored, 1, trade.p_yes_micro, trade.q_yes_micro, 0, trade.trade_id)
     ]
     rows = await scylla_client.execute(
@@ -128,15 +140,22 @@ async def test_read_returns_points_in_ascending_order_across_two_days(
         await history.write(written)
     await history.write(point(other_market, MIDNIGHT, version=1))
 
-    everything = await history.read(market_id, opened.ts, last.ts)
-    second_day = await history.read(market_id, MIDNIGHT, MIDNIGHT + timedelta(days=1))
-    inside = await history.read(market_id, late.ts, same_instant_a.ts)
+    everything = await history.read(market_id, opened.ts, last.ts, limit=EVERYTHING)
+    second_day = await history.read(
+        market_id, MIDNIGHT, MIDNIGHT + timedelta(days=1), limit=EVERYTHING
+    )
+    inside = await history.read(market_id, late.ts, same_instant_a.ts, limit=EVERYTHING)
+    newest_two = await history.read(market_id, opened.ts, last.ts, limit=2)
+    newest_four = await history.read(market_id, opened.ts, last.ts, limit=4)
 
     assert everything == [opened, late, same_instant_a, same_instant_b, last]
     assert everything[0].trade_id is None
     assert second_day == [same_instant_a, same_instant_b, last]
     assert inside == [late, same_instant_a, same_instant_b]
-    assert await history.read(market_id, last.ts, opened.ts) == []
+    # Of two points of one instant the one with the higher version is the newer.
+    assert newest_two == [same_instant_b, last]
+    assert newest_four == [late, same_instant_a, same_instant_b, last], "over midnight"
+    assert await history.read(market_id, last.ts, opened.ts, limit=EVERYTHING) == []
 
 
 async def test_read_returns_a_day_that_is_larger_than_one_result_page(
@@ -147,7 +166,80 @@ async def test_read_returns_a_day_that_is_larger_than_one_result_page(
     for batch in batched(points, 250, strict=False):
         await asyncio.gather(*(history.write(written) for written in batch))
 
-    assert await history.read(market_id, MIDNIGHT, MIDNIGHT + timedelta(days=1)) == points
+    whole_day = (MIDNIGHT, MIDNIGHT + timedelta(days=1))
+    assert await history.read(market_id, *whole_day, limit=EVERYTHING) == points
+    # A limit beyond one page of the driver, and below what the day holds.
+    assert await history.read(market_id, *whole_day, limit=5_200) == points[-5_200:]
+    assert await history.read(market_id, *whole_day, limit=1) == points[-1:]
+
+
+class Asked:
+    """What a store sends for its reads: the day and the LIMIT of every SELECT, in
+    order, on the way to the node."""
+
+    def __init__(self, client: ScyllaClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.selects: list[tuple[date, int]] = []
+        execute = client.execute
+
+        async def recording(
+            cql: str,
+            parameters: Sequence[Any] | None = None,
+            *,
+            timeout_seconds: float | None = None,
+        ) -> list[Row]:
+            if cql.startswith("SELECT ts") and parameters is not None:
+                _, day, _, _, limit = parameters
+                self.selects.append((day, limit))
+            return await execute(cql, parameters, timeout_seconds=timeout_seconds)
+
+        monkeypatch.setattr(client, "execute", recording)
+
+
+async def test_a_read_that_is_cut_returns_the_newest_points_and_asks_no_day_it_does_not_need(
+    history: QuoteHistoryStore, scylla_client: ScyllaClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The newest day first, each older day for what is still missing, and none once
+    the limit is reached: the node is asked for at most `limit` rows in all."""
+    market_id = uuid7()
+    yesterday, today = (MIDNIGHT - timedelta(days=1)).date(), MIDNIGHT.date()
+    older = [
+        point(market_id, MIDNIGHT - timedelta(hours=1) + timedelta(seconds=n), version=n)
+        for n in range(30)
+    ]
+    newer = [point(market_id, MIDNIGHT + timedelta(seconds=n), version=30 + n) for n in range(20)]
+    await asyncio.gather(*(history.write(written) for written in (*older, *newer)))
+    await history.write(point(uuid7(), MIDNIGHT + timedelta(seconds=5), version=99))
+    both_days = (MIDNIGHT - timedelta(days=1), MIDNIGHT + timedelta(hours=12))
+    asked = Asked(scylla_client, monkeypatch)
+
+    everything = await history.read(market_id, *both_days, limit=EVERYTHING)
+    exactly_today = await history.read(market_id, *both_days, limit=20)
+    over_midnight = await history.read(market_id, *both_days, limit=25)
+    a_few = await history.read(market_id, *both_days, limit=7)
+
+    assert everything == [*older, *newer]
+    assert exactly_today == newer
+    assert over_midnight == [*older[-5:], *newer]
+    assert a_few == newer[-7:]
+    assert asked.selects == [
+        (today, EVERYTHING),
+        (yesterday, EVERYTHING - 20),
+        (today, 20),
+        (today, 25),
+        (yesterday, 5),
+        (today, 7),
+    ]
+
+
+async def test_a_read_that_asks_for_no_point_is_refused_before_anything_is_sent(
+    history: QuoteHistoryStore, scylla_client: ScyllaClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asked = Asked(scylla_client, monkeypatch)
+
+    with pytest.raises(ValueError, match="at least one point"):
+        await history.read(uuid7(), MIDNIGHT, MIDNIGHT + timedelta(days=1), limit=0)
+
+    assert asked.selects == []
 
 
 async def test_naive_timestamps_are_rejected_before_anything_is_sent(
@@ -157,6 +249,8 @@ async def test_naive_timestamps_are_rejected_before_anything_is_sent(
 
     with pytest.raises(ValueError, match="timezone-aware"):
         await history.write(point(uuid7(), naive, version=1))
+    with pytest.raises(ValueError, match="timezone-aware"):
+        await history.read(uuid7(), naive, MIDNIGHT, limit=EVERYTHING)
 
 
 async def test_unreachable_scylla_raises_without_blocking_the_event_loop(
@@ -218,7 +312,10 @@ async def test_node_that_dies_and_returns_never_stalls_the_event_loop(
             f"the loop stood still for {watch.longest_stall:.3f} s"
         )
         assert client.is_connected
-        assert await store.read(market_id, before.ts, after.ts) == [before, after]
+        assert await store.read(market_id, before.ts, after.ts, limit=EVERYTHING) == [
+            before,
+            after,
+        ]
     finally:
         await client.close()
 
