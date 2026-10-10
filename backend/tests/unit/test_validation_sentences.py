@@ -22,7 +22,7 @@ import importlib
 import inspect
 import pkgutil
 import re
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Generator, Iterator
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
@@ -739,13 +739,29 @@ def test_the_sentences_that_name_a_figure_name_it_in_tokens() -> None:
 REACHED: Final[str] = "The request passed its validation and reached a service."
 
 
+class Reached:
+    """What a call on a stand-in gives back: awaited or entered, it says that the
+    request reached a service."""
+
+    def __await__(self) -> Generator[None]:
+        raise ConflictError(REACHED)
+        yield
+
+    async def __aenter__(self) -> None:
+        raise ConflictError(REACHED)
+
+    async def __aexit__(self, *raised: object) -> None:
+        return None
+
+
 class ReachedService:
     """Stands in for every service: whatever a route calls on it says so and does
-    nothing. A request that gets this far passed its validation."""
+    nothing, whether the route awaits the call or enters it, as the event stream enters
+    its place at the hub. A request that gets this far passed its validation."""
 
     def __getattr__(self, name: str) -> Any:
-        async def reached(*arguments: object, **named: object) -> None:
-            raise ConflictError(REACHED)
+        def reached(*arguments: object, **named: object) -> Reached:
+            return Reached()
 
         return reached
 
@@ -815,6 +831,7 @@ VALID: Final[dict[type[RequestModel], dict[str, Any]]] = {
     PageQuery: {},
     LeaderboardQuery: {},
     AdminUserListQuery: {},
+    LiveStreamQuery: {"tab": "tab-0123"},
     RedeemCodeRequest: {"code": "ABCD-EFGH-JKMN"},
     RedeemVoucherRequest: {"code": "ABCD-EFGH"},
     IssueVoucherRequest: {"product_id": "mate"},
@@ -842,11 +859,6 @@ VALID: Final[dict[type[RequestModel], dict[str, Any]]] = {
 
 BASES_ONLY: Final[frozenset[type[RequestModel]]] = frozenset({TradeSize})
 """Request models no route takes by itself: what a quote and a trade have in common."""
-
-WITHOUT_AN_OPERATION: Final[frozenset[type[RequestModel]]] = frozenset({LiveStreamQuery})
-"""Request models whose operation the application does not serve: the query of the
-event stream, `GET /stream`. Its rules and their sentences are held on the model, above
-and in `tests/integration/test_api_contract.py`."""
 
 WRONG_IN_A_BODY: Final[tuple[object, ...]] = (
     None,
@@ -975,10 +987,10 @@ def test_every_request_model_is_taken_by_an_operation_and_has_a_request_to_start
     shows up on its operation. What it needs is an entry in `VALID`."""
     used = {use.model for use in USES}
 
-    assert request_models() - used == BASES_ONLY | WITHOUT_AN_OPERATION
+    assert request_models() - used == BASES_ONLY
     assert used == set(VALID)
-    assert len(USES) >= 24, "five query models and nineteen bodies"
-    assert len(FIELDS) >= 77
+    assert len(USES) >= 25, "six query models and nineteen bodies"
+    assert len(FIELDS) >= 79
     assert {use.where for use in USES} == {"body", "query"}
 
 
@@ -1026,7 +1038,8 @@ async def test_whatever_a_field_is_refused_with_is_a_sentence_for_the_person_who
 
     for wrong in battery:
         errors = refusals(await send(api, use, valid | {field: wrong}), wrong)
-        refused_on_the_field += any(error["loc"][-1] == field for error in errors)
+        # A field that is a list is refused at one of its entries: `[where, field, 0]`.
+        refused_on_the_field += any(error["loc"][1:2] == [field] for error in errors)
 
     assert refused_on_the_field, f"nothing of the battery is wrong for {field}"
 
