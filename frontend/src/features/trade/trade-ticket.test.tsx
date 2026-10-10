@@ -205,9 +205,11 @@ describe("the form", () => {
 
   test("without a range from the market there is no slider; the field and the presets stay", () => {
     openTicket({
-      // The balance is below the smallest buy: the server sends no range, and may still
-      // quote. Nothing here works that out.
-      market: marketDetail({ viewer: marketViewer({ balance_cr: "0.5", buy_slider: null }) }),
+      // Less than a whole step of the slider is left: the server sends no range, and says
+      // that an amount can still be bought. Nothing here works that out.
+      market: marketDetail({
+        viewer: marketViewer({ stake_left_cr: "1.5", buy_slider: null, can_buy: true }),
+      }),
     });
 
     expect(screen.queryByRole("slider")).not.toBeInTheDocument();
@@ -405,6 +407,105 @@ describe("a viewer who cannot trade", () => {
     await user.click(button("Buy YES"));
     expect(api.calls(QUOTE)).toHaveLength(1);
     expect(api.calls(TRADE)).toHaveLength(0);
+  });
+});
+
+describe("a viewer who can buy nothing", () => {
+  /** 100 of 100 tokens are in the market: no amount is a buy, and the holding can be sold. */
+  const atTheLimit = () =>
+    marketViewerWithPosition({
+      cost_cr: "100",
+      net_stake_cr: "100",
+      stake_left_cr: "0",
+      stake_presets: [
+        { amount_cr: "25", allowed: false },
+        { amount_cr: "50", allowed: false },
+        { amount_cr: "100", allowed: false },
+      ],
+      buy_slider: null,
+      can_buy: false,
+    });
+
+  test("at the stake limit the field takes no amount, the line says what is left, and no quote is asked for", async () => {
+    const { user, api } = openTicket({ market: marketDetail({ viewer: atTheLimit() }) });
+
+    expect(stakeField()).toBeDisabled();
+    for (const amount of ["25", "50", "100"]) expect(stakeChip(amount)).toBeDisabled();
+    expect(screen.queryByRole("slider")).not.toBeInTheDocument();
+    expect(screen.getByText("0 of 100 tokens left in this market")).toBeInTheDocument();
+    expect(button("Buy YES")).toBeDisabled();
+
+    await user.type(stakeField(), "5");
+    expect(stakeField()).toHaveValue("");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(api.calls(QUOTE)).toHaveLength(0);
+    expect(stakeRefusal()).not.toBeInTheDocument();
+  });
+
+  test("selling stays open, and its shares field takes a number", async () => {
+    const { user } = openTicket({
+      market: marketDetail({ viewer: atTheLimit() }),
+      routes: { [QUOTE]: json(200, quote({ side: "SELL" })) },
+    });
+
+    expect(sideSegment("Sell")).toBeEnabled();
+    await user.click(sideSegment("Sell"));
+
+    expect(sharesField()).toBeEnabled();
+    await user.type(sharesField(), "10");
+    expect(sharesField()).toHaveValue("10");
+  });
+
+  test("the entry follows can_buy alone: a balance below the smallest buy switches it off as the limit does", () => {
+    openTicket({
+      market: marketDetail({
+        viewer: marketViewer({ balance_cr: "0.5", buy_slider: null, can_buy: false }),
+      }),
+    });
+
+    expect(stakeField()).toBeDisabled();
+    expect(button("Buy YES")).toBeDisabled();
+  });
+
+  test("when the limit is reached behind the ticket, the amount stays in the field and is asked about no more", async () => {
+    const { user, api, client } = openTicket({ routes: { [QUOTE]: json(200, quote()) } });
+    await user.click(stakeChip("25"));
+    await waitFor(() => expect(button("Buy YES")).toBeEnabled());
+
+    // The market was read again: the viewer bought up to the limit somewhere else.
+    act(() =>
+      client.setQueryData(keys.markets.detail(MARKET_ID), marketDetail({ viewer: atTheLimit() })),
+    );
+
+    await waitFor(() => expect(stakeField()).toBeDisabled());
+    expect(stakeField()).toHaveValue("25");
+    expect(button("Buy YES")).toBeDisabled();
+    expect(within(row("You pay")).getByText("none yet")).toBeInTheDocument();
+    await user.click(button("Buy YES"));
+    expect(api.calls(QUOTE)).toHaveLength(1);
+    expect(api.calls(TRADE)).toHaveLength(0);
+  });
+
+  test("what a sale gives back can be bought again: the field takes an amount once can_buy is true", async () => {
+    const { user, api, client } = openTicket({
+      market: marketDetail({ viewer: atTheLimit() }),
+      routes: { [QUOTE]: json(200, quote()) },
+    });
+    expect(stakeField()).toBeDisabled();
+    // The read of the opening ticket has answered before the market changes.
+    await waitFor(() => expect(api.calls(MARKET)).toHaveLength(1));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+
+    act(() =>
+      client.setQueryData(
+        keys.markets.detail(MARKET_ID),
+        marketDetail({ viewer: marketViewerWithPosition() }),
+      ),
+    );
+
+    await waitFor(() => expect(stakeField()).toBeEnabled());
+    await user.type(stakeField(), "5");
+    expect(stakeField()).toHaveValue("5");
   });
 });
 

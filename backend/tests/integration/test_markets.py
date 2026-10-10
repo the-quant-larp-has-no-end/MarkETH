@@ -2047,7 +2047,9 @@ async def test_the_buy_slider_ends_where_the_stake_limit_does_and_selling_moves_
     assert with_some_left.viewer.stake_left_cr == to_cr(left)
     assert slider_of(with_some_left) == (1, 30, 1)
     assert (at_the_limit.viewer.stake_left_cr, slider_of(at_the_limit)) == (NOTHING, None)
+    assert (with_some_left.viewer.can_buy, at_the_limit.viewer.can_buy) == (True, False)
     assert after.viewer.stake_left_cr == to_cr(received_micro)
+    assert after.viewer.can_buy
     assert received_micro % MICRO, "what the sale brought back is no whole number of credits"
     assert slider_of(after) == (1, received_micro // MICRO, 1)
     await assert_books_balance(container.uow_factory)
@@ -2228,6 +2230,7 @@ async def test_whether_the_viewer_may_trade_and_the_first_reason_why_not(
         assert [preset.shares for preset in entry.presets] == [
             to_cr(shares) for shares in SHARE_SHORTCUTS
         ]
+    assert block.can_buy == (reason is None)
     if reason is None:
         assert block.buy_slider is not None
         assert all(entry.slider is not None for entry in block.buy)
@@ -2587,6 +2590,7 @@ async def test_whatever_a_viewer_traded_their_side_is_what_market_view_makes_of_
     assert block.buy_slider == view.buy_slider(
         view.stake_left_micro(stake_micro), balance_micro, True
     )
+    assert block.can_buy == view.can_buy(view.stake_left_micro(stake_micro), balance_micro, True)
     row = await market_row(container, market.id)
     assert block.buy == view.buy_entries(
         row, view.stake_left_micro(stake_micro), balance_micro, True

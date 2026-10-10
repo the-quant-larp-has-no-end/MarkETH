@@ -251,6 +251,18 @@ class MarketView:
             min=smallest_micro // MICRO, max=largest_micro // MICRO, step=step_micro // MICRO
         )
 
+    def can_buy(self, stake_left_micro: int, balance_micro: int, can_trade: bool) -> bool:
+        """Whether any amount is a buy the viewer can make right now (A.11).
+
+        A buy for an amount costs exactly that amount, and `QuoteService.price` and
+        `check_buy` ask that it is at least `MIN_TRADE_CR`, within the stake left and
+        covered by the balance. So some amount passes exactly when the viewer may
+        trade (`can_trade`) and `MIN_TRADE_CR` is at most `stake_left_micro` and at
+        most `balance_micro`. It is true wherever `buy_slider` gives a slider, and
+        also where less than a whole step of the slider is left to buy.
+        """
+        return can_trade and self._min_trade_micro <= min(stake_left_micro, balance_micro)
+
     def most_shares_micro(self, market: Market, outcome: Outcome, budget_micro: int) -> int:
         """The most µshares of `outcome` whose cost, rounded up, is at most
         `budget_micro`: `lmsr.quote_buy_for_budget(state, outcome,

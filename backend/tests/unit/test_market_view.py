@@ -793,6 +793,65 @@ def test_a_stake_preset_on_a_step_of_the_slider_is_allowed_exactly_within_it(
                 assert preset.allowed == within, (stake_left, balance, amount)
 
 
+# --- Whether any amount is a buy (A.11) ----------------------------------------------
+
+
+def test_nothing_can_be_bought_once_the_stake_limit_is_reached(
+    view: MarketView, base_settings: Settings
+) -> None:
+    """At the limit no amount passes, whatever the balance, and what a sale gives back
+    can be bought again from the smallest trade on."""
+    pricing = base_settings.pricing
+    limit, smallest = pricing.max_stake_per_user_market_micro, pricing.min_trade_micro
+    plenty = 10 * limit
+
+    assert view.can_buy(view.stake_left_micro(0), plenty, can_trade=True)
+    assert not view.can_buy(view.stake_left_micro(limit), plenty, can_trade=True)
+    assert not view.can_buy(smallest - 1, plenty, can_trade=True)
+    assert view.can_buy(smallest, plenty, can_trade=True)
+
+
+def test_nothing_can_be_bought_with_a_balance_below_the_smallest_trade(
+    view: MarketView, base_settings: Settings
+) -> None:
+    pricing = base_settings.pricing
+    limit, smallest = pricing.max_stake_per_user_market_micro, pricing.min_trade_micro
+
+    assert not view.can_buy(limit, smallest - 1, can_trade=True)
+    assert view.can_buy(limit, smallest, can_trade=True)
+
+
+def test_nothing_can_be_bought_by_someone_who_may_not_trade(
+    view: MarketView, base_settings: Settings
+) -> None:
+    plenty = 10 * base_settings.pricing.max_stake_per_user_market_micro
+
+    assert view.can_buy(plenty, plenty, can_trade=True)
+    assert not view.can_buy(plenty, plenty, can_trade=False)
+
+
+@given(
+    step_cr=st.integers(min_value=1, max_value=25),
+    min_trade_micro=st.integers(min_value=0, max_value=60 * CR),
+    stake_left_micro=st.integers(min_value=0, max_value=120 * CR),
+    balance_micro=st.integers(min_value=0, max_value=120 * CR),
+)
+def test_something_can_be_bought_wherever_there_is_a_slider_and_between_its_steps(
+    step_cr: int, min_trade_micro: int, stake_left_micro: int, balance_micro: int
+) -> None:
+    """The smallest trade is the first amount that passes, so something can be bought
+    exactly when the stake left and the balance cover it. A slider is a whole step of
+    that, so there is none without it, and it can be missing where less than a step is
+    left."""
+    view = slider_view(step_cr=step_cr, min_trade_micro=min_trade_micro)
+
+    found = view.can_buy(stake_left_micro, balance_micro, can_trade=True)
+
+    assert found == (min_trade_micro <= stake_left_micro and min_trade_micro <= balance_micro)
+    if view.buy_slider(stake_left_micro, balance_micro, can_trade=True) is not None:
+        assert found
+
+
 # --- What a viewer can buy, in shares (A.11) -----------------------------------------
 
 PLENTY: Final[int] = 10 * STAKE_LIMIT
