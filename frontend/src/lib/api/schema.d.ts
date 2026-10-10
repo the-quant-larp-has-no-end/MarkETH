@@ -2128,6 +2128,13 @@ export interface components {
              */
             cost_cr: string;
             /**
+             * Entered At
+             * Format: date-time
+             * @description When the user entered the market: the instant of their first trade there. It
+             *     stays that instant whatever they bought or sold since.
+             */
+            entered_at: string;
+            /**
              * Holdings
              * @description Always two entries, YES then NO.
              */

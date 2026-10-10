@@ -92,6 +92,10 @@ class PortfolioEntry(ResponseModel):
     holdings: list[Holding]
     """Always two entries, YES then NO."""
 
+    entered_at: datetime
+    """When the user entered the market: the instant of their first trade there. It
+    stays that instant whatever they bought or sold since."""
+
     value_cr: CreditAmount
     """Sum of the holdings' values."""
 

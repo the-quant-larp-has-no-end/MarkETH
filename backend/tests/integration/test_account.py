@@ -379,9 +379,11 @@ async def as_market_view_shows_it(
     holdings = view.holdings(row, positions, resolution)
     payout_micro = view.payout_micro(positions, resolution)
     refund_micro = view.refund_micro(positions, resolution)
+    trades = await trades_of(container, user)
     return PortfolioEntry(
         market=view.summary(row, container.clock.now(), resolution),
         holdings=holdings,
+        entered_at=min(trade.created_at for trade in trades if trade.market_id == market.id),
         value_cr=sum((holding.value_cr for holding in holdings), Decimal(0)),
         cost_cr=to_cr(sum(position.cost_micro for position in positions)),
         proceeds_cr=to_cr(sum(position.proceeds_micro for position in positions)),
@@ -807,11 +809,41 @@ async def test_markets_that_close_at_the_same_instant_are_ordered_by_their_id(
     await assert_books_balance(container.uow_factory)
 
 
-async def test_the_portfolio_asks_postgres_the_same_three_things_for_one_market_as_for_many(
+async def test_a_position_is_entered_at_the_users_first_trade_in_its_market(
+    container: Container, factory: Factory, clock: FrozenClock
+) -> None:
+    """Buying more, the other outcome or selling everything leaves the instant where
+    it is, and somebody else's trade in the market is not the user's."""
+    alice = await factory.user(balance_micro=STARTING)
+    bob = await factory.user(balance_micro=STARTING)
+    lunch = await factory.market(question="Will the mensa serve rösti on Monday?")
+    exam = await factory.market(question="Will the analysis exam be moved?")
+    await factory.position(bob, lunch, Outcome.NO, shares_micro=70 * MICRO)
+    clock.advance(timedelta(minutes=5))
+    entered_lunch = clock.now()
+    await factory.position(alice, lunch, Outcome.YES, shares_micro=40 * MICRO)
+    clock.advance(timedelta(minutes=5))
+    entered_exam = clock.now()
+    await factory.position(alice, exam, Outcome.NO, shares_micro=8 * MICRO)
+    clock.advance(timedelta(minutes=5))
+    await factory.position(alice, lunch, Outcome.NO, shares_micro=5 * MICRO)
+    await sell(container, alice, lunch, Outcome.YES, 40 * MICRO)
+    await sell(container, alice, exam, Outcome.NO, 8 * MICRO)
+
+    portfolio = await container.account.portfolio(factory.identity(alice))
+
+    assert {entry.market.id: entry.entered_at for entry in portfolio.items} == {
+        lunch.id: entered_lunch,
+        exam.id: entered_exam,
+    }
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_the_portfolio_asks_postgres_the_same_four_things_for_one_market_as_for_many(
     container: Container, factory: Factory
 ) -> None:
-    """The positions, the markets and the resolutions: one query each, whatever the
-    number of markets."""
+    """The positions, the markets, the resolutions and the first trades: one query
+    each, whatever the number of markets."""
     admin = await factory.admin()
     one = await factory.user(balance_micro=STARTING)
     many = await factory.user(balance_micro=STARTING)
@@ -827,7 +859,7 @@ async def test_the_portfolio_asks_postgres_the_same_three_things_for_one_market_
     with recorded_selects(container) as for_many:
         assert len((await container.account.portfolio(factory.identity(many))).items) == 5
 
-    assert len(for_one) == len(for_many) == 3
+    assert len(for_one) == len(for_many) == 4
     await assert_books_balance(container.uow_factory)
 
 

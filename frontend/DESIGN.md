@@ -772,7 +772,7 @@ A programme picker is disabled until a level is chosen, and changing the level c
 | --- | --- | --- |
 | Ledger | `description`, and `created_at` below in `caption` | Signed `amount_cr` |
 | Trade | `market_question` (one line), and "Bought YES" or "Sold NO" with the date below | `amount_cr`, and `shares` below |
-| Position | The question, and holdings below ("183.29 YES shares") | `value_cr`, with a status badge when settled |
+| Position | The question, and below it the holdings ("183.29 YES shares") and "Entered" with the date and time of `entered_at` | `value_cr`, with a status badge when settled |
 | Product | `name` | The token icon and `price_cr`; the whole row is disabled when `affordable` is false |
 | Voucher | `product_name`, and the expiry below in `caption` | "Show QR", or what became of it: "Redeemed", "Expired, refunded" or "Expired, refund on its way" (§13) |
 | Leaderboard | `rank` in a column at least 32 px wide, then `username` on one line with `degree_programme` below in `caption` | The figure of the measure the list is sorted by. It flashes when it changes by itself (§7) |
@@ -1077,7 +1077,7 @@ No sentence of the ticket is a joke, and none names a tier, a liquidity figure o
 1. Top bar.
 2. A summary card: "Value of open positions" with `total_value_cr` in `number-lg`.
 3. Tabs: **Positions** and **History**.
-4. Positions: position rows from `GET /me/positions` in API order, under the subheadings "Open" and "Settled"; a market is settled when its `status` is RESOLVED or VOID. A row names each holding whose `shares` is not `0` ("183.29 YES shares"), or "No shares held" when there is none. A settled row shows "Paid out" or "Refunded" with the token icon and `payout_cr` or `refund_cr` in place of `value_cr`. A row opens the market.
+4. Positions: position rows from `GET /me/positions` in API order, under the subheadings "Open" and "Settled"; a market is settled when its `status` is RESOLVED or VOID. A row names each holding whose `shares` is not `0` ("183.29 YES shares"), or "No shares held" when there is none, and says when the user entered the market: "Entered" with the date and time of `entered_at`, the user's first trade there. A settled row shows "Paid out" or "Refunded" with the token icon and `payout_cr` or `refund_cr` in place of `value_cr`. A row opens the market.
 5. History: trade rows from `GET /me/trades`, loading more with `next_cursor` as the user scrolls. A row opens its market.
 
 Empty: the empty-cup illustration and "No positions yet. Your cup is empty." with a primary "Browse markets" button. An empty History says "No trades yet." Loading: a skeleton summary card and five skeleton rows. Error: a banner with "Try again".

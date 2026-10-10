@@ -117,16 +117,19 @@ describe("TradeRow", () => {
 });
 
 describe("PositionRow", () => {
-  test("an open position names its holdings and shows value_cr", () => {
+  test("an open position names its holdings, when it was entered, and shows value_cr", () => {
     renderWithProviders(
       <RowList>
-        <PositionRow entry={portfolioEntry({ value_cr: "50.221461" })} />
+        <PositionRow
+          entry={portfolioEntry({ value_cr: "50.221461", entered_at: "2026-10-04T10:00:00Z" })}
+        />
       </RowList>,
     );
 
     const row = screen.getByRole("link");
     expect(row).toHaveAttribute("href", `/markets/${MARKET_ID}`);
     expect(row).toHaveTextContent("91.64 YES shares");
+    expect(row).toHaveTextContent("Entered 4 Oct 2026, 12:00");
     expect(row).toHaveTextContent("50.22 tokens");
     expect(row).not.toHaveTextContent("Paid out");
   });
