@@ -4,7 +4,8 @@ Unit tests need nothing external: Docker starts only when a test asks for a cont
 fixture, directly, through another fixture, or by carrying the `integration` marker.
 Containers and the connection pool are session-scoped and run on pytest-asyncio's
 session event loop (see `[tool.pytest.ini_options]`), so one Postgres and one Redis
-serve the run.
+serve a process. Under `--numprocesses` (pytest-xdist) every worker is a session of its
+own with containers of its own: no two processes share a database or a Redis.
 
 What a test of the API or of a service uses (mark the module `integration`):
 
