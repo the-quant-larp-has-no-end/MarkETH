@@ -197,11 +197,10 @@ services:
       - core
     depends_on: *needs-schema
 
-  # One-shot, as the owner role. It builds the schema in an empty database, then proves
-  # that the database at hand was built from the models of this code. The schema has one
-  # revision and no upgrade path, so a database built from other models fails here,
-  # before api and relay start: it has to be wiped and rebuilt (`make reset`, on the VM
-  # `make deploy-wipe`).
+  # One-shot, as the owner role. It builds the schema in an empty database and takes an
+  # existing one through the revisions it has not seen, then proves that the database at
+  # hand has the schema of the models of this code. A model that changed without a
+  # revision fails here, before api and relay start: it needs one (`make revision`).
   migrate:
     <<: *backend
     # Where the stores are and nothing else, so the owner role's password is the one

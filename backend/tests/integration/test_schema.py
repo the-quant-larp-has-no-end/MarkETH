@@ -74,6 +74,7 @@ from app.models import (
     Voucher,
 )
 from app.models.fingerprint import schema_fingerprint
+from app.models.privileges import APP_ROLE_PRIVILEGES
 from app.models.triggers import TRIGGER_FUNCTIONS, TRIGGER_STATEMENTS
 from app.repositories.unit_of_work import UnitOfWork
 from scripts import check_schema
@@ -327,13 +328,103 @@ async def test_downgrade_removes_everything_but_the_app_role(
         assert await stored_fingerprint(scratch) == schema_fingerprint()
 
 
+# --- What the revisions build is what the models describe (A.10) ----------------------
+#
+# A database is built and changed by the revisions alone, so they have to arrive where
+# the models are. The database every test runs on was taken through all of them; beside
+# it one is built from the models directly, and the catalogues of the two are compared.
+
+CATALOGUE_OF_A_SCHEMA: Final[dict[str, str]] = {
+    # Without the position of a column: one that a revision adds is the last of its table.
+    "columns": (
+        "SELECT table_name, column_name, data_type, character_maximum_length, is_nullable,"
+        " column_default, is_identity, identity_generation"
+        " FROM information_schema.columns"
+        " WHERE table_schema = 'public' AND table_name <> 'alembic_version'"
+    ),
+    "constraints": (
+        "SELECT conrelid::regclass::text, conname, pg_get_constraintdef(oid)"
+        " FROM pg_constraint"
+        " WHERE connamespace = 'public'::regnamespace"
+        " AND conrelid::regclass::text <> 'alembic_version'"
+    ),
+    "indexes": (
+        "SELECT tablename, indexname, indexdef FROM pg_indexes"
+        " WHERE schemaname = 'public' AND tablename <> 'alembic_version'"
+    ),
+    "triggers": (
+        "SELECT tgrelid::regclass::text, tgname, pg_get_triggerdef(oid)"
+        " FROM pg_trigger WHERE NOT tgisinternal"
+    ),
+    "functions": (
+        "SELECT proname, pg_get_functiondef(oid) FROM pg_proc"
+        " WHERE pronamespace = 'public'::regnamespace"
+    ),
+    "table privileges of the app role": (
+        "SELECT table_name, privilege_type FROM information_schema.role_table_grants"
+        " WHERE grantee = :role AND table_name <> 'alembic_version'"
+    ),
+    "column privileges of the app role": (
+        "SELECT table_name, column_name, privilege_type"
+        " FROM information_schema.role_column_grants"
+        " WHERE grantee = :role AND table_name <> 'alembic_version'"
+    ),
+}
+
+
+async def _catalogue(engine: AsyncEngine, role: str) -> dict[str, list[tuple[Any, ...]]]:
+    async with engine.connect() as connection:
+        return {
+            part: sorted(
+                tuple(row)
+                for row in await connection.execute(
+                    text(query), {"role": role} if ":role" in query else {}
+                )
+            )
+            for part, query in CATALOGUE_OF_A_SCHEMA.items()
+        }
+
+
+async def test_the_revisions_build_the_schema_the_models_describe(
+    settings: Settings, owner_engine: AsyncEngine
+) -> None:
+    """Columns, constraints (CHECKs with their expressions), indexes, triggers, trigger
+    functions and what the app role may do: a database taken through every revision has
+    what one built from the models, the triggers and the privileges of this code has.
+    Where this fails, the last revision does not do what the models say."""
+    app_role = settings.postgres.app_user
+    migrated = await _catalogue(owner_engine, app_role)
+
+    async with scratch_database(owner_engine, settings, "marketh_models_check") as scratch:
+        scratch_engine = create_async_engine(scratch.postgres.owner_url, poolclass=NullPool)
+        async with scratch_engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+            for statement in TRIGGER_STATEMENTS:
+                await connection.exec_driver_sql(statement)
+            for template in APP_ROLE_PRIVILEGES:
+                if "alembic_version" in template:
+                    continue
+                statement = await connection.scalar(
+                    text("SELECT format(CAST(:template AS text), CAST(:role AS text))"),
+                    {"template": template, "role": app_role},
+                )
+                await connection.exec_driver_sql(statement)
+        from_the_models = await _catalogue(scratch_engine, app_role)
+        await scratch_engine.dispose()
+
+    for part in CATALOGUE_OF_A_SCHEMA:
+        assert migrated[part], part
+        assert migrated[part] == from_the_models[part], part
+
+
 # --- The fingerprint of the schema (A.10) ---------------------------------------------
 #
-# The schema has one revision, so `alembic upgrade head` leaves a database alone that
-# was built from other models. `scripts.check_schema` is what notices.
+# `alembic upgrade head` takes a database through the revisions and no further: where a
+# model changed without one, the database stays as it was. `scripts.check_schema` is
+# what notices.
 
 
-async def test_a_fresh_database_carries_the_fingerprint_of_the_models(
+async def test_a_migrated_database_carries_the_fingerprint_of_the_models(
     settings: Settings, owner_engine: AsyncEngine
 ) -> None:
     assert await stored_fingerprint(settings) == schema_fingerprint()
@@ -357,7 +448,7 @@ async def test_check_schema_accepts_a_database_built_from_these_models(
 ) -> None:
     await _run_check_schema(settings, monkeypatch)
 
-    assert capsys.readouterr().out == "The database was built from the schema of this code.\n"
+    assert capsys.readouterr().out == "The database has the schema of this code.\n"
 
 
 def _change_a_check(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -394,7 +485,8 @@ async def test_check_schema_refuses_a_database_once_a_model_has_changed(
     with pytest.raises(SystemExit) as refusal:
         await _run_check_schema(settings, monkeypatch)
     assert refusal.value.code == (
-        "The schema changed since this database was built: wipe and rebuild it (make reset)."
+        "The models of this code are not the schema of this database, and no revision "
+        "leads there: write one (make revision NAME=...)."
     )
 
 
@@ -404,7 +496,7 @@ async def test_check_schema_refuses_a_database_that_carries_no_fingerprint(
     """Nothing says what such a database was built from, so nothing vouches for it."""
     async with scratch_database(owner_engine, settings, "marketh_unbuilt_check") as scratch:
         assert await stored_fingerprint(scratch) is None
-        with pytest.raises(SystemExit, match="The schema changed since this database was built"):
+        with pytest.raises(SystemExit, match="are not the schema of this database"):
             await _run_check_schema(scratch, monkeypatch)
 
 

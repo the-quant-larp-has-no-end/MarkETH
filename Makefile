@@ -23,7 +23,7 @@ BACKEND := cd backend &&
 FRONTEND := cd frontend && { cmp -s package-lock.json node_modules/.installed-lock \
 	|| { npm ci && cp package-lock.json node_modules/.installed-lock; }; } &&
 
-.PHONY: help up down logs migrate seed test test-backend test-frontend test-scylla e2e \
+.PHONY: help up down logs migrate revision seed test test-backend test-frontend test-scylla e2e \
         lint fmt api-client psql redis-cli cqlsh reset \
         deploy deploy-guard deploy-backup deploy-sync deploy-env deploy-build deploy-pull \
         deploy-migrate deploy-stop-template deploy-up deploy-check deploy-smoke deploy-wipe \
@@ -46,8 +46,15 @@ down: ## Stop the stack; the database volumes stay
 logs: ## Tail the logs of every service
 	$(COMPOSE) logs --follow --tail=100
 
-migrate: ## Build the schema as the owner role and check that it is the one of this code
+migrate: ## Take the database to the schema of this code, as the owner role, and check it
 	$(COMPOSE) run --rm migrate
+
+# A change to a model comes with the revision that takes a database there (SPEC A.10).
+# The file is numbered after the last one and carries the fingerprint of the models as
+# they are now, so the models are edited first. It needs no database.
+revision: ## Write the file of a new schema revision: NAME="what changes"
+	@test -n "$(NAME)" || { echo 'Name what changes: make revision NAME="add a nickname to users"'; exit 1; }
+	$(BACKEND) uv run alembic revision --rev-id "$$(printf '%04d' $$(( $$(ls migrations/versions/*.py | wc -l) + 1 )))" -m "$(NAME)"
 
 seed: ## Load demo data (the stack must be up)
 	$(COMPOSE) exec api python -m scripts.seed
@@ -184,7 +191,7 @@ deploy-pull: deploy-guard ## Pull the store and proxy images on the VM
 	@echo "==> $(VM): pull the images this stack does not build"
 	$(ON_VM) '$(VM_COMPOSE) pull --ignore-buildable'
 
-deploy-migrate: deploy-guard ## Build or verify the schema on the VM with the image just built
+deploy-migrate: deploy-guard ## Take the VM's database to the schema of the image just built
 	@echo "==> $(VM): run the migrate image once; a failure stops the deployment here, with whatever served before still serving"
 	$(ON_VM) '$(VM_COMPOSE) run --rm migrate'
 

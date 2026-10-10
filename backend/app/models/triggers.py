@@ -9,10 +9,10 @@
 * `markets_audience_fixed`: the audience of a market cannot change, whatever its status
   and whoever asks.
 
-The baseline revision (`migrations/versions/0001_baseline.py`) runs `TRIGGER_STATEMENTS`
-right after it has created the tables from the models. `app.models.fingerprint` hashes
-the same statements, so an edit here asks for a rebuilt database, as an edit to a table
-does.
+The baseline revision (`migrations/versions/0001_baseline.py`) holds these statements as
+they were first deployed. `app.models.fingerprint` hashes `TRIGGER_STATEMENTS`, so an
+edit here asks for a revision that replaces the function or trigger in a database, as an
+edit to a table does.
 """
 
 from typing import Final
@@ -184,7 +184,7 @@ TRIGGER_STATEMENTS: Final[tuple[str, ...]] = (
     CREATE_AUDIENCE_FUNCTION,
     CREATE_AUDIENCE_TRIGGER,
 )
-"""In the order the baseline runs them: each function before the trigger that calls it."""
+"""In the order they are run: each function before the trigger that calls it."""
 
 TRIGGER_FUNCTIONS: Final[tuple[str, ...]] = (
     "assert_journal_entry_balanced",

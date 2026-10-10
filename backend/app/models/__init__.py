@@ -5,9 +5,9 @@ Models are tables, constraints and indexes only. They have no behaviour and no
 relationship attributes: repositories query what a service needs, nothing lazy-loads.
 
 Three modules beside the models complete the schema. `triggers` and `privileges` hold
-the SQL a table definition cannot state; the baseline revision runs it once the tables
-exist. `fingerprint` reduces all of it to one hash, which says whether a database was
-built from this code.
+the SQL a table definition cannot state. `fingerprint` reduces all of it to one hash,
+which says whether a database has the schema of this code. A change to any of it comes
+with a revision of `migrations/versions/`, and `revisions` holds what one needs.
 """
 
 from app.models.broadcast import Broadcast
