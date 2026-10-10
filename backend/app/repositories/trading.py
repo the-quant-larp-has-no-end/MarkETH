@@ -174,6 +174,17 @@ class TradeRepository(BaseRepository[Trade]):
         )
         return (await self._session.execute(statement)).all()
 
+    async def first_trade_at_by_market(self, user_id: UUID) -> dict[UUID, datetime]:
+        """Per market a user ever traded, the instant of their first trade there, in
+        one query: when they entered the market (`PortfolioEntry.entered_at`)."""
+        statement = (
+            select(Trade.market_id, func.min(Trade.created_at))
+            .where(Trade.user_id == user_id)
+            .group_by(Trade.market_id)
+        )
+        rows = await self._session.execute(statement)
+        return dict(rows.all())
+
     async def exists_for_user_market(self, user_id: UUID, market_id: UUID) -> bool:
         """Whether a user ever traded a market (A.4: such an admin may not resolve it)."""
         statement = select(exists().where(Trade.user_id == user_id, Trade.market_id == market_id))
