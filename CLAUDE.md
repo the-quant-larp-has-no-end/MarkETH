@@ -14,7 +14,7 @@ A mobile-first prediction market for ETH Zurich students. Users trade YES/NO sha
 | `compose.yaml`, `compose.override.yaml` | The whole stack. `compose.yaml` alone is what is deployed; the override adds hot reload, published ports and the development identity |
 | `infra/nginx/` | Reverse proxy template, and in `infra/nginx/dev/` the stand-in for the portal's sign-in |
 | `infra/deploy/` | What the deployed stack sets differently, and the backup, check and smoke scripts |
-| `.github/workflows/` | `ci.yml`, the checks of every pull request and of main, and `deploy.yml`, which has the VM deploy itself. Both run on the team's runner, which is the VM, and hold no secret |
+| `.github/workflows/` | `ci.yml`, the checks of every update of main, and `deploy.yml`, which has the VM deploy itself. Both run on the team's runner, which is the VM, and hold no secret |
 | `backend/` | FastAPI API, the outbox relay and the scripts. Rules in `backend/CLAUDE.md` |
 | `frontend/` | Next.js app. Rules in `frontend/CLAUDE.md`, design system in `frontend/DESIGN.md` |
 | `Makefile` | The commands below |
