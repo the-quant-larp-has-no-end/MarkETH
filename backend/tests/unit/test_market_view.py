@@ -36,7 +36,7 @@ from app.core.units import MICRO, format_cr, to_cr, to_micro
 from app.models import Market, Position, Resolution
 from app.pricing import lmsr
 from app.repositories.unit_of_work import UnitOfWork
-from app.schemas.markets import BuyEntry, BuySlider, SellPortion
+from app.schemas.markets import BuyEntry, BuySlider, SellPortion, SellSlider
 from app.schemas.trading import TradeSize
 from app.services.market_view import (
     EVEN_ODDS_MICRO,
@@ -1413,3 +1413,103 @@ def test_selling_half_and_then_all_sells_everything(view: MarketView) -> None:
     )[1]
 
     assert (half.shares, then_all.shares) == (to_cr(95_451_414), to_cr(95_451_415))
+
+
+# --- The slider of a sell (A.11) -----------------------------------------------------
+
+
+def sell_range(
+    yes_micro: int,
+    no_micro: int = 0,
+    *,
+    step: int = 1,
+    min_trade_shares_micro: int = CR,
+    can_trade: bool = True,
+) -> list[tuple[int, int, int] | None]:
+    """`(min, max, step)` of the slider of a sell per outcome, YES then NO, None for
+    none, for somebody who holds these µshares."""
+    traded = market(q_yes_micro=yes_micro, q_no_micro=no_micro)
+    held = [
+        position(traded.id, Outcome.YES, shares_micro=yes_micro),
+        position(traded.id, Outcome.NO, shares_micro=no_micro),
+    ]
+    entries = shares_view(step=step, min_trade_shares_micro=min_trade_shares_micro).sell_entries(
+        held, can_trade
+    )
+    assert [entry.outcome for entry in entries] == [Outcome.YES, Outcome.NO]
+    return [
+        None if entry.slider is None else (entry.slider.min, entry.slider.max, entry.slider.step)
+        for entry in entries
+    ]
+
+
+def test_the_slider_of_a_sell_runs_over_the_whole_shares_of_each_holding(
+    view: MarketView,
+) -> None:
+    traded = market(q_yes_micro=40 * CR, q_no_micro=25 * CR)
+    held = [
+        position(traded.id, Outcome.YES, shares_micro=40 * CR),
+        position(traded.id, Outcome.NO, shares_micro=25 * CR),
+    ]
+
+    entries = view.sell_entries(held, can_trade=True)
+
+    assert [(entry.outcome, entry.slider) for entry in entries] == [
+        (Outcome.YES, SellSlider(min=1, max=40, step=1)),
+        (Outcome.NO, SellSlider(min=1, max=25, step=1)),
+    ]
+
+
+def test_someone_without_positions_gets_two_entries_without_a_slider(view: MarketView) -> None:
+    entries = view.sell_entries([], can_trade=True)
+
+    assert [(entry.outcome, entry.slider) for entry in entries] == [
+        (Outcome.YES, None),
+        (Outcome.NO, None),
+    ]
+
+
+def test_shares_held_beyond_a_whole_step_are_not_on_the_slider_of_a_sell() -> None:
+    assert sell_range(ODD_HOLDING) == [(1, ODD_HOLDING // CR, 1), None]
+    assert sell_range(48 * CR + CR // 2, 11 * CR - 1) == [(1, 48, 1), (1, 10, 1)]
+    assert sell_range(15 * CR - 1, 15 * CR, step=5) == [(5, 10, 5), (5, 15, 5)]
+
+
+def test_a_holding_below_the_smallest_sale_leaves_no_slider() -> None:
+    assert sell_range(CR - 1, CR) == [None, (1, 1, 1)]
+    assert sell_range(5 * CR - 1, 5 * CR, step=5) == [None, (5, 5, 5)]
+    assert sell_range(25 * CR - 1, 25 * CR, min_trade_shares_micro=25 * CR) == [None, (25, 25, 1)]
+    assert sell_range(3 * CR, min_trade_shares_micro=CR // 4) == [(1, 3, 1), None], (
+        "a quarter of a share is a trade; the slider counts whole ones"
+    )
+
+
+def test_there_is_no_slider_of_a_sell_for_someone_who_may_not_trade() -> None:
+    assert sell_range(40 * CR, 25 * CR, can_trade=False) == [None, None]
+
+
+@given(
+    step=st.integers(min_value=1, max_value=7),
+    min_trade_shares_micro=st.integers(min_value=1, max_value=12 * CR),
+    held_micro=st.integers(min_value=0, max_value=60 * CR),
+)
+def test_the_slider_of_a_sell_is_the_first_and_the_last_step_a_sell_passes_at(
+    step: int, min_trade_shares_micro: int, held_micro: int
+) -> None:
+    """Whatever the step, the smallest trade and the holding: counted out one step at
+    a time, the slider runs from the first multiple of the step that is a trade and
+    is held to the last one, and there is none exactly when there is no such
+    multiple."""
+    step_micro = step * CR
+    passing = [
+        shares_micro
+        for shares_micro in range(step_micro, 60 * CR + 1, step_micro)
+        if min_trade_shares_micro <= shares_micro <= held_micro
+    ]
+
+    found = sell_range(held_micro, step=step, min_trade_shares_micro=min_trade_shares_micro)[0]
+
+    if not passing:
+        assert found is None
+    else:
+        assert found == (passing[0] // CR, passing[-1] // CR, step)

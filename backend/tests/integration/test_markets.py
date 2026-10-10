@@ -2101,6 +2101,15 @@ async def test_what_a_sell_shortcut_says_it_brings_in_is_the_amount_of_the_quote
 
     viewer = (await client.get(f"{MARKETS}/{market.id}")).json()["viewer"]
 
+    assert viewer["sell"] == [
+        {"outcome": "YES", "slider": {"min": 1, "max": 30, "step": 1}},
+        {"outcome": "NO", "slider": {"min": 1, "max": 12, "step": 1}},
+    ]
+    for entry in viewer["sell"]:
+        for shares in (entry["slider"]["min"], entry["slider"]["max"]):
+            sale = {"side": "SELL", "outcome": entry["outcome"], "shares": shares}
+            quoted = await client.get(f"{MARKETS}/{market.id}/quote", params=sale)
+            assert quoted.status_code == 200, quoted.text
     assert len(viewer["sell_presets"]) == 4
     for preset in viewer["sell_presets"]:
         assert preset["allowed"]
@@ -2583,6 +2592,7 @@ async def test_whatever_a_viewer_traded_their_side_is_what_market_view_makes_of_
         row, view.stake_left_micro(stake_micro), balance_micro, True
     )
     assert block.sell_presets == view.sell_presets(row, rows, True)
+    assert block.sell == view.sell_entries(rows, True)
     assert (block.can_trade, block.can_settle) == (True, False)
     for entry in block.buy:
         if entry.slider is not None:
@@ -2602,5 +2612,8 @@ async def test_whatever_a_viewer_traded_their_side_is_what_market_view_makes_of_
     for offer in block.sell_presets:
         assert offer.shares <= shares[offer.outcome]
         assert offer.shares > 0 or not offer.allowed
+    for sale in block.sell:
+        if sale.slider is not None:
+            assert 0 < sale.slider.min <= sale.slider.max <= shares[sale.outcome]
     assert detail.version == market.version
     await assert_books_balance(container.uow_factory)

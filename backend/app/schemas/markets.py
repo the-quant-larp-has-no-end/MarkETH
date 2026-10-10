@@ -210,6 +210,34 @@ class SellPreset(ResponseModel):
     least the minimum trade size."""
 
 
+class SellSlider(ResponseModel):
+    """The slider of a sell on the trade sheet (A.11): the whole shares of one outcome
+    between which the viewer can sell right now, and the step between two positions.
+    JSON integers, as a range input takes them. Every multiple of `step` from `min`
+    to `max` is a size a sell passes with: send it as `shares`."""
+
+    min: int
+    """The smallest multiple of `step` that is a trade: at least `min_trade_shares`."""
+
+    max: int
+    """The largest multiple of `step` the viewer holds of the outcome. Never below
+    `min`. What is held beyond it is sold with the ALL entry of `sell_presets`."""
+
+    step: int
+    """`share_step` of `GET /config`."""
+
+
+class SellEntry(ResponseModel):
+    """What the viewer can sell of one outcome by the slider right now (A.11). The
+    server reads it from the holding, so the client compares nothing."""
+
+    outcome: Outcome
+    slider: SellSlider | None
+    """Where the slider of a sell of `outcome` runs. Null when the viewer cannot sell
+    a whole step of it right now: they may not trade, or hold less than the smallest
+    sale. A size typed beside the slider is judged by `GET /markets/{id}/quote`."""
+
+
 class TradeBlockReason(StrEnum):
     """Why `MarketViewer.can_trade` is false."""
 
@@ -262,6 +290,9 @@ class MarketViewer(ResponseModel):
 
     sell_presets: list[SellPreset]
     """Always four entries: YES half, YES all, NO half, NO all."""
+
+    sell: list[SellEntry]
+    """Always two entries, YES then NO."""
 
     can_trade: bool
     cannot_trade_reason: TradeBlockReason | None

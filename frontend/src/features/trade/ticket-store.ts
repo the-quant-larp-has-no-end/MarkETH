@@ -10,7 +10,7 @@ import type {
   BuySlider,
   ErrorCode,
   QuoteResponse,
-  SellPortion,
+  SellEntry,
   SellPreset,
   StakePreset,
   TradeRequest,
@@ -46,7 +46,7 @@ import { receiptHeadline, type TradeIntent } from "./intent";
  * then show what the server recorded.
  */
 
-/** What is entered: an amount when buying, a part of the holding when selling. */
+/** What is entered: an amount when buying, a number of shares when selling. */
 export type Choice = {
   /**
    * The text of the amount field: what was typed, the `amount_cr` of a preset or the
@@ -54,8 +54,12 @@ export type Choice = {
    * it is, and is sent as it stands.
    */
   readonly stake: string;
-  /** `portion` of the chosen sell preset. Its `shares` are read from the market. */
-  readonly portion: SellPortion | null;
+  /**
+   * The text of the shares field of a sell: what was typed, the `shares` of a sell preset
+   * or the digits of a step of the slider. Empty until something is entered, and sent as
+   * it stands.
+   */
+  readonly shares: string;
 };
 
 /** What Confirm sends, with what the ticket showed when it was tapped. */
@@ -63,7 +67,7 @@ export type Order = {
   readonly intent: TradeIntent;
   /**
    * What the quote was asked for: the text of the amount field as `amount_cr`, or the
-   * preset's `shares` as they arrived.
+   * text of the shares field as `shares`.
    */
   readonly request: QuoteRequest;
   /** The quote on screen. It is the guard of the trade. */
@@ -72,6 +76,7 @@ export type Order = {
   readonly stakePresets: readonly StakePreset[];
   readonly buySlider: BuySlider | null;
   readonly sellPresets: readonly SellPreset[];
+  readonly sell: readonly SellEntry[];
 };
 
 /** What a ticket shows of a trade while it waits: the order, and the choice it was made from. */
@@ -110,7 +115,7 @@ type Rest = {
 export type TicketState = SubmissionState<Sent, Rest>;
 
 const UNTOUCHED: Rest = {
-  choice: { stake: "", portion: null },
+  choice: { stake: "", shares: "" },
   refusal: null,
   receipt: null,
 };
@@ -120,14 +125,14 @@ const UNTOUCHED: Rest = {
  * belongs to one of these.
  */
 export function choiceKey(intent: TradeIntent, choice: Choice): string {
-  const entered = intent.side === "BUY" ? choice.stake : (choice.portion ?? "");
+  const entered = intent.side === "BUY" ? choice.stake : choice.shares;
   return [intent.side, intent.outcome, entered].join(":");
 }
 
 /**
  * The body of a trade (DESIGN.md §13): what was quoted, and the quote on screen as its
  * guard. Buying sends the text of the amount field and is guarded by the quote's `shares`;
- * selling sends the preset's `shares` and is guarded by the quote's `amount_cr`. A price
+ * selling sends the text of the shares field and is guarded by the quote's `amount_cr`. A price
  * that moved against the user is therefore always answered `QUOTE_STALE`. Every amount is
  * a string that was typed or that the API sent, and none is changed on its way.
  */
@@ -203,7 +208,7 @@ export type TicketStore = {
   /** Follows one market's ticket while it is on screen. Returns how to stop. */
   watch(marketId: string, onChange: () => void): () => void;
   /**
-   * The user changed the form: the amount, a chip, the side or the outcome. A refusal was
+   * The user changed the form: the amount, the shares, the side or the outcome. A refusal was
    * about what was sent, so it goes. Does nothing while a trade waits or a receipt is
    * shown.
    */

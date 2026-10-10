@@ -1888,6 +1888,11 @@ export interface components {
              */
             refund_cr: string | null;
             /**
+             * Sell
+             * @description Always two entries, YES then NO.
+             */
+            sell: components["schemas"]["SellEntry"][];
+            /**
              * Sell Presets
              * @description Always four entries: YES half, YES all, NO half, NO all.
              */
@@ -2904,6 +2909,20 @@ export interface components {
             username: string;
         };
         /**
+         * SellEntry
+         * @description What the viewer can sell of one outcome by the slider right now (A.11). The
+         *     server reads it from the holding, so the client compares nothing.
+         */
+        SellEntry: {
+            outcome: components["schemas"]["Outcome"];
+            /**
+             * @description Where the slider of a sell of `outcome` runs. Null when the viewer cannot sell
+             *     a whole step of it right now: they may not trade, or hold less than the smallest
+             *     sale. A size typed beside the slider is judged by `GET /markets/{id}/quote`.
+             */
+            slider: components["schemas"]["SellSlider"] | null;
+        };
+        /**
          * SellPortion
          * @description How much of a holding a sell button of the trade sheet stands for.
          * @enum {string}
@@ -2937,6 +2956,31 @@ export interface components {
              * @example 0.25
              */
             shares: string;
+        };
+        /**
+         * SellSlider
+         * @description The slider of a sell on the trade sheet (A.11): the whole shares of one outcome
+         *     between which the viewer can sell right now, and the step between two positions.
+         *     JSON integers, as a range input takes them. Every multiple of `step` from `min`
+         *     to `max` is a size a sell passes with: send it as `shares`.
+         */
+        SellSlider: {
+            /**
+             * Max
+             * @description The largest multiple of `step` the viewer holds of the outcome. Never below
+             *     `min`. What is held beyond it is sold with the ALL entry of `sell_presets`.
+             */
+            max: number;
+            /**
+             * Min
+             * @description The smallest multiple of `step` that is a trade: at least `min_trade_shares`.
+             */
+            min: number;
+            /**
+             * Step
+             * @description `share_step` of `GET /config`.
+             */
+            step: number;
         };
         /**
          * SetUserRoleRequest
@@ -3515,8 +3559,10 @@ export type RevokeCodesResponse = components['schemas']['RevokeCodesResponse'];
 export type RiskMarketRow = components['schemas']['RiskMarketRow'];
 export type RiskResponse = components['schemas']['RiskResponse'];
 export type SaveProfileRequest = components['schemas']['SaveProfileRequest'];
+export type SellEntry = components['schemas']['SellEntry'];
 export type SellPortion = components['schemas']['SellPortion'];
 export type SellPreset = components['schemas']['SellPreset'];
+export type SellSlider = components['schemas']['SellSlider'];
 export type SetUserRoleRequest = components['schemas']['SetUserRoleRequest'];
 export type SortOrder = components['schemas']['SortOrder'];
 export type StakePreset = components['schemas']['StakePreset'];

@@ -13,8 +13,8 @@ all show markets. The rules they must agree on live here, once:
   VIS;
 * what a viewer can buy of each outcome on the trade sheet, in shares: where the
   slider of a buy runs and which of its shortcuts would be accepted, at the market
-  maker's prices; and how many shares each sell shortcut stands for and what it
-  brings in;
+  maker's prices; how many shares each sell shortcut stands for and what it brings
+  in; and where the slider of a sell runs;
 * which buy buttons for a budget would be accepted, and between which amounts the
   slider of a buy for a budget runs.
 
@@ -41,8 +41,10 @@ from app.schemas.markets import (
     BuySlider,
     Holding,
     MarketSummary,
+    SellEntry,
     SellPortion,
     SellPreset,
+    SellSlider,
     StakePreset,
 )
 
@@ -471,6 +473,42 @@ class MarketView:
                     )
                 )
         return presets
+
+    def sell_entries(self, positions: Sequence[Position], can_trade: bool) -> list[SellEntry]:
+        """Where the slider of a sell runs for each outcome, YES then NO, in whole
+        shares (A.11).
+
+        `step` is `TRADE_SHARE_STEP`. `min` is the smallest multiple of the step,
+        above zero, that is at least `MIN_TRADE_SHARES`. `max` is the largest multiple
+        of the step that is at most the holding: what is held beyond a whole step
+        does not count, so a holding of 48.5 shares ends a slider of step 1 at 48,
+        and the ALL shortcut of `sell_presets` sells the rest. There is no slider when
+        the viewer may not trade (`can_trade`, as for the sell shortcuts) and when
+        `max` would lie below `min`.
+
+        Every multiple of the step from `min` to `max` is at least the smallest trade
+        and at most the holding, which is all `QuoteService.admit` asks of a sell. So
+        wherever the slider stands, somebody who may trade gets that sale. Nothing is
+        priced here.
+        """
+        step_micro = self._share_step_micro
+        steps_to_the_smallest_trade = -(-self._min_trade_shares_micro // step_micro)
+        smallest_micro = max(1, steps_to_the_smallest_trade) * step_micro
+        shares_by_outcome = {position.outcome: position.shares_micro for position in positions}
+        entries: list[SellEntry] = []
+        for outcome in (Outcome.YES, Outcome.NO):
+            largest_micro = shares_by_outcome.get(outcome, 0) // step_micro * step_micro
+            slider = (
+                None
+                if not can_trade or largest_micro < smallest_micro
+                else SellSlider(
+                    min=smallest_micro // MICRO,
+                    max=largest_micro // MICRO,
+                    step=step_micro // MICRO,
+                )
+            )
+            entries.append(SellEntry(outcome=outcome, slider=slider))
+        return entries
 
     def _sale_proceeds_micro(
         self, market: Market, outcome: Outcome, held_micro: int, size_micro: int

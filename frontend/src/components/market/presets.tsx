@@ -95,11 +95,13 @@ export function StakePresets({
 const PORTIONS: Record<SellPortion, string> = { HALF: "Half", ALL: "All" };
 
 /**
- * The presets of a sell (DESIGN.md §13, Trade sheet): two chips, "Half" and "All", from
- * the entries of `viewer.sell_presets` for the selected outcome. Each shows its `shares`
- * and is disabled when `allowed` is false. The server worked out half and all of the
- * holding; the frontend halves nothing, and sends the chosen preset's `shares` string as
- * it arrived.
+ * The presets of the shares entry of a sell (DESIGN.md §12): two chips, "Half" and "All",
+ * from the entries of `viewer.sell_presets` for the selected outcome. Each shows its
+ * `shares` and is disabled when `allowed` is false. The server worked out half and all of
+ * the holding; the frontend halves nothing. They are shortcuts: a tap hands on the
+ * preset's `shares`, as the string it arrived as, for the shares field to hold. A chip is
+ * selected while `value`, the text of that field, is exactly its `shares`: a test of two
+ * strings for equality.
  */
 export function SellPresets({
   presets,
@@ -113,16 +115,16 @@ export function SellPresets({
   presets: readonly SellPreset[];
   /** The outcome whose two entries are offered. */
   outcome: Outcome;
-  /** The portion of the chosen preset, or null while none is chosen. */
-  value: SellPortion | null;
-  onChange: (preset: SellPreset) => void;
+  /** What the shares field holds. */
+  value: string;
+  onChange: (shares: string) => void;
   disabled?: boolean;
   className?: string;
 }) {
   return (
     <div
       role="group"
-      aria-label="Shares to sell"
+      aria-label="Shortcuts"
       data-slot="sell-presets"
       className={cn("grid auto-cols-fr grid-flow-col gap-2", className)}
     >
@@ -131,9 +133,9 @@ export function SellPresets({
         .map((preset) => (
           <PresetChip
             key={preset.portion}
-            selected={preset.portion === value}
+            selected={preset.shares === value}
             disabled={disabled || !preset.allowed}
-            onSelect={() => onChange(preset)}
+            onSelect={() => onChange(preset.shares)}
           >
             <span className="type-label">{PORTIONS[preset.portion]}</span>
             <span className="type-caption">{formatShares(preset.shares)}</span>

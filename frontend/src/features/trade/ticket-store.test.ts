@@ -42,6 +42,7 @@ const buy: Order = {
   stakePresets: viewer.stake_presets,
   buySlider: viewer.buy_slider,
   sellPresets: viewer.sell_presets,
+  sell: viewer.sell,
 };
 
 /** Selling half of the YES holding. */
@@ -52,6 +53,7 @@ const sell: Order = {
   stakePresets: viewer.stake_presets,
   buySlider: viewer.buy_slider,
   sellPresets: viewer.sell_presets,
+  sell: viewer.sell,
 };
 
 function setup(trade: Handler) {
@@ -582,7 +584,7 @@ describe("a 2xx", () => {
     await answered(store);
 
     expect(store.read(MARKET_ID)).toEqual({
-      choice: { stake: "", portion: null },
+      choice: { stake: "", shares: "" },
       attempt: null,
       refusal: null,
       receipt: tradeResponse(),
@@ -611,7 +613,7 @@ describe("a 2xx", () => {
     await answered(store);
 
     expect(store.read(MARKET_ID)).toEqual({
-      choice: { stake: "", portion: null },
+      choice: { stake: "", shares: "" },
       attempt: null,
       refusal: null,
       receipt: null,
@@ -634,8 +636,8 @@ describe("the form's state", () => {
   test("what is entered is kept per side, and changing the form drops the refusal", async () => {
     const { store } = setup(apiError(409, "INSUFFICIENT_BALANCE", "Not enough tokens for this."));
     store.choose(MARKET_ID, { stake: "25" });
-    store.choose(MARKET_ID, { portion: "HALF" });
-    expect(store.read(MARKET_ID).choice).toEqual({ stake: "25", portion: "HALF" });
+    store.choose(MARKET_ID, { shares: "45.8225" });
+    expect(store.read(MARKET_ID).choice).toEqual({ stake: "25", shares: "45.8225" });
 
     store.confirm(MARKET_ID, buy);
     await answered(store);
@@ -644,7 +646,7 @@ describe("the form's state", () => {
     // A refusal is about what was sent.
     store.choose(MARKET_ID);
     expect(store.read(MARKET_ID).refusal).toBeNull();
-    expect(store.read(MARKET_ID).choice).toEqual({ stake: "25", portion: "HALF" });
+    expect(store.read(MARKET_ID).choice).toEqual({ stake: "25", shares: "45.8225" });
   });
 
   test("tells its watchers of every change, and hands out the same object in between", () => {
@@ -700,11 +702,11 @@ describe("the form's state", () => {
 
 describe("choiceKey", () => {
   test("names the side, the outcome and what is entered for that side", () => {
-    const choice = { stake: "25", portion: "ALL" } as const;
+    const choice = { stake: "25", shares: "91.645" } as const;
 
     expect(choiceKey({ side: "BUY", outcome: "NO" }, choice)).toBe("BUY:NO:25");
-    expect(choiceKey({ side: "SELL", outcome: "YES" }, choice)).toBe("SELL:YES:ALL");
-    expect(choiceKey({ side: "SELL", outcome: "YES" }, { stake: "25", portion: null })).toBe(
+    expect(choiceKey({ side: "SELL", outcome: "YES" }, choice)).toBe("SELL:YES:91.645");
+    expect(choiceKey({ side: "SELL", outcome: "YES" }, { stake: "25", shares: "" })).toBe(
       "SELL:YES:",
     );
   });
@@ -712,9 +714,9 @@ describe("choiceKey", () => {
   test("an amount is named by its characters: two texts for one figure are two choices", () => {
     const buying = { side: "BUY", outcome: "YES" } as const;
 
-    expect(choiceKey(buying, { stake: "37.5", portion: null })).toBe("BUY:YES:37.5");
-    expect(choiceKey(buying, { stake: "37.50", portion: null })).toBe("BUY:YES:37.50");
-    expect(choiceKey(buying, { stake: "", portion: null })).toBe("BUY:YES:");
+    expect(choiceKey(buying, { stake: "37.5", shares: "" })).toBe("BUY:YES:37.5");
+    expect(choiceKey(buying, { stake: "37.50", shares: "" })).toBe("BUY:YES:37.50");
+    expect(choiceKey(buying, { stake: "", shares: "" })).toBe("BUY:YES:");
   });
 });
 
