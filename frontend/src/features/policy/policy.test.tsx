@@ -185,6 +185,16 @@ describe("Usage policy for a visitor without a profile", () => {
     // Every route but this one shows the set-up to a visitor without a profile.
     expect(links[0]).toHaveAttribute("href", "/");
   });
+
+  test("for a visitor who came from the set-up the logo is one step back, to the address it stood at", async () => {
+    navigation.go("/wallet?code=ABCD-EFGH-JKMN");
+    navigation.router.push("/policy");
+    const { user } = renderWithProviders(<PolicyForVisitor fromSetup />, { me: null });
+
+    await user.click(screen.getByRole("link", { name: "MarkETH" }));
+
+    expect(navigation.href).toBe("/wallet?code=ABCD-EFGH-JKMN");
+  });
 });
 
 describe("PolicyCheckbox", () => {
@@ -202,15 +212,13 @@ describe("PolicyCheckbox", () => {
     expect(box()).not.toBeInvalid();
   });
 
-  test("the words usage policy are a link to /policy that opens in a tab of its own, and says so", () => {
+  test("the words usage policy are a link to /policy that opens in the same tab", () => {
     renderWithProviders(<Form />);
 
     const link = screen.getByRole("link", { name: "usage policy" });
     expect(link).toHaveAttribute("href", "/policy");
-    expect(link).toHaveAttribute("target", "_blank");
-    expect(link).toHaveAccessibleDescription("Opens in another tab.");
-    // The note is for a screen reader, and no part of the checkbox's name.
-    expect(screen.queryByText("Opens in another tab.")).not.toBeVisible();
+    // Another tab has no way back to the form.
+    expect(link).not.toHaveAttribute("target");
   });
 
   test("a tap on the text ticks the box; a tap on the link leaves it as it is", async () => {

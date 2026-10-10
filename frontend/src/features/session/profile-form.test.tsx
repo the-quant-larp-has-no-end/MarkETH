@@ -401,13 +401,13 @@ describe("creating a profile", () => {
   const create = (props: Partial<Parameters<typeof ProfileForm>[0]> = {}) =>
     renderWithProviders(<ProfileForm creating submitLabel="Create profile" {...props} />);
 
-  test("ends with the usage-policy checkbox, unticked, whose link opens the policy in a tab of its own", () => {
+  test("ends with the usage-policy checkbox, unticked, whose link opens the policy in the same tab", () => {
     create();
 
     expect(policy()).not.toBeChecked();
     const link = screen.getByRole("link", { name: "usage policy" });
     expect(link).toHaveAttribute("href", "/policy");
-    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).not.toHaveAttribute("target");
     // The checkbox is a line of the form: after the sentence about what others see,
     // before the button.
     const others = screen.getByText(/Other players can see your username/);

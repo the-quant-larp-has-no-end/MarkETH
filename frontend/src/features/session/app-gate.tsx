@@ -32,14 +32,20 @@ export function useWelcomeOpen(): boolean {
 /**
  * What a visitor without a profile sees in place of the route they opened: the profile
  * set-up, on every route but one. `/policy` is the route the set-up does not stand in
- * front of (DESIGN.md §11): the usage policy is read before it is accepted.
+ * front of (DESIGN.md §11): the usage policy is read before it is accepted. A visitor who
+ * came to it from the set-up goes back there with the logo, to the address the set-up
+ * stood at, so a code card's code is still in it.
  *
  * The address is read here and not in the gate, which is also what the server renders:
  * this is shown only once `/me` has answered, which happens in the browser.
  */
 function WithoutProfile(props: Parameters<typeof ProfileSetupScreen>[0]) {
   const pathname = usePathname();
-  if (pathname === POLICY_ROUTE) return <PolicyForVisitor />;
+  // The gate stays while the routes change: it has seen the set-up or it has not.
+  const [setupShown, setSetupShown] = useState(pathname !== POLICY_ROUTE);
+  if (pathname !== POLICY_ROUTE && !setupShown) setSetupShown(true);
+
+  if (pathname === POLICY_ROUTE) return <PolicyForVisitor fromSetup={setupShown} />;
   return <ProfileSetupScreen {...props} />;
 }
 

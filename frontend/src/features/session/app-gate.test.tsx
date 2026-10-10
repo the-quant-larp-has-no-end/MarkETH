@@ -46,11 +46,22 @@ function Route() {
 
 type User = ReturnType<typeof userEvent.setup>;
 
+/** Chooses in a picker: its sheet, a tap on the option, and the sheet gone. */
+async function choose(user: User, picker: "Level" | "Programme", option: string) {
+  await user.click(screen.getByLabelText(picker));
+  const sheet = await screen.findByRole("dialog", { name: picker });
+  await user.click(within(sheet).getByRole("option", { name: option }));
+  await waitFor(
+    () => expect(screen.queryByRole("dialog", { name: picker })).not.toBeInTheDocument(),
+    { timeout: 3000 },
+  );
+}
+
 /** Fills in the set-up screen: the three fields, and the usage policy accepted. */
 async function setUp(user: User) {
   await user.type(await screen.findByLabelText("Username"), "anna_m");
-  await user.selectOptions(screen.getByLabelText("Level"), "Bachelor");
-  await user.selectOptions(screen.getByLabelText("Programme"), "BSc Computer Science");
+  await choose(user, "Level", "Bachelor");
+  await choose(user, "Programme", "BSc Computer Science");
   await user.click(screen.getByRole("checkbox", { name: "I accept the usage policy" }));
 }
 
@@ -265,6 +276,29 @@ describe("the usage policy, for a caller without a profile", () => {
     expect(navigation.pathname).toBe("/");
     expect(await screen.findByRole("button", { name: "Create profile" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Usage policy" })).not.toBeInTheDocument();
+  });
+
+  test("a visitor who reads the policy from the set-up comes back to what was entered, at the address that was opened", async () => {
+    mockApi({ [CONFIG]: json(200, config()), [ME]: PROFILE_REQUIRED });
+    navigation.go("/wallet?code=ABCD-EFGH-JKMN");
+    const { user } = renderApp();
+    await setUp(user);
+
+    await user.click(screen.getByRole("link", { name: "usage policy" }));
+    expect(navigation.pathname).toBe("/policy");
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Usage policy" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("link", { name: "MarkETH" }));
+
+    // The code of a code card is still in the address.
+    expect(navigation.href).toBe("/wallet?code=ABCD-EFGH-JKMN");
+    expect(await screen.findByLabelText("Username")).toHaveValue("anna_m");
+    expect(screen.getByLabelText("Level")).toHaveTextContent("Bachelor");
+    expect(screen.getByLabelText("Programme")).toHaveTextContent("BSc Computer Science");
+    expect(screen.getByRole("checkbox", { name: "I accept the usage policy" })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Create profile" })).toBeEnabled();
   });
 
   test("every other route still shows the set-up, with the checkbox that links to the policy", async () => {

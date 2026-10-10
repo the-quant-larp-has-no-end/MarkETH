@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { type FormEvent, useEffect, useRef } from "react";
 import { toast } from "sonner";
 
 import { SubmitError } from "@/components/feedback";
@@ -12,7 +12,7 @@ import { proposeMarketMutation } from "@/lib/api/mutations";
 import { useConfig } from "@/lib/api/session";
 import { useSubmit } from "@/lib/api/submit";
 import { formatCount } from "@/lib/format";
-import { useRetryAfter } from "@/lib/hooks";
+import { useDraft, useRetryAfter } from "@/lib/hooks";
 
 import {
   EMPTY_TERMS,
@@ -23,6 +23,9 @@ import {
 } from "./market-terms-fields";
 
 const FIELDS = [...TERM_FIELDS, "policy_accepted"] as const;
+
+/** What is entered before it is sent. The box is empty whenever the form is. */
+const EMPTY = { terms: EMPTY_TERMS, accepted: false };
 
 /** What the toast says once a proposal is in. The proposal itself stands in the list below. */
 const PROPOSAL_SENT = "Proposal sent. VIS reviews it before it opens.";
@@ -39,21 +42,24 @@ const PROPOSAL_SENT = "Proposal sent. VIS reviews it before it opens.";
  *
  * The API decides what is valid. A `VALIDATION_ERROR` appears on the field it names (one
  * that names `policy_accepted` under the checkbox), `LIMIT_EXCEEDED` above the button,
- * both with the API's message, and the input stays.
+ * both with the API's message, and the input stays. It also stays while the form is away
+ * (`useDraft`): whoever reads the usage policy and comes back finds what was typed.
  * Without an answer the banner stands above the button and the button waits until the
  * list of proposals has been read again: a proposal that arrived is in it.
  *
  * A proposal that was accepted is told with a toast; its row is at the top of the list
- * below. `onSent` is called then; whoever renders the form empties it by giving it another
- * `key`, which also leaves the box unticked: the policy is accepted with every proposal.
+ * below. What was entered is forgotten and `onSent` is called then; whoever renders the form
+ * empties it by giving it another `key`, which also leaves the box unticked: the policy is
+ * accepted with every proposal.
  */
 export function ProposeForm({ onSent }: { onSent?: () => void }) {
   const config = useConfig();
   // A second submit is stopped where it is made, not by what the last render knew.
   const propose = useSubmit(proposeMarketMutation);
-  const [terms, setTerms] = useState<MarketTerms>(EMPTY_TERMS);
-  // The policy is accepted with every proposal: the box is empty whenever the form is.
-  const [accepted, setAccepted] = useState(false);
+  const [{ terms, accepted }, keep, forget] = useDraft<{ terms: MarketTerms; accepted: boolean }>(
+    "propose",
+    EMPTY,
+  );
   const wait = useRetryAfter(propose.error);
   const form = useRef<HTMLFormElement>(null);
 
@@ -80,6 +86,7 @@ export function ProposeForm({ onSent }: { onSent?: () => void }) {
       {
         onSuccess: () => {
           toast(PROPOSAL_SENT);
+          forget();
           onSent?.();
         },
       },
@@ -97,7 +104,7 @@ export function ProposeForm({ onSent }: { onSent?: () => void }) {
       <MarketTermsFields
         value={terms}
         onChange={(next) => {
-          setTerms(next);
+          keep({ terms: next, accepted });
           edited();
         }}
         errors={placed?.fields}
@@ -118,7 +125,7 @@ export function ProposeForm({ onSent }: { onSent?: () => void }) {
       <PolicyCheckbox
         checked={accepted}
         onChange={(next) => {
-          setAccepted(next);
+          keep({ terms, accepted: next });
           edited();
         }}
         error={placed?.fields.policy_accepted}
