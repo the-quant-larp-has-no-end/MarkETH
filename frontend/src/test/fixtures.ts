@@ -235,11 +235,16 @@ export function marketViewer(overrides: Partial<MarketViewer> = {}): MarketViewe
       { amount_cr: "100", allowed: true },
     ],
     buy_slider: { min: 1, max: 100, step: 1 },
+    can_buy: true,
     sell_presets: [
       { outcome: "YES", portion: "HALF", shares: "0", proceeds_cr: "0", allowed: false },
       { outcome: "YES", portion: "ALL", shares: "0", proceeds_cr: "0", allowed: false },
       { outcome: "NO", portion: "HALF", shares: "0", proceeds_cr: "0", allowed: false },
       { outcome: "NO", portion: "ALL", shares: "0", proceeds_cr: "0", allowed: false },
+    ],
+    sell: [
+      { outcome: "YES", slider: null },
+      { outcome: "NO", slider: null },
     ],
     ...overrides,
   };
@@ -285,6 +290,10 @@ export function marketViewerWithPosition(overrides: Partial<MarketViewer> = {}):
       { outcome: "YES", portion: "ALL", shares: "91.645", proceeds_cr: "49.17859", allowed: true },
       { outcome: "NO", portion: "HALF", shares: "0", proceeds_cr: "0", allowed: false },
       { outcome: "NO", portion: "ALL", shares: "0", proceeds_cr: "0", allowed: false },
+    ],
+    sell: [
+      { outcome: "YES", slider: { min: 1, max: 91, step: 1 } },
+      { outcome: "NO", slider: null },
     ],
     ...overrides,
   });
@@ -417,6 +426,7 @@ export function portfolioEntry(overrides: Partial<PortfolioEntry> = {}): Portfol
   return {
     market: marketSummary(),
     holdings: holdings({ shares: "91.645", value_cr: "50.221461" }),
+    entered_at: "2026-10-04T10:00:00Z",
     value_cr: "50.221461",
     cost_cr: "50",
     proceeds_cr: "0",

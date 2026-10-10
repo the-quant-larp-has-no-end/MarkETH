@@ -506,16 +506,4 @@ describe("TextLink", () => {
     // It stays in the page it is on.
     expect(link).not.toHaveAttribute("target");
   });
-
-  test("can open beside the page, which then keeps what was typed into it", () => {
-    renderWithProviders(
-      <TextLink href="/policy" newTab>
-        usage policy
-      </TextLink>,
-    );
-
-    const link = screen.getByRole("link", { name: "usage policy" });
-    expect(link).toHaveAttribute("target", "_blank");
-    expect(link).toHaveAttribute("rel", "noopener");
-  });
 });

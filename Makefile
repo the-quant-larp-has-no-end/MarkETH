@@ -17,6 +17,9 @@
 
 COMPOSE := docker compose
 BACKEND := cd backend &&
+# How many processes share the backend tests. Each one that reaches an integration test
+# starts a Postgres and a Redis of its own, so none shares a database with another.
+TEST_WORKERS ?= 4
 # uv keeps backend/.venv in step with uv.lock by itself; npm needs the nudge. This
 # reinstalls the frontend's dependencies whenever package-lock.json differs from the
 # one they were installed from (the same stamp frontend/Dockerfile uses).
@@ -67,7 +70,7 @@ reset: ## Stop the stack and delete its volumes
 test: test-backend test-frontend ## Backend and frontend tests
 
 test-backend: ## Unit and integration tests (needs Docker for Testcontainers)
-	$(BACKEND) uv run pytest
+	$(BACKEND) uv run pytest --numprocesses $(TEST_WORKERS)
 
 test-scylla: ## The slow ScyllaDB tests
 	$(BACKEND) uv run pytest -m scylla

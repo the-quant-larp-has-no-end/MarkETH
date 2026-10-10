@@ -152,9 +152,14 @@ class AccountService:
 
         1. `positions.list_for_user(user.id)`, grouped by market. Every market with a
            position row is listed, also one whose shares were all sold.
-        2. Load the markets and the resolutions of the settled ones in two queries,
-           whatever the number of markets: `markets.get_many(<market ids>)` and
-           `resolutions.get_many_by_market(<market ids>)`, in that order. A market is
+        2. Load the markets, the resolutions of the settled ones and the instants the
+           user entered in three queries, whatever the number of markets:
+           `markets.get_many(<market ids>)`,
+           `resolutions.get_many_by_market(<market ids>)` and
+           `trades.first_trade_at_by_market(user.id)`, in that order. `entered_at` is
+           the instant of the user's first trade in the market. A position row is
+           written by a trade alone and the trades are read after the positions, so
+           every market listed has one. A market is
            settled when its row says RESOLVED or VOID, and only then is its
            resolution used: a settlement that commits between the two queries shows
            with the next request, whole. Build each entry with `MarketView`:
@@ -181,6 +186,7 @@ class AccountService:
             market_ids = list(by_market)
             markets = await uow.markets.get_many(market_ids)
             resolutions = await uow.resolutions.get_many_by_market(market_ids)
+            entered_at = await uow.trades.first_trade_at_by_market(user.id)
 
         rows: list[_PortfolioRow] = []
         for market_id, positions in by_market.items():
@@ -192,6 +198,7 @@ class AccountService:
             entry = PortfolioEntry(
                 market=self._view.summary(market, now, resolution),
                 holdings=holdings,
+                entered_at=entered_at[market_id],
                 value_cr=to_cr(value_micro),
                 cost_cr=to_cr(sum(position.cost_micro for position in positions)),
                 proceeds_cr=to_cr(sum(position.proceeds_micro for position in positions)),

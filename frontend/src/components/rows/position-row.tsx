@@ -3,6 +3,7 @@
 import { StatusBadge } from "@/components/market/status-badge";
 import { Amount } from "@/components/money";
 import { Link } from "@/components/shell/link";
+import { DateTime } from "@/components/time";
 import type { Holding, PortfolioEntry } from "@/lib/api/schema";
 import { formatShares, isZero } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -23,7 +24,7 @@ export function holdingsText(holdings: readonly Holding[], none: string): string
 
 /**
  * One position of the Portfolio (DESIGN.md §12, §13): the question with the holdings
- * below, and what the position is worth. A market is settled when its `status` is
+ * and "Entered" with `entered_at` below, and what the position is worth. A market is settled when its `status` is
  * RESOLVED or VOID: then the row shows "Paid out" with `payout_cr` or "Refunded" with
  * `refund_cr` in place of `value_cr`, and the status badge. Every figure is the API's;
  * nothing is added up or compared here. The row is one link to its market.
@@ -40,7 +41,15 @@ export function PositionRow({ entry }: { entry: PortfolioEntry }) {
         <RowText
           wrap
           title={market.question}
-          below={holdingsText(entry.holdings, "No shares held")}
+          below={
+            <>
+              {holdingsText(entry.holdings, "No shares held")}
+              {" · "}
+              <span className="whitespace-nowrap">
+                Entered <DateTime value={entry.entered_at} />
+              </span>
+            </>
+          }
         />
         <RowFigure
           below={

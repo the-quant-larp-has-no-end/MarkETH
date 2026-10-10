@@ -1756,6 +1756,11 @@
             ],
             "description": "Where the slider of a buy by amount runs, counted in whole credits: every\nmultiple of `step` from `min` to `max` is a budget a buy passes with, sent as\n`amount_cr`, and `step` is `stake_step_cr` of `GET /config`. Null when the viewer\ncannot buy anything right now: they may not trade, or the stake left or the balance\nis below the smallest buy. An amount typed in between two positions is judged by\n`GET /markets/{id}/quote`."
           },
+          "can_buy": {
+            "description": "Whether any amount is a buy the viewer can make right now: they may trade, and\nthe stake left and the balance both cover the smallest buy (`min_trade_cr` of\n`GET /config`). While it is false no amount passes, whatever is sent as\n`amount_cr`, so the trade sheet takes none.",
+            "title": "Can Buy",
+            "type": "boolean"
+          },
           "can_settle": {
             "description": "Whether the viewer is someone who may resolve or void this market: an admin who\nnever traded it (A.4). An admin who did trade it is answered 403 by both actions,\nand another admin has to settle it. This says who may settle, not when: which\nactions the market's status allows is SPEC §6. False for everybody who is no admin.",
             "title": "Can Settle",
@@ -1843,6 +1848,14 @@
             "description": "What the viewer got back when the market was VOID: their net stake. Null in any\nother status.",
             "title": "Refund Cr"
           },
+          "sell": {
+            "description": "Always two entries, YES then NO.",
+            "items": {
+              "$ref": "#/components/schemas/SellEntry"
+            },
+            "title": "Sell",
+            "type": "array"
+          },
           "sell_presets": {
             "description": "Always four entries: YES half, YES all, NO half, NO all.",
             "items": {
@@ -1890,7 +1903,9 @@
           "buy",
           "stake_presets",
           "buy_slider",
+          "can_buy",
           "sell_presets",
+          "sell",
           "can_trade",
           "cannot_trade_reason",
           "can_settle"
@@ -2185,6 +2200,12 @@
             "title": "Cost Cr",
             "type": "string"
           },
+          "entered_at": {
+            "description": "When the user entered the market: the instant of their first trade there. It\nstays that instant whatever they bought or sold since.",
+            "format": "date-time",
+            "title": "Entered At",
+            "type": "string"
+          },
           "holdings": {
             "description": "Always two entries, YES then NO.",
             "items": {
@@ -2257,6 +2278,7 @@
         "required": [
           "market",
           "holdings",
+          "entered_at",
           "value_cr",
           "cost_cr",
           "proceeds_cr",
@@ -3472,6 +3494,31 @@
         "title": "SaveProfileRequest",
         "type": "object"
       },
+      "SellEntry": {
+        "description": "What the viewer can sell of one outcome by the slider right now (A.11). The\nserver reads it from the holding, so the client compares nothing.",
+        "properties": {
+          "outcome": {
+            "$ref": "#/components/schemas/Outcome"
+          },
+          "slider": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SellSlider"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the slider of a sell of `outcome` runs. Null when the viewer cannot sell\na whole step of it right now: they may not trade, or hold less than the smallest\nsale. A size typed beside the slider is judged by `GET /markets/{id}/quote`."
+          }
+        },
+        "required": [
+          "outcome",
+          "slider"
+        ],
+        "title": "SellEntry",
+        "type": "object"
+      },
       "SellPortion": {
         "description": "How much of a holding a sell button of the trade sheet stands for.",
         "enum": [
@@ -3522,6 +3569,33 @@
           "allowed"
         ],
         "title": "SellPreset",
+        "type": "object"
+      },
+      "SellSlider": {
+        "description": "The slider of a sell on the trade sheet (A.11): the whole shares of one outcome\nbetween which the viewer can sell right now, and the step between two positions.\nJSON integers, as a range input takes them. Every multiple of `step` from `min`\nto `max` is a size a sell passes with: send it as `shares`.",
+        "properties": {
+          "max": {
+            "description": "The largest multiple of `step` the viewer holds of the outcome. Never below\n`min`. What is held beyond it is sold with the ALL entry of `sell_presets`.",
+            "title": "Max",
+            "type": "integer"
+          },
+          "min": {
+            "description": "The smallest multiple of `step` that is a trade: at least `min_trade_shares`.",
+            "title": "Min",
+            "type": "integer"
+          },
+          "step": {
+            "description": "`share_step` of `GET /config`.",
+            "title": "Step",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "min",
+          "max",
+          "step"
+        ],
+        "title": "SellSlider",
         "type": "object"
       },
       "SetUserRoleRequest": {

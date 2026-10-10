@@ -162,6 +162,14 @@ export const stakeChip = (amount: string) =>
 /** What the server said about the amount, where the stake entry shows it. */
 export const stakeRefusal = () =>
   document.querySelector<HTMLElement>("[data-slot=stake-entry] [data-slot=inline-error]");
+/** The shares field of the shares entry of a sell. */
+export const sharesField = () =>
+  screen.getByRole<HTMLInputElement>("textbox", { name: "Number of shares" });
+/** The slider of the shares entry: its thumb is what has the role. */
+export const sharesSlider = () => screen.getByRole("slider", { name: "Whole shares" });
+/** What the server said about the number of shares, where the shares entry shows it. */
+export const sharesRefusal = () =>
+  document.querySelector<HTMLElement>("[data-slot=shares-entry] [data-slot=inline-error]");
 export const sellChip = (portion: "Half" | "All") =>
   screen.getByRole("button", { name: new RegExp(`^${portion}`) });
 export const button = (name: string) => screen.getByRole("button", { name });

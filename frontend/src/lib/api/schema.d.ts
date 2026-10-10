@@ -1841,6 +1841,14 @@ export interface components {
              */
             buy_slider: components["schemas"]["BuySlider"] | null;
             /**
+             * Can Buy
+             * @description Whether any amount is a buy the viewer can make right now: they may trade, and
+             *     the stake left and the balance both cover the smallest buy (`min_trade_cr` of
+             *     `GET /config`). While it is false no amount passes, whatever is sent as
+             *     `amount_cr`, so the trade sheet takes none.
+             */
+            can_buy: boolean;
+            /**
              * Can Settle
              * @description Whether the viewer is someone who may resolve or void this market: an admin who
              *     never traded it (A.4). An admin who did trade it is answered 403 by both actions,
@@ -1887,6 +1895,11 @@ export interface components {
              *     other status.
              */
             refund_cr: string | null;
+            /**
+             * Sell
+             * @description Always two entries, YES then NO.
+             */
+            sell: components["schemas"]["SellEntry"][];
             /**
              * Sell Presets
              * @description Always four entries: YES half, YES all, NO half, NO all.
@@ -2127,6 +2140,13 @@ export interface components {
              * @example 0.25
              */
             cost_cr: string;
+            /**
+             * Entered At
+             * Format: date-time
+             * @description When the user entered the market: the instant of their first trade there. It
+             *     stays that instant whatever they bought or sold since.
+             */
+            entered_at: string;
             /**
              * Holdings
              * @description Always two entries, YES then NO.
@@ -2904,6 +2924,20 @@ export interface components {
             username: string;
         };
         /**
+         * SellEntry
+         * @description What the viewer can sell of one outcome by the slider right now (A.11). The
+         *     server reads it from the holding, so the client compares nothing.
+         */
+        SellEntry: {
+            outcome: components["schemas"]["Outcome"];
+            /**
+             * @description Where the slider of a sell of `outcome` runs. Null when the viewer cannot sell
+             *     a whole step of it right now: they may not trade, or hold less than the smallest
+             *     sale. A size typed beside the slider is judged by `GET /markets/{id}/quote`.
+             */
+            slider: components["schemas"]["SellSlider"] | null;
+        };
+        /**
          * SellPortion
          * @description How much of a holding a sell button of the trade sheet stands for.
          * @enum {string}
@@ -2937,6 +2971,31 @@ export interface components {
              * @example 0.25
              */
             shares: string;
+        };
+        /**
+         * SellSlider
+         * @description The slider of a sell on the trade sheet (A.11): the whole shares of one outcome
+         *     between which the viewer can sell right now, and the step between two positions.
+         *     JSON integers, as a range input takes them. Every multiple of `step` from `min`
+         *     to `max` is a size a sell passes with: send it as `shares`.
+         */
+        SellSlider: {
+            /**
+             * Max
+             * @description The largest multiple of `step` the viewer holds of the outcome. Never below
+             *     `min`. What is held beyond it is sold with the ALL entry of `sell_presets`.
+             */
+            max: number;
+            /**
+             * Min
+             * @description The smallest multiple of `step` that is a trade: at least `min_trade_shares`.
+             */
+            min: number;
+            /**
+             * Step
+             * @description `share_step` of `GET /config`.
+             */
+            step: number;
         };
         /**
          * SetUserRoleRequest
@@ -3515,8 +3574,10 @@ export type RevokeCodesResponse = components['schemas']['RevokeCodesResponse'];
 export type RiskMarketRow = components['schemas']['RiskMarketRow'];
 export type RiskResponse = components['schemas']['RiskResponse'];
 export type SaveProfileRequest = components['schemas']['SaveProfileRequest'];
+export type SellEntry = components['schemas']['SellEntry'];
 export type SellPortion = components['schemas']['SellPortion'];
 export type SellPreset = components['schemas']['SellPreset'];
+export type SellSlider = components['schemas']['SellSlider'];
 export type SetUserRoleRequest = components['schemas']['SetUserRoleRequest'];
 export type SortOrder = components['schemas']['SortOrder'];
 export type StakePreset = components['schemas']['StakePreset'];

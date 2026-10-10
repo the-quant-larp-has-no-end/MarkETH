@@ -116,14 +116,13 @@ describe("the form", () => {
     expect(screen.queryByText(/1386\.29|693\.14|346\.57/)).not.toBeInTheDocument();
   });
 
-  test("ends with the usage-policy checkbox, unticked, whose link opens the policy in a tab of its own", async () => {
+  test("ends with the usage-policy checkbox, unticked, whose link opens the policy in the same tab", async () => {
     const { user } = renderWithProviders(<ProposeForm />);
 
     expect(policy()).not.toBeChecked();
     const link = screen.getByRole("link", { name: "usage policy" });
     expect(link).toHaveAttribute("href", "/policy");
-    expect(link).toHaveAttribute("target", "_blank");
-    expect(link).toHaveAccessibleDescription("Opens in another tab.");
+    expect(link).not.toHaveAttribute("target");
 
     // A tap on the text ticks the box; the link is a target of its own.
     await user.click(screen.getByText("I accept the"));

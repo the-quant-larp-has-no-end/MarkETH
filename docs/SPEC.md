@@ -126,6 +126,8 @@ Each user may have at most 100 CR at stake per market (`MAX_STAKE_PER_USER_MARKE
 - A buy is rejected with `LIMIT_EXCEEDED` if the net stake after the trade would exceed `MAX_STAKE_PER_USER_MARKET`.
 - Selling is always allowed and lowers the net stake, so a user can sell and buy again up to 100 CR net.
 - The trade sheet offers the buy buttons `TRADE_STAKE_PRESETS_CR=25,50,100`, a slider with a number field, and shows how much stake is left in this market. The API says where the slider runs for the viewer: `buy_slider` of the market detail is `{min, max, step}` in whole credits. The step is `TRADE_STAKE_STEP_CR=1`, `min` the smallest multiple of the step that is a trade, `max` the largest multiple that both the stake left and the balance cover; it is null when the viewer cannot buy.
+- Once the limit is reached the trade sheet takes no amount. `can_buy` of the market detail says whether any amount is a buy the viewer can make right now: they may trade, and the stake left and the balance both cover the smallest buy (`MIN_TRADE_CR`). While it is false the slider, the number field and the buy buttons are switched off and no quote is asked; a sale lowers the net stake and makes it true again. A sale needs no such answer: selling is offered for an outcome exactly while the viewer holds a sale of it.
+- The trade sheet offers the same for a sale: a slider with a number field for the shares to sell, and the sell buttons for half and all of the holding. `sell` of the market detail says per outcome where that slider runs, `{min, max, step}` in whole shares. The step is `TRADE_SHARE_STEP=1`, `min` the smallest multiple of the step that is a trade (`MIN_TRADE_SHARES`), `max` the largest multiple the viewer holds of the outcome; it is null when the viewer holds less than that or cannot trade. What is held beyond a whole share is sold with the button for all.
 - A quote is about the caller. `GET /markets/{market_id}/quote` answers with the figures of a trade the caller could make, and otherwise with the error the trade would get, so an amount somebody types is judged by the server (A.4).
 
 ### Formulas
@@ -400,7 +402,7 @@ FastAPI with Pydantic models; `backend/openapi.json` is the contract, and the fr
 | --- | --- | --- | --- |
 | GET | `/me` | MEMBER | Profile, role, balance, `can_get_voucher`, next monthly grant |
 | GET | `/markets` | MEMBER | List by effective status (`status`, repeatable) with p\_yes and volume |
-| GET | `/markets/{market_id}` | MEMBER | Details, rules, deadline, price, and the viewer's side: position, stake left, buy buttons, slider, sell buttons |
+| GET | `/markets/{market_id}` | MEMBER | Details, rules, deadline, price, and the viewer's side: position, stake left, buy buttons, slider, sell buttons, sell slider |
 | GET | `/markets/{market_id}/quote` | MEMBER | Query `side, outcome, amount_cr or shares`; returns cost, shares, average price, p\_after, quote\_version, or the error the trade would get |
 | POST | `/markets/{market_id}/trades` | MEMBER | Idempotent trade (section 8) |
 | GET | `/markets/{market_id}/history` | MEMBER | Chart data, Scylla with Postgres fallback |
@@ -473,8 +475,8 @@ Next.js with TypeScript, mobile-first; the frontend only shows numbers the serve
 | Usage policy | The rules of MarkETH on one page |
 | Markets | Cards with question, YES %, close date |
 | Market detail | Price, live chart, rules, deadline, own position, stake left |
-| Trade sheet | Bottom sheet: YES/NO toggle, the buy buttons, slider and number field, live quote (`QUOTE_DEBOUNCE_MS=300`) showing shares, average price and the probability after the trade, Confirm |
-| Portfolio | Open positions, value at current price, resolved results |
+| Trade sheet | Bottom sheet: YES/NO toggle, the buy buttons, slider and number field, when selling the sell buttons, slider and shares field, live quote (`QUOTE_DEBOUNCE_MS=300`) showing shares, average price and the probability after the trade, Confirm |
+| Portfolio | Open positions, when each was entered, value at current price, resolved results |
 | Wallet | Balance, ledger, "Redeem code" (typed or camera QR), getting a voucher for a product and its QR |
 | Leaderboard | The ranking by credits, win rate, trades or payout ratio, with its filters |
 | Propose market | Form with all required fields |
@@ -750,7 +752,7 @@ Negative or zero inputs raise `ValueError`. So does a b too large for the precis
 - On screen the unit is called a "token" and is shown with a coffee-bean icon; "credit", "CR" and `*_cr` are its names in the API, the database and this spec. The logo (a cup with a rising arrow, alone and with the name) and the token icon are PNGs in `frontend/public/brand/`, derived from the originals in `frontend/design/`.
 - The design direction is Polymarket with playful, gamified ETH aspects; `frontend/DESIGN.md` lists what a generic startup or SaaS layout looks like and forbids it, gradients included. The leaderboard has pixel trophies for the top three.
 - The frontend reads no environment variables. Tunables come from `GET /api/config`. The web server has no identity and cannot reach the API: every page is a static shell, and all data is fetched in the browser.
-- The server owns every number and every decision. Stake presets come from the market detail response with an `allowed` flag each, so the UI never compares amounts itself. So do the bounds of the buy slider, and the sell presets: for each outcome, half of the viewer's holding (rounded down to a millionth of a share) and all of it, as the number of shares to send, with an `allowed` flag. The wallet enables getting a voucher from `can_get_voucher` in `GET /me` and offers each product from its `affordable`.
+- The server owns every number and every decision. Stake presets come from the market detail response with an `allowed` flag each, so the UI never compares amounts itself. So do the bounds of the buy slider, the bounds of the sell slider of each outcome (`sell`), and the sell presets: for each outcome, half of the viewer's holding (rounded down to a millionth of a share) and all of it, as the number of shares to send, with an `allowed` flag. The wallet enables getting a voucher from `can_get_voucher` in `GET /me` and offers each product from its `affordable`.
 - A 401 whose body has no `code` is the portal's and means its sign-in has ended: the page reloads once, which leads through the sign-in and back.
 - A submitted trade keeps its serialised body and its Idempotency-Key until an answer says what became of it: a 2xx, or a 4xx other than 429. Any 5xx, any 429, the portal's 401 and a network error keep both, and "Try again" sends the stored body with the stored key.
 - The chart is drawn up to the `until` the server names, not up to a clock of the device.

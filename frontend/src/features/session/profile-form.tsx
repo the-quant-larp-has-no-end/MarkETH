@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { type FormEvent, useEffect, useRef } from "react";
 
 import { SubmitError } from "@/components/feedback";
 import { PickerField, revealFirstInvalid, TextField } from "@/components/form";
@@ -11,7 +11,7 @@ import { saveProfileMutation } from "@/lib/api/mutations";
 import type { DegreeLevel, MeResponse, ProfileSavedResponse } from "@/lib/api/schema";
 import { useConfig } from "@/lib/api/session";
 import { useSubmit } from "@/lib/api/submit";
-import { useRetryAfter } from "@/lib/hooks";
+import { useDraft, useRetryAfter } from "@/lib/hooks";
 
 const FIELDS = ["username", "degree_level", "degree_programme", "policy_accepted"] as const;
 
@@ -49,6 +49,9 @@ export type ProfileFormProps = {
  * with the API's message, and the other fields keep their input; one that names
  * `policy_accepted` stands under the checkbox. Without an answer, or with a 503, the
  * banner stands above the button and the input stays; saving again is safe.
+ *
+ * The set-up screen keeps what is entered while it is away (`useDraft`): whoever reads the
+ * usage policy and comes back finds the fields and the box as they were left.
  */
 export function ProfileForm({
   initial,
@@ -61,10 +64,18 @@ export function ProfileForm({
   const config = useConfig();
   // A second submit is stopped where it is made, not by what the last render knew.
   const save = useSubmit(saveProfileMutation);
-  const [username, setUsername] = useState(initial?.username ?? "");
-  const [level, setLevel] = useState<DegreeLevel | "">(initial?.degree_level ?? "");
-  const [programme, setProgramme] = useState(initial?.degree_programme ?? "");
-  const [accepted, setAccepted] = useState(false);
+  const [entered, keep, forget] = useDraft<{
+    username: string;
+    level: DegreeLevel | "";
+    programme: string;
+    accepted: boolean;
+  }>(creating ? "profile-setup" : null, {
+    username: initial?.username ?? "",
+    level: initial?.degree_level ?? "",
+    programme: initial?.degree_programme ?? "",
+    accepted: false,
+  });
+  const { username, level, programme, accepted } = entered;
   const wait = useRetryAfter(save.error);
   const form = useRef<HTMLFormElement>(null);
 
@@ -93,7 +104,10 @@ export function ProfileForm({
     const profile = { username, degree_level: level, degree_programme: programme };
     // The box is ticked, or the form would not be `filled`: the save says what it shows.
     save.mutate(creating ? { ...profile, policy_accepted: true } : profile, {
-      onSuccess: onSaved,
+      onSuccess: (saved) => {
+        forget();
+        onSaved?.(saved);
+      },
     });
   };
 
@@ -111,7 +125,10 @@ export function ProfileForm({
         value={username}
         // What the field shows is what is sent: lower case, and at most as long as allowed.
         onChange={(event) => {
-          setUsername(event.target.value.toLowerCase().slice(0, config.username_max_length));
+          keep({
+            ...entered,
+            username: event.target.value.toLowerCase().slice(0, config.username_max_length),
+          });
           edited();
         }}
         maxLength={config.username_max_length}
@@ -127,9 +144,8 @@ export function ProfileForm({
         name="degree_level"
         value={level}
         onChange={(next) => {
-          setLevel(next as DegreeLevel);
           // A programme belongs to its level.
-          setProgramme("");
+          keep({ ...entered, level: next as DegreeLevel, programme: "" });
           edited();
         }}
         options={config.degrees.map((degree) => ({ value: degree.level, label: degree.name }))}
@@ -143,7 +159,7 @@ export function ProfileForm({
         name="degree_programme"
         value={programme}
         onChange={(next) => {
-          setProgramme(next);
+          keep({ ...entered, programme: next });
           edited();
         }}
         options={programmes.map((label) => ({ value: label, label }))}
@@ -162,7 +178,7 @@ export function ProfileForm({
         <PolicyCheckbox
           checked={accepted}
           onChange={(next) => {
-            setAccepted(next);
+            keep({ ...entered, accepted: next });
             edited();
           }}
           error={placed?.fields.policy_accepted}

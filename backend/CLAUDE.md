@@ -4,6 +4,7 @@ FastAPI API (`app.main:create_app`) and the outbox relay (`python -m app.relay`)
 
 ```
 uv run pytest                      # unit + integration (needs Docker for Testcontainers)
+uv run pytest --numprocesses 4     # the same in four processes, as `make test-backend` runs it
 uv run pytest -m scylla            # the slow ScyllaDB tests
 uv run ruff check . && uv run ruff format .
 uv run mypy                        # strict

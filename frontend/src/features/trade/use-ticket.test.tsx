@@ -20,6 +20,7 @@ const buy: Order = {
   stakePresets: viewer.stake_presets,
   buySlider: viewer.buy_slider,
   sellPresets: viewer.sell_presets,
+  sell: viewer.sell,
 };
 
 /** The hook as the surface of a sheet uses it, beside the store its ticket writes to. */
