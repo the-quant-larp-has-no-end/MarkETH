@@ -14,6 +14,7 @@ A mobile-first prediction market for ETH Zurich students. Users trade YES/NO sha
 | `compose.yaml`, `compose.override.yaml` | The whole stack. `compose.yaml` alone is what is deployed; the override adds hot reload, published ports and the development identity |
 | `infra/nginx/` | Reverse proxy template, and in `infra/nginx/dev/` the stand-in for the portal's sign-in |
 | `infra/deploy/` | What the deployed stack sets differently, and the backup, check and smoke scripts |
+| `.github/workflows/` | `ci.yml`, the checks of every pull request and of main, and `deploy.yml`, which has the VM deploy itself. Both run on the team's runner, which is the VM, and hold no secret |
 | `backend/` | FastAPI API, the outbox relay and the scripts. Rules in `backend/CLAUDE.md` |
 | `frontend/` | Next.js app. Rules in `frontend/CLAUDE.md`, design system in `frontend/DESIGN.md` |
 | `Makefile` | The commands below |
@@ -36,7 +37,7 @@ Run from the repository root. `make` alone lists them.
 | `make deploy-status` / `make deploy-logs` | Containers, memory and disk on the VM / tail its logs |
 | `make deploy-smoke` / `make deploy-wipe` / `make deploy-rollback` | Walk an empty database on the VM / dump and delete its databases / go back to the organizers' template |
 
-`make deploy` runs `deploy-backup`, `deploy-sync`, `deploy-env`, `deploy-build`, `deploy-pull`, `deploy-migrate`, `deploy-stop-template`, `deploy-up` and `deploy-check` in that order; `docs/SERVER_INFRASTRUCTURE.md` §14 walks through them.
+`make deploy` runs `deploy-backup`, `deploy-sync`, `deploy-env`, `deploy-build`, `deploy-pull`, `deploy-migrate`, `deploy-stop-template`, `deploy-up` and `deploy-check` in that order; `docs/SERVER_INFRASTRUCTURE.md` §14 walks through them. The Deploy workflow runs the same targets on the VM itself (`make deploy DEPLOY_LOCAL=1`).
 
 ## Golden rules
 
