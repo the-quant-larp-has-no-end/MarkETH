@@ -6,10 +6,10 @@ implementation. Three groups:
 * Rules the other two files leave open: what a trader keeps after any sequence of trades
   that ends without shares, split trades, the closed forms of SPEC §4 beyond |q|/b = 50,
   and what a buy by budget charges.
-* Knife-edge inputs, found by search, on which the amount lies within 10^-18 of a whole
-  micro-unit. They are rounded correctly by every precision the module accepts for that
-  b, from 45 digits up, and by the smallest `Settings` accepts. With 28 to 32 digits
-  they were not; such a precision is now refused for that b.
+* Knife-edge inputs, found by search at b = 1,442.69 CR, on which the amount lies within
+  10^-18 of a whole micro-unit. They are rounded correctly by every precision the module
+  accepts for that b, from 45 digits up, and by the smallest `Settings` accepts. With 28
+  to 32 digits they were not; such a precision is refused for that b.
 * Arguments of the wrong type, which were priced instead of rejected: any outcome that
   was not the `Outcome.YES` object traded NO, and a `Decimal` size gave fractional
   micro-units.
@@ -24,14 +24,13 @@ from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 from app.core.config import PricingSettings
-from app.core.enums import Outcome, ResolutionOutcome
+from app.core.enums import MarketTier, Outcome, ResolutionOutcome
 from app.core.units import MICRO, ceil_micro, floor_micro
 from app.pricing import lmsr
 from app.pricing.lmsr import MarketState, TradeQuote
+from tests.support.economy import MARKET_B, MAX_B, MIN_TRADE_SHARES, TIER_B
 
 CR = MICRO
-MAX_B = 1_442_695_040
-"""b of the largest market budget, 1,000 CR (SPEC §4 "Choosing b")."""
 
 checks = settings(max_examples=200, deadline=None)
 
@@ -51,9 +50,11 @@ sizes = st.one_of(
     st.integers(min_value=1, max_value=1000 * CR),
 )
 allowed_b = st.one_of(
-    st.sampled_from((CR, 5 * CR, 10 * CR, 20 * CR, MAX_B)),
+    st.sampled_from((CR, *MARKET_B)),
     st.integers(min_value=CR, max_value=MAX_B),
 )
+"""A b a market can have: 1 CR, a tier's or the largest (the b of MAX_MARKET_BUDGET) by
+name, or any in between."""
 
 
 @st.composite
@@ -256,8 +257,9 @@ def test_closed_forms_of_spec_section_4_hold_far_beyond_q_over_b_of_50(
 # shares, m = 1 - e^(-c/b). Far behind, x creeps towards its limit by about 1/b per
 # µshare of g, so whole runs of g put x, and the cost of the shares around it, next to a
 # whole number. The error of a `precision`-digit m is magnified by b/m, about b²/c, which
-# is 2 · 10^18 / c at the largest b. Every state below is inside SPEC §4: b at most
-# 1,442.695040 CR and |q|/b below 50. The expected values come from 400 digits.
+# is 2 · 10^18 / c at b = 1,442.69 CR, where these were found. Every state below is a
+# market a budget of 1,000 CR allows, with |q|/b below 50. The expected values come from
+# 400 digits.
 
 KNIFE_EDGES = [
     pytest.param(
@@ -272,7 +274,7 @@ KNIFE_EDGES = [
         MarketState(q_yes=0, q_no=61_070_925_371, b=1_442_609_484),
         10_001,
         (43_933_769_700, 10_001),
-        id="budget just above MIN_TRADE_CR, x = whole + 3.2e-14",
+        id="budget of 0.010001 CR, x = whole + 3.2e-14",
     ),
     pytest.param(
         lmsr.quote_buy_for_budget,
@@ -429,17 +431,20 @@ def test_b_and_budget_conversions_take_integers_only(
 
 
 def test_a_sale_of_all_but_worthless_shares_returns_zero_proceeds() -> None:
-    """Below a price of 10^-4 a sale of 0.01 shares rounds down to 0 µCR: about 43 full
-    stakes on the other side at the tight tier. "Selling is always allowed" (SPEC §4),
-    so this is a quote like any other, and the trade books no journal entry for it."""
-    lopsided = MarketState(q_yes=2 * CR, q_no=150 * CR, b=10 * CR)
+    """Where the other outcome leads by 40 times b, a share is priced below 10^-17 of a
+    credit, and a sale of the smallest size, MIN_TRADE_SHARES, rounds down to 0 µCR.
+    "Selling is always allowed" (SPEC §4), so this is a quote like any other, and the
+    trade books no journal entry for it."""
+    b = TIER_B[MarketTier.TIGHT]
+    held = 2 * MIN_TRADE_SHARES
+    lopsided = MarketState(q_yes=held, q_no=held + 40 * b, b=b)
 
-    for shares in (10_000, 2 * CR):
+    for shares in (MIN_TRADE_SHARES, held):
         quote = lmsr.quote_sell_shares(lopsided, Outcome.YES, shares)
 
         assert quote.amount_micro == 0
         assert quote.shares_micro == shares
-        assert quote.after.q_yes == 2 * CR - shares
+        assert quote.after.q_yes == held - shares
         assert quote.p_yes_before_micro == 0
 
 

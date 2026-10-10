@@ -5,6 +5,9 @@
 # Tests, linters and the API client generator run on the host through uv and npm; the
 # integration tests start their own databases with Testcontainers.
 #
+# The deploy-* targets act on the VM named in .env (DEPLOY_SSH_HOST, DEPLOY_PATH) over
+# SSH; docs/SERVER_INFRASTRUCTURE.md §14 walks through them.
+#
 # Kept to what GNU Make 3.81 understands, the version macOS ships.
 
 .DEFAULT_GOAL := help
@@ -12,23 +15,27 @@
 COMPOSE := docker compose
 BACKEND := cd backend &&
 # uv keeps backend/.venv in step with uv.lock by itself; npm needs the nudge. This
-# reinstalls the frontend's dependencies whenever package-lock.json is no longer the
+# reinstalls the frontend's dependencies whenever package-lock.json differs from the
 # one they were installed from (the same stamp frontend/Dockerfile uses).
 FRONTEND := cd frontend && { cmp -s package-lock.json node_modules/.installed-lock \
 	|| { npm ci && cp package-lock.json node_modules/.installed-lock; }; } &&
 
 .PHONY: help up down logs migrate seed test test-backend test-frontend test-scylla \
-        lint fmt api-client psql redis-cli cqlsh reset
+        lint fmt api-client psql redis-cli cqlsh reset \
+        deploy deploy-guard deploy-backup deploy-sync deploy-env deploy-build deploy-pull \
+        deploy-migrate deploy-stop-template deploy-up deploy-check deploy-smoke deploy-wipe \
+        deploy-rollback deploy-status deploy-logs
 
 help: ## List these commands
-	@awk 'BEGIN { FS = ":.*## " } /^[a-z-]+:.*## / { printf "  make %-14s %s\n", $$1, $$2 }' Makefile
+	@awk 'BEGIN { FS = ":.*## " } /^[a-z-]+:.*## / { printf "  make %-21s %s\n", $$1, $$2 }' Makefile
 
 # --- Stack --------------------------------------------------------------------
 
 up: ## Build and start the stack in the background
 	$(COMPOSE) up --build --detach
-	@echo "App:  http://localhost:$$($(COMPOSE) port nginx 80 | sed 's/.*://')"
-	@echo "Mail: http://localhost:$$($(COMPOSE) port mailpit 8025 | sed 's/.*://')"
+	@port=$$($(COMPOSE) port nginx 80 | sed 's/.*://') \
+		&& echo "App:      http://localhost:$$port" \
+		&& echo "Identity: http://localhost:$$port/__dev/identity"
 
 down: ## Stop the stack; the database volumes stay
 	$(COMPOSE) down --remove-orphans
@@ -36,7 +43,7 @@ down: ## Stop the stack; the database volumes stay
 logs: ## Tail the logs of every service
 	$(COMPOSE) logs --follow --tail=100
 
-migrate: ## Apply the Alembic migrations (as the owner role)
+migrate: ## Build the schema as the owner role and check that it is the one of this code
 	$(COMPOSE) run --rm migrate
 
 seed: ## Load demo data (the stack must be up)
@@ -82,3 +89,129 @@ redis-cli: ## Redis shell on the database the app uses
 
 cqlsh: ## ScyllaDB shell
 	$(COMPOSE) exec scylla cqlsh
+
+# --- Deployment (SPEC A.10, docs/SERVER_INFRASTRUCTURE.md §14) -----------------
+#
+# The VM runs compose.yaml alone, from a mirror of this tree under its home directory.
+# Images are built there (the laptop has another CPU architecture), and its .env is
+# rendered there, so no secret ever leaves it.
+
+deploy_setting = $(shell sed -n 's/^$(1)=//p' .env)
+DEPLOY_SSH_HOST = $(call deploy_setting,DEPLOY_SSH_HOST)
+DEPLOY_PATH = $(call deploy_setting,DEPLOY_PATH)
+# The Compose project, which prefixes the names of its images and volumes.
+STACK = $(shell sed -n 's/^name: *//p' compose.yaml)
+DATABASE_VOLUME = $(STACK)_postgres-data
+# What only the VM knows (two passwords, who is admin and barista): a file beside the tree.
+VM_OWN_ENV = $$HOME/$(DEPLOY_PATH).env
+# The organizers' template, the other project that publishes the port the portal
+# forwards to. It is stopped and started, its files are never touched.
+TEMPLATE_PATH := template
+ON_VM = ssh -o BatchMode=yes $(DEPLOY_SSH_HOST)
+VM_COMPOSE = cd $(DEPLOY_PATH) && docker compose -f compose.yaml
+# ADMIN_EMAILS=... and BARISTA_EMAILS=... given to make set the role lists on the VM;
+# left out, the VM keeps the lists it has.
+ROLE_LISTS = $(if $(findstring command line,$(origin ADMIN_EMAILS)),--admins "$(ADMIN_EMAILS)") \
+             $(if $(findstring command line,$(origin BARISTA_EMAILS)),--baristas "$(BARISTA_EMAILS)")
+
+# The sync deletes whatever the VM's directory holds beyond this tree, so the directory
+# must be one of its own: a plain name, not the home directory, not the template.
+deploy-guard:
+	@case "$(DEPLOY_SSH_HOST)" in \
+		"") echo "Set DEPLOY_SSH_HOST in .env (see .example.env)."; exit 1;; \
+	esac
+	@case "$(DEPLOY_PATH)" in \
+		""|$(TEMPLATE_PATH)|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) \
+			echo "DEPLOY_PATH in .env must be a plain directory name (letters, digits, '.', '_', '-'," \
+				"starting with a letter or digit) other than '$(TEMPLATE_PATH)'. It is '$(DEPLOY_PATH)'."; \
+			exit 1;; \
+	esac
+
+deploy: deploy-guard ## Back up, mirror the tree to the VM, build, migrate, switch over, check
+	@$(MAKE) --no-print-directory deploy-backup
+	@$(MAKE) --no-print-directory deploy-sync
+	@$(MAKE) --no-print-directory deploy-env
+	@$(MAKE) --no-print-directory deploy-build
+	@$(MAKE) --no-print-directory deploy-pull
+	@$(MAKE) --no-print-directory deploy-migrate
+	@$(MAKE) --no-print-directory deploy-stop-template
+	@$(MAKE) --no-print-directory deploy-up
+	@$(MAKE) --no-print-directory deploy-check
+
+deploy-backup: deploy-guard ## Dump the VM's database beside the tree, if there is one
+	@echo "==> $(DEPLOY_SSH_HOST): dump the database into ~/$(DEPLOY_PATH)-backups, if a database exists"
+	$(ON_VM) 'sh -s -- $(DEPLOY_PATH) $(DATABASE_VOLUME)' < infra/deploy/backup.sh
+
+deploy-sync: deploy-guard ## Make ~/DEPLOY_PATH on the VM a mirror of this tree
+	@echo "==> $(DEPLOY_SSH_HOST): make ~/$(DEPLOY_PATH) a mirror of this tree; whatever else is in it is deleted"
+	rsync --archive --compress --delete --rsh='ssh -o BatchMode=yes' \
+		--exclude-from=infra/deploy/rsync-exclude ./ '$(DEPLOY_SSH_HOST):$(DEPLOY_PATH)/'
+	$(ON_VM) 'rm -rf $(DEPLOY_PATH)/compose.override.yaml $(DEPLOY_PATH)/infra/nginx/dev'
+
+deploy-env: deploy-guard ## Render the VM's .env there: [ADMIN_EMAILS=<id>,<id>] [BARISTA_EMAILS=<id>]
+	@echo "==> $(DEPLOY_SSH_HOST): render ~/$(DEPLOY_PATH)/.env from .example.env, infra/deploy/env.production and ~/$(DEPLOY_PATH).env"
+	$(ON_VM) 'cd $(DEPLOY_PATH)/backend && python3 -B -m scripts.production_env \
+		--example ../.example.env --production ../infra/deploy/env.production \
+		--own "$(VM_OWN_ENV)" --output ../.env --postgres-volume $(DATABASE_VOLUME) $(strip $(ROLE_LISTS))'
+	$(ON_VM) '$(VM_COMPOSE) config --quiet'
+
+deploy-build: deploy-guard ## Build the images on the VM; the ones in use stay tagged "previous"
+	@echo "==> $(DEPLOY_SSH_HOST): tag the images in use as 'previous', then build the images of this tree"
+	$(ON_VM) '$(VM_COMPOSE) config --images | grep "^$(STACK)-" | while read -r image; do \
+		if docker image inspect "$$image" > /dev/null 2>&1; then docker tag "$$image" "$${image%%:*}:previous"; fi; \
+		done'
+	$(ON_VM) '$(VM_COMPOSE) build'
+
+deploy-pull: deploy-guard ## Pull the store and proxy images on the VM
+	@echo "==> $(DEPLOY_SSH_HOST): pull the images this stack does not build"
+	$(ON_VM) '$(VM_COMPOSE) pull --ignore-buildable'
+
+deploy-migrate: deploy-guard ## Build or verify the schema on the VM with the image just built
+	@echo "==> $(DEPLOY_SSH_HOST): run the migrate image once; a failure stops the deployment here, with whatever served before still serving"
+	$(ON_VM) '$(VM_COMPOSE) run --rm migrate'
+
+deploy-stop-template: deploy-guard ## Stop the organizers' template on the VM; its files stay
+	@echo "==> $(DEPLOY_SSH_HOST): docker compose down of ~/$(TEMPLATE_PATH), which frees the published port; its files and images stay"
+	$(ON_VM) 'if [ -f $(TEMPLATE_PATH)/docker-compose.yml ]; then cd $(TEMPLATE_PATH) && docker compose down; \
+		else echo "No template project in ~/$(TEMPLATE_PATH)."; fi'
+
+deploy-up: deploy-guard ## Start the stack on the VM and load the proxy configuration
+	@echo "==> $(DEPLOY_SSH_HOST): start the stack and wait until it is healthy, then recreate nginx so it reads the proxy files of this tree"
+	$(ON_VM) '$(VM_COMPOSE) up --detach --wait --no-build --remove-orphans'
+	$(ON_VM) '$(VM_COMPOSE) up --detach --wait --no-build --no-deps --force-recreate nginx'
+
+deploy-check: deploy-guard ## Check the stack on the VM, and from here that its port is closed
+	@echo "==> $(DEPLOY_SSH_HOST): check the running stack (infra/deploy/check.sh); no data is changed"
+	$(ON_VM) 'cd $(DEPLOY_PATH) && sh infra/deploy/check.sh'
+	@echo "==> from this machine: the VM's public address must not answer on the published port"
+	@endpoint=$$($(ON_VM) 'cd $(DEPLOY_PATH) && sh infra/deploy/check.sh public-endpoint') \
+		&& sh infra/deploy/check.sh outside $$endpoint
+
+deploy-smoke: deploy-guard ## Walk an empty database on the VM from sign-up to a redeemed voucher: CONFIRM=smoke
+	@test "$(CONFIRM)" = "smoke" || { \
+		echo "This registers made-up people and the first admin and writes a market, trades and a voucher into the VM's database."; \
+		echo "Run it on an empty database and wipe it afterwards: make deploy-smoke CONFIRM=smoke"; exit 1; }
+	@echo "==> $(DEPLOY_SSH_HOST): walk the stack through infra/deploy/smoke.sh; this writes test data"
+	$(ON_VM) 'cd $(DEPLOY_PATH) && sh infra/deploy/smoke.sh'
+
+deploy-wipe: deploy-guard ## Dump, then delete every database on the VM: CONFIRM=wipe
+	@test "$(CONFIRM)" = "wipe" || { \
+		echo "This stops the stack on the VM and deletes every user, balance, market, trade and voucher."; \
+		echo "A dump is taken first. Run: make deploy-wipe CONFIRM=wipe"; exit 1; }
+	@$(MAKE) --no-print-directory deploy-backup
+	@echo "==> $(DEPLOY_SSH_HOST): stop the stack and delete its volumes"
+	$(ON_VM) '$(VM_COMPOSE) down --volumes --remove-orphans'
+	@echo "The VM serves nothing now. Start it empty with: make deploy"
+
+deploy-rollback: deploy-guard ## Stop MarkETH on the VM (its data stays) and start the template again
+	@echo "==> $(DEPLOY_SSH_HOST): stop the MarkETH containers (volumes stay), then start ~/$(TEMPLATE_PATH)"
+	$(ON_VM) 'if [ -f $(DEPLOY_PATH)/compose.yaml ]; then $(VM_COMPOSE) stop; fi'
+	$(ON_VM) 'cd $(TEMPLATE_PATH) && docker compose up --detach'
+
+deploy-status: deploy-guard ## Containers, memory and disk on the VM
+	@echo "==> $(DEPLOY_SSH_HOST): containers, memory and disk"
+	$(ON_VM) '$(VM_COMPOSE) ps --all; docker stats --no-stream --format "table {{.Name}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.CPUPerc}}"; free -m; df -h /'
+
+deploy-logs: deploy-guard ## Tail the logs of the stack on the VM
+	@echo "==> $(DEPLOY_SSH_HOST): follow the logs of every service (Ctrl-C to leave)"
+	$(ON_VM) '$(VM_COMPOSE) logs --follow --tail=100'

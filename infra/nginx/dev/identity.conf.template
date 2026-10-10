@@ -1,0 +1,37 @@
+# Development stand-in for the portal's sign-in (SPEC A.10). Nobody signs in on a laptop,
+# so this file tells the API who is calling.
+#
+# Only compose.override.yaml mounts this directory. The nginx image renders this template
+# to /etc/nginx/dev/identity.conf, and the server block of conf.d/default.conf includes
+# what it finds there. The deployed stack runs compose.yaml alone, which mounts no such
+# directory, and `make deploy` keeps this one off the VM.
+#
+# The caller is whoever the cookies dev_user_id and dev_user_name name; the page at
+# /__dev/identity stores them. A browser without them is DEV_USER_ID and DEV_USER_NAME of
+# .env. The name is percent-encoded in both places, as the portal sends it.
+set $dev_user_id   $cookie_dev_user_id;
+set $dev_user_name $cookie_dev_user_name;
+if ($cookie_dev_user_id = "") {
+    set $dev_user_id   "${NGINX_DEV_USER_ID}";
+    set $dev_user_name "${NGINX_DEV_USER_NAME}";
+}
+
+# Always both, whatever the request says about itself: an X-User-Id or X-User-Name sent
+# by the client is replaced here and never reaches the API. The two lines join the
+# request headers of the server block, which are the API's. The location of the web app
+# has a list of its own and takes both headers out, here as in the deployed stack.
+proxy_set_header X-User-Id   $dev_user_id;
+proxy_set_header X-User-Name $dev_user_name;
+
+# The page that picks the caller. The path has no extension to take a type from.
+location = /__dev/identity {
+    default_type text/html;
+    alias /etc/nginx/templates/dev/identity.html;
+}
+
+# Who the proxy names right now, for that page: the id on the first line, the
+# percent-encoded name on the second.
+location = /__dev/identity/current {
+    default_type text/plain;
+    return 200 "$dev_user_id\n$dev_user_name\n";
+}

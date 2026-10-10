@@ -1,7 +1,9 @@
 """Worked examples for the LMSR module (SPEC §4, §12 "Pricing" and "Stake limit").
 
-Every number here can be checked by hand or against the table in SPEC §4 "Choosing b".
-The rules that must hold for every input are in `test_lmsr_properties.py`.
+They are set in the economy of `.env`: a market of the DEFAULT tier, and a buy for the
+whole of MAX_STAKE_PER_USER_MARKET. Every number here can be checked by hand or against
+the table in SPEC §4 "Choosing b". The rules that must hold for every input are in
+`test_lmsr_properties.py`.
 """
 
 from collections.abc import Callable
@@ -10,16 +12,21 @@ from fractions import Fraction
 
 import pytest
 
-from app.core.enums import Outcome, TradeSide
-from app.core.units import MICRO, display_probability, to_cr, to_micro
+from app.core.config import Settings
+from app.core.enums import MarketTier, Outcome, TradeSide
+from app.core.units import MICRO, ceil_micro, probability_to_micro
 from app.pricing import lmsr
 from app.pricing.lmsr import MarketState, TradeQuote
+from tests.support.economy import MARKET_B, MAX_B, MAX_MARKET_BUDGET
 
 CR = MICRO
-DEFAULT_B = 10 * CR
+DEFAULT_B = 1000 * CR
+"""b of the DEFAULT tier, LMSR_TIER_DEFAULT_B."""
+FULL_STAKE = 100 * CR
+"""MAX_STAKE_PER_USER_MARKET: the most a user may have at stake in one market."""
 FRESH = MarketState(q_yes=0, q_no=0, b=DEFAULT_B)
 BIGINT_MAX = 2**63 - 1
-CENT = Decimal("0.01")
+REFERENCE_PRECISION = 100
 
 STATE_FUNCTIONS: dict[str, Callable[[MarketState], object]] = {
     "price_yes": lmsr.price_yes,
@@ -39,65 +46,90 @@ AMOUNT_FUNCTIONS: dict[str, Callable[[int], object]] = {
 }
 
 
+def test_the_examples_are_set_in_the_economy_of_the_settings(base_settings: Settings) -> None:
+    assert base_settings.pricing.tier_b_micro(MarketTier.DEFAULT) == DEFAULT_B
+    assert base_settings.pricing.max_stake_per_user_market_micro == FULL_STAKE
+
+
 def test_fresh_market_is_exactly_fifty_fifty() -> None:
     assert lmsr.price_yes(FRESH) == Decimal("0.5")
     assert lmsr.price_yes_micro(FRESH) == 500_000
 
 
 def test_cost_of_a_fresh_market_is_b_ln_2() -> None:
-    assert Decimal("6931471.805599") < lmsr.cost(FRESH) < Decimal("6931471.805600")
+    assert Decimal("693147180.559945") < lmsr.cost(FRESH) < Decimal("693147180.559946")
 
 
-@pytest.mark.parametrize(
-    ("b_cr", "loss_bound_cr", "shares_for_one_cr", "price_after", "price_decimals"),
-    [
-        ("5", "3.47", "1.83", 0.591, 1),
-        ("10", "6.93", "1.91", 0.548, 1),
-        ("20", "13.86", "1.95", 0.524, 1),
-        ("1442.695", "1000.00", "2.00", 0.5003, 2),
-    ],
-)
-def test_choosing_b_table_of_spec_section_4_is_reproduced(
-    b_cr: str,
-    loss_bound_cr: str,
-    shares_for_one_cr: str,
-    price_after: float,
-    price_decimals: int,
-) -> None:
-    b = to_micro(b_cr)
+def test_each_row_of_the_choosing_b_table_follows_from_the_cost_function() -> None:
+    """SPEC §4 "Choosing b" has a row for each fixed tier and one for the largest b a
+    market can have. A row states the loss bound b · ln 2, the shares a full stake buys
+    in a fresh market, and the price after that buy.
 
-    quote = lmsr.quote_buy_for_budget(MarketState(q_yes=0, q_no=0, b=b), Outcome.YES, CR)
+    No figure is typed in here. The rows are the b values of the settings, and what a
+    row states is computed from the cost and the price function with twice the digits,
+    which the quote functions then have to agree with.
+    """
+    rows: list[tuple[int, int, int, int]] = []
+    for b in sorted(MARKET_B):
+        fresh = MarketState(q_yes=0, q_no=0, b=b)
+        quote = lmsr.quote_buy_for_budget(fresh, Outcome.YES, FULL_STAKE)
+        one_share_more = MarketState(q_yes=quote.shares_micro + 1, q_no=0, b=b)
 
-    assert to_cr(lmsr.max_loss_micro(b)).quantize(CENT) == Decimal(loss_bound_cr)
-    assert to_cr(quote.shares_micro).quantize(CENT) == Decimal(shares_for_one_cr)
-    assert display_probability(quote.p_yes_after_micro, price_decimals) == price_after
+        with localcontext() as reference:
+            reference.prec = 2 * REFERENCE_PRECISION
+            start = lmsr.cost(fresh, precision=REFERENCE_PRECISION)
+            paid = lmsr.cost(quote.after, precision=REFERENCE_PRECISION) - start
+            for_more = lmsr.cost(one_share_more, precision=REFERENCE_PRECISION) - start
+            price_after = lmsr.price_yes(quote.after, precision=REFERENCE_PRECISION)
+
+            # The loss bound is what a fresh market has already cost, rounded up.
+            assert lmsr.max_loss_micro(b) == ceil_micro(start)
+            # A full stake buys the most shares it pays for: one more costs too much.
+            assert paid <= FULL_STAKE < for_more
+            assert quote.p_yes_after_micro == probability_to_micro(price_after)
+        rows.append((b, lmsr.max_loss_micro(b), quote.shares_micro, quote.p_yes_after_micro))
+
+    # Down the table b grows. With it the loss bound grows, a stake buys more shares,
+    # and it moves the price less.
+    loss_bounds = [loss_bound for _, loss_bound, _, _ in rows]
+    shares_for_a_stake = [shares for _, _, shares, _ in rows]
+    prices_after = [price for _, _, _, price in rows]
+    assert loss_bounds == sorted(loss_bounds)
+    assert shares_for_a_stake == sorted(shares_for_a_stake)
+    assert prices_after == sorted(prices_after, reverse=True)
+    # In a fresh market a share costs between half a credit and a whole one, and a buy
+    # takes the price above the 50% it started at.
+    assert all(FULL_STAKE < shares < 2 * FULL_STAKE for shares in shares_for_a_stake)
+    assert all(MICRO // 2 < price < MICRO for price in prices_after)
+    # The last row is the largest market: its loss bound is the whole of the budget.
+    assert rows[-1][:2] == (MAX_B, MAX_MARKET_BUDGET)
 
 
-def test_one_credit_at_default_b_moves_the_price_from_50_to_about_55_percent() -> None:
-    quote = lmsr.quote_buy_for_budget(FRESH, Outcome.YES, CR)
+def test_a_full_stake_at_default_b_moves_the_price_from_50_to_about_55_percent() -> None:
+    quote = lmsr.quote_buy_for_budget(FRESH, Outcome.YES, FULL_STAKE)
 
     assert quote == TradeQuote(
         side=TradeSide.BUY,
         outcome=Outcome.YES,
-        shares_micro=1_909_028,
-        amount_micro=1_000_000,
+        shares_micro=190_902_828,
+        amount_micro=100_000_000,
         before=FRESH,
-        after=MarketState(q_yes=1_909_028, q_no=0, b=DEFAULT_B),
+        after=MarketState(q_yes=190_902_828, q_no=0, b=DEFAULT_B),
         p_yes_before_micro=500_000,
         p_yes_after_micro=547_581,
     )
 
 
 def test_buying_no_is_the_mirror_image_of_buying_yes() -> None:
-    quote = lmsr.quote_buy_for_budget(FRESH, Outcome.NO, CR)
+    quote = lmsr.quote_buy_for_budget(FRESH, Outcome.NO, FULL_STAKE)
 
-    assert quote.after == MarketState(q_yes=0, q_no=1_909_028, b=DEFAULT_B)
-    assert (quote.shares_micro, quote.amount_micro) == (1_909_028, 1_000_000)
+    assert quote.after == MarketState(q_yes=0, q_no=190_902_828, b=DEFAULT_B)
+    assert (quote.shares_micro, quote.amount_micro) == (190_902_828, 100_000_000)
     assert quote.p_yes_after_micro == MICRO - 547_581
 
 
 def test_selling_half_returns_the_exact_reverse_cost_rounded_down() -> None:
-    bought = lmsr.quote_buy_for_budget(FRESH, Outcome.YES, CR)
+    bought = lmsr.quote_buy_for_budget(FRESH, Outcome.YES, FULL_STAKE)
     half = bought.shares_micro // 2
 
     sold = lmsr.quote_sell_shares(bought.after, Outcome.YES, half)
@@ -105,11 +137,11 @@ def test_selling_half_returns_the_exact_reverse_cost_rounded_down() -> None:
 
     assert sold.side is TradeSide.SELL
     assert bought_back.after == bought.after
-    assert (sold.amount_micro, bought_back.amount_micro) == (511_358, 511_359)
+    assert (sold.amount_micro, bought_back.amount_micro) == (51_135_853, 51_135_854)
 
 
 def test_stake_freed_by_a_sale_can_be_bought_again_without_exceeding_the_limit() -> None:
-    limit = CR
+    limit = FULL_STAKE
     first = lmsr.quote_buy_for_budget(FRESH, Outcome.YES, limit)
     sold = lmsr.quote_sell_shares(first.after, Outcome.YES, first.shares_micro // 2)
     net_stake = first.amount_micro - sold.amount_micro
@@ -121,12 +153,14 @@ def test_stake_freed_by_a_sale_can_be_bought_again_without_exceeding_the_limit()
     assert net_stake + second.amount_micro <= limit
 
 
-def test_b_from_budget_of_1000_credits_is_the_maximum_allowed_b() -> None:
-    assert lmsr.b_from_budget_micro(1000 * CR) == 1_442_695_040
+def test_b_from_the_largest_market_budget_is_the_largest_b_a_market_can_have() -> None:
+    """MAX_MARKET_BUDGET is 5,000 CR, and 5,000 / ln 2 is 7,213.475204..."""
+    assert MAX_MARKET_BUDGET == 5000 * CR
+    assert lmsr.b_from_budget_micro(MAX_MARKET_BUDGET) == MAX_B == 7_213_475_204
 
 
-def test_max_loss_at_default_b_is_6_931472_credits() -> None:
-    assert lmsr.max_loss_micro(10 * CR) == 6_931_472
+def test_max_loss_at_default_b_is_693_147181_credits() -> None:
+    assert lmsr.max_loss_micro(DEFAULT_B) == 693_147_181
 
 
 @pytest.mark.parametrize("ratio", [50, 115, 500, 10**6, 10**12])

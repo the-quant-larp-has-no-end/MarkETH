@@ -1,16 +1,25 @@
 """`GET /config`: the tunables the UI needs (Appendix A.2, A.11).
 
 The frontend reads no environment. Whatever it has to know about limits, presets and
-timings comes from here, straight out of `Settings`.
+timings comes from here, straight out of `Settings`. Two things that are no tunables
+travel with it, because a form needs them before anybody types: the degree catalogue,
+and how long the texts of a market may be, which the request models fix.
 """
 
 from typing import Final
 
 from app.core.config import Settings
+from app.core.degrees import CATALOGUE
 from app.core.enums import MarketTier
 from app.core.units import to_cr
 from app.pricing import lmsr
-from app.schemas.config import PublicConfigResponse, TierConfig
+from app.schemas.config import DegreeLevelOption, PublicConfigResponse, TierConfig
+from app.schemas.markets import (
+    LONG_TEXT_MAX_LENGTH,
+    QUESTION_MAX_LENGTH,
+    QUESTION_MIN_LENGTH,
+    SHORT_TEXT_MAX_LENGTH,
+)
 
 FIXED_TIERS: Final[tuple[MarketTier, ...]] = (
     MarketTier.TIGHT,
@@ -30,7 +39,17 @@ class PublicConfigService:
 
     @staticmethod
     def _build(settings: Settings) -> PublicConfigResponse:
-        pricing, vouchers = settings.pricing, settings.vouchers
+        identity, pricing, grants, codes, vouchers = (
+            settings.identity,
+            settings.pricing,
+            settings.grants,
+            settings.codes,
+            settings.vouchers,
+        )
+        degrees = [
+            DegreeLevelOption(level=entry.level, name=entry.name, programmes=list(entry.programmes))
+            for entry in CATALOGUE
+        ]
         tiers = [
             TierConfig(
                 tier=tier,
@@ -45,10 +64,11 @@ class PublicConfigService:
         ]
         return PublicConfigResponse(
             timezone=settings.app.timezone_name,
-            allowed_email_domains=list(settings.auth.allowed_email_domains),
-            login_link_ttl_minutes=settings.auth.login_token_ttl_minutes,
-            signup_grant_cr=to_cr(vouchers.signup_grant_micro),
-            monthly_grant_cr=to_cr(vouchers.monthly_grant_micro),
+            signup_grant_cr=to_cr(grants.signup_grant_micro),
+            monthly_grant_cr=to_cr(grants.monthly_grant_micro),
+            username_min_length=identity.username_min_length,
+            username_max_length=identity.username_max_length,
+            degrees=degrees,
             max_stake_per_market_cr=to_cr(pricing.max_stake_per_user_market_micro),
             stake_presets_cr=[to_cr(preset) for preset in pricing.stake_presets_micro],
             min_trade_cr=to_cr(pricing.min_trade_micro),
@@ -61,12 +81,15 @@ class PublicConfigService:
             max_market_lifetime_days=settings.risk.max_market_lifetime_days,
             max_resolution_delay_days=settings.lifecycle.max_resolution_delay_days,
             max_proposals_per_day=settings.lifecycle.max_proposals_per_user_per_day,
+            question_min_length=QUESTION_MIN_LENGTH,
+            question_max_length=QUESTION_MAX_LENGTH,
+            short_text_max_length=SHORT_TEXT_MAX_LENGTH,
+            long_text_max_length=LONG_TEXT_MAX_LENGTH,
+            code_length=codes.length,
+            code_min_value_cr=to_cr(codes.min_value_micro),
+            code_max_value_cr=to_cr(codes.max_value_micro),
+            code_default_value_cr=to_cr(codes.default_value_micro),
+            max_code_issuance_per_month_cr=to_cr(codes.max_issuance_per_month_micro),
             voucher_code_length=vouchers.code_length,
-            voucher_code_min_value_cr=to_cr(vouchers.code_min_value_micro),
-            voucher_code_max_value_cr=to_cr(vouchers.code_max_value_micro),
-            voucher_code_default_value_cr=to_cr(vouchers.code_default_value_micro),
-            max_code_issuance_per_month_cr=to_cr(vouchers.max_code_issuance_per_month_micro),
-            coffee_ticket_value_cr=to_cr(vouchers.coffee_ticket_value_micro),
-            coffee_ticket_code_length=vouchers.coffee_ticket_code_length,
-            coffee_ticket_expiry_days=vouchers.coffee_ticket_expiry_days,
+            voucher_expiry_days=vouchers.expiry_days,
         )

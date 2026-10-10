@@ -1,0 +1,294 @@
+#!/bin/sh
+# Check a running MarkETH stack from the machine it runs on. Changes no data.
+#
+#   sh infra/deploy/check.sh                            the checks below, against the stack
+#                                                       the .env of this tree describes
+#   sh infra/deploy/check.sh public-endpoint            print "<address> <port>": this
+#                                                       machine's public address and the
+#                                                       port the stack is published on
+#   sh infra/deploy/check.sh outside <address> <port>   from another machine: that
+#                                                       address must not answer there
+#
+# `make deploy-check` runs the first form on the VM, then the other two to probe the VM
+# from the laptop. The first form is for a stack started from compose.yaml alone: with
+# compose.override.yaml merged in, the proxy names a caller itself and check 2 fails.
+#
+# What the first form proves, in this order. It stops at the first check that fails.
+#
+#   1. The API is healthy and the app answers.
+#   2. A request without the portal's identity headers is refused (401).
+#   3. A request that names a caller is taken at its word: who can reach the port is
+#      who the stack believes (docs/SERVER_INFRASTRUCTURE.md §3.4). The made-up caller
+#      has no profile, so the answer is 403 PROFILE_REQUIRED and nothing is written.
+#   4. An address outside the allowed domains is refused.
+#   5. Two X-User-Id lines are no identity.
+#   6. A request another site makes to the API with a visitor's browser is refused by
+#      the proxy; the visitor's own window opening an API address from there is not.
+#   7. A body above NGINX_CLIENT_MAX_BODY_SIZE is refused by the proxy; one below is not.
+#   8. The proxy's rate limit refuses part of a burst, and counts per caller.
+#   9. With APP_ENV=production: the development identity files are absent, the running
+#      proxy has no trace of them, and nginx is the only container with a published
+#      port, bound to the one address .env names.
+#
+# Needs curl, jq and docker.
+
+set -eu
+
+HEALTH_WAIT_SECONDS=120
+REQUEST_SECONDS=10
+OUTSIDE_CONNECT_SECONDS=8
+
+fail() {
+    echo "FAILED  $*" >&2
+    exit 1
+}
+
+passed() {
+    echo "ok      $*"
+}
+
+# The value of a variable of .env, without surrounding double quotes.
+setting() {
+    value=$(sed -n "s/^$1=//p" .env)
+    case $value in
+        \"*\")
+            value=${value#\"}
+            value=${value%\"}
+            ;;
+    esac
+    printf '%s' "$value"
+}
+
+# `64k` and `1m`, as nginx writes sizes, in bytes.
+bytes_of() {
+    case $1 in
+        *[kK]) echo $((${1%[kK]} * 1024)) ;;
+        *[mM]) echo $((${1%[mM]} * 1048576)) ;;
+        *) echo "$1" ;;
+    esac
+}
+
+# request <curl arguments>: STATUS holds the HTTP status, $WORK/body the body.
+request() {
+    STATUS=$(curl --silent --show-error --max-time "$REQUEST_SECONDS" --output "$WORK/body" \
+        --write-out '%{http_code}' "$@") || fail "no answer to: curl $*"
+}
+
+# The `code` of the API's error body, or nothing.
+error_code() {
+    jq -r '.code? // empty' "$WORK/body" 2> /dev/null || true
+}
+
+body_excerpt() {
+    head -c 300 "$WORK/body" 2> /dev/null || true
+}
+
+expect() {
+    wanted_status=$1
+    wanted_code=$2
+    what=$3
+    if [ "$STATUS" != "$wanted_status" ] || [ "$(error_code)" != "$wanted_code" ]; then
+        fail "$what: expected HTTP $wanted_status ${wanted_code:-without an error code}," \
+            "got $STATUS $(body_excerpt)"
+    fi
+    passed "$what"
+}
+
+cd "$(dirname "$0")/../.."
+[ -f .env ] || fail "no .env in $(pwd)"
+
+# --- The two forms of the outside probe ------------------------------------------
+
+if [ "${1-}" = "public-endpoint" ]; then
+    address=$(ip -4 route get 1.1.1.1 | sed -n 's/.* src \([0-9.]*\).*/\1/p')
+    [ -n "$address" ] || fail "this machine has no route to the internet to take its public address from"
+    echo "$address $(setting NGINX_HTTP_PORT)"
+    exit 0
+fi
+
+if [ "${1-}" = "outside" ]; then
+    [ "$#" -eq 3 ] || fail "usage: sh infra/deploy/check.sh outside <address> <port>"
+    result=0
+    curl --silent --output /dev/null --connect-timeout "$OUTSIDE_CONNECT_SECONDS" \
+        --max-time "$((OUTSIDE_CONNECT_SECONDS + 2))" "http://$2:$3/api/health" || result=$?
+    case $result in
+        7 | 28)
+            passed "http://$2:$3 does not answer from here (curl exit $result): the port is closed to the internet"
+            ;;
+        0)
+            fail "http://$2:$3 answers from here. The identity headers are plain text, so anyone" \
+                "who reaches this port can act as anyone. Close the port (docs/SERVER_INFRASTRUCTURE.md §6)" \
+                "before the stack serves another request."
+            ;;
+        *)
+            fail "could not tell whether http://$2:$3 is closed (curl exit $result)"
+            ;;
+    esac
+    exit 0
+fi
+
+[ "$#" -eq 0 ] || fail "unknown argument: $1"
+
+# --- The stack this tree describes ---------------------------------------------------
+
+for tool in curl jq docker; do
+    command -v "$tool" > /dev/null || fail "$tool is not installed"
+done
+
+WORK=$(mktemp -d)
+trap 'rm -rf "$WORK"' EXIT
+
+APP_ENV=$(setting APP_ENV)
+BIND=$(setting NGINX_HTTP_BIND)
+PORT=$(setting NGINX_HTTP_PORT)
+# The made-up callers below are ids at the first allowed domain.
+DOMAIN=$(setting ALLOWED_EMAIL_DOMAINS | cut -d, -f1)
+ORIGIN=$(setting PUBLIC_BASE_URL)
+[ -n "$BIND" ] || fail ".env has no NGINX_HTTP_BIND"
+[ -n "$PORT" ] || fail ".env has no NGINX_HTTP_PORT"
+[ -n "$DOMAIN" ] || fail ".env has no ALLOWED_EMAIL_DOMAINS"
+if [ "$BIND" = "0.0.0.0" ]; then
+    BASE="http://127.0.0.1:$PORT"
+else
+    BASE="http://$BIND:$PORT"
+fi
+echo "Checking $BASE (APP_ENV=$APP_ENV)"
+
+# 1. Health --------------------------------------------------------------------------
+
+waited=0
+until curl --silent --fail --max-time "$REQUEST_SECONDS" --output "$WORK/body" "$BASE/api/health"; do
+    [ "$waited" -lt "$HEALTH_WAIT_SECONDS" ] \
+        || fail "GET /api/health gave no 200 within $HEALTH_WAIT_SECONDS seconds"
+    sleep 2
+    waited=$((waited + 2))
+done
+[ "$(jq -r '.postgres?' "$WORK/body")" = "up" ] || fail "the API is up but Postgres is not: $(body_excerpt)"
+passed "the API is healthy: $(jq -c . "$WORK/body")"
+
+request "$BASE/"
+[ "$STATUS" = "200" ] || fail "GET / answered $STATUS, not the app"
+passed "the app answers"
+
+# 2. No identity ---------------------------------------------------------------------
+
+request "$BASE/api/me"
+expect 401 UNAUTHENTICATED "a request without identity headers is refused"
+
+# 3. A named caller is believed ------------------------------------------------------
+
+request --header "X-User-Id: deploy.check@$DOMAIN" --header 'X-User-Name: Zo%C3%AB%20Check' "$BASE/api/me"
+expect 403 PROFILE_REQUIRED "a request that names a caller is answered as that caller"
+jq -e --arg email "deploy.check@$DOMAIN" --arg name 'Zoë Check' \
+    '.details.email == $email and .details.name == $name' "$WORK/body" > /dev/null \
+    || fail "the API did not see the caller the request named: $(body_excerpt)"
+passed "the caller's id and percent-encoded name arrive intact"
+
+# 4. Outside the allowed domains -------------------------------------------------------
+
+request --header 'X-User-Id: someone@not-allowed.example' "$BASE/api/me"
+expect 403 FORBIDDEN "an address outside the allowed domains is refused"
+
+# 5. Two identities are none ---------------------------------------------------------
+
+request --header "X-User-Id: deploy.check@$DOMAIN" --header "X-User-Id: deploy.other@$DOMAIN" "$BASE/api/me"
+case "$STATUS $(error_code)" in
+    "401 UNAUTHENTICATED" | "403 FORBIDDEN") passed "two X-User-Id lines are refused ($STATUS)" ;;
+    *) fail "two X-User-Id lines: expected 401 UNAUTHENTICATED or 403 FORBIDDEN, got $STATUS $(body_excerpt)" ;;
+esac
+
+# 6. Requests another site makes -----------------------------------------------------
+# /api/config is public and the API answers it with 200, so a 403 here is the proxy's.
+# No route of the API answers a caller without an identity with 403 either, which makes
+# the 403 on the stream path the proxy's too.
+
+request --header 'Sec-Fetch-Site: cross-site' --header 'Sec-Fetch-Mode: cors' \
+    --header 'Sec-Fetch-Dest: empty' "$BASE/api/config"
+expect 403 FORBIDDEN "a request another site makes to the API is refused by the proxy"
+request --header 'Sec-Fetch-Site: same-site' --header 'Sec-Fetch-Mode: cors' \
+    --header 'Sec-Fetch-Dest: empty' --header 'Accept: text/event-stream' \
+    "$BASE/api/markets/00000000-0000-0000-0000-000000000000/stream"
+expect 403 FORBIDDEN "so is an event stream another team's app opens"
+request --header 'Sec-Fetch-Site: cross-site' --header 'Sec-Fetch-Mode: navigate' \
+    --header 'Sec-Fetch-Dest: iframe' "$BASE/api/config"
+expect 403 FORBIDDEN "and an API address another site loads into a frame"
+request --header 'Sec-Fetch-Site: cross-site' --header 'Sec-Fetch-Mode: navigate' \
+    --header 'Sec-Fetch-Dest: document' "$BASE/api/config"
+[ "$STATUS" = "200" ] || fail "a window that opens an API address from another site: expected 200, got $STATUS $(body_excerpt)"
+passed "a visitor's own window that opens an API address from another site is answered"
+
+# 7. The body limit ------------------------------------------------------------------
+
+LIMIT=$(bytes_of "$(setting NGINX_CLIENT_MAX_BODY_SIZE)")
+head -c "$((LIMIT + 1024))" /dev/zero > "$WORK/above"
+head -c "$((LIMIT - 1024))" /dev/zero > "$WORK/below"
+request --request POST --header "Origin: $ORIGIN" --header 'Content-Type: application/json' \
+    --data-binary "@$WORK/above" "$BASE/api/markets"
+[ "$STATUS" = "413" ] || fail "a body of $((LIMIT + 1024)) bytes: expected 413, got $STATUS $(body_excerpt)"
+passed "a body above $(setting NGINX_CLIENT_MAX_BODY_SIZE) is refused (413)"
+request --request POST --header "Origin: $ORIGIN" --header 'Content-Type: application/json' \
+    --data-binary "@$WORK/below" "$BASE/api/markets"
+[ "$STATUS" != "413" ] || fail "a body of $((LIMIT - 1024)) bytes was refused as too large"
+passed "a body below it reaches the API ($STATUS)"
+
+# 8. The rate limit ------------------------------------------------------------------
+# One curl process sends the burst on parallel connections: started one process at a
+# time, the requests would arrive slower than the bucket refills.
+
+BURST=$(setting NGINX_RATE_LIMIT_BURST)
+REQUESTS=$((BURST * 4))
+[ "$REQUESTS" -le 300 ] || REQUESTS=300
+count=0
+: > "$WORK/burst"
+while [ "$count" -lt "$REQUESTS" ]; do
+    printf 'url = "%s/api/config"\noutput = "/dev/null"\n' "$BASE" >> "$WORK/burst"
+    count=$((count + 1))
+done
+curl --silent --parallel --parallel-immediate --parallel-max "$REQUESTS" --max-time 30 \
+    --header "X-User-Id: deploy.burst@$DOMAIN" --write-out '%{http_code}\n' \
+    --config "$WORK/burst" > "$WORK/burst.codes" || true
+answered=$(grep -c '^200$' "$WORK/burst.codes" || true)
+refused=$(grep -c '^429$' "$WORK/burst.codes" || true)
+if [ "$answered" -eq 0 ] || [ "$refused" -eq 0 ]; then
+    fail "a burst of $REQUESTS requests by one caller: $answered answered, $refused refused with 429;" \
+        "expected some of each (NGINX_RATE_LIMIT=$(setting NGINX_RATE_LIMIT), burst $BURST)." \
+        "Statuses seen: $(sort "$WORK/burst.codes" | uniq -c | tr '\n' ' ')"
+fi
+passed "of a burst of $REQUESTS requests by one caller, $answered are answered and $refused refused (429)"
+request --header "X-User-Id: deploy.other@$DOMAIN" "$BASE/api/config"
+[ "$STATUS" = "200" ] || fail "another caller from the same address got $STATUS right after the burst: the limit is not per caller"
+passed "another caller from the same address is not limited"
+
+# 9. Production only -----------------------------------------------------------------
+
+if [ "$APP_ENV" != "production" ]; then
+    echo "skipped the checks of a production tree (APP_ENV=$APP_ENV)"
+    echo "All checks passed."
+    exit 0
+fi
+
+[ ! -e compose.override.yaml ] || fail "compose.override.yaml exists in a production tree"
+[ ! -e infra/nginx/dev ] || fail "infra/nginx/dev exists in a production tree"
+passed "the development overlay and its identity files are absent"
+
+docker compose -f compose.yaml exec -T nginx nginx -T < /dev/null > "$WORK/nginx.conf" 2> /dev/null \
+    || fail "could not read the configuration of the running nginx"
+if grep -n -i -E 'dev_user|__dev' "$WORK/nginx.conf" >&2; then
+    fail "the running nginx configuration names a development identity (lines above)"
+fi
+passed "the running proxy has no development identity"
+
+PROJECT=$(sed -n 's/^name: *//p' compose.yaml)
+proxy=$(docker compose -f compose.yaml ps --quiet nginx < /dev/null) || fail "could not ask Compose for the nginx container"
+[ -n "$proxy" ] || fail "no nginx container is running"
+# Every address the port is bound to. The probe from outside asks the public IPv4
+# address, so a second binding, on IPv6, would be a way in that nothing looks at.
+published=$(docker port "$proxy" 80/tcp < /dev/null | tr '\n' ' ') || true
+published=${published% }
+[ "$published" = "$BIND:$PORT" ] || fail "nginx is published on '$published', not on $BIND:$PORT alone"
+others=$(docker ps --filter "label=com.docker.compose.project=$PROJECT" \
+    --format '{{.Label "com.docker.compose.service"}} {{.Ports}}' | grep -e '->' | grep -v '^nginx ' || true)
+[ -z "$others" ] || fail "containers other than nginx publish a port: $others"
+passed "nginx on $published is the only published port of the stack"
+
+echo "All checks passed."

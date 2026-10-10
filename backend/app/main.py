@@ -26,7 +26,9 @@ from app.core.logging import configure_logging
 API_TITLE: Final[str] = "MarkETH API"
 API_VERSION: Final[str] = "0.1.0"
 API_DESCRIPTION: Final[str] = (
-    "Everything sits under `/api`, on the same origin as the app.\n\n"
+    "Everything sits under `/api`, on the same origin as the app. There is no sign-in "
+    "here: the portal in front of the API signs a person in and names them in a "
+    "request header.\n\n"
     "* Credits (`*_cr`) and shares are decimal strings with at most six places, never "
     "JSON numbers. Probabilities are numbers in [0, 1], already rounded for display.\n"
     "* Every error has one shape, `ErrorResponse`: switch on `code`, show `message`.\n"

@@ -1,28 +1,40 @@
 """Test data written straight to the database, with the books kept straight.
 
-`Factory` puts users, sessions, markets and positions in place through the repositories
-and `LedgerService`, without going through the services under test. Whatever it writes
+`Factory` puts users, markets and positions in place through the repositories and
+`LedgerService`, without going through the services under test. Whatever it writes
 leaves every invariant intact: entries balance, all accounts sum to zero, a market's
-quantities equal the sum of its positions, no user balance is negative.
+quantities equal the sum of its positions, no user balance is negative. These are the
+rules `tests/support/books.py` holds a database against.
 
     user = await factory.user(balance_micro=5 * MICRO)
     market = await factory.market()                       # OPEN, default tier
     await factory.position(user, market, Outcome.YES, shares_micro=MICRO)
-    as_user(user)                                         # or, through SessionService:
-    client.cookies.set(cookie_name, await factory.session(user))
+    admin = await factory.admin()                         # an address of ADMIN_EMAILS
+    as_user(user)                                         # a plain user
+    as_user(admin)                                        # an admin: the address says so
+    as_user(user, UserRole.ADMIN)                         # a guard test names the role
+    client.get("/api/me", headers=portal_headers(admin))  # through the real headers
+
+Who has which role is derived the way the application derives it: from the address and
+the role lists of the test settings (tests/support/settings.py). `factory.identity`,
+`as_user` and the real seam therefore agree about every user the factory makes.
 
 Rows come back detached and readable. Time is the container's clock.
 """
 
-from collections.abc import Callable
+from collections.abc import Sequence
 from datetime import timedelta
-from typing import Final
+from typing import Final, Protocol
+from urllib.parse import quote
 from uuid import uuid7
 
 from app.container import Container
+from app.core.config import IdentitySettings
+from app.core.degrees import CATALOGUE
 from app.core.enums import (
     SIGNUP_GRANT_PERIOD,
     AccountKind,
+    DegreeLevel,
     JournalKind,
     MarketStatus,
     MarketTier,
@@ -32,10 +44,10 @@ from app.core.enums import (
     UserRole,
     UserStatus,
 )
-from app.core.identity import AuthenticatedUser
-from app.core.security import generate_token, sha256_hex
-from app.models import Market, Position, Resolution, Trade, User, UserSession
+from app.core.identity import AuthenticatedUser, Caller, PortalIdentity
+from app.models import Market, Position, Resolution, Trade, User
 from app.pricing import lmsr
+from app.services.email_policy import EmailPolicy
 from app.services.ledger import LedgerRef, PostingLine, signup_grant_key, trade_key
 from app.services.market_view import HIDDEN_STATUSES, SETTLED_STATUSES, UNSETTLED_STATUSES
 
@@ -43,19 +55,78 @@ DEFAULT_CLOSE_IN: Final[timedelta] = timedelta(days=7)
 DEFAULT_RESOLVE_AFTER_CLOSE: Final[timedelta] = timedelta(days=7)
 DEFAULT_QUESTION: Final[str] = "Will the Polymensa serve Älplermagronen on Friday?"
 
-type ActAs = Callable[[AuthenticatedUser | User | None], None]
-"""The `as_user` fixture: pass a user (or its identity) to act as, None to be anonymous."""
+DEFAULT_DEGREE_LEVEL: Final[DegreeLevel] = CATALOGUE[0].level
+DEFAULT_DEGREE_PROGRAMME: Final[str] = CATALOGUE[0].programmes[0]
+"""The degree of a factory user: the first pair of the catalogue."""
+
+type Actor = User | AuthenticatedUser | PortalIdentity | None
+"""Whom a test can make the application believe is calling: a user row, a registered
+caller built by hand, somebody the portal named who has no profile, or nobody."""
+
+type Named = User | AuthenticatedUser | PortalIdentity
+"""Anybody the portal can name: each has the address it sends and a display name."""
 
 
-def identity_of(user: User) -> AuthenticatedUser:
-    """The `AuthenticatedUser` a session of `user` would resolve to."""
+class ActAs(Protocol):
+    """The `as_user` fixture. A `User` row acts with the role its address has in the
+    test settings, or with `role` when a test names one. The other actors say for
+    themselves what they are, so giving one of them a role is refused."""
+
+    def __call__(self, who: Actor, role: UserRole | None = None) -> None: ...
+
+
+class PortalHeaders(Protocol):
+    """The `portal_headers` fixture: the two request headers in which the portal
+    would name `who`."""
+
+    def __call__(self, who: Named) -> dict[str, str]: ...
+
+
+def identity_of(user: User, role: UserRole = UserRole.USER) -> AuthenticatedUser:
+    """The registered caller a request of `user` resolves to when `.env` gives that
+    person `role`. A role is in no column, so the test says which one it means: this
+    is for a test of a guard, which asks what a role may do whoever holds it. What role
+    a user of the factory really has is `Factory.identity`."""
     return AuthenticatedUser(
         id=user.id,
         email=user.email,
-        canonical_email=user.canonical_email,
-        role=user.role,
+        name=user.name,
+        username=user.username,
+        role=role,
         status=user.status,
     )
+
+
+def caller_of(who: Actor, role: UserRole | None, roles: EmailPolicy) -> Caller | None:
+    """What `authenticate_request` returns for `who`: None for nobody, a `Caller`
+    without a user for a bare `PortalIdentity`, a registered caller otherwise.
+
+    A `User` row gets `role`, and without one the role `roles` derives from its
+    address, as the application would. Every other actor carries its own role, and a
+    second one beside it would silently lose, so it is refused.
+    """
+    if isinstance(who, User):
+        user = identity_of(who, role or roles.role_for(who.email))
+    elif role is not None:
+        raise ValueError("only a `User` row takes a role; this actor carries its own")
+    elif who is None:
+        return None
+    elif isinstance(who, PortalIdentity):
+        return Caller(identity=who, user=None)
+    else:
+        user = who
+    portal = PortalIdentity(email=user.email, name=user.name, role=user.role)
+    return Caller(identity=portal, user=user)
+
+
+def portal_headers_of(who: Named, identity: IdentitySettings) -> dict[str, str]:
+    """The two headers the portal would put on a request of `who`: the address as the
+    id, and the display name percent-encoded, which is how the portal sends whatever is
+    outside ASCII (`Zo%C3%AB`). The header names are those of `identity`."""
+    return {
+        identity.header_user_id: who.email,
+        identity.header_user_name: quote(who.name, safe=""),
+    }
 
 
 class Factory:
@@ -64,47 +135,54 @@ class Factory:
         self._ledger = container.ledger
         self._clock = container.clock
         self._settings = container.settings
+        self._roles = container.email_policy
         self._users_made = 0
 
     async def user(
         self,
         *,
-        role: UserRole = UserRole.USER,
         balance_micro: int = 0,
         email: str | None = None,
+        username: str | None = None,
+        name: str | None = None,
+        degree_level: DegreeLevel = DEFAULT_DEGREE_LEVEL,
+        degree_programme: str = DEFAULT_DEGREE_PROGRAMME,
         status: UserStatus = UserStatus.ACTIVE,
     ) -> User:
-        """A verified user with their ledger account, created now.
+        """A user with a profile and their ledger account, created now.
 
-        The user counts as having received the signup grant: the `voucher_grants` row
+        The user counts as having received the signup grant: the `grants` row
         exists, and a positive `balance_micro` is booked as that grant from
-        `vis:issuance`. Without `email`, addresses are `user1@…`, `user2@…` on the
-        first allowed domain; the canonical address swaps in the canonical domain.
+        `vis:issuance`. Left out, the n-th user of a test is `user{n}@…` at the first
+        of `ALLOWED_EMAIL_DOMAINS`, with the username `user{n}` and the name
+        `User {n}`. `email` is stored as given: pass an id as `EmailPolicy.identify`
+        returns it, in lower case.
         """
-        auth = self._settings.auth
         self._users_made += 1
-        address = email or f"user{self._users_made}@{auth.allowed_email_domains[0]}"
-        canonical = f"{address.partition('@')[0]}@{auth.canonical_email_domain}"
+        number = self._users_made
+        domain = self._settings.identity.allowed_email_domains[0]
         now = self._clock.now()
         async with self._uow_factory() as uow:
             user = await uow.users.add(
                 User(
-                    canonical_email=canonical,
-                    email=address,
-                    role=role,
+                    email=email or f"user{number}@{domain}",
+                    name=f"User {number}" if name is None else name,
+                    username=username or f"user{number}",
+                    degree_level=degree_level,
+                    degree_programme=degree_programme,
                     status=status,
                     created_at=now,
                 )
             )
             account = await uow.accounts.create_user_account(user.id)
-            grant = await uow.voucher_grants.insert_if_absent(user.id, SIGNUP_GRANT_PERIOD, now)
+            grant = await uow.grants.insert_if_absent(user.id, SIGNUP_GRANT_PERIOD, now)
             assert grant is not None
             if balance_micro:
                 issuance = await uow.accounts.get_system_account(AccountKind.VIS_ISSUANCE)
                 entry = await self._ledger.post(
                     uow,
                     kind=JournalKind.SIGNUP_GRANT,
-                    ref_type=LedgerRef.VOUCHER_GRANT,
+                    ref_type=LedgerRef.GRANT,
                     ref_id=grant.id,
                     idempotency_key=signup_grant_key(user.id),
                     lines=[
@@ -113,34 +191,49 @@ class Factory:
                     ],
                     at=now,
                 )
-                await uow.voucher_grants.set_entry(grant.id, entry.id)
+                await uow.grants.set_entry(grant.id, entry.id)
         return user
 
-    def identity(self, user: User) -> AuthenticatedUser:
-        return identity_of(user)
+    async def admin(self, index: int = 0, *, balance_micro: int = 0) -> User:
+        """A registered user whose address is the `index`-th of `ADMIN_EMAILS`.
 
-    async def session(self, user: User) -> str:
-        """Sign `user` in, as a confirmed magic link would, and return the cookie's token.
-
-        Writes the `sessions` row `SessionService.create` writes: its id is the SHA-256
-        of the token, it was created and last seen now, and it expires after
-        `SESSION_TTL_DAYS`. Nothing is cached. Advance the clock to test the idle and
-        the absolute expiry; send the token in the cookie named `SESSION_COOKIE_NAME`.
+        The test settings name two, so `admin()` and `admin(1)` are two admins: the
+        second can settle a market the first traded (A.4). Nothing on the row says
+        admin; the address does, to `identity`, to `as_user` and to the application.
+        One per index and test: the address is unique.
         """
-        auth = self._settings.auth
-        token = generate_token(auth.login_token_bytes)
-        now = self._clock.now()
-        async with self._uow_factory() as uow:
-            await uow.sessions.add(
-                UserSession(
-                    id=sha256_hex(token),
-                    user_id=user.id,
-                    created_at=now,
-                    expires_at=now + auth.session_ttl,
-                    last_seen_at=now,
-                )
+        return await self._role_holder(
+            "admin", self._settings.identity.admin_emails, index, balance_micro
+        )
+
+    async def barista(self, index: int = 0, *, balance_micro: int = 0) -> User:
+        """A registered user whose address is the `index`-th of `BARISTA_EMAILS`. The
+        test settings name one."""
+        return await self._role_holder(
+            "barista", self._settings.identity.barista_emails, index, balance_micro
+        )
+
+    async def _role_holder(
+        self, title: str, addresses: Sequence[str], index: int, balance_micro: int
+    ) -> User:
+        if not 0 <= index < len(addresses):
+            raise ValueError(
+                f"the test settings name {len(addresses)} {title} address(es); "
+                f"there is none with index {index}"
             )
-        return token
+        return await self.user(
+            balance_micro=balance_micro,
+            # A list entry may be written with capitals; the row holds the id.
+            email=self._roles.identify(addresses[index]),
+            username=f"{title}{index}",
+            name=f"{title.capitalize()} {index}",
+        )
+
+    def identity(self, user: User) -> AuthenticatedUser:
+        """The registered caller a request of `user` resolves to: the row, with the role
+        the application derives from its address (`EmailPolicy.role_for`). For calling
+        a service directly as that user."""
+        return identity_of(user, self._roles.role_for(user.email))
 
     async def market(
         self,

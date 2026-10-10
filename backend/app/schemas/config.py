@@ -3,7 +3,7 @@
 Everything here is public. Nothing in it is a secret or an address of a person.
 """
 
-from app.core.enums import MarketTier
+from app.core.enums import DegreeLevel, MarketTier
 from app.schemas.common import CreditAmount, ResponseModel, ShareAmount
 
 
@@ -16,15 +16,29 @@ class TierConfig(ResponseModel):
     """What VIS can lose at most in a market of this tier: b · ln 2, rounded up."""
 
 
+class DegreeLevelOption(ResponseModel):
+    """One level of the degree catalogue and the programmes a profile may name in it."""
+
+    level: DegreeLevel
+    name: str
+    """How the level is shown, for example "Continuing education"."""
+
+    programmes: list[str]
+    """The labels of the level, in the order to offer them. A label is both what is
+    shown and what `PUT /me/profile` takes as `degree_programme`."""
+
+
 class PublicConfigResponse(ResponseModel):
     timezone: str
     """IANA name of the calendar behind monthly grants and daily limits."""
 
-    allowed_email_domains: list[str]
-    login_link_ttl_minutes: int
-
     signup_grant_cr: CreditAmount
     monthly_grant_cr: CreditAmount
+
+    username_min_length: int
+    username_max_length: int
+    degrees: list[DegreeLevelOption]
+    """Every level, in the order to offer them."""
 
     max_stake_per_market_cr: CreditAmount
     stake_presets_cr: list[CreditAmount]
@@ -44,12 +58,26 @@ class PublicConfigResponse(ResponseModel):
     max_resolution_delay_days: int
     max_proposals_per_day: int
 
-    voucher_code_length: int
-    voucher_code_min_value_cr: CreditAmount
-    voucher_code_max_value_cr: CreditAmount
-    voucher_code_default_value_cr: CreditAmount
+    question_min_length: int
+    question_max_length: int
+    """Characters a market's question may have, from the shortest to the longest."""
+
+    short_text_max_length: int
+    """The longest `yes_definition`, `no_definition` and `resolution_source` of a
+    proposal, and the longest reason or note an admin gives when rejecting, halting,
+    resuming or closing a market."""
+
+    long_text_max_length: int
+    """The longest `resolution_criteria` of a proposal, and the longest evidence or
+    reason an admin gives when resolving or voiding a market."""
+
+    code_length: int
+    code_min_value_cr: CreditAmount
+    code_max_value_cr: CreditAmount
+    code_default_value_cr: CreditAmount
     max_code_issuance_per_month_cr: CreditAmount
 
-    coffee_ticket_value_cr: CreditAmount
-    coffee_ticket_code_length: int
-    coffee_ticket_expiry_days: int
+    voucher_code_length: int
+    voucher_expiry_days: int
+    """An unused voucher is refunded this many days after it was issued. What a voucher
+    can be for, and what each product takes, is `GET /vouchers/products`."""

@@ -1,7 +1,7 @@
-"""Secrets: generation, hashing and the Crockford Base32 code format (SPEC §2, §3).
+"""Secrets: generation, hashing and the Crockford Base32 code format (SPEC §2).
 
-Nothing secret is ever stored in the clear. Login tokens, session IDs, voucher codes
-and coffee-ticket codes are all persisted as SHA-256 hashes of the value the user holds.
+Nothing secret is ever stored in the clear. Codes and the codes of vouchers are
+persisted as SHA-256 hashes of the value the user holds.
 """
 
 import hashlib
@@ -14,11 +14,6 @@ CROCKFORD_ALPHABET: Final[str] = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 _CROCKFORD_SET: Final[frozenset[str]] = frozenset(CROCKFORD_ALPHABET)
 _LOOKALIKES: Final[dict[int, str]] = str.maketrans({"O": "0", "I": "1", "L": "1"})
 _GROUP_SIZE: Final[int] = 4
-
-
-def generate_token(n_bytes: int) -> str:
-    """A URL-safe random token carrying `n_bytes` of entropy."""
-    return secrets.token_urlsafe(n_bytes)
 
 
 def sha256_hex(value: str) -> str:

@@ -1,0 +1,1766 @@
+"""Markets as everyone reads them, and how one is proposed: `MarketService` (SPEC §6,
+§9, §10, Appendix A.4, A.5, A.11).
+
+Three things are proven here: what a proposal has to state and how many a day may be
+made, which markets a list holds and when it comes from the cache, and what one market
+tells the person looking at it.
+
+Every expected status, price, stake and payout is what `MarketView` and
+`app.pricing.lmsr` make of the rows; every limit is read from the test settings. Trades
+are the factory's buys and the `sell` below, which is their counterpart, so nothing here
+waits for the trading service. Markets are settled by `MarketLifecycleService`.
+"""
+
+import asyncio
+from collections.abc import Awaitable, Callable, Collection, Sequence
+from dataclasses import dataclass, fields
+from datetime import UTC, datetime, timedelta, timezone
+from decimal import Decimal
+from typing import Any, Final
+from uuid import UUID, uuid7
+
+import httpx
+import pytest
+from hypothesis import HealthCheck, given
+from hypothesis import settings as hypothesis_settings
+from hypothesis import strategies as st
+
+from app.container import Container
+from app.core.clock import local_date
+from app.core.config import Settings
+from app.core.enums import (
+    JournalKind,
+    MarketStatus,
+    MarketTier,
+    Outcome,
+    ResolutionOutcome,
+    TradeSide,
+    UserRole,
+    UserStatus,
+)
+from app.core.errors import (
+    ForbiddenError,
+    LimitExceededError,
+    NotFoundError,
+    ValidationFailedError,
+)
+from app.core.identity import AuthenticatedUser
+from app.core.units import MICRO, format_cr, to_cr
+from app.integrations.redis.market_cache import MarketCache
+from app.models import (
+    AuditLogEntry,
+    JournalEntry,
+    Market,
+    OutboxEvent,
+    Position,
+    Resolution,
+    Trade,
+    User,
+)
+from app.pricing import lmsr
+from app.schemas.admin.markets import (
+    ApproveMarketRequest,
+    HaltMarketRequest,
+    RejectMarketRequest,
+    ResolveMarketRequest,
+    VoidMarketRequest,
+)
+from app.schemas.common import Limit
+from app.schemas.markets import (
+    MarketDetailResponse,
+    MarketListResponse,
+    ProposeMarketRequest,
+    SellPortion,
+    TradeBlockReason,
+)
+from app.services.ledger import LedgerRef, PostingLine, trade_key
+from app.services.market_view import HIDDEN_STATUSES, SETTLED_STATUSES
+from app.services.markets import (
+    PROPOSAL_LIMIT_MESSAGE,
+    PUBLIC_STATUSES,
+    UNSTORABLE_TEXT_MESSAGE,
+    VOID_RULE,
+)
+from tests.support.books import assert_books_balance, count_rows
+from tests.support.clock import FrozenClock
+from tests.support.factories import ActAs, Factory, identity_of
+from tests.support.settings import load_base_settings
+
+pytestmark = pytest.mark.integration
+
+BASE: Final[Settings] = load_base_settings()
+PRECISION: Final[int] = BASE.pricing.decimal_precision
+PRESETS: Final[tuple[int, ...]] = tuple(BASE.pricing.stake_presets_micro)
+"""TRADE_STAKE_PRESETS_CR in µCR: the buy buttons, in the order they are offered."""
+
+STAKE_LIMIT: Final[int] = BASE.pricing.max_stake_per_user_market_micro
+MIN_SHARES: Final[int] = BASE.pricing.min_trade_shares_micro
+DAILY_LIMIT: Final[int] = BASE.lifecycle.max_proposals_per_user_per_day
+LIFETIME: Final[timedelta] = BASE.risk.max_market_lifetime
+DELAY: Final[timedelta] = BASE.lifecycle.max_resolution_delay
+
+WALLET: Final[int] = 5 * STAKE_LIMIT
+"""What a trader of these tests starts with: more than every preset and the stake limit."""
+
+MARKETS: Final[str] = "/api/markets"
+PUBLIC_LIST: Final[str] = MarketCache.list_key(PUBLIC_STATUSES)
+"""The cache key of the list a request without `status` gets."""
+
+NOTHING: Final[Decimal] = to_cr(0)
+"""No credits and no shares, as an amount of the API."""
+
+SECOND: Final[timedelta] = timedelta(seconds=1)
+TICK: Final[timedelta] = timedelta(microseconds=1)
+NUL: Final[str] = "\x00"
+
+TEXTS_OF_A_PROPOSAL: Final[tuple[str, ...]] = (
+    "question",
+    "yes_definition",
+    "no_definition",
+    "resolution_criteria",
+    "resolution_source",
+)
+
+type FlushRedis = Callable[[], Awaitable[None]]
+
+
+# --- Asking and looking ------------------------------------------------------------------
+
+
+def proposal(now: datetime, **overrides: Any) -> ProposeMarketRequest:
+    """A proposal that breaks no rule at `now`, with `overrides` on top."""
+    values: dict[str, Any] = {
+        "question": "Will the Polymensa serve Älplermagronen on Friday?",
+        "yes_definition": "It is on the menu that day.",
+        "no_definition": "It is not on the menu that day.",
+        "resolution_criteria": "The menu published for that Friday decides.",
+        "resolution_source": "ethz.ch/menu",
+        "close_at": now + timedelta(days=7),
+        "resolve_by": now + timedelta(days=9),
+        "requested_tier": MarketTier.DEFAULT,
+    }
+    return ProposeMarketRequest(**(values | overrides))
+
+
+async def market_row(container: Container, market_id: UUID) -> Market:
+    async with container.uow_factory() as uow:
+        row = await uow.markets.get(market_id)
+    assert row is not None
+    return row
+
+
+async def resolution_of(container: Container, market: Market) -> Resolution | None:
+    async with container.uow_factory() as uow:
+        return await uow.resolutions.get_by_market(market.id)
+
+
+async def positions_of(container: Container, user: User, market: Market) -> Sequence[Position]:
+    async with container.uow_factory() as uow:
+        return await uow.positions.list_for_user_market(user.id, market.id)
+
+
+def listed(
+    container: Container, markets: Collection[Market], statuses: Collection[MarketStatus]
+) -> list[UUID]:
+    """The ids a list of `statuses` owes: the markets whose effective status is one of
+    them, soonest `close_at` first."""
+    view, now = container.market_view, container.clock.now()
+    in_order = sorted(markets, key=lambda market: (market.close_at, market.id))
+    return [market.id for market in in_order if view.effective_status(market, now) in statuses]
+
+
+def ids(answer: MarketListResponse) -> list[UUID]:
+    return [item.id for item in answer.items]
+
+
+async def sell(
+    container: Container, user: User, market: Market, outcome: Outcome, shares_micro: int
+) -> int:
+    """Let `user` sell shares they hold, as a committed trade would (A.4, A.8): the
+    counterpart of `Factory.position`. Returns the proceeds lmsr quotes. `market` is
+    brought up to the committed state in place."""
+    now = container.clock.now()
+    async with container.uow_factory() as uow:
+        row = await uow.markets.get_for_update(market.id)
+        account = await uow.accounts.get_user_account(user.id, for_update=True)
+        market_account = await uow.accounts.get_market_account(market.id)
+        position = await uow.positions.get(user.id, market.id, outcome)
+        assert row is not None
+        assert account is not None
+        assert market_account is not None
+        assert position is not None
+        state = lmsr.MarketState(q_yes=row.q_yes_micro, q_no=row.q_no_micro, b=row.b_micro)
+        quote = lmsr.quote_sell_shares(state, outcome, shares_micro, precision=PRECISION)
+        trade_id = uuid7()
+        if quote.amount_micro:
+            await container.ledger.post(
+                uow,
+                kind=JournalKind.TRADE_SELL,
+                ref_type=LedgerRef.TRADE,
+                ref_id=trade_id,
+                idempotency_key=trade_key(trade_id),
+                lines=[
+                    PostingLine(market_account.id, -quote.amount_micro),
+                    PostingLine(account.id, quote.amount_micro),
+                ],
+                at=now,
+            )
+        position.shares_micro -= shares_micro
+        position.proceeds_micro += quote.amount_micro
+        row.q_yes_micro = quote.after.q_yes
+        row.q_no_micro = quote.after.q_no
+        row.version += 1
+        row.volume_micro += quote.amount_micro
+        await uow.trades.add(
+            Trade(
+                id=trade_id,
+                market_id=market.id,
+                user_id=user.id,
+                side=TradeSide.SELL,
+                outcome=outcome,
+                shares_micro=shares_micro,
+                amount_micro=quote.amount_micro,
+                p_yes_before_micro=quote.p_yes_before_micro,
+                p_yes_after_micro=quote.p_yes_after_micro,
+                market_version=row.version,
+                created_at=now,
+            )
+        )
+    market.q_yes_micro = row.q_yes_micro
+    market.q_no_micro = row.q_no_micro
+    market.version = row.version
+    market.volume_micro = row.volume_micro
+    return quote.amount_micro
+
+
+# --- Proposing ---------------------------------------------------------------------------
+
+
+async def test_a_proposal_becomes_a_proposed_market_that_states_what_was_asked(
+    container: Container, factory: Factory, clock: FrozenClock
+) -> None:
+    alice = await factory.user()
+    request = proposal(clock.now(), requested_tier=MarketTier.MEDIUM)
+
+    answer = await container.markets.propose(factory.identity(alice), request)
+
+    row = await market_row(container, answer.id)
+    assert row.status is MarketStatus.PROPOSED
+    assert (
+        row.question,
+        row.yes_def,
+        row.no_def,
+        row.resolution_criteria,
+        row.resolution_source,
+    ) == (
+        request.question,
+        request.yes_definition,
+        request.no_definition,
+        request.resolution_criteria,
+        request.resolution_source,
+    )
+    assert (row.close_at, row.resolve_by) == (request.close_at, request.resolve_by)
+    assert (row.requested_tier, row.tier) == (MarketTier.MEDIUM, None)
+    assert (row.created_by, row.created_at) == (alice.id, clock.now())
+    # Liquidity comes with approval, and nobody has traded.
+    assert (row.budget_micro, row.b_micro) == (0, 0)
+    assert (row.q_yes_micro, row.q_no_micro, row.version, row.volume_micro) == (0, 0, 0, 0)
+    assert (row.approved_by, row.opened_at, row.closed_at, row.rejection_reason) == (
+        None,
+        None,
+        None,
+        None,
+    )
+
+
+async def test_the_answer_to_a_proposal_is_its_detail_as_the_proposer_sees_it(
+    container: Container, factory: Factory, clock: FrozenClock
+) -> None:
+    alice = factory.identity(await factory.user(balance_micro=WALLET))
+
+    answer = await container.markets.propose(alice, proposal(clock.now()))
+
+    assert answer == await container.markets.detail(alice, answer.id)
+    assert (answer.status, answer.trading_open, answer.tier) == (
+        MarketStatus.PROPOSED,
+        False,
+        None,
+    )
+    assert (answer.b_cr, answer.max_loss_cr, answer.volume_cr) == (NOTHING, NOTHING, NOTHING)
+    # A market that was never opened has no price of its own.
+    assert (answer.p_yes, answer.p_no) == (0.5, 0.5)
+    assert answer.viewer.balance_cr == to_cr(WALLET)
+    assert answer.viewer.can_trade is False
+
+
+async def test_a_proposal_is_not_public_so_it_opens_no_account_and_tells_nobody(
+    container: Container, factory: Factory, clock: FrozenClock
+) -> None:
+    """No market account, no chart point, no audit row, and the cached lists stay."""
+    alice = factory.identity(await factory.user())
+    await container.markets.list_markets(alice, None)
+    cached = await container.market_cache.get(PUBLIC_LIST)
+    assert cached is not None
+
+    answer = await container.markets.propose(alice, proposal(clock.now()))
+
+    async with container.uow_factory() as uow:
+        assert await uow.accounts.get_market_account(answer.id) is None
+    for table in (OutboxEvent, AuditLogEntry, JournalEntry):
+        assert await count_rows(container.uow_factory, table) == 0
+    assert await container.market_cache.get(PUBLIC_LIST) == cached
+
+
+@pytest.mark.parametrize(
+    ("closes_in", "resolves_after", "field"),
+    [
+        (timedelta(0), DELAY, "close_at"),
+        (-SECOND, timedelta(0), "close_at"),
+        (LIFETIME + TICK, timedelta(0), "close_at"),
+        (TICK, DELAY + TICK, "resolve_by"),
+        (LIFETIME, DELAY + TICK, "resolve_by"),
+        (-SECOND, DELAY + SECOND, "close_at"),
+    ],
+    ids=[
+        "closes-now",
+        "closes-in-the-past",
+        "open-a-moment-longer-than-the-lifetime",
+        "decided-a-moment-too-late",
+        "at-the-lifetime-and-decided-a-moment-too-late",
+        "both-wrong-the-close-is-named",
+    ],
+)
+async def test_a_proposal_whose_dates_break_a_rule_is_422_naming_the_field(
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    closes_in: timedelta,
+    resolves_after: timedelta,
+    field: str,
+) -> None:
+    alice = factory.identity(await factory.user())
+    close_at = clock.now() + closes_in
+    request = proposal(clock.now(), close_at=close_at, resolve_by=close_at + resolves_after)
+
+    with pytest.raises(ValidationFailedError) as refused:
+        await container.markets.propose(alice, request)
+
+    assert refused.value.status_code == 422
+    assert refused.value.details == {"field": field}
+    assert await count_rows(container.uow_factory, Market) == 0
+
+
+@pytest.mark.parametrize(
+    ("closes_in", "resolves_after"),
+    [(TICK, timedelta(0)), (LIFETIME, DELAY), (LIFETIME, timedelta(0)), (TICK, DELAY)],
+    ids=[
+        "closes-the-next-instant-and-is-decided-then",
+        "at-both-limits",
+        "at-the-lifetime",
+        "at-the-resolution-delay",
+    ],
+)
+async def test_a_proposal_at_the_edge_of_a_date_rule_is_taken(
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    closes_in: timedelta,
+    resolves_after: timedelta,
+) -> None:
+    alice = factory.identity(await factory.user())
+    close_at = clock.now() + closes_in
+    request = proposal(clock.now(), close_at=close_at, resolve_by=close_at + resolves_after)
+
+    answer = await container.markets.propose(alice, request)
+
+    assert (answer.close_at, answer.resolve_by) == (close_at, close_at + resolves_after)
+
+
+async def test_the_dates_of_a_proposal_are_instants_whatever_offset_they_are_written_in(
+    container: Container, factory: Factory, clock: FrozenClock
+) -> None:
+    """The form sends the two times with the offset of APP_TIMEZONE. A deadline that is
+    past is past in every offset, and one that is kept is kept as the instant it is."""
+    alice = factory.identity(await factory.user())
+    far_east = timezone(timedelta(hours=14))
+    far_west = timezone(-timedelta(hours=12))
+    # Tomorrow's date on the far-east clock, and still a moment ago.
+    just_passed = (clock.now() - SECOND).astimezone(far_east)
+    assert just_passed.date() > clock.now().date()
+    in_a_week = (clock.now() + timedelta(days=7)).astimezone(far_west)
+
+    with pytest.raises(ValidationFailedError) as refused:
+        await container.markets.propose(
+            alice, proposal(clock.now(), close_at=just_passed, resolve_by=just_passed)
+        )
+    answer = await container.markets.propose(
+        alice, proposal(clock.now(), close_at=in_a_week, resolve_by=in_a_week)
+    )
+
+    assert refused.value.details == {"field": "close_at"}
+    assert answer.close_at == clock.now() + timedelta(days=7)
+    assert (await market_row(container, answer.id)).close_at == in_a_week
+
+
+@pytest.mark.parametrize("field", TEXTS_OF_A_PROPOSAL)
+async def test_a_text_postgres_cannot_store_is_422_naming_the_field_not_a_failed_insert(
+    container: Container, factory: Factory, clock: FrozenClock, field: str
+) -> None:
+    """A NUL character is valid in JSON and in no text column."""
+    alice = factory.identity(await factory.user())
+    request = proposal(clock.now(), **{field: f"Will it rain{NUL} tomorrow?"})
+
+    with pytest.raises(ValidationFailedError) as refused:
+        await container.markets.propose(alice, request)
+
+    assert refused.value.details == {"field": field}
+    assert refused.value.message == UNSTORABLE_TEXT_MESSAGE
+    assert await count_rows(container.uow_factory, Market) == 0
+
+
+async def test_proposals_beyond_the_daily_limit_are_409_naming_the_limit(
+    container: Container, factory: Factory, clock: FrozenClock
+) -> None:
+    alice = factory.identity(await factory.user())
+    bob = factory.identity(await factory.user())
+    for _ in range(DAILY_LIMIT):
+        await container.markets.propose(alice, proposal(clock.now()))
+
+    with pytest.raises(LimitExceededError) as refused:
+        await container.markets.propose(alice, proposal(clock.now()))
+
+    assert refused.value.status_code == 409
+    assert refused.value.details == {"limit": Limit.MAX_PROPOSALS_PER_USER_PER_DAY}
+    assert refused.value.message == PROPOSAL_LIMIT_MESSAGE
+    assert await count_rows(container.uow_factory, Market) == DAILY_LIMIT
+    # The limit is each user's own.
+    await container.markets.propose(bob, proposal(clock.now()))
+
+
+async def test_a_proposal_counts_for_its_day_whatever_became_of_it(
+    container: Container, factory: Factory, clock: FrozenClock
+) -> None:
+    """Rejected and approved proposals were proposed all the same."""
+    alice = factory.identity(await factory.user())
+    admin = factory.identity(await factory.admin())
+    made = [
+        await container.markets.propose(alice, proposal(clock.now())) for _ in range(DAILY_LIMIT)
+    ]
+    await container.market_lifecycle.reject(
+        admin, made[0].id, RejectMarketRequest(reason="Asked before.")
+    )
+    if DAILY_LIMIT > 1:
+        await container.market_lifecycle.approve(
+            admin, made[1].id, ApproveMarketRequest(tier=MarketTier.DEFAULT)
+        )
+
+    with pytest.raises(LimitExceededError):
+        await container.markets.propose(alice, proposal(clock.now()))
+
+
+async def test_a_proposal_with_bad_dates_is_told_so_even_at_the_daily_limit(
+    container: Container, factory: Factory, clock: FrozenClock
+) -> None:
+    """The request is judged before the day is counted."""
+    alice = factory.identity(await factory.user())
+    for _ in range(DAILY_LIMIT):
+        await container.markets.propose(alice, proposal(clock.now()))
+
+    with pytest.raises(ValidationFailedError) as refused:
+        await container.markets.propose(alice, proposal(clock.now(), close_at=clock.now()))
+
+    assert refused.value.details == {"field": "close_at"}
+
+
+async def test_the_proposal_limit_starts_again_at_midnight_in_the_app_timezone(
+    container: Container, factory: Factory, clock: FrozenClock
+) -> None:
+    """Two minutes before midnight in Zurich and two minutes after it are one day in
+    UTC and two days on the calendar the limit counts."""
+    zone = container.settings.app.timezone
+    alice = factory.identity(await factory.user())
+    before_midnight = datetime(2026, 10, 9, 23, 58, tzinfo=zone)
+    clock.set(before_midnight)
+    for _ in range(DAILY_LIMIT):
+        await container.markets.propose(alice, proposal(clock.now()))
+    with pytest.raises(LimitExceededError):
+        await container.markets.propose(alice, proposal(clock.now()))
+
+    after_midnight = clock.advance(timedelta(minutes=4))
+
+    assert local_date(after_midnight, zone) > local_date(before_midnight, zone)
+    assert after_midnight.astimezone(UTC).date() == before_midnight.astimezone(UTC).date()
+    for _ in range(DAILY_LIMIT):
+        await container.markets.propose(alice, proposal(clock.now()))
+    with pytest.raises(LimitExceededError):
+        await container.markets.propose(alice, proposal(clock.now()))
+    assert await count_rows(container.uow_factory, Market) == 2 * DAILY_LIMIT
+
+
+async def test_midnight_in_utc_is_not_the_start_of_a_proposal_day(
+    container: Container, factory: Factory, clock: FrozenClock
+) -> None:
+    """Half past one at night in Zurich and an hour later are two days in UTC and one
+    day on the calendar the limit counts."""
+    zone = container.settings.app.timezone
+    alice = factory.identity(await factory.user())
+    at_night = datetime(2026, 10, 10, 1, 30, tzinfo=zone)
+    clock.set(at_night)
+    for _ in range(DAILY_LIMIT):
+        await container.markets.propose(alice, proposal(clock.now()))
+
+    an_hour_later = clock.advance(timedelta(hours=1))
+
+    assert local_date(an_hour_later, zone) == local_date(at_night, zone)
+    assert an_hour_later.astimezone(UTC).date() > at_night.astimezone(UTC).date()
+    with pytest.raises(LimitExceededError):
+        await container.markets.propose(alice, proposal(clock.now()))
+
+
+async def test_parallel_proposals_at_the_limit_admit_only_as_many_as_it_leaves(
+    container: Container, factory: Factory, clock: FrozenClock
+) -> None:
+    """Each request counts the day's proposals before it inserts its own. Without the
+    lock on the user's proposals, all of them would count the same number."""
+    alice = factory.identity(await factory.user())
+    for _ in range(DAILY_LIMIT - 1):
+        await container.markets.propose(alice, proposal(clock.now()))
+
+    answers = await asyncio.gather(
+        *(container.markets.propose(alice, proposal(clock.now())) for _ in range(4)),
+        return_exceptions=True,
+    )
+
+    taken = [answer for answer in answers if isinstance(answer, MarketDetailResponse)]
+    refused = [answer for answer in answers if isinstance(answer, LimitExceededError)]
+    assert (len(taken), len(refused)) == (1, 3)
+    assert await count_rows(container.uow_factory, Market) == DAILY_LIMIT
+
+
+async def test_the_route_takes_a_proposal_and_answers_201_with_the_market(
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+) -> None:
+    alice = await factory.user(balance_micro=WALLET)
+    as_user(alice)
+    zone = container.settings.app.timezone
+    close_at = (clock.now() + timedelta(days=7)).astimezone(zone)
+    body = proposal(clock.now(), close_at=close_at).model_dump(mode="json")
+    assert body["close_at"].endswith("+02:00")
+
+    response = await client.post(MARKETS, json=body)
+
+    assert response.status_code == 201
+    answer = MarketDetailResponse.model_validate(response.json())
+    assert answer == await container.markets.detail(factory.identity(alice), answer.id)
+    assert response.json()["status"] == "PROPOSED"
+    assert response.json()["close_at"] == "2026-10-16T12:00:00Z"
+    assert response.json()["viewer"]["balance_cr"] == format_cr(WALLET)
+
+
+@pytest.mark.parametrize(
+    ("field", "written"),
+    [
+        ("close_at", lambda now: (now - SECOND).isoformat()),
+        ("resolve_by", lambda now: (now + timedelta(days=7) + DELAY + SECOND).isoformat()),
+        ("question", lambda now: f"Will it rain{NUL} tomorrow?"),
+    ],
+    ids=["a-deadline-that-has-passed", "decided-too-late", "a-text-with-a-nul"],
+)
+async def test_the_route_answers_a_rule_of_the_service_with_422_and_the_field(
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    field: str,
+    written: Callable[[datetime], str],
+) -> None:
+    as_user(await factory.user())
+    body = proposal(clock.now()).model_dump(mode="json") | {field: written(clock.now())}
+
+    response = await client.post(MARKETS, json=body)
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "VALIDATION_ERROR"
+    assert response.json()["details"] == {"field": field}
+    assert response.json()["message"] != ValidationFailedError.default_message
+    assert await count_rows(container.uow_factory, Market) == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "written"),
+    [
+        ("requested_tier", lambda now: "CUSTOM"),
+        ("resolve_by", lambda now: (now + timedelta(days=1)).isoformat()),
+        ("budget_cr", lambda now: "50"),
+    ],
+    ids=["the-tier-of-vis", "decided-before-the-close", "a-field-nobody-asked-for"],
+)
+async def test_the_route_refuses_what_the_request_model_refuses_and_writes_nothing(
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    field: str,
+    written: Callable[[datetime], str],
+) -> None:
+    as_user(await factory.user())
+    body = proposal(clock.now()).model_dump(mode="json") | {field: written(clock.now())}
+
+    response = await client.post(MARKETS, json=body)
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "VALIDATION_ERROR"
+    assert response.json()["details"]["errors"]
+    assert await count_rows(container.uow_factory, Market) == 0
+
+
+async def test_the_route_answers_the_daily_limit_with_409_and_the_limit(
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+) -> None:
+    alice = await factory.user()
+    as_user(alice)
+    body = proposal(clock.now()).model_dump(mode="json")
+    for _ in range(DAILY_LIMIT):
+        assert (await client.post(MARKETS, json=body)).status_code == 201
+
+    response = await client.post(MARKETS, json=body)
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "code": "LIMIT_EXCEEDED",
+        "message": PROPOSAL_LIMIT_MESSAGE,
+        "details": {"limit": "MAX_PROPOSALS_PER_USER_PER_DAY"},
+    }
+    assert await count_rows(container.uow_factory, Market) == DAILY_LIMIT
+
+
+# --- Listing -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class World:
+    """One market of every kind a list can be asked for. Their deadlines differ, so the
+    order of a list is theirs and not the order they were made in."""
+
+    void: Market
+    resolved: Market
+    proposed: Market
+    open: Market
+    rejected: Market
+    halted: Market
+    closed: Market
+    closes_first: Market
+    """OPEN, with the soonest deadline of the markets that still trade."""
+
+    past_deadline: Market
+    """Stored OPEN, and reported CLOSED: its `close_at` has passed (A.4)."""
+
+    @property
+    def markets(self) -> tuple[Market, ...]:
+        return tuple(getattr(self, field.name) for field in fields(self))
+
+
+@pytest.fixture
+async def world(factory: Factory) -> World:
+    day = timedelta(days=1)
+    return World(
+        void=await factory.market(status=MarketStatus.VOID, close_in=5 * day),
+        resolved=await factory.market(
+            status=MarketStatus.RESOLVED, close_in=4 * day, outcome=ResolutionOutcome.NO
+        ),
+        proposed=await factory.market(status=MarketStatus.PROPOSED, close_in=6 * day),
+        open=await factory.market(close_in=3 * day),
+        rejected=await factory.market(status=MarketStatus.REJECTED, close_in=8 * day),
+        halted=await factory.market(status=MarketStatus.HALTED, close_in=2 * day),
+        closed=await factory.market(status=MarketStatus.CLOSED, close_in=day),
+        closes_first=await factory.market(close_in=day / 2),
+        past_deadline=await factory.market(close_in=-2 * timedelta(hours=1)),
+    )
+
+
+@pytest.fixture
+async def viewer(factory: Factory) -> AuthenticatedUser:
+    """A plain user."""
+    return factory.identity(await factory.user())
+
+
+@pytest.fixture
+async def admin(factory: Factory) -> AuthenticatedUser:
+    return factory.identity(await factory.admin())
+
+
+async def test_without_a_status_the_list_holds_every_public_market_soonest_close_first(
+    container: Container, world: World, viewer: AuthenticatedUser
+) -> None:
+    answer = await container.markets.list_markets(viewer, None)
+
+    assert ids(answer) == [
+        world.past_deadline.id,
+        world.closes_first.id,
+        world.closed.id,
+        world.halted.id,
+        world.open.id,
+        world.resolved.id,
+        world.void.id,
+    ]
+    assert ids(answer) == listed(container, world.markets, PUBLIC_STATUSES)
+
+
+async def test_markets_that_close_at_the_same_instant_are_listed_in_the_order_of_their_ids(
+    container: Container, factory: Factory, viewer: AuthenticatedUser
+) -> None:
+    twins = [await factory.market() for _ in range(4)]
+    assert len({market.close_at for market in twins}) == 1
+
+    answer = await container.markets.list_markets(viewer, None)
+
+    assert ids(answer) == sorted(market.id for market in twins)
+
+
+async def test_a_listed_market_is_the_card_market_view_makes_of_its_row(
+    container: Container, factory: Factory, world: World, viewer: AuthenticatedUser
+) -> None:
+    """The effective status, the display price of its q, volume and version, and for a
+    settled market how it ended."""
+    trader = await factory.user(balance_micro=WALLET)
+    await factory.position(trader, world.open, Outcome.YES, shares_micro=80 * MICRO)
+    await factory.position(trader, world.halted, Outcome.NO, shares_micro=30 * MICRO)
+    view, now = container.market_view, container.clock.now()
+
+    answer = await container.markets.list_markets(viewer, None)
+
+    cards = {item.id: item for item in answer.items}
+    for market in world.markets:
+        if market.status in HIDDEN_STATUSES:
+            continue
+        row = await market_row(container, market.id)
+        assert cards[market.id] == view.summary(row, now, await resolution_of(container, market))
+    traded = cards[world.open.id]
+    assert (traded.p_yes, traded.p_no) == view.probabilities(view.p_yes_micro(world.open))
+    assert traded.p_yes > 0.5 > cards[world.halted.id].p_yes
+    assert (traded.version, traded.volume_cr) == (1, to_cr(world.open.volume_micro))
+    assert (cards[world.resolved.id].outcome, cards[world.void.id].outcome) == (
+        ResolutionOutcome.NO,
+        ResolutionOutcome.VOID,
+    )
+    assert all(card.outcome is None for card in answer.items if card.status not in SETTLED_STATUSES)
+    late = cards[world.past_deadline.id]
+    assert (late.status, late.trading_open) == (MarketStatus.CLOSED, False)
+    assert [card.trading_open for card in answer.items] == [
+        card.status is MarketStatus.OPEN for card in answer.items
+    ]
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_market_past_its_deadline_is_listed_as_closed_and_not_as_open(
+    container: Container, world: World, viewer: AuthenticatedUser
+) -> None:
+    opened = await container.markets.list_markets(viewer, [MarketStatus.OPEN])
+    closed = await container.markets.list_markets(viewer, [MarketStatus.CLOSED])
+
+    assert ids(opened) == [world.closes_first.id, world.open.id]
+    assert ids(closed) == [world.past_deadline.id, world.closed.id]
+    assert {item.status for item in closed.items} == {MarketStatus.CLOSED}
+
+
+async def test_a_market_moves_from_the_open_list_to_the_closed_one_at_its_deadline(
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    viewer: AuthenticatedUser,
+    flush_redis: FlushRedis,
+) -> None:
+    market = await factory.market(close_in=timedelta(hours=1))
+
+    async def lists() -> tuple[list[UUID], list[UUID]]:
+        await flush_redis()
+        opened = await container.markets.list_markets(viewer, [MarketStatus.OPEN])
+        closed = await container.markets.list_markets(viewer, [MarketStatus.CLOSED])
+        return ids(opened), ids(closed)
+
+    clock.set(market.close_at - TICK)
+    assert await lists() == ([market.id], [])
+    clock.set(market.close_at)
+    assert await lists() == ([], [market.id])
+    assert (await market_row(container, market.id)).status is MarketStatus.OPEN
+
+
+@pytest.mark.parametrize(
+    "statuses",
+    [
+        [MarketStatus.OPEN, MarketStatus.HALTED],
+        [MarketStatus.RESOLVED, MarketStatus.VOID],
+        [MarketStatus.HALTED],
+        [MarketStatus.VOID, MarketStatus.CLOSED, MarketStatus.OPEN],
+    ],
+    ids=["the-open-chip", "the-resolved-chip", "one-status", "three-in-any-order"],
+)
+async def test_several_statuses_list_the_markets_of_each_in_one_order(
+    container: Container, world: World, viewer: AuthenticatedUser, statuses: list[MarketStatus]
+) -> None:
+    answer = await container.markets.list_markets(viewer, statuses)
+
+    assert ids(answer) == listed(container, world.markets, statuses)
+    assert {item.status for item in answer.items} == set(statuses)
+
+
+async def test_a_status_named_twice_counts_once(
+    container: Container, world: World, viewer: AuthenticatedUser
+) -> None:
+    twice = [MarketStatus.HALTED, MarketStatus.OPEN, MarketStatus.HALTED, MarketStatus.OPEN]
+
+    answer = await container.markets.list_markets(viewer, twice)
+
+    assert ids(answer) == [world.closes_first.id, world.halted.id, world.open.id]
+
+
+async def test_no_status_at_all_lists_nothing(
+    container: Container, world: World, viewer: AuthenticatedUser
+) -> None:
+    """What the route cannot ask for, another caller of the service can: an empty set
+    of statuses is not the same as leaving the filter out."""
+    assert (await container.markets.list_markets(viewer, [])).items == []
+
+
+@pytest.mark.parametrize(
+    "statuses",
+    [
+        [MarketStatus.PROPOSED],
+        [MarketStatus.REJECTED],
+        [MarketStatus.OPEN, MarketStatus.PROPOSED],
+        list(MarketStatus),
+    ],
+    ids=["proposed", "rejected", "proposed-with-a-public-status", "every-status"],
+)
+async def test_proposed_and_rejected_markets_are_listed_for_admins_and_403_for_everyone_else(
+    container: Container,
+    factory: Factory,
+    world: World,
+    viewer: AuthenticatedUser,
+    admin: AuthenticatedUser,
+    statuses: list[MarketStatus],
+) -> None:
+    barista = factory.identity(await factory.barista())
+    proposer = await factory.user()
+    own = await factory.market(status=MarketStatus.PROPOSED, created_by=proposer)
+
+    for refused in (viewer, barista, factory.identity(proposer)):
+        with pytest.raises(ForbiddenError) as error:
+            await container.markets.list_markets(refused, statuses)
+        assert error.value.status_code == 403
+    answer = await container.markets.list_markets(admin, statuses)
+
+    assert ids(answer) == listed(container, (*world.markets, own), statuses)
+    assert {item.status for item in answer.items} == set(statuses)
+
+
+async def test_a_suspended_admin_is_no_admin_to_the_list(
+    container: Container, factory: Factory, world: World
+) -> None:
+    """A suspended account keeps its address and none of its rights. The guards stop it
+    before the service; the service does not rely on that."""
+    suspended = identity_of(await factory.user(status=UserStatus.SUSPENDED), UserRole.ADMIN)
+
+    with pytest.raises(ForbiddenError):
+        await container.markets.list_markets(suspended, [MarketStatus.PROPOSED])
+
+
+@hypothesis_settings(
+    max_examples=60,
+    deadline=None,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
+)
+@given(statuses=st.lists(st.sampled_from(MarketStatus), max_size=9))
+async def test_any_set_of_statuses_lists_exactly_the_markets_in_them_to_whoever_may_ask(
+    container: Container,
+    world: World,
+    viewer: AuthenticatedUser,
+    admin: AuthenticatedUser,
+    statuses: list[MarketStatus],
+) -> None:
+    """Whatever is asked for, in any order and however often: an admin gets the markets
+    whose effective status was named, soonest close first. A plain user gets the same
+    list, or 403 as soon as PROPOSED or REJECTED is among them. Lists come from the
+    cache or from Postgres as it happens; the answer is the same."""
+    expected = listed(container, world.markets, statuses)
+
+    assert ids(await container.markets.list_markets(admin, statuses)) == expected
+    if HIDDEN_STATUSES.isdisjoint(statuses):
+        assert ids(await container.markets.list_markets(viewer, statuses)) == expected
+    else:
+        with pytest.raises(ForbiddenError):
+            await container.markets.list_markets(viewer, statuses)
+
+
+async def test_the_route_lists_markets_with_amounts_as_strings_and_403_for_a_hidden_status(
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+    container: Container,
+    factory: Factory,
+    world: World,
+) -> None:
+    trader = await factory.user(balance_micro=WALLET)
+    await factory.position(trader, world.open, Outcome.YES, shares_micro=80 * MICRO)
+    as_user(trader)
+
+    everything = await client.get(MARKETS)
+    chip = await client.get(MARKETS, params=[("status", "OPEN"), ("status", "HALTED")])
+    hidden = await client.get(MARKETS, params=[("status", "OPEN"), ("status", "PROPOSED")])
+
+    assert everything.status_code == 200
+    assert MarketListResponse.model_validate(everything.json()) == (
+        await container.markets.list_markets(factory.identity(trader), None)
+    )
+    assert [item["id"] for item in chip.json()["items"]] == [
+        str(world.closes_first.id),
+        str(world.halted.id),
+        str(world.open.id),
+    ]
+    traded = chip.json()["items"][2]
+    assert traded["volume_cr"] == format_cr(world.open.volume_micro)
+    assert isinstance(traded["p_yes"], float)
+    assert hidden.status_code == 403
+    assert (hidden.json()["code"], hidden.json()["details"]) == ("FORBIDDEN", {})
+
+    as_user(await factory.admin())
+    for_admins = await client.get(MARKETS, params={"status": "PROPOSED"})
+    assert [item["id"] for item in for_admins.json()["items"]] == [str(world.proposed.id)]
+    await assert_books_balance(container.uow_factory)
+
+
+# --- The list cache ----------------------------------------------------------------------
+
+
+async def test_a_list_is_served_from_the_cache_until_the_lists_are_dropped(
+    container: Container, factory: Factory, viewer: AuthenticatedUser
+) -> None:
+    """A market written behind the service's back shows what a second request reads:
+    not Postgres."""
+    first = await factory.market()
+    before = await container.markets.list_markets(viewer, None)
+    assert await container.market_cache.get(PUBLIC_LIST) == before.model_dump_json()
+    second = await factory.market(close_in=timedelta(days=1))
+
+    cached = await container.markets.list_markets(viewer, None)
+    await container.market_cache.invalidate_lists()
+    after = await container.markets.list_markets(viewer, None)
+
+    assert ids(before) == ids(cached) == [first.id]
+    assert cached == before
+    assert ids(after) == [second.id, first.id]
+    assert await container.market_cache.get(PUBLIC_LIST) == after.model_dump_json()
+
+
+async def test_one_cached_list_serves_every_viewer_and_every_spelling_of_its_statuses(
+    container: Container,
+    factory: Factory,
+    viewer: AuthenticatedUser,
+    admin: AuthenticatedUser,
+) -> None:
+    """A list holds nothing about who asked, and one set of statuses has one key."""
+    first = await factory.market()
+    chip = [MarketStatus.OPEN, MarketStatus.HALTED]
+    before = await container.markets.list_markets(viewer, chip)
+    await factory.market(status=MarketStatus.HALTED)
+
+    for someone, spelled in (
+        (admin, chip),
+        (viewer, [MarketStatus.HALTED, MarketStatus.OPEN]),
+        (admin, [MarketStatus.OPEN, MarketStatus.HALTED, MarketStatus.OPEN]),
+    ):
+        assert await container.markets.list_markets(someone, spelled) == before
+    assert ids(before) == [first.id]
+
+
+async def test_each_set_of_statuses_is_cached_on_its_own_and_all_are_dropped_together(
+    container: Container, factory: Factory, viewer: AuthenticatedUser
+) -> None:
+    halted = await factory.market(status=MarketStatus.HALTED)
+    opened = await container.markets.list_markets(viewer, [MarketStatus.OPEN])
+    paused = await container.markets.list_markets(viewer, [MarketStatus.HALTED])
+    everything = await container.markets.list_markets(viewer, None)
+    cache = container.market_cache
+
+    assert (ids(opened), ids(paused), ids(everything)) == ([], [halted.id], [halted.id])
+    assert await cache.get(MarketCache.list_key([MarketStatus.OPEN])) == opened.model_dump_json()
+    assert await cache.get(MarketCache.list_key([MarketStatus.HALTED])) == paused.model_dump_json()
+    assert await cache.get(PUBLIC_LIST) == everything.model_dump_json()
+
+    await cache.invalidate_lists()
+
+    for key in (
+        MarketCache.list_key([MarketStatus.OPEN]),
+        MarketCache.list_key([MarketStatus.HALTED]),
+        PUBLIC_LIST,
+    ):
+        assert await cache.get(key) is None
+
+
+@pytest.mark.parametrize(
+    "statuses",
+    [[MarketStatus.PROPOSED], [MarketStatus.OPEN, MarketStatus.REJECTED], list(MarketStatus)],
+    ids=["proposed", "rejected-with-a-public-status", "every-status"],
+)
+async def test_a_list_with_proposed_or_rejected_markets_is_never_cached(
+    container: Container,
+    factory: Factory,
+    admin: AuthenticatedUser,
+    statuses: list[MarketStatus],
+) -> None:
+    """Such a list is for admins. Out of a shared cache it could reach somebody else,
+    and a proposal just made would be missing from it."""
+    hidden = next(status for status in statuses if status in HIDDEN_STATUSES)
+    await factory.market()
+    before = await container.markets.list_markets(admin, statuses)
+    late = await factory.market(status=hidden)
+
+    after = await container.markets.list_markets(admin, statuses)
+
+    assert await container.market_cache.get(MarketCache.list_key(statuses)) is None
+    assert late.id not in ids(before)
+    assert late.id in ids(after)
+
+
+@pytest.mark.parametrize(
+    "left_behind",
+    ["", "not json", "[]", '{"items": [{"id": "of-another-version"}]}', '{"items": 7}'],
+    ids=["nothing", "no-json", "a-list", "cards-of-another-shape", "no-cards"],
+)
+async def test_a_cached_entry_that_is_no_list_counts_as_a_miss_and_is_replaced(
+    container: Container, factory: Factory, viewer: AuthenticatedUser, left_behind: str
+) -> None:
+    """Redis decides nothing: an entry another version of the API left behind must not
+    fail the list for as long as it lives."""
+    market = await factory.market()
+    await container.market_cache.set(PUBLIC_LIST, left_behind)
+
+    answer = await container.markets.list_markets(viewer, None)
+
+    assert ids(answer) == [market.id]
+    assert await container.market_cache.get(PUBLIC_LIST) == answer.model_dump_json()
+
+
+async def test_a_change_to_a_market_shows_in_the_lists_at_once_not_a_cache_lifetime_later(
+    container: Container, factory: Factory, viewer: AuthenticatedUser, admin: AuthenticatedUser
+) -> None:
+    """A lifecycle action drops the lists after its commit (A.4)."""
+    market = await factory.market()
+    chip = [MarketStatus.OPEN]
+    assert ids(await container.markets.list_markets(viewer, chip)) == [market.id]
+    assert ids(await container.markets.list_markets(viewer, None)) == [market.id]
+
+    await container.market_lifecycle.halt(
+        admin, market.id, HaltMarketRequest(reason="The source is in doubt.")
+    )
+
+    assert ids(await container.markets.list_markets(viewer, chip)) == []
+    (card,) = (await container.markets.list_markets(viewer, None)).items
+    assert (card.status, card.trading_open) == (MarketStatus.HALTED, False)
+
+
+@pytest.mark.redis_down
+async def test_without_redis_lists_and_details_come_from_postgres(
+    container: Container, factory: Factory
+) -> None:
+    """SPEC §9: the cache is bypassed, nothing else changes."""
+    alice = factory.identity(await factory.user(balance_micro=WALLET))
+    market = await factory.market()
+
+    first = await container.markets.list_markets(alice, None)
+    late = await factory.market(close_in=timedelta(days=1))
+    second = await container.markets.list_markets(alice, None)
+    detail = await container.markets.detail(alice, market.id)
+
+    assert (ids(first), ids(second)) == ([market.id], [late.id, market.id])
+    assert (detail.id, detail.viewer.balance_cr) == (market.id, to_cr(WALLET))
+
+
+# --- One market: who may see it ----------------------------------------------------------
+
+
+async def test_a_market_nobody_knows_is_404(
+    container: Container, viewer: AuthenticatedUser, admin: AuthenticatedUser
+) -> None:
+    for someone in (viewer, admin):
+        with pytest.raises(NotFoundError) as refused:
+            await container.markets.detail(someone, uuid7())
+        assert refused.value.status_code == 404
+
+
+@pytest.mark.parametrize("status", sorted(HIDDEN_STATUSES))
+async def test_a_proposed_or_rejected_market_is_404_to_all_but_its_proposer_and_admins(
+    container: Container,
+    factory: Factory,
+    viewer: AuthenticatedUser,
+    admin: AuthenticatedUser,
+    status: MarketStatus,
+) -> None:
+    proposer = await factory.user()
+    barista = factory.identity(await factory.barista())
+    market = await factory.market(status=status, created_by=proposer)
+
+    for stranger in (viewer, barista):
+        with pytest.raises(NotFoundError):
+            await container.markets.detail(stranger, market.id)
+    own = await container.markets.detail(factory.identity(proposer), market.id)
+    seen = await container.markets.detail(admin, market.id)
+
+    assert (own.id, own.status) == (seen.id, seen.status) == (market.id, status)
+    assert own.rejection_reason == market.rejection_reason
+    assert (own.rejection_reason is not None) == (status is MarketStatus.REJECTED)
+
+
+@pytest.mark.parametrize("status", PUBLIC_STATUSES)
+async def test_every_other_market_is_for_everybody(
+    container: Container, factory: Factory, viewer: AuthenticatedUser, status: MarketStatus
+) -> None:
+    market = await factory.market(status=status)
+
+    assert (await container.markets.detail(viewer, market.id)).status is status
+
+
+async def test_who_proposed_a_market_is_told_to_admins_only(
+    container: Container, factory: Factory, viewer: AuthenticatedUser, admin: AuthenticatedUser
+) -> None:
+    proposer = await factory.user()
+    barista = factory.identity(await factory.barista())
+    market = await factory.market(created_by=proposer)
+
+    assert (await container.markets.detail(admin, market.id)).proposer_email == proposer.email
+    for someone in (viewer, barista, factory.identity(proposer)):
+        assert (await container.markets.detail(someone, market.id)).proposer_email is None
+
+
+# --- One market: its rules ---------------------------------------------------------------
+
+
+async def test_a_market_shows_its_wording_its_liquidity_and_the_void_rule_before_anyone_trades(
+    container: Container, factory: Factory, viewer: AuthenticatedUser
+) -> None:
+    market = await factory.market(tier=MarketTier.TIGHT)
+    view, now = container.market_view, container.clock.now()
+
+    detail = await container.markets.detail(viewer, market.id)
+
+    summary = view.summary(market, now, None)
+    assert detail.model_dump(include=set(type(summary).model_fields)) == summary.model_dump()
+    assert (
+        detail.yes_definition,
+        detail.no_definition,
+        detail.resolution_criteria,
+        detail.resolution_source,
+    ) == (market.yes_def, market.no_def, market.resolution_criteria, market.resolution_source)
+    assert (detail.requested_tier, detail.tier) == (MarketTier.TIGHT, MarketTier.TIGHT)
+    assert detail.b_cr == to_cr(container.settings.pricing.tier_b_micro(MarketTier.TIGHT))
+    assert detail.max_loss_cr == to_cr(market.budget_micro)
+    assert detail.void_rule == VOID_RULE
+    assert (detail.created_at, detail.opened_at, detail.closed_at) == (now, now, None)
+    assert (detail.rejection_reason, detail.resolution) == (None, None)
+
+
+@pytest.mark.parametrize(
+    ("status", "outcome"),
+    [
+        (MarketStatus.RESOLVED, ResolutionOutcome.YES),
+        (MarketStatus.RESOLVED, ResolutionOutcome.NO),
+        (MarketStatus.VOID, ResolutionOutcome.VOID),
+    ],
+)
+async def test_a_settled_market_shows_how_it_ended(
+    container: Container,
+    factory: Factory,
+    viewer: AuthenticatedUser,
+    status: MarketStatus,
+    outcome: ResolutionOutcome,
+) -> None:
+    market = await factory.market(status=status, outcome=outcome)
+    resolution = await resolution_of(container, market)
+    assert resolution is not None
+
+    detail = await container.markets.detail(viewer, market.id)
+
+    assert detail.outcome is outcome
+    assert detail.resolution is not None
+    assert (
+        detail.resolution.outcome,
+        detail.resolution.evidence,
+        detail.resolution.resolved_at,
+    ) == (outcome, resolution.evidence, resolution.created_at)
+    assert detail.closed_at == market.closed_at
+
+
+# --- One market: the viewer's side -------------------------------------------------------
+
+
+async def test_the_viewer_block_is_what_market_view_makes_of_their_account_and_positions(
+    container: Container, factory: Factory
+) -> None:
+    """Balance, holdings at the current price, everything paid and received, the net
+    stake and what the stake limit leaves."""
+    alice = await factory.user(balance_micro=WALLET)
+    bob = await factory.user(balance_micro=WALLET)
+    market = await factory.market()
+    await factory.position(alice, market, Outcome.YES, shares_micro=60 * MICRO)
+    await factory.position(alice, market, Outcome.NO, shares_micro=20 * MICRO)
+    await factory.position(bob, market, Outcome.NO, shares_micro=90 * MICRO)
+    received_micro = await sell(container, alice, market, Outcome.YES, 25 * MICRO)
+    view = container.market_view
+
+    detail = await container.markets.detail(factory.identity(alice), market.id)
+
+    rows = await positions_of(container, alice, market)
+    paid_micro = sum(row.cost_micro for row in rows)
+    block = detail.viewer
+    assert block.balance_cr == to_cr(await factory.balance_micro(alice))
+    assert block.balance_cr == to_cr(WALLET - paid_micro + received_micro)
+    assert block.holdings == view.holdings(market, rows, None)
+    assert [(held.outcome, held.shares) for held in block.holdings] == [
+        (Outcome.YES, to_cr(35 * MICRO)),
+        (Outcome.NO, to_cr(20 * MICRO)),
+    ]
+    assert (block.cost_cr, block.proceeds_cr) == (to_cr(paid_micro), to_cr(received_micro))
+    assert received_micro > 0
+    assert block.net_stake_cr == to_cr(view.net_stake_micro(rows))
+    assert block.stake_limit_cr == to_cr(view.stake_limit_micro) == to_cr(STAKE_LIMIT)
+    assert block.stake_left_cr == to_cr(view.stake_left_micro(view.net_stake_micro(rows)))
+    assert 0 < block.stake_left_cr < block.stake_limit_cr
+    assert (block.payout_cr, block.refund_cr) == (None, None)
+    # Somebody else's trades are not the viewer's: bob moved the price, not the stake.
+    assert detail.p_yes == view.probabilities(view.p_yes_micro(market))[0]
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_somebody_who_never_traded_a_market_sees_an_empty_side_and_the_whole_limit(
+    container: Container, factory: Factory
+) -> None:
+    alice = await factory.user(balance_micro=WALLET)
+    trader = await factory.user(balance_micro=WALLET)
+    market = await factory.market()
+    await factory.position(trader, market, Outcome.YES, shares_micro=60 * MICRO)
+
+    block = (await container.markets.detail(factory.identity(alice), market.id)).viewer
+
+    assert [(held.outcome, held.shares, held.value_cr) for held in block.holdings] == [
+        (Outcome.YES, NOTHING, NOTHING),
+        (Outcome.NO, NOTHING, NOTHING),
+    ]
+    assert (block.cost_cr, block.proceeds_cr, block.net_stake_cr) == (NOTHING, NOTHING, NOTHING)
+    assert block.stake_left_cr == block.stake_limit_cr == to_cr(STAKE_LIMIT)
+    assert block.balance_cr == to_cr(WALLET)
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_detail_is_read_from_postgres_every_time(
+    container: Container, factory: Factory
+) -> None:
+    """It carries its viewer's side, so no answer is anybody else's and none is cached:
+    a trade shows in the next one."""
+    alice = await factory.user(balance_micro=WALLET)
+    viewer = factory.identity(alice)
+    market = await factory.market()
+    await container.markets.list_markets(viewer, None)
+    before = await container.markets.detail(viewer, market.id)
+
+    await factory.position(alice, market, Outcome.YES, shares_micro=40 * MICRO)
+    after = await container.markets.detail(viewer, market.id)
+
+    assert (before.version, after.version) == (0, 1)
+    assert before.viewer.cost_cr == NOTHING < after.viewer.cost_cr
+    assert after.viewer.balance_cr == before.viewer.balance_cr - after.viewer.cost_cr
+    assert after.p_yes > before.p_yes
+    await assert_books_balance(container.uow_factory)
+
+
+# --- One market: the buy buttons ---------------------------------------------------------
+
+
+def allowed_stakes(detail: MarketDetailResponse) -> list[bool]:
+    assert [preset.amount_cr for preset in detail.viewer.stake_presets] == [
+        to_cr(preset) for preset in PRESETS
+    ]
+    return [preset.allowed for preset in detail.viewer.stake_presets]
+
+
+async def test_every_stake_preset_is_allowed_to_a_trader_with_the_tokens_and_the_whole_limit(
+    container: Container, factory: Factory
+) -> None:
+    alice = factory.identity(await factory.user(balance_micro=WALLET))
+    market = await factory.market()
+
+    detail = await container.markets.detail(alice, market.id)
+
+    assert allowed_stakes(detail) == [preset <= STAKE_LIMIT for preset in PRESETS]
+    assert any(allowed_stakes(detail))
+
+
+async def test_a_stake_preset_the_balance_does_not_cover_is_not_allowed(
+    container: Container, factory: Factory
+) -> None:
+    """A balance of exactly a preset covers it and no larger one."""
+    covered = PRESETS[len(PRESETS) // 2]
+    alice = factory.identity(await factory.user(balance_micro=covered))
+    broke = factory.identity(await factory.user())
+    market = await factory.market()
+
+    assert allowed_stakes(await container.markets.detail(alice, market.id)) == [
+        preset <= covered for preset in PRESETS
+    ]
+    assert allowed_stakes(await container.markets.detail(broke, market.id)) == [False] * len(
+        PRESETS
+    )
+
+
+async def test_a_stake_preset_above_what_the_stake_limit_leaves_is_not_allowed(
+    container: Container, factory: Factory
+) -> None:
+    """With exactly the smallest preset left, that one is allowed; one micro-credit less
+    left and none is."""
+    smallest = min(PRESETS)
+    alice = await factory.user(balance_micro=WALLET)
+    market = await factory.market()
+    await factory.position(
+        alice, market, Outcome.YES, shares_micro=5 * MICRO, cost_micro=STAKE_LIMIT - smallest
+    )
+
+    exactly = await container.markets.detail(factory.identity(alice), market.id)
+    await factory.position(alice, market, Outcome.NO, shares_micro=1, cost_micro=1)
+    short = await container.markets.detail(factory.identity(alice), market.id)
+
+    assert exactly.viewer.stake_left_cr == to_cr(smallest)
+    assert allowed_stakes(exactly) == [preset <= smallest for preset in PRESETS]
+    assert short.viewer.stake_left_cr == to_cr(smallest - 1)
+    assert allowed_stakes(short) == [False] * len(PRESETS)
+    assert short.viewer.stake_presets == container.market_view.stake_presets(
+        smallest - 1, await factory.balance_micro(alice), True
+    )
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_selling_gives_stake_back_and_buttons_with_it(
+    container: Container, factory: Factory
+) -> None:
+    """SPEC §4: selling lowers the net stake, so a user can buy again up to the limit."""
+    alice = await factory.user(balance_micro=WALLET)
+    market = await factory.market()
+    await factory.position(
+        alice, market, Outcome.YES, shares_micro=150 * MICRO, cost_micro=STAKE_LIMIT
+    )
+    at_the_limit = await container.markets.detail(factory.identity(alice), market.id)
+
+    received_micro = await sell(container, alice, market, Outcome.YES, 150 * MICRO)
+    after = await container.markets.detail(factory.identity(alice), market.id)
+
+    assert at_the_limit.viewer.stake_left_cr == NOTHING
+    assert allowed_stakes(at_the_limit) == [False] * len(PRESETS)
+    assert after.viewer.stake_left_cr == to_cr(received_micro)
+    assert allowed_stakes(after) == [preset <= received_micro for preset in PRESETS]
+    assert any(allowed_stakes(after))
+    await assert_books_balance(container.uow_factory)
+
+
+# --- One market: the sell buttons --------------------------------------------------------
+
+
+async def test_the_sell_presets_are_half_and_all_of_each_holding_yes_first(
+    container: Container, factory: Factory
+) -> None:
+    """Half is rounded down to a millionth of a share, so the client halves nothing."""
+    alice = await factory.user(balance_micro=WALLET)
+    market = await factory.market()
+    odd_micro = 30 * MICRO + 1
+    await factory.position(alice, market, Outcome.YES, shares_micro=odd_micro)
+
+    detail = await container.markets.detail(factory.identity(alice), market.id)
+
+    presets = detail.viewer.sell_presets
+    assert [(preset.outcome, preset.portion) for preset in presets] == [
+        (Outcome.YES, SellPortion.HALF),
+        (Outcome.YES, SellPortion.ALL),
+        (Outcome.NO, SellPortion.HALF),
+        (Outcome.NO, SellPortion.ALL),
+    ]
+    assert [preset.shares for preset in presets] == [
+        to_cr(15 * MICRO),
+        to_cr(odd_micro),
+        NOTHING,
+        NOTHING,
+    ]
+    assert [preset.allowed for preset in presets] == [True, True, False, False]
+    assert presets == container.market_view.sell_presets(
+        await positions_of(container, alice, market), True
+    )
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_sell_preset_below_the_smallest_trade_is_not_allowed(
+    container: Container, factory: Factory
+) -> None:
+    """Of a holding of one and a half smallest trades, all of it can be sold and half
+    of it cannot."""
+    alice = await factory.user(balance_micro=WALLET)
+    market = await factory.market()
+    holding_micro = MIN_SHARES + MIN_SHARES // 2
+    await factory.position(alice, market, Outcome.NO, shares_micro=holding_micro)
+
+    detail = await container.markets.detail(factory.identity(alice), market.id)
+
+    half, everything = detail.viewer.sell_presets[2:]
+    assert (half.outcome, half.shares, half.allowed) == (
+        Outcome.NO,
+        to_cr(holding_micro // 2),
+        False,
+    )
+    assert (everything.shares, everything.allowed) == (to_cr(holding_micro), True)
+    await assert_books_balance(container.uow_factory)
+
+
+# --- One market: may the viewer trade ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("status", "closes_in", "own", "reason"),
+    [
+        (MarketStatus.OPEN, timedelta(days=7), False, None),
+        (MarketStatus.OPEN, timedelta(days=7), True, TradeBlockReason.OWN_MARKET),
+        (MarketStatus.OPEN, -TICK, False, TradeBlockReason.MARKET_NOT_OPEN),
+        (MarketStatus.OPEN, timedelta(0), False, TradeBlockReason.MARKET_NOT_OPEN),
+        (MarketStatus.OPEN, -TICK, True, TradeBlockReason.MARKET_NOT_OPEN),
+        (MarketStatus.HALTED, timedelta(days=7), False, TradeBlockReason.MARKET_NOT_OPEN),
+        (MarketStatus.HALTED, timedelta(days=7), True, TradeBlockReason.MARKET_NOT_OPEN),
+        (MarketStatus.CLOSED, timedelta(days=7), False, TradeBlockReason.MARKET_NOT_OPEN),
+        (MarketStatus.RESOLVED, timedelta(days=7), False, TradeBlockReason.MARKET_NOT_OPEN),
+        (MarketStatus.VOID, timedelta(days=7), False, TradeBlockReason.MARKET_NOT_OPEN),
+        (MarketStatus.PROPOSED, timedelta(days=7), True, TradeBlockReason.MARKET_NOT_OPEN),
+        (MarketStatus.REJECTED, timedelta(days=7), True, TradeBlockReason.MARKET_NOT_OPEN),
+    ],
+    ids=[
+        "open",
+        "open-and-the-viewer-proposed-it",
+        "open-a-moment-past-its-deadline",
+        "open-at-its-deadline",
+        "past-its-deadline-and-the-viewers-own",
+        "halted",
+        "halted-and-the-viewers-own",
+        "closed",
+        "resolved",
+        "void",
+        "the-viewers-proposal",
+        "the-viewers-rejected-proposal",
+    ],
+)
+async def test_whether_the_viewer_may_trade_and_the_first_reason_why_not(
+    container: Container,
+    factory: Factory,
+    status: MarketStatus,
+    closes_in: timedelta,
+    own: bool,
+    reason: TradeBlockReason | None,
+) -> None:
+    """The market's status is asked before whose market it is. Nothing is offered to
+    somebody who may not trade, whatever they hold and have."""
+    alice = await factory.user(balance_micro=WALLET)
+    proposer = alice if own else await factory.user()
+    market = await factory.market(status=status, close_in=closes_in, created_by=proposer)
+
+    block = (await container.markets.detail(factory.identity(alice), market.id)).viewer
+
+    assert (block.can_trade, block.cannot_trade_reason) == (reason is None, reason)
+    if reason is not None:
+        assert not any(preset.allowed for preset in block.stake_presets)
+        assert not any(preset.allowed for preset in block.sell_presets)
+
+
+async def test_a_halted_market_offers_no_button_to_somebody_with_shares_tokens_and_stake_left(
+    container: Container, factory: Factory, admin: AuthenticatedUser
+) -> None:
+    alice = await factory.user(balance_micro=WALLET)
+    market = await factory.market()
+    await factory.position(alice, market, Outcome.YES, shares_micro=40 * MICRO)
+    trading = await container.markets.detail(factory.identity(alice), market.id)
+
+    await container.market_lifecycle.halt(
+        admin, market.id, HaltMarketRequest(reason="The source is in doubt.")
+    )
+    paused = await container.markets.detail(factory.identity(alice), market.id)
+
+    assert any(preset.allowed for preset in trading.viewer.stake_presets)
+    assert [preset.allowed for preset in trading.viewer.sell_presets[:2]] == [True, True]
+    assert paused.viewer.cannot_trade_reason is TradeBlockReason.MARKET_NOT_OPEN
+    assert not any(preset.allowed for preset in paused.viewer.stake_presets)
+    assert not any(preset.allowed for preset in paused.viewer.sell_presets)
+    # What is offered changed; what the viewer holds did not.
+    assert [preset.shares for preset in paused.viewer.sell_presets] == [
+        preset.shares for preset in trading.viewer.sell_presets
+    ]
+    assert paused.viewer.stake_left_cr == trading.viewer.stake_left_cr
+    await assert_books_balance(container.uow_factory)
+
+
+# --- One market: what it paid and gave back ----------------------------------------------
+
+
+@pytest.mark.parametrize("outcome", list(Outcome))
+async def test_a_resolved_market_shows_each_viewer_the_shares_they_held_of_the_winning_outcome(
+    container: Container, factory: Factory, admin: AuthenticatedUser, outcome: Outcome
+) -> None:
+    winner = await factory.user(balance_micro=WALLET)
+    loser = await factory.user(balance_micro=WALLET)
+    both = await factory.user(balance_micro=WALLET)
+    onlooker = await factory.user()
+    market = await factory.market(status=MarketStatus.CLOSED)
+    await factory.position(winner, market, outcome, shares_micro=70 * MICRO)
+    await factory.position(loser, market, outcome.opposite, shares_micro=40 * MICRO)
+    await factory.position(both, market, outcome, shares_micro=10 * MICRO)
+    await factory.position(both, market, outcome.opposite, shares_micro=25 * MICRO)
+    unsettled = await container.markets.detail(factory.identity(winner), market.id)
+    held_before_micro = await factory.balance_micro(winner)
+
+    await container.market_lifecycle.resolve(
+        admin, market.id, ResolveMarketRequest(outcome=outcome, evidence="The menu shows it.")
+    )
+
+    view = container.market_view
+    resolution = await resolution_of(container, market)
+    expected_micro = {winner.id: 70 * MICRO, loser.id: 0, both.id: 10 * MICRO, onlooker.id: 0}
+    for user in (winner, loser, both, onlooker):
+        block = (await container.markets.detail(factory.identity(user), market.id)).viewer
+        rows = await positions_of(container, user, market)
+        assert block.payout_cr == to_cr(expected_micro[user.id])
+        assert view.payout_micro(rows, resolution) == expected_micro[user.id]
+        assert block.refund_cr is None
+        # A share of the winning outcome is worth one credit, the other nothing.
+        assert sum(held.value_cr for held in block.holdings) == block.payout_cr
+        assert block.can_trade is False
+    paid = (await container.markets.detail(factory.identity(winner), market.id)).viewer
+    assert (unsettled.viewer.payout_cr, unsettled.viewer.refund_cr) == (None, None)
+    assert paid.balance_cr == to_cr(held_before_micro + 70 * MICRO)
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_void_market_shows_each_viewer_the_net_stake_they_got_back(
+    container: Container, factory: Factory, admin: AuthenticatedUser
+) -> None:
+    """Their shares are gone; cost and proceeds stay, and the refund is read off them."""
+    holder = await factory.user(balance_micro=WALLET)
+    seller = await factory.user(balance_micro=WALLET)
+    onlooker = await factory.user()
+    market = await factory.market(status=MarketStatus.CLOSED)
+    await factory.position(holder, market, Outcome.YES, shares_micro=70 * MICRO)
+    await factory.position(seller, market, Outcome.NO, shares_micro=40 * MICRO)
+    await sell(container, seller, market, Outcome.NO, 15 * MICRO)
+    view = container.market_view
+    stakes_micro = {
+        user.id: view.net_stake_micro(await positions_of(container, user, market))
+        for user in (holder, seller, onlooker)
+    }
+    balances_micro = {
+        user.id: await factory.balance_micro(user) for user in (holder, seller, onlooker)
+    }
+
+    await container.market_lifecycle.void(
+        admin, market.id, VoidMarketRequest(reason="The source went away.")
+    )
+
+    resolution = await resolution_of(container, market)
+    for user in (holder, seller, onlooker):
+        block = (await container.markets.detail(factory.identity(user), market.id)).viewer
+        rows = await positions_of(container, user, market)
+        assert block.refund_cr == to_cr(stakes_micro[user.id])
+        assert view.refund_micro(rows, resolution) == stakes_micro[user.id]
+        assert block.payout_cr is None
+        assert [(held.shares, held.value_cr) for held in block.holdings] == 2 * [(NOTHING, NOTHING)]
+        assert block.net_stake_cr == block.refund_cr
+        assert block.balance_cr == to_cr(balances_micro[user.id] + stakes_micro[user.id])
+    assert stakes_micro[holder.id] > stakes_micro[seller.id] > stakes_micro[onlooker.id] == 0
+    await assert_books_balance(container.uow_factory)
+
+
+# --- One market: may the viewer settle it ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "status", [MarketStatus.OPEN, MarketStatus.HALTED, MarketStatus.CLOSED, MarketStatus.RESOLVED]
+)
+async def test_an_admin_who_never_traded_a_market_may_settle_it_whatever_its_status(
+    container: Container, factory: Factory, admin: AuthenticatedUser, status: MarketStatus
+) -> None:
+    """`can_settle` says who, not when: which action a status allows is SPEC §6."""
+    market = await factory.market(status=status)
+
+    assert (await container.markets.detail(admin, market.id)).viewer.can_settle is True
+
+
+async def test_an_admin_who_traded_a_market_may_not_settle_it_even_after_selling_everything(
+    container: Container, factory: Factory
+) -> None:
+    """A.4: whoever ever traded it, whatever they hold now. Another admin may."""
+    first = await factory.admin(0, balance_micro=WALLET)
+    second = await factory.admin(1)
+    market = await factory.market()
+    untouched = await factory.market()
+    await factory.position(first, market, Outcome.YES, shares_micro=40 * MICRO)
+    holding = await container.markets.detail(factory.identity(first), market.id)
+
+    await sell(container, first, market, Outcome.YES, 40 * MICRO)
+    sold_out = await container.markets.detail(factory.identity(first), market.id)
+
+    assert (holding.viewer.can_settle, sold_out.viewer.can_settle) == (False, False)
+    assert [held.shares for held in sold_out.viewer.holdings] == [NOTHING, NOTHING]
+    assert (await container.markets.detail(factory.identity(second), market.id)).viewer.can_settle
+    assert (await container.markets.detail(factory.identity(first), untouched.id)).viewer.can_settle
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_nobody_but_an_admin_may_settle_a_market(
+    container: Container, factory: Factory
+) -> None:
+    proposer = await factory.user()
+    market = await factory.market(created_by=proposer)
+    plain = factory.identity(await factory.user())
+    barista = factory.identity(await factory.barista())
+    suspended = await factory.user(status=UserStatus.SUSPENDED)
+
+    for someone in (
+        plain,
+        barista,
+        factory.identity(proposer),
+        identity_of(suspended, UserRole.ADMIN),
+    ):
+        assert (await container.markets.detail(someone, market.id)).viewer.can_settle is False
+
+
+# --- One market: through the route -------------------------------------------------------
+
+
+async def test_the_route_answers_a_market_with_the_viewers_side_and_amounts_as_strings(
+    client: httpx.AsyncClient, as_user: ActAs, container: Container, factory: Factory
+) -> None:
+    alice = await factory.user(balance_micro=WALLET)
+    market = await factory.market()
+    paid_micro = 30 * MICRO
+    await factory.position(
+        alice, market, Outcome.YES, shares_micro=50 * MICRO, cost_micro=paid_micro
+    )
+    as_user(alice)
+
+    response = await client.get(f"{MARKETS}/{market.id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert MarketDetailResponse.model_validate(body) == await container.markets.detail(
+        factory.identity(alice), market.id
+    )
+    assert (body["viewer"]["cost_cr"], body["viewer"]["proceeds_cr"]) == ("30", "0")
+    assert body["viewer"]["balance_cr"] == format_cr(WALLET - paid_micro)
+    assert body["viewer"]["stake_left_cr"] == format_cr(STAKE_LIMIT - paid_micro)
+    assert body["viewer"]["holdings"][0]["shares"] == "50"
+    assert body["viewer"]["sell_presets"][0] == {
+        "outcome": "YES",
+        "portion": "HALF",
+        "shares": "25",
+        "allowed": True,
+    }
+    assert (body["viewer"]["payout_cr"], body["viewer"]["refund_cr"]) == (None, None)
+    assert body["proposer_email"] is None
+    assert body["void_rule"] == VOID_RULE
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_the_route_answers_404_for_an_unknown_market_and_for_somebody_elses_proposal(
+    client: httpx.AsyncClient, as_user: ActAs, factory: Factory
+) -> None:
+    proposer = await factory.user()
+    hidden = await factory.market(status=MarketStatus.PROPOSED, created_by=proposer)
+    as_user(await factory.user())
+
+    for market_id in (uuid7(), hidden.id):
+        response = await client.get(f"{MARKETS}/{market_id}")
+        assert response.status_code == 404
+        assert (response.json()["code"], response.json()["details"]) == ("NOT_FOUND", {})
+
+    as_user(proposer)
+    assert (await client.get(f"{MARKETS}/{hidden.id}")).status_code == 200
+
+
+# --- Whatever was traded -----------------------------------------------------------------
+
+STEP = st.tuples(
+    st.sampled_from(Outcome),
+    st.booleans(),
+    st.integers(min_value=1, max_value=60 * MICRO),
+)
+"""One step of a trader: the outcome, whether to sell if they hold any of it, and how
+many micro-shares."""
+
+
+@hypothesis_settings(
+    max_examples=25,
+    deadline=None,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
+)
+@given(
+    steps=st.lists(STEP, max_size=5),
+    wallet_micro=st.integers(min_value=0, max_value=3 * STAKE_LIMIT),
+)
+async def test_whatever_a_viewer_traded_their_side_is_what_market_view_makes_of_the_rows(
+    container: Container,
+    factory: Factory,
+    steps: list[tuple[Outcome, bool, int]],
+    wallet_micro: int,
+) -> None:
+    """For any run of buys and sells and any balance: the block is `MarketView` on the
+    viewer's own rows, a stake preset marked allowed is one the balance and the stake
+    limit both cover, and a sell preset never offers more than is held.
+
+    Every example has a trader and a market of its own. The factory applies no stake
+    limit, so the net stake may lie beyond it, where nothing is left.
+    """
+    alice = await factory.user(balance_micro=wallet_micro)
+    market = await factory.market()
+    for outcome, would_sell, shares_micro in steps:
+        held = {
+            row.outcome: row.shares_micro for row in await positions_of(container, alice, market)
+        }
+        if would_sell and held.get(outcome):
+            await sell(container, alice, market, outcome, min(shares_micro, held[outcome]))
+        elif shares_micro <= await factory.balance_micro(alice):
+            await factory.position(alice, market, outcome, shares_micro=shares_micro)
+    view = container.market_view
+
+    detail = await container.markets.detail(factory.identity(alice), market.id)
+
+    rows = await positions_of(container, alice, market)
+    balance_micro = await factory.balance_micro(alice)
+    stake_micro = view.net_stake_micro(rows)
+    block = detail.viewer
+    assert block.balance_cr == to_cr(balance_micro)
+    assert block.holdings == view.holdings(market, rows, None)
+    assert block.cost_cr == to_cr(sum(row.cost_micro for row in rows))
+    assert block.proceeds_cr == to_cr(sum(row.proceeds_micro for row in rows))
+    assert block.net_stake_cr == to_cr(stake_micro)
+    assert block.stake_left_cr == to_cr(view.stake_left_micro(stake_micro))
+    assert block.stake_presets == view.stake_presets(
+        view.stake_left_micro(stake_micro), balance_micro, True
+    )
+    assert block.sell_presets == view.sell_presets(rows, True)
+    assert (block.can_trade, block.can_settle) == (True, False)
+    for stake in block.stake_presets:
+        if stake.allowed:
+            assert stake.amount_cr <= block.balance_cr
+            assert stake.amount_cr <= block.stake_left_cr
+    shares = {held.outcome: held.shares for held in block.holdings}
+    for offer in block.sell_presets:
+        assert offer.shares <= shares[offer.outcome]
+        assert offer.shares > 0 or not offer.allowed
+    assert detail.version == market.version
+    await assert_books_balance(container.uow_factory)

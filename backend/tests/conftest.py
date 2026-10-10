@@ -8,26 +8,40 @@ serve the run.
 
 What a test of the API or of a service uses (mark the module `integration`):
 
-    settings    `.example.env`, pointing at the Postgres and Redis containers. ScyllaDB
-                and SMTP point at closed ports: the default suite proves the API works
-                without ScyllaDB, and no test can mail anyone.
+    settings    `.example.env` with two admins and one barista, pointing at the
+                Postgres and Redis containers. ScyllaDB points at a closed port: the
+                default suite proves the API works without it.
     clock       a `FrozenClock`; move it with `advance()` or `set()`
-    mailer      a `MemoryMailer`; `mailer.last_token` is the token of the last link
-    container   the application's `Container`, built with that clock and mailer on the
-                shared database, started, and stopped after the test
-    factory     writes users, sessions, markets and positions directly
+    container   the application's `Container`, built with that clock on the shared
+                database, started, and stopped after the test
+    factory     writes users, markets and positions directly; `factory.admin()` and
+                `factory.barista()` are users whose address has that role
                 (tests/support/factories.py)
     app         the FastAPI application around that container
     client      an `httpx.AsyncClient` on it; paths start with `/api`, and the Origin
-                header is already set
-    as_user     `as_user(user)` makes every request come from that user; `as_user(None)`
-                makes it anonymous again. It bypasses `SessionService`; a test of
-                sessions sends the cookie of `factory.session(user)` instead.
+                header is already set. It sends no portal header: nobody is calling
+                until `as_user` says who
+    as_user     `as_user(user)` makes every request come from that user, with the
+                role the application derives from their address: a plain user, unless
+                the factory made them an admin or a barista. `as_user(user,
+                UserRole.ADMIN)` names the role instead, for a test of a guard.
+                `as_user(PortalIdentity(...))` is somebody the portal named who has no
+                profile yet; `as_user(None)` is nobody again. It stands in for the
+                headers and `IdentityService`.
+    portal_headers
+                `portal_headers(user)` is the two headers the portal would send for
+                that user. Pass them to a request to go through the real
+                `authenticate_request` and `IdentityService` instead of `as_user`.
 
 Every `integration` test starts with an empty database (system accounts at zero), and
 every test that uses `container` with an empty Redis. Redis runs in real time: a cached
 market list outlives a `clock.advance()`, so call `await flush_redis()` after moving the
 clock when a cache or a rate-limit window matters.
+
+A test of anything that moves credits ends with
+`await assert_books_balance(container.uow_factory)` (tests/support/books.py): all
+accounts sum to zero, every journal entry sums to zero, every market's q is the sum of
+its positions, no floor is broken and no market can lose more than its budget.
 
 A dependency that fails (SPEC §9 and the "Failures" tests of §12). The same fixtures,
 `container`, `factory`, `app`, `client` and `as_user`, then give the application as it
@@ -49,7 +63,6 @@ suite: where the reaper finds the Docker socket, and a race while it starts.
 import os
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
-from pathlib import Path
 from typing import Final
 
 import httpx
@@ -66,13 +79,12 @@ from testcontainers.core.wait_strategies import LogMessageWaitStrategy
 
 from app.api.deps import authenticate_request
 from app.container import Container
-from app.core.config import REPO_ROOT, RedisSettings, ScyllaSettings, Settings
-from app.core.identity import AuthenticatedUser
+from app.core.config import RedisSettings, ScyllaSettings, Settings
+from app.core.enums import UserRole
 from app.db.database import Database
 from app.integrations.redis.client import RedisClient
 from app.integrations.scylla.client import ScyllaClient
 from app.main import create_app
-from app.models import User
 from app.repositories.unit_of_work import UnitOfWork
 from tests.support.clock import FrozenClock
 from tests.support.containers import (
@@ -90,17 +102,23 @@ from tests.support.containers import (
     published_port,
 )
 from tests.support.database import reset_database, upgrade_database
-from tests.support.factories import ActAs, Factory, identity_of
-from tests.support.mail import MemoryMailer
+from tests.support.factories import (
+    ActAs,
+    Actor,
+    Factory,
+    Named,
+    PortalHeaders,
+    caller_of,
+    portal_headers_of,
+)
 from tests.support.network import SwitchableProxy
+from tests.support.settings import load_base_settings
 
 if sys.platform == "darwin":
     # On macOS Docker runs in a VM. The socket the client talks to on the host (under the
     # home directory with Docker Desktop) cannot be mounted into Testcontainers' reaper;
     # inside the VM the daemon listens on the standard path. A developer's own setting wins.
     os.environ.setdefault("TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE", "/var/run/docker.sock")
-
-EXAMPLE_ENV_FILE: Final[Path] = REPO_ROOT / ".example.env"
 
 DOCKER_MARKERS: Final[tuple[str, ...]] = ("integration", "scylla")
 REAPER_START_ATTEMPTS: Final[int] = 10
@@ -136,12 +154,12 @@ def _start_reaper() -> None:
 
 @pytest.fixture(scope="session")
 def base_settings() -> Settings:
-    """The committed `.example.env` with APP_ENV=test. Nothing runs behind its hosts.
+    """The committed `.example.env` with APP_ENV=test and the role lists of the tests:
+    two admins and one barista. Nothing runs behind its hosts.
 
     For tests that need tunables but no services; it never starts Docker.
     """
-    example = Settings.load(EXAMPLE_ENV_FILE)
-    return example.model_copy(update={"app": example.app.model_copy(update={"env": "test"})})
+    return load_base_settings()
 
 
 @pytest.fixture(scope="session")
@@ -244,8 +262,8 @@ def settings(
 ) -> Settings:
     """`base_settings` pointing at the Postgres and Redis containers.
 
-    ScyllaDB and SMTP point at a local port nothing listens on: every connection is
-    refused at once, so the suite runs as the API does with ScyllaDB down (SPEC §9).
+    ScyllaDB points at a local port nothing listens on: every connection is refused
+    at once, so the suite runs as the API does with ScyllaDB down (SPEC §9).
     """
     postgres = base_settings.postgres.model_copy(
         update={
@@ -253,11 +271,9 @@ def settings(
             "port": published_port(postgres_container, POSTGRES_PORT),
         }
     )
-    nowhere = closed_port()
-    scylla = base_settings.scylla.model_copy(update={"hosts": [LOOPBACK], "port": nowhere})
-    mail = base_settings.mail.model_copy(update={"host": LOOPBACK, "port": nowhere})
+    scylla = base_settings.scylla.model_copy(update={"hosts": [LOOPBACK], "port": closed_port()})
     return base_settings.model_copy(
-        update={"postgres": postgres, "redis": redis_settings, "scylla": scylla, "mail": mail}
+        update={"postgres": postgres, "redis": redis_settings, "scylla": scylla}
     )
 
 
@@ -303,13 +319,8 @@ def clock() -> FrozenClock:
 
 
 @pytest.fixture
-def mailer() -> MemoryMailer:
-    return MemoryMailer()
-
-
-@pytest.fixture
 def flush_redis(redis_settings: RedisSettings) -> Callable[[], Awaitable[None]]:
-    """`await flush_redis()` empties the test Redis: caches, sessions, rate-limit windows."""
+    """`await flush_redis()` empties the test Redis: caches and rate-limit windows."""
 
     async def flush() -> None:
         raw = Redis(host=redis_settings.host, port=redis_settings.port, db=redis_settings.db)
@@ -356,10 +367,9 @@ async def container(
     container_settings: Settings,
     database: Database,
     clock: FrozenClock,
-    mailer: MemoryMailer,
     flush_redis: Callable[[], Awaitable[None]],
 ) -> AsyncIterator[Container]:
-    """The application's objects, wired as in production around the test doubles.
+    """The application's objects, wired as in production around the frozen clock.
 
     Built per test on the session's connection pool, with an empty Redis, and started,
     so the live-quote listener runs. Stopping it leaves the shared pool open. With
@@ -367,7 +377,7 @@ async def container(
     """
     await flush_redis()
     shared = database if container_settings.postgres == settings.postgres else None
-    container = Container.build(container_settings, clock=clock, mailer=mailer, database=shared)
+    container = Container.build(container_settings, clock=clock, database=shared)
     await container.start()
     yield container
     await container.stop()
@@ -396,15 +406,32 @@ async def client(app: FastAPI, settings: Settings) -> AsyncIterator[httpx.AsyncC
 
 @pytest.fixture
 def as_user(app: FastAPI) -> Iterator[ActAs]:
-    """Decide who the application believes is calling, without a session or a cookie.
+    """Decide who the application believes is calling, without the portal's headers.
 
-    Replaces the one dependency every guard rests on, so `CurrentUser`, `AdminUser` and
-    `BaristaUser` still apply their own rules to the user given.
+    Replaces the one dependency every guard rests on, so `Identity`, `CurrentUser`,
+    `AdminUser` and `BaristaUser` still apply their own rules to the caller given.
     """
 
-    def act_as(user: AuthenticatedUser | User | None) -> None:
-        identity = identity_of(user) if isinstance(user, User) else user
-        app.dependency_overrides[authenticate_request] = lambda: identity
+    container: Container = app.state.container
+
+    def act_as(who: Actor, role: UserRole | None = None) -> None:
+        caller = caller_of(who, role, container.email_policy)
+        app.dependency_overrides[authenticate_request] = lambda: caller
 
     yield act_as
     app.dependency_overrides.pop(authenticate_request, None)
+
+
+@pytest.fixture
+def portal_headers(base_settings: Settings) -> PortalHeaders:
+    """`portal_headers(user)`: the two headers in which the portal would name `user`.
+
+    A request that carries them is not acted for: it goes through the real
+    `authenticate_request` and `IdentityService`, so the role it gets is the one the
+    application derives. The header names are those of the settings.
+    """
+
+    def headers(who: Named) -> dict[str, str]:
+        return portal_headers_of(who, base_settings.identity)
+
+    return headers

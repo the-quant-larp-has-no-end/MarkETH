@@ -217,8 +217,12 @@ class ErrorResponse(ResponseModel):
 
     * `VALIDATION_ERROR`. A request that does not match its schema: `errors`, a list
       of `{loc, msg, type}`, one per field. A rule a service checks: `field`, the name
-      of the offending field. An email address that is not allowed: `allowed_domains`,
-      a list.
+      of the offending field.
+    * `FORBIDDEN`, when the portal's id is not an address MarkETH is open to:
+      `allowed_domains`, a list of the domains it is open to.
+    * `PROFILE_REQUIRED`: `name` and `email`, who the portal says is calling. `name`
+      may be an empty string.
+    * `USERNAME_TAKEN`: `field`, which is `username`.
     * `RATE_LIMITED`: `retry_after_seconds`, an integer, also sent as the
       `Retry-After` header.
     * `QUOTE_STALE`: `quote`, a fresh `QuoteResponse` for the same trade.

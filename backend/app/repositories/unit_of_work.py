@@ -20,7 +20,9 @@ run on that unit of work, so let it leave the block.
   surfaces from the end of the block.
 * A lost or refused connection is nobody's to translate: it leaves the service as it
   is, and the API answers it with 503 for every route (`app/api/errors.py`, SPEC §9).
-  The relay and the scripts are not behind the API and catch it themselves.
+  So does a lock that another transaction held for longer than
+  `POSTGRES_LOCK_TIMEOUT_MS`. The relay and the scripts are not behind the API and
+  catch both themselves.
 """
 
 import asyncio
@@ -30,26 +32,21 @@ from typing import Self
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.repositories.auth import LoginTokenRepository, SessionRepository
-from app.repositories.coffee_ticket import CoffeeTicketRepository
+from app.repositories.code import CodeBatchRepository, CodeRepository
+from app.repositories.grant import GrantRepository
+from app.repositories.leaderboard import LeaderboardRepository
 from app.repositories.ledger import AccountRepository, JournalRepository
 from app.repositories.market import MarketRepository, ResolutionRepository
 from app.repositories.ops import AlertRepository, AuditLogRepository, OutboxRepository
 from app.repositories.trading import IdempotencyRepository, PositionRepository, TradeRepository
 from app.repositories.user import UserRepository
-from app.repositories.voucher import (
-    VoucherCodeBatchRepository,
-    VoucherCodeRepository,
-    VoucherGrantRepository,
-)
+from app.repositories.voucher import VoucherRepository
 
 
 class UnitOfWork:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session = session_factory()
         self.users = UserRepository(self._session)
-        self.login_tokens = LoginTokenRepository(self._session)
-        self.sessions = SessionRepository(self._session)
         self.markets = MarketRepository(self._session)
         self.resolutions = ResolutionRepository(self._session)
         self.positions = PositionRepository(self._session)
@@ -57,13 +54,14 @@ class UnitOfWork:
         self.idempotency = IdempotencyRepository(self._session)
         self.accounts = AccountRepository(self._session)
         self.journal = JournalRepository(self._session)
-        self.voucher_grants = VoucherGrantRepository(self._session)
-        self.code_batches = VoucherCodeBatchRepository(self._session)
-        self.codes = VoucherCodeRepository(self._session)
-        self.coffee_tickets = CoffeeTicketRepository(self._session)
+        self.grants = GrantRepository(self._session)
+        self.code_batches = CodeBatchRepository(self._session)
+        self.codes = CodeRepository(self._session)
+        self.vouchers = VoucherRepository(self._session)
         self.outbox = OutboxRepository(self._session)
         self.audit = AuditLogRepository(self._session)
         self.alerts = AlertRepository(self._session)
+        self.leaderboard = LeaderboardRepository(self._session)
 
     @property
     def session(self) -> AsyncSession:
@@ -97,6 +95,7 @@ class UnitOfWork:
         """Hold a named lock until this transaction ends.
 
         Serialises check-then-insert rules that no single row lock covers, such as the
-        caps checked at market approval (A.5) and at code batch creation (A.6).
+        caps checked at market approval (A.5) and at code batch creation (A.6), and
+        the choice of a username (A.3).
         """
         await self._session.execute(select(func.pg_advisory_xact_lock(func.hashtext(name))))

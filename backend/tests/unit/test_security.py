@@ -1,7 +1,6 @@
-"""`app.core.security`: tokens, hashes and the Crockford Base32 code format (SPEC §2, §3)."""
+"""`app.core.security`: hashes and the Crockford Base32 code format (SPEC §2)."""
 
 import hashlib
-import string
 
 import pytest
 from hypothesis import given
@@ -11,13 +10,10 @@ from app.core.security import (
     CROCKFORD_ALPHABET,
     format_code,
     generate_code,
-    generate_token,
     hash_code,
     normalize_code,
     sha256_hex,
 )
-
-URL_SAFE = set(string.ascii_letters + string.digits + "-_")
 
 codes = st.text(alphabet=CROCKFORD_ALPHABET, min_size=1, max_size=32)
 
@@ -25,17 +21,6 @@ codes = st.text(alphabet=CROCKFORD_ALPHABET, min_size=1, max_size=32)
 def test_crockford_alphabet_has_32_symbols_and_no_lookalikes() -> None:
     assert len(CROCKFORD_ALPHABET) == len(set(CROCKFORD_ALPHABET)) == 32
     assert not set("ILOU") & set(CROCKFORD_ALPHABET)
-
-
-def test_a_token_is_url_safe_and_carries_the_asked_entropy() -> None:
-    token = generate_token(32)
-    assert set(token) <= URL_SAFE
-    # 32 bytes in unpadded base64 are 43 characters.
-    assert len(token) == 43
-
-
-def test_tokens_do_not_repeat() -> None:
-    assert len({generate_token(32) for _ in range(200)}) == 200
 
 
 def test_sha256_hex_is_the_standard_digest_in_lowercase_hex() -> None:

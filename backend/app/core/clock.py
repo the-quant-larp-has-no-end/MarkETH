@@ -26,7 +26,7 @@ def local_date(instant: datetime, timezone: ZoneInfo) -> date:
 
 
 def month_period(day: date) -> str:
-    """`YYYY-MM`, the `voucher_grants.period` of a monthly grant (SPEC §2)."""
+    """`YYYY-MM`, the `grants.period` of a monthly grant (SPEC §2)."""
     return f"{day.year:04d}-{day.month:02d}"
 
 

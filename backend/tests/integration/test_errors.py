@@ -1,13 +1,15 @@
 """Every non-2xx response has one shape, and every guard holds (SPEC §10, §12, A.2).
 
 `{code, message, details}` for whatever goes wrong: an unknown route, a body that does
-not validate, a missing header, a foreign Origin, a missing session, a role that is not
-enough, a service error, a bug, a database that is down. The guard tests walk the
+not validate, a missing header, a foreign Origin, a request the portal names nobody
+for, a caller without a profile, a role that is not enough, a service error, a bug, a
+database that is down, a lock that is not granted in time. The guard tests walk the
 OpenAPI document, so a route added later is covered without anyone remembering to add
 it here.
 """
 
 import logging
+import time
 from collections.abc import AsyncIterator
 from typing import Any, Final
 from uuid import uuid7
@@ -16,72 +18,107 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.container import Container
-from app.core.enums import UserRole, UserStatus
-from app.core.errors import QuoteStaleError, RateLimitedError
-from app.core.identity import AuthenticatedUser
+from app.core.config import Settings
+from app.core.enums import AccountKind, UserRole, UserStatus
+from app.core.errors import (
+    ForbiddenError,
+    QuoteStaleError,
+    RateLimitedError,
+    UsernameTakenError,
+    ValidationFailedError,
+)
+from app.core.identity import DISPLAY_NAME_MAX_LENGTH, AuthenticatedUser, Caller, PortalIdentity
 from app.core.units import to_cr
+from app.db import database as database_errors
+from app.db.database import Database
+from app.main import create_app
 from app.schemas.markets import Holding
-from tests.support.factories import ActAs
+from app.services.codes import OWN_BATCH_MESSAGE
+from app.services.market_lifecycle import SELF_DEALING_MESSAGE
+from app.services.profile import RESERVED_USERNAME_MESSAGE
+from tests.support.clock import FrozenClock
+from tests.support.factories import ActAs, Factory
 
 pytestmark = pytest.mark.integration
 
+type Operation = tuple[str, str]
+
 ERROR_KEYS: Final[set[str]] = {"code", "message", "details"}
 
-PUBLIC_OPERATIONS: Final[frozenset[tuple[str, str]]] = frozenset(
+PUBLIC_OPERATIONS: Final[frozenset[Operation]] = frozenset(
     {
         ("GET", "/api/health"),
         ("GET", "/api/config"),
-        ("POST", "/api/auth/request-link"),
-        ("POST", "/api/auth/verify"),
-        ("POST", "/api/auth/logout"),
-        ("GET", "/api/markets"),
-        ("GET", "/api/markets/{market_id}"),
-        ("GET", "/api/markets/{market_id}/quote"),
-        ("GET", "/api/markets/{market_id}/history"),
-        ("GET", "/api/markets/{market_id}/stream"),
     }
 )
-"""What Appendix A.2 opens to everybody. Everything else needs a session."""
+"""What Appendix A.2 opens to everybody. Everything else needs the portal to name the caller."""
+
+PROFILE_OPERATION: Final[Operation] = ("PUT", "/api/me/profile")
+"""The one operation a named caller may use without a profile: it creates the profile."""
 
 PATH_VALUES: Final[dict[str, str]] = {
     "{market_id}": str(uuid7()),
     "{batch_id}": str(uuid7()),
+    "{voucher_id}": str(uuid7()),
     "{alert_id}": "1",
-    "{code}": "ABCD-EFGH",
 }
+"""A value for every path parameter the API has. None of them is a code: a code travels
+in a body."""
+
+BARISTA_ROUTE: Final[str] = "/api/barista/vouchers/redeem"
+SCANNED: Final[dict[str, str]] = {"code": "ABCD-EFGH"}
 
 TRADE_PATH: Final[str] = f"/api/markets/{uuid7()}/trades"
-TRADE_BODY: Final[dict[str, str]] = {"side": "BUY", "outcome": "YES", "amount_cr": "0.25"}
+TRADE_BODY: Final[dict[str, str]] = {"side": "BUY", "outcome": "YES", "amount_cr": "25"}
+
+PROFILE_BODY: Final[dict[str, str]] = {
+    "username": "newcomer",
+    "degree_level": "BACHELOR",
+    "degree_programme": "BSc Computer Science",
+}
+
+NEWCOMER: Final[PortalIdentity] = PortalIdentity(
+    email="newcomer@ethz.ch", name="Nora Newcomer", role=UserRole.USER
+)
+"""Somebody the portal signed in who has not saved a profile yet."""
 
 
 def someone(role: UserRole, status: UserStatus = UserStatus.ACTIVE) -> AuthenticatedUser:
     name = role.value.lower()
     return AuthenticatedUser(
         id=uuid7(),
-        email=f"{name}@student.ethz.ch",
-        canonical_email=f"{name}@ethz.ch",
+        email=f"{name}@ethz.ch",
+        name=name.capitalize(),
+        username=name,
         role=role,
         status=status,
     )
 
 
-def operations(app: FastAPI) -> list[tuple[str, str]]:
+def operations(app: FastAPI) -> list[Operation]:
     """Every (METHOD, path template) the application serves under `/api`."""
     return sorted(
         (method.upper(), path) for path, item in app.openapi()["paths"].items() for method in item
     )
 
 
-def protected(app: FastAPI, prefix: str = "/api/") -> list[tuple[str, str]]:
+def protected(app: FastAPI, prefix: str = "/api/") -> list[Operation]:
+    """Every operation that is not public."""
     return [
         (method, path)
         for method, path in operations(app)
         if (method, path) not in PUBLIC_OPERATIONS and path.startswith(prefix)
     ]
+
+
+def member_operations(app: FastAPI) -> list[Operation]:
+    """Every operation that needs a profile: all that are protected, except the one
+    that creates it."""
+    return [operation for operation in protected(app) if operation != PROFILE_OPERATION]
 
 
 def concrete(path: str) -> str:
@@ -118,6 +155,27 @@ async def unhandled_client(
         yield unhandled
 
 
+class RecordedIdentity:
+    """Stands in for `IdentityService`: remembers what it was asked and answers with a
+    caller who has no profile, under the id and the name it was given."""
+
+    def __init__(self) -> None:
+        self.asked: list[tuple[str, str]] = []
+
+    async def authenticate(self, user_id: str, user_name: str) -> Caller:
+        self.asked.append((user_id, user_name))
+        identity = PortalIdentity(email=user_id, name=user_name, role=UserRole.USER)
+        return Caller(identity=identity, user=None)
+
+
+@pytest.fixture
+def identity_service(container: Container, monkeypatch: pytest.MonkeyPatch) -> RecordedIdentity:
+    """Puts a `RecordedIdentity` where the application looks for its identity service."""
+    recorded = RecordedIdentity()
+    monkeypatch.setattr(container, "identity", recorded)
+    return recorded
+
+
 # --- Requests that never reach a route -------------------------------------------
 
 
@@ -135,21 +193,27 @@ async def test_a_wrong_method_is_405_with_the_same_shape(client: httpx.AsyncClie
 
 @pytest.mark.parametrize("origin", ["https://evil.example", "http://localhost:8081", "null", ""])
 async def test_a_state_changing_request_from_a_foreign_origin_is_403(
-    client: httpx.AsyncClient, origin: str
+    client: httpx.AsyncClient, as_user: ActAs, origin: str
 ) -> None:
+    """The portal names the visitor whichever page made the browser ask. Acting as a
+    user here shows what refuses such a page: the Origin check, not the missing identity."""
+    as_user(someone(UserRole.USER))
     response = await client.post(
-        "/api/auth/request-link", json={"email": "x@ethz.ch"}, headers={"Origin": origin}
+        "/api/codes/redeem", json={"code": "ABCD-EFGH-JKMN"}, headers={"Origin": origin}
     )
     assert_error(response, 403, "FORBIDDEN")
+    assert "did not come from" in response.json()["message"]
 
 
 async def test_a_state_changing_request_without_an_origin_is_403(
-    client: httpx.AsyncClient,
+    client: httpx.AsyncClient, as_user: ActAs
 ) -> None:
+    as_user(someone(UserRole.ADMIN))
     del client.headers["Origin"]
     for method in ("POST", "PUT", "PATCH", "DELETE"):
-        response = await client.request(method, "/api/auth/logout")
+        response = await client.request(method, "/api/me/profile")
         assert_error(response, 403, "FORBIDDEN")
+        assert "did not come from" in response.json()["message"]
 
 
 async def test_the_origin_check_comes_before_everything_else(client: httpx.AsyncClient) -> None:
@@ -171,7 +235,7 @@ async def test_every_allowed_origin_passes_the_check(
     allowed = app.state.container.settings.app.allowed_origins
     assert len(allowed) >= 2
     for origin in (*allowed, allowed[0] + "/"):
-        response = await client.post("/api/coffee-tickets", headers={"Origin": origin})
+        response = await client.post("/api/vouchers", headers={"Origin": origin})
         assert_error(response, 401, "UNAUTHENTICATED")
 
 
@@ -179,23 +243,32 @@ async def test_every_allowed_origin_passes_the_check(
 
 
 async def test_a_body_that_does_not_validate_is_422_with_the_field_errors(
-    client: httpx.AsyncClient,
+    client: httpx.AsyncClient, as_user: ActAs
 ) -> None:
-    response = await client.post("/api/auth/request-link", json={"e_mail": "x@ethz.ch"})
+    as_user(someone(UserRole.USER))
+    response = await client.post("/api/codes/redeem", json={"kode": "ABCD-EFGH-JKMN"})
     details = assert_error(response, 422, "VALIDATION_ERROR")
     errors = {tuple(error["loc"]): error for error in details["errors"]}
-    assert errors[("body", "email")]["type"] == "missing"
-    assert errors[("body", "e_mail")]["type"] == "extra_forbidden"
+    assert errors[("body", "code")]["type"] == "missing"
+    assert errors[("body", "kode")]["type"] == "extra_forbidden"
     for error in errors.values():
         assert set(error) == {"loc", "msg", "type"}, "the rejected input is not echoed back"
 
 
-async def test_a_body_that_is_not_json_is_422(client: httpx.AsyncClient) -> None:
-    response = await client.post(
-        "/api/auth/verify", content=b"{not json", headers={"Content-Type": "application/json"}
-    )
-    details = assert_error(response, 422, "VALIDATION_ERROR")
-    assert details["errors"][0]["loc"][0] == "body"
+async def test_a_body_that_is_not_json_is_422_whoever_sent_it(
+    client: httpx.AsyncClient, as_user: ActAs
+) -> None:
+    """The framework parses the body before it asks any guard, so this one answer does
+    not depend on who is calling. It says nothing about anybody and writes nothing."""
+    for who in (None, NEWCOMER, someone(UserRole.USER)):
+        as_user(who)
+        response = await client.post(
+            "/api/codes/redeem",
+            content=b"{not json",
+            headers={"Content-Type": "application/json"},
+        )
+        details = assert_error(response, 422, "VALIDATION_ERROR")
+        assert details["errors"][0]["loc"][0] == "body"
 
 
 async def test_a_json_float_is_not_an_amount(client: httpx.AsyncClient, as_user: ActAs) -> None:
@@ -211,7 +284,10 @@ async def test_a_json_float_is_not_an_amount(client: httpx.AsyncClient, as_user:
     assert details["errors"][0]["type"] == "decimal_string"
 
 
-async def test_a_quote_query_is_validated_like_a_body(client: httpx.AsyncClient) -> None:
+async def test_a_quote_query_is_validated_like_a_body(
+    client: httpx.AsyncClient, as_user: ActAs
+) -> None:
+    as_user(someone(UserRole.USER))
     path = f"/api/markets/{uuid7()}/quote"
     seven_places = await client.get(
         path, params={"side": "BUY", "outcome": "YES", "amount_cr": "0.1234567"}
@@ -233,7 +309,10 @@ async def test_a_quote_query_is_validated_like_a_body(client: httpx.AsyncClient)
     assert details["errors"][0]["loc"] == ["query", "leverage"]
 
 
-async def test_a_path_parameter_that_is_not_a_uuid_is_422(client: httpx.AsyncClient) -> None:
+async def test_a_path_parameter_that_is_not_a_uuid_is_422(
+    client: httpx.AsyncClient, as_user: ActAs
+) -> None:
+    as_user(someone(UserRole.USER))
     details = assert_error(await client.get("/api/markets/not-a-uuid"), 422, "VALIDATION_ERROR")
     assert details["errors"][0]["loc"] == ["path", "market_id"]
 
@@ -257,37 +336,420 @@ async def test_an_idempotency_key_must_be_a_uuid(client: httpx.AsyncClient, as_u
     assert details["errors"][0]["type"] == "uuid_parsing"
 
 
-# --- Sessions and roles ----------------------------------------------------------
+@pytest.mark.parametrize(
+    ("body", "field", "rule"),
+    [
+        (PROFILE_BODY | {"username": "two words"}, "username", "string_pattern_mismatch"),
+        (PROFILE_BODY | {"username": "bindestrich-name"}, "username", "string_pattern_mismatch"),
+        (PROFILE_BODY | {"username": "Newcomer"}, "username", "string_pattern_mismatch"),
+        (PROFILE_BODY | {"username": "NEWCOMER"}, "username", "string_pattern_mismatch"),
+        (PROFILE_BODY | {"username": "x" * 33}, "username", "string_too_long"),
+        (PROFILE_BODY | {"username": "   "}, "username", "string_too_short"),
+        (PROFILE_BODY | {"degree_level": "KINDERGARTEN"}, "degree_level", "enum"),
+        (PROFILE_BODY | {"degree_programme": "x" * 101}, "degree_programme", "string_too_long"),
+        (PROFILE_BODY | {"degree_programme": ""}, "degree_programme", "string_too_short"),
+    ],
+    ids=[
+        "username-with-a-space",
+        "username-with-a-dash",
+        "username-with-a-capital-letter",
+        "username-in-upper-case",
+        "username-of-33-characters",
+        "username-of-blanks",
+        "level-that-does-not-exist",
+        "programme-of-101-characters",
+        "programme-that-is-empty",
+    ],
+)
+async def test_a_profile_that_has_the_wrong_shape_is_422(
+    client: httpx.AsyncClient, as_user: ActAs, body: dict[str, str], field: str, rule: str
+) -> None:
+    as_user(NEWCOMER)
+    details = assert_error(await client.put("/api/me/profile", json=body), 422, "VALIDATION_ERROR")
+    assert [(error["loc"], error["type"]) for error in details["errors"]] == [
+        (["body", field], rule)
+    ]
 
 
-async def test_every_route_that_is_not_public_answers_401_without_a_session(
+async def test_a_profile_takes_no_field_it_does_not_know(
+    client: httpx.AsyncClient, as_user: ActAs
+) -> None:
+    """Least of all one that says who the caller is, or what they may do."""
+    as_user(NEWCOMER)
+    for extra in ("role", "email", "name", "status"):
+        response = await client.put("/api/me/profile", json=PROFILE_BODY | {extra: "ADMIN"})
+        details = assert_error(response, 422, "VALIDATION_ERROR")
+        assert [(error["loc"], error["type"]) for error in details["errors"]] == [
+            (["body", extra], "extra_forbidden")
+        ]
+
+
+# --- Who is calling: the portal's headers -------------------------------------------
+
+
+async def test_every_route_that_is_not_public_answers_401_when_the_portal_names_nobody(
     client: httpx.AsyncClient, app: FastAPI
 ) -> None:
     routes = protected(app)
-    assert len(routes) >= 24
+    assert len(routes) == 33, "every operation but /health and /config"
+    assert PROFILE_OPERATION in routes
     for method, path in routes:
         response = await client.request(method, concrete(path))
         assert_error(response, 401, "UNAUTHENTICATED")
+        assert "portal" in response.json()["message"]
 
 
 async def test_the_document_marks_exactly_the_routes_that_answer_401(app: FastAPI) -> None:
     """`security` in openapi.json is read off the guards, so it matches what they do:
-    a session is required exactly where no session means 401."""
+    an identity is required exactly where a request that names nobody gets 401."""
     paths = app.openapi()["paths"]
-    needs_session = sorted(
+    needs_identity = sorted(
         (method.upper(), path)
         for path, item in paths.items()
         for method, operation in item.items()
-        if operation.get("security") and {} not in operation["security"]
+        if operation.get("security")
     )
-    assert needs_session == protected(app)
+    assert needs_identity == protected(app)
 
 
-async def test_a_missing_session_is_reported_before_a_bad_body(
-    client: httpx.AsyncClient,
+async def test_a_request_without_the_id_header_never_reaches_the_identity_service(
+    client: httpx.AsyncClient, app: FastAPI, identity_service: RecordedIdentity
 ) -> None:
-    response = await client.post("/api/markets", json={"question": 1})
-    assert_error(response, 401, "UNAUTHENTICATED")
+    for method, path in protected(app):
+        assert_error(await client.request(method, concrete(path)), 401, "UNAUTHENTICATED")
+
+    assert identity_service.asked == []
+
+
+@pytest.mark.parametrize("blank", ["", " ", "\t", "   \t "], ids=["empty", "space", "tab", "mixed"])
+async def test_a_blank_id_header_names_nobody(
+    client: httpx.AsyncClient, settings: Settings, identity_service: RecordedIdentity, blank: str
+) -> None:
+    headers = {settings.identity.header_user_id: blank, settings.identity.header_user_name: "Eve"}
+
+    assert_error(await client.get("/api/me", headers=headers), 401, "UNAUTHENTICATED")
+    assert_error(
+        await client.put("/api/me/profile", json=PROFILE_BODY, headers=headers),
+        401,
+        "UNAUTHENTICATED",
+    )
+    assert identity_service.asked == []
+
+
+async def test_a_name_without_an_id_names_nobody(
+    client: httpx.AsyncClient, settings: Settings, identity_service: RecordedIdentity
+) -> None:
+    headers = {settings.identity.header_user_name: "admin@ethz.ch"}
+
+    assert_error(await client.get("/api/me", headers=headers), 401, "UNAUTHENTICATED")
+    assert identity_service.asked == []
+
+
+async def test_an_id_header_sent_twice_names_nobody(
+    client: httpx.AsyncClient, settings: Settings, identity_service: RecordedIdentity
+) -> None:
+    """Whatever a client put in front of the portal's own line must not be the one read."""
+    header = settings.identity.header_user_id
+    for first, second in (
+        ("admin@ethz.ch", "student@ethz.ch"),
+        ("student@ethz.ch", "admin@ethz.ch"),
+        ("student@ethz.ch", "student@ethz.ch"),
+        ("", "admin@ethz.ch"),
+    ):
+        response = await client.get("/api/me", headers=[(header, first), (header, second)])
+        assert_error(response, 401, "UNAUTHENTICATED")
+
+    assert identity_service.asked == []
+
+
+async def test_the_portal_headers_reach_the_identity_service_with_the_name_percent_decoded(
+    client: httpx.AsyncClient, settings: Settings, identity_service: RecordedIdentity
+) -> None:
+    """The portal percent-encodes what is outside ASCII in the name: Zo%C3%AB is Zoë."""
+    names = settings.identity
+    headers = {
+        names.header_user_id: "zoe@ethz.ch",
+        names.header_user_name: "Zo%C3%AB%20M%C3%BCller",
+    }
+
+    response = await client.get("/api/me", headers=headers)
+
+    zoe = "Zo" + chr(0xEB) + " M" + chr(0xFC) + "ller"
+    assert identity_service.asked == [("zoe@ethz.ch", zoe)]
+    details = assert_error(response, 403, "PROFILE_REQUIRED")
+    assert details == {"name": zoe, "email": "zoe@ethz.ch"}
+
+
+@pytest.mark.parametrize(
+    ("sent", "name"),
+    [
+        ("Ada%00Admin", "AdaAdmin"),
+        ("%20%20Ada%09%0A%20Admin%0D%0A", "Ada Admin"),
+        ("Ada%E2%80%AE%20Admin%E2%80%8B", "Ada Admin"),
+        ("a" * 300, "a" * DISPLAY_NAME_MAX_LENGTH),
+        ("%00%20%0A", ""),
+    ],
+    ids=["nul", "mixed-whitespace", "format-characters", "300-characters", "nothing-to-keep"],
+)
+async def test_the_name_reaches_the_identity_service_as_the_display_name_a_profile_stores(
+    client: httpx.AsyncClient,
+    settings: Settings,
+    identity_service: RecordedIdentity,
+    sent: str,
+    name: str,
+) -> None:
+    """`authenticate_request` reads the name header with `display_name`: no control or
+    format character, whitespace collapsed, at most 200 characters."""
+    names = settings.identity
+    headers = {names.header_user_id: "x@ethz.ch", names.header_user_name: sent}
+
+    response = await client.get("/api/me", headers=headers)
+
+    assert identity_service.asked == [("x@ethz.ch", name)]
+    assert assert_error(response, 403, "PROFILE_REQUIRED") == {"name": name, "email": "x@ethz.ch"}
+
+
+async def test_the_id_header_reaches_the_identity_service_exactly_as_it_arrived(
+    client: httpx.AsyncClient, settings: Settings, identity_service: RecordedIdentity
+) -> None:
+    """Nothing is decoded, trimmed, folded or picked apart on the way: what the id means
+    is `EmailPolicy`'s to say, and it can only refuse what it gets to see."""
+    header = settings.identity.header_user_id.encode()
+    as_sent = [
+        b"Zoe%40ETHZ.ch",
+        b"a@ethz.ch, admin@ethz.ch",
+        b"d\xbakw\xaak@ethz.ch",
+        b"\xa0admin@ethz.ch",
+    ]
+
+    for value in as_sent:
+        await client.get("/api/me", headers={header: value})
+
+    assert [user_id for user_id, _ in identity_service.asked] == [
+        value.decode("latin-1") for value in as_sent
+    ]
+
+
+async def test_a_request_without_a_name_header_has_an_empty_name(
+    client: httpx.AsyncClient, settings: Settings, identity_service: RecordedIdentity
+) -> None:
+    response = await client.get("/api/me", headers={settings.identity.header_user_id: "x@ethz.ch"})
+
+    assert identity_service.asked == [("x@ethz.ch", "")]
+    assert assert_error(response, 403, "PROFILE_REQUIRED") == {"name": "", "email": "x@ethz.ch"}
+
+
+async def test_a_name_header_sent_twice_is_no_name(
+    client: httpx.AsyncClient, settings: Settings, identity_service: RecordedIdentity
+) -> None:
+    names = settings.identity
+    headers = [
+        (names.header_user_id, "x@ethz.ch"),
+        (names.header_user_name, "Mallory"),
+        (names.header_user_name, "Xavier"),
+    ]
+
+    await client.get("/api/me", headers=headers)
+
+    assert identity_service.asked == [("x@ethz.ch", "")]
+
+
+async def test_the_header_names_come_from_the_settings(
+    container: Container, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """IDENTITY_HEADER_USER_ID and IDENTITY_HEADER_USER_NAME decide what is read."""
+    renamed = container.settings.identity.model_copy(
+        update={"header_user_id": "X-Portal-Subject", "header_user_name": "X-Portal-Display"}
+    )
+    monkeypatch.setattr(
+        container, "settings", container.settings.model_copy(update={"identity": renamed})
+    )
+    recorded = RecordedIdentity()
+    monkeypatch.setattr(container, "identity", recorded)
+    origin = container.settings.app.public_base_url
+    transport = httpx.ASGITransport(app=create_app(container))
+
+    async with httpx.AsyncClient(transport=transport, base_url=origin) as renamed_client:
+        under_the_example_names = await renamed_client.get(
+            "/api/me", headers={"X-User-Id": "x@ethz.ch", "X-User-Name": "Xavier"}
+        )
+        await renamed_client.get(
+            "/api/me", headers={"x-portal-subject": "x@ethz.ch", "X-PORTAL-DISPLAY": "Xavier"}
+        )
+
+    assert_error(under_the_example_names, 401, "UNAUTHENTICATED")
+    assert recorded.asked == [("x@ethz.ch", "Xavier")]
+
+
+async def test_the_identity_service_is_asked_once_per_request_however_many_guards_there_are(
+    client: httpx.AsyncClient,
+    container: Container,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An admin route sits behind three guards that all rest on `authenticate_request`.
+    Who is calling costs one query, and upkeep hangs on it, so it must happen once."""
+    admin = someone(UserRole.ADMIN)
+    asked: list[str] = []
+
+    async def authenticate(user_id: str, user_name: str) -> Caller:
+        asked.append(user_id)
+        identity = PortalIdentity(email=admin.email, name=admin.name, role=admin.role)
+        return Caller(identity=identity, user=admin)
+
+    monkeypatch.setattr(container.identity, "authenticate", authenticate)
+    headers = {settings.identity.header_user_id: admin.email}
+
+    revoke = f"/api/admin/code-batches/{uuid7()}/revoke"
+    assert (await client.post(revoke, json={}, headers=headers)).status_code not in (401, 403)
+    assert asked == [admin.email]
+
+    scanned = await client.post(BARISTA_ROUTE, json=SCANNED, headers=headers)
+    assert scanned.status_code not in (401, 403)
+    assert asked == [admin.email, admin.email]
+
+
+async def test_an_id_the_policy_refuses_is_403_with_the_allowed_domains(
+    client: httpx.AsyncClient,
+    container: Container,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Through the application's own `EmailPolicy`, as `IdentityService` asks it first."""
+
+    async def authenticate(user_id: str, user_name: str) -> Caller:
+        email = container.email_policy.identify(user_id)
+        role = container.email_policy.role_for(email)
+        return Caller(identity=PortalIdentity(email=email, name=user_name, role=role), user=None)
+
+    monkeypatch.setattr(container.identity, "authenticate", authenticate)
+    header = settings.identity.header_user_id.encode()
+    refused = [
+        b"someone@uzh.ch",
+        b"someone@student.ethz.ch",
+        b"a@ethz.ch, admin@ethz.ch",
+        b"not an address",
+        b"admin@ethz.ch@ethz.ch",
+        b"\xa0admin@ethz.ch",
+        b"admin@ethz.ch\xa0",
+        b"d\xbakw\xaak@ethz.ch",
+        b"admin%40ethz.ch",
+    ]
+
+    for foreign in refused:
+        for method, path in (("GET", "/api/me"), ("PUT", "/api/me/profile")):
+            response = await client.request(method, path, headers={header: foreign})
+            details = assert_error(response, 403, "FORBIDDEN")
+            assert details == {"allowed_domains": ["ethz.ch"]}
+            assert foreign.decode("latin-1") not in response.text
+
+    # An id is read in lower case: capitals name the same account.
+    allowed = await client.get("/api/me", headers={header: b"Someone@ETHZ.ch"})
+    assert assert_error(allowed, 403, "PROFILE_REQUIRED")["email"] == "someone@ethz.ch"
+
+
+# --- Profiles and roles --------------------------------------------------------------
+
+
+async def test_every_member_route_answers_403_profile_required_to_an_identity_without_a_profile(
+    client: httpx.AsyncClient, app: FastAPI, as_user: ActAs
+) -> None:
+    as_user(NEWCOMER)
+    routes = member_operations(app)
+    assert len(routes) == 32, "every protected operation but the one that saves a profile"
+    for method, path in routes:
+        response = await client.request(method, concrete(path))
+        details = assert_error(response, 403, "PROFILE_REQUIRED")
+        assert details == {"name": "Nora Newcomer", "email": "newcomer@ethz.ch"}
+
+
+@pytest.mark.parametrize("role", [UserRole.ADMIN, UserRole.BARISTA])
+async def test_a_role_opens_nothing_before_the_profile_exists(
+    client: httpx.AsyncClient, app: FastAPI, as_user: ActAs, role: UserRole
+) -> None:
+    """An address of `ADMIN_EMAILS` sets up a profile like everybody else."""
+    as_user(PortalIdentity(email="chief@ethz.ch", name="", role=role))
+    for method, path in member_operations(app):
+        response = await client.request(method, concrete(path))
+        assert assert_error(response, 403, "PROFILE_REQUIRED") == {
+            "name": "",
+            "email": "chief@ethz.ch",
+        }
+
+
+async def test_the_profile_route_lets_an_identity_without_a_profile_through(
+    client: httpx.AsyncClient, as_user: ActAs
+) -> None:
+    as_user(NEWCOMER)
+
+    response = await client.put("/api/me/profile", json=PROFILE_BODY)
+
+    assert response.status_code not in (401, 403), response.text
+
+
+async def test_the_profile_route_lets_a_registered_user_through(
+    client: httpx.AsyncClient, as_user: ActAs
+) -> None:
+    """A profile can be changed by the route that created it."""
+    as_user(someone(UserRole.USER))
+
+    response = await client.put("/api/me/profile", json=PROFILE_BODY)
+
+    assert response.status_code not in (401, 403), response.text
+
+
+async def test_who_is_calling_is_settled_before_a_body_is_validated(
+    client: httpx.AsyncClient, as_user: ActAs
+) -> None:
+    bad_body = {"question": 1}
+
+    assert_error(await client.post("/api/markets", json=bad_body), 401, "UNAUTHENTICATED")
+    assert_error(await client.put("/api/me/profile", json=bad_body), 401, "UNAUTHENTICATED")
+
+    as_user(NEWCOMER)
+    assert_error(await client.post("/api/markets", json=bad_body), 403, "PROFILE_REQUIRED")
+    assert_error(await client.put("/api/me/profile", json=bad_body), 422, "VALIDATION_ERROR")
+
+
+async def test_the_guard_of_the_stream_runs_before_the_stream_subscribes(
+    client: httpx.AsyncClient,
+    container: Container,
+    as_user: ActAs,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The subscription is opened by a dependency of the route. A caller the guard turns
+    away must not get as far as Redis."""
+
+    class NoSubscriptions:
+        def subscribe(self, market_id: object) -> object:
+            raise AssertionError("a refused caller reached the subscription")
+
+    monkeypatch.setattr(container, "live_quotes", NoSubscriptions())
+    stream = f"/api/markets/{uuid7()}/stream"
+
+    assert_error(await client.get(stream), 401, "UNAUTHENTICATED")
+    as_user(NEWCOMER)
+    assert_error(await client.get(stream), 403, "PROFILE_REQUIRED")
+    as_user(someone(UserRole.USER, UserStatus.SUSPENDED))
+    assert_error(await client.get(stream), 403, "FORBIDDEN")
+
+
+async def test_every_route_that_asks_for_no_role_lets_a_registered_user_through(
+    client: httpx.AsyncClient, app: FastAPI, factory: Factory, as_user: ActAs
+) -> None:
+    """Eighteen operations are open to every registered user. No guard may turn a plain
+    user away from one of them; what the service then answers is not the point here."""
+    as_user(await factory.user())
+    routes = [
+        (method, path)
+        for method, path in member_operations(app)
+        if not path.startswith(("/api/admin/", "/api/barista/"))
+    ]
+    assert len(routes) == 18
+    assert ("GET", "/api/leaderboard") in routes
+    for method, path in routes:
+        response = await client.request(method, concrete(path))
+        assert response.status_code not in (401, 403), (method, path, response.text)
 
 
 @pytest.mark.parametrize("role", [UserRole.USER, UserRole.BARISTA])
@@ -307,10 +769,10 @@ async def test_barista_routes_answer_403_to_a_normal_user(
 ) -> None:
     as_user(someone(UserRole.USER))
     routes = protected(app, "/api/barista/")
-    assert routes == [("POST", "/api/barista/coffee-tickets/{code}/redeem")]
+    assert routes == [("POST", BARISTA_ROUTE)]
     for method, path in routes:
-        response = await client.request(method, concrete(path))
-        assert_error(response, 403, "FORBIDDEN")
+        assert_error(await client.request(method, concrete(path)), 403, "FORBIDDEN")
+        assert_error(await client.request(method, path, json=SCANNED), 403, "FORBIDDEN")
 
 
 @pytest.mark.parametrize("role", [UserRole.BARISTA, UserRole.ADMIN])
@@ -318,7 +780,7 @@ async def test_barista_routes_let_baristas_and_admins_through(
     client: httpx.AsyncClient, as_user: ActAs, role: UserRole
 ) -> None:
     as_user(someone(role))
-    response = await client.post("/api/barista/coffee-tickets/ABCD-EFGH/redeem")
+    response = await client.post(BARISTA_ROUTE, json=SCANNED)
     assert response.status_code not in (401, 403)
 
 
@@ -330,22 +792,20 @@ async def test_admin_routes_let_an_admin_through(client: httpx.AsyncClient, as_u
 
 
 @pytest.mark.parametrize("role", list(UserRole))
-async def test_a_suspended_user_is_refused_everywhere_a_session_is_needed(
-    client: httpx.AsyncClient, as_user: ActAs, role: UserRole
+async def test_a_suspended_user_is_refused_everywhere_an_identity_is_needed(
+    client: httpx.AsyncClient, app: FastAPI, as_user: ActAs, role: UserRole
 ) -> None:
+    """The profile route included: a suspended account cannot rename itself either."""
     as_user(someone(role, UserStatus.SUSPENDED))
-    for method, path in (
-        ("GET", "/api/me"),
-        ("POST", "/api/coffee-tickets"),
-        ("GET", "/api/admin/risk"),
-        ("POST", "/api/barista/coffee-tickets/ABCD-EFGH/redeem"),
-    ):
-        response = await client.request(method, path)
+    routes = protected(app)
+    assert PROFILE_OPERATION in routes
+    for method, path in routes:
+        response = await client.request(method, concrete(path))
         assert_error(response, 403, "FORBIDDEN")
-        assert "suspended" in response.json()["message"]
+        assert response.json()["message"] == "This account is suspended."
 
 
-async def test_as_user_none_makes_the_request_anonymous_again(
+async def test_as_user_none_makes_the_request_come_from_nobody_again(
     client: httpx.AsyncClient, as_user: ActAs
 ) -> None:
     as_user(someone(UserRole.ADMIN))
@@ -369,6 +829,69 @@ async def test_an_app_error_keeps_its_status_details_and_headers(
     assert details == {"retry_after_seconds": 42}
     assert response.headers["retry-after"] == "42"
     assert response.json()["message"] == RateLimitedError.default_message
+
+
+async def test_a_taken_username_is_409_and_names_the_field(
+    client: httpx.AsyncClient, app: FastAPI
+) -> None:
+    """What the profile form gets back when somebody else holds the name it asked for."""
+
+    async def taken() -> None:
+        raise UsernameTakenError
+
+    app.add_api_route("/api/_test/taken", taken)
+    details = assert_error(await client.get("/api/_test/taken"), 409, "USERNAME_TAKEN")
+    assert details == {"field": "username"}
+
+
+async def test_an_admin_who_traded_a_market_is_told_that_another_admin_has_to_settle_it(
+    client: httpx.AsyncClient, app: FastAPI
+) -> None:
+    """What resolving and voiding answer such an admin (A.4): 403 with a sentence the
+    admin screen shows as it is, and nothing in `details`."""
+
+    async def traded() -> None:
+        raise ForbiddenError(SELF_DEALING_MESSAGE)
+
+    app.add_api_route("/api/_test/traded", traded)
+    response = await client.get("/api/_test/traded")
+
+    assert assert_error(response, 403, "FORBIDDEN") == {}
+    assert response.json()["message"] == (
+        "You traded this market, so another admin has to settle it."
+    )
+
+
+async def test_the_creator_of_a_batch_is_told_why_its_codes_are_not_theirs_to_redeem(
+    client: httpx.AsyncClient, app: FastAPI
+) -> None:
+    """What redeeming answers whoever created the batch of the code (A.6): 403 with a
+    sentence of its own, and nothing in `details`."""
+
+    async def own_batch() -> None:
+        raise ForbiddenError(OWN_BATCH_MESSAGE)
+
+    app.add_api_route("/api/_test/own-batch", own_batch)
+    response = await client.get("/api/_test/own-batch")
+
+    assert assert_error(response, 403, "FORBIDDEN") == {}
+    assert response.json()["message"] == "You created this batch, so you cannot redeem its codes."
+
+
+async def test_a_reserved_username_is_422_and_names_the_field(
+    client: httpx.AsyncClient, app: FastAPI, base_settings: Settings
+) -> None:
+    """What the profile form gets back for a name of RESERVED_USERNAMES."""
+
+    async def reserved() -> None:
+        raise ValidationFailedError(RESERVED_USERNAME_MESSAGE, details={"field": "username"})
+
+    app.add_api_route("/api/_test/reserved", reserved)
+    response = await client.get("/api/_test/reserved")
+
+    assert assert_error(response, 422, "VALIDATION_ERROR") == {"field": "username"}
+    assert response.json()["message"] == "This username is reserved. Pick another one."
+    assert "admin" in base_settings.identity.reserved_usernames
 
 
 async def test_schema_objects_in_details_are_serialised_like_responses(
@@ -512,3 +1035,112 @@ async def test_a_bug_that_is_an_os_error_stays_a_500(
     response = await unhandled_client.get("/api/_test/file")
     assert_error(response, 500, "INTERNAL_ERROR")
     assert "secret.pem" not in response.text
+
+
+# --- A lock that is not granted in time (SPEC §8, §9) --------------------------------
+
+IMPATIENT_MS: Final[int] = 200
+"""A POSTGRES_LOCK_TIMEOUT_MS short enough to sit through in a test."""
+
+LOCK_TIMEOUT_IN_MS: Final[str] = "SELECT setting::int FROM pg_settings WHERE name = 'lock_timeout'"
+
+
+@pytest.fixture
+async def impatient_app(settings: Settings, clock: FrozenClock) -> AsyncIterator[FastAPI]:
+    """The application on a connection pool of its own, built with a lock timeout of
+    `IMPATIENT_MS`. Its database is the one every other fixture uses."""
+    postgres = settings.postgres.model_copy(update={"lock_timeout_ms": IMPATIENT_MS})
+    container = Container.build(settings.model_copy(update={"postgres": postgres}), clock=clock)
+    yield create_app(container)
+    await container.stop()
+
+
+async def test_every_connection_of_the_application_carries_the_lock_timeout(
+    database: Database, settings: Settings, owner_engine: AsyncEngine
+) -> None:
+    """It is set as a connection opens, so no statement of the api or the relay can wait
+    for a lock without end. The owner role's connections build and empty the schema;
+    they are not the application's and keep Postgres' own setting, no timeout."""
+    configured = settings.postgres.lock_timeout_ms
+
+    async with database.engine.connect() as first, database.engine.connect() as second:
+        for connection in (first, second):
+            assert await connection.scalar(text(LOCK_TIMEOUT_IN_MS)) == configured
+    async with owner_engine.connect() as owner:
+        assert await owner.scalar(text(LOCK_TIMEOUT_IN_MS)) == 0
+
+
+async def test_a_lock_that_is_not_granted_in_time_is_503_and_the_request_can_be_sent_again(
+    impatient_app: FastAPI,
+    settings: Settings,
+    owner_engine: AsyncEngine,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A request queued behind a lock must not outlive the client that waits for it. It
+    fails once POSTGRES_LOCK_TIMEOUT_MS have passed, having changed nothing, and 503 is
+    the answer after which a client sends the same request again."""
+    container: Container = impatient_app.state.container
+
+    async def lock_the_issuance_account() -> dict[str, int]:
+        async with container.uow_factory() as uow:
+            account = await uow.accounts.get_system_account(
+                AccountKind.VIS_ISSUANCE, for_update=True
+            )
+            return {"balance_micro": account.balance_micro}
+
+    impatient_app.add_api_route("/api/_test/locked", lock_the_issuance_account)
+    transport = httpx.ASGITransport(app=impatient_app)
+    origin = settings.app.public_base_url
+
+    async with httpx.AsyncClient(transport=transport, base_url=origin) as impatient:
+        async with owner_engine.connect() as holder:
+            await holder.execute(
+                text("SELECT id FROM accounts WHERE kind = 'VIS_ISSUANCE' FOR UPDATE")
+            )
+            started = time.monotonic()
+            with caplog.at_level(logging.WARNING, logger="app.api.errors"):
+                refused = await impatient.get("/api/_test/locked")
+            waited_seconds = time.monotonic() - started
+        # The holder is gone and its lock with it.
+        served = await impatient.get("/api/_test/locked")
+
+    assert_error(refused, 503, "SERVICE_UNAVAILABLE")
+    assert waited_seconds >= IMPATIENT_MS / 2000, "it has to wait for the lock first"
+    (record,) = [r for r in caplog.records if r.name == "app.api.errors"]
+    assert "GET /api/_test/locked" in record.getMessage()
+    assert "lock timeout" in record.getMessage()
+    assert (served.status_code, served.json()) == (200, {"balance_micro": 0})
+
+
+async def test_a_lock_timeout_and_a_lost_connection_are_told_apart_as_the_driver_reports_them(
+    impatient_app: FastAPI, owner_engine: AsyncEngine
+) -> None:
+    """What `UserUpkeepService` rests on (A.3): it skips its turn on the first and
+    lets the second leave as a 503. Both are errors `is_unavailable` recognises; only
+    `is_lock_timeout` says which one it is."""
+    container: Container = impatient_app.state.container
+
+    async def lock_the_issuance_account() -> None:
+        async with container.uow_factory() as uow:
+            await uow.accounts.get_system_account(AccountKind.VIS_ISSUANCE, for_update=True)
+
+    async def lose_the_connection() -> None:
+        async with container.uow_factory() as uow:
+            backend = await uow.session.scalar(text("SELECT pg_backend_pid()"))
+            async with owner_engine.connect() as admin:
+                await admin.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": backend})
+            await uow.accounts.total_balance()
+
+    async with owner_engine.connect() as holder:
+        await holder.execute(text("SELECT id FROM accounts WHERE kind = 'VIS_ISSUANCE' FOR UPDATE"))
+        with pytest.raises(DBAPIError) as timed_out:
+            await lock_the_issuance_account()
+    with pytest.raises(DBAPIError) as lost:
+        await lose_the_connection()
+
+    assert database_errors.is_lock_timeout(timed_out.value)
+    assert database_errors.is_unavailable(timed_out.value)
+    assert not database_errors.is_lock_timeout(lost.value)
+    assert database_errors.is_unavailable(lost.value)
+    # After a lock timeout the connection is whole: the same pool serves the next call.
+    await lock_the_issuance_account()

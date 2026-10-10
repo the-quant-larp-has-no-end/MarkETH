@@ -1,7 +1,7 @@
 """The single place where credits change representation (SPEC §2, §4).
 
-There is one unit everywhere: 1 voucher = 1 coffee = 1 credit (CR). It is stored and
-computed as an integer number of micro-units (µCR). Shares use the same scale.
+There is one unit everywhere: the credit (CR), shown on screen as a token. It is stored
+and computed as an integer number of micro-units (µCR). Shares use the same scale.
 
 Naming rule used across the codebase:
     *_micro   int      µCR or µshares; what the database and the services use

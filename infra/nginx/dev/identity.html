@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>Who is calling? · MarkETH development</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --background: #1e2749;
+        --card: #273469;
+        --raised: #384475;
+        --foreground: #fafaff;
+        --muted: #b0b5ca;
+        --border: #495481;
+        --border-strong: #7b83a5;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 32px 16px 48px;
+        background: var(--background);
+        color: var(--foreground);
+        font: 16px/1.5 system-ui, sans-serif;
+      }
+      main {
+        max-width: 520px;
+        margin: 0 auto;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 28px;
+        line-height: 1.2;
+      }
+      h2 {
+        margin: 32px 0 8px;
+        color: var(--muted);
+        font-size: 13px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      p {
+        margin: 0;
+      }
+      .muted,
+      small {
+        color: var(--muted);
+      }
+      .card {
+        padding: 12px 16px;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        background: var(--card);
+      }
+      button,
+      input {
+        width: 100%;
+        min-height: 44px;
+        border-radius: 10px;
+        color: inherit;
+        font: inherit;
+      }
+      button {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-top: 8px;
+        padding: 8px 16px;
+        border: 1px solid var(--border);
+        background: var(--card);
+        text-align: left;
+        cursor: pointer;
+      }
+      button:hover {
+        background: var(--raised);
+      }
+      button span {
+        flex: 1;
+      }
+      button small {
+        display: block;
+      }
+      button em {
+        padding: 2px 8px;
+        border: 1px solid var(--border-strong);
+        border-radius: 6px;
+        color: var(--muted);
+        font-size: 13px;
+        font-style: normal;
+      }
+      label {
+        display: block;
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      input {
+        padding: 8px 12px;
+        border: 1px solid var(--border-strong);
+        background: var(--background);
+      }
+      button.primary {
+        justify-content: center;
+        margin-top: 16px;
+        border-color: var(--foreground);
+        background: var(--foreground);
+        color: var(--background);
+        font-weight: 600;
+      }
+      :focus-visible {
+        outline: 2px solid var(--foreground);
+        outline-offset: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Who is calling?</h1>
+      <p class="muted">
+        Nobody signs in on a laptop. This page stands in for the ETH sign-in: the proxy tells the
+        API that every request of this browser comes from the person picked here.
+      </p>
+
+      <h2>Now</h2>
+      <p class="card" id="current">…</p>
+
+      <h2>Become</h2>
+      <button data-id="admin@ethz.ch" data-name="Ada Admin">
+        <span>Ada Admin <small>admin@ethz.ch</small></span><em>admin</em>
+      </button>
+      <button data-id="barista@ethz.ch" data-name="Bruno Barista">
+        <span>Bruno Barista <small>barista@ethz.ch</small></span><em>barista</em>
+      </button>
+      <button data-id="zoe@ethz.ch" data-name="Zoë Zürcher">
+        <span>Zoë Zürcher <small>zoe@ethz.ch</small></span><em>student</em>
+      </button>
+      <button data-id="noah@ethz.ch" data-name="Noah Keller">
+        <span>Noah Keller <small>noah@ethz.ch</small></span><em>student</em>
+      </button>
+      <button data-id="mia@ethz.ch" data-name="Mia Meier">
+        <span>Mia Meier <small>mia@ethz.ch</small></span><em>student</em>
+      </button>
+      <button data-id="uma@uzh.ch" data-name="Uma Uster">
+        <span>Uma Uster <small>uma@uzh.ch</small></span><em>not ETH: refused</em>
+      </button>
+
+      <h2>Somebody else</h2>
+      <form id="somebody">
+        <label>
+          Id, as the portal sends it
+          <input
+            name="user_id"
+            required
+            autocomplete="off"
+            placeholder="username@ethz.ch"
+            pattern="[A-Za-z0-9._+\-]+@[A-Za-z0-9.\-]+"
+            title="An address such as username@ethz.ch"
+          />
+        </label>
+        <label>
+          Name
+          <input name="user_name" required autocomplete="off" placeholder="First Last" />
+        </label>
+        <button class="primary">Become this person</button>
+      </form>
+
+      <h2>Nobody picked</h2>
+      <button id="forget">
+        <span>Use DEV_USER_ID and DEV_USER_NAME of .env</span>
+      </button>
+    </main>
+
+    <script>
+      const A_YEAR = 60 * 60 * 24 * 365;
+
+      function store(cookie, value, seconds) {
+        document.cookie = `${cookie}=${value}; Path=/; SameSite=Lax; Max-Age=${seconds}`;
+      }
+
+      // The id is stored as it is: the buttons and the pattern of the field admit only
+      // characters a cookie may hold. The name is percent-encoded, as the portal sends it.
+      function become(id, name) {
+        store("dev_user_id", id, A_YEAR);
+        store("dev_user_name", encodeURIComponent(name), A_YEAR);
+        location.assign("/");
+      }
+
+      for (const person of document.querySelectorAll("[data-id]")) {
+        person.addEventListener("click", () => become(person.dataset.id, person.dataset.name));
+      }
+
+      document.querySelector("#somebody").addEventListener("submit", (event) => {
+        event.preventDefault();
+        const { user_id, user_name } = event.target.elements;
+        become(user_id.value, user_name.value.trim());
+      });
+
+      document.querySelector("#forget").addEventListener("click", () => {
+        store("dev_user_id", "", 0);
+        store("dev_user_name", "", 0);
+        location.reload();
+      });
+
+      // The proxy says whom it names: the id, then the percent-encoded name.
+      fetch("/__dev/identity/current", { cache: "no-store" })
+        .then((answer) => answer.text())
+        .then((lines) => {
+          const [id, name] = lines.split("\n");
+          document.querySelector("#current").textContent = `${decodeURIComponent(name)} · ${id}`;
+        });
+    </script>
+  </body>
+</html>

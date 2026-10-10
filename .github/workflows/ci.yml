@@ -68,6 +68,50 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  # compose.yaml is what the VM runs (SPEC A.10). This job proves that the files a
+  # deployment is made of fit together: the scripts parse cleanly, both compose variants
+  # resolve with the development environment and keep the web app and the owner role's
+  # password where they belong, the production environment renders from the committed
+  # layers, and compose.yaml resolves with it.
+  stack:
+    name: Stack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Create .env from the template
+        run: cp .example.env .env
+      - run: shellcheck --shell=sh infra/deploy/backup.sh infra/deploy/check.sh infra/deploy/smoke.sh
+      - name: The deployment targets expand
+        run: make --dry-run deploy
+      - name: Both compose variants resolve
+        run: |
+          docker compose config --quiet
+          docker compose -f compose.yaml config --quiet
+      # What a YAML merge and an env_file add up to is Compose's to say, so it is asked:
+      # the web app is on the edge network alone, and of api, relay and migrate only
+      # migrate is handed the password of the owner role.
+      - name: Compose keeps the web app off the core network and the owner password with migrate
+        run: |
+          for files in "--file compose.yaml" "--file compose.yaml --file compose.override.yaml"; do
+            docker compose $files config --format json | jq --exit-status '
+              (.services.web.networks | keys) == ["edge"]
+              and (.services.nginx.networks | keys) == ["core", "edge"]
+              and .services.api.environment.POSTGRES_PASSWORD == ""
+              and .services.relay.environment.POSTGRES_PASSWORD == ""
+              and (.services.migrate.environment.POSTGRES_PASSWORD | length) > 0' > /dev/null
+          done
+      # The VM's own file is made up here, by the command that creates the real one.
+      - name: The production environment renders and compose.yaml resolves with it
+        working-directory: backend
+        run: |
+          python3 -B -m scripts.production_env \
+            --example ../.example.env --production ../infra/deploy/env.production \
+            --own "$RUNNER_TEMP/own.env" --output "$RUNNER_TEMP/production.env" \
+            --postgres-volume ci-has-no-database \
+            --admins first.admin@ethz.ch,second.admin@ethz.ch
+          docker compose --env-file "$RUNNER_TEMP/production.env" -f ../compose.yaml config --quiet
+
   # backend/openapi.json and the frontend's generated types are committed. This job
   # regenerates both and fails when the commit does not already contain the result.
   contract:

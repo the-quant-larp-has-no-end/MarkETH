@@ -1,4 +1,4 @@
-"""Result of granting every owed monthly voucher at once (SPEC §2, Appendix A.2)."""
+"""Result of booking every owed monthly grant at once (SPEC §2, Appendix A.2)."""
 
 from app.schemas.common import CreditAmount, ResponseModel
 

@@ -3,8 +3,9 @@
 The market row is the lock every trade takes first (SPEC §8). It carries the LMSR state
 (`b_micro`, `q_yes_micro`, `q_no_micro`) and a `version` that grows by one per trade.
 
-SPEC §5: budget and b are immutable while a market is OPEN. A trigger (in the
-migrations) rejects such an UPDATE; changing them means halting the market first.
+SPEC §5: budget and b are immutable while a market is OPEN. A trigger
+(`app.models.triggers`) rejects such an UPDATE; changing them means halting the market
+first.
 """
 
 from datetime import datetime

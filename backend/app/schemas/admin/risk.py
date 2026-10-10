@@ -15,10 +15,10 @@ from app.schemas.common import (
 
 
 class Obligations(ResponseModel):
-    """Outstanding obligations: the most coffee VIS could owe right now (SPEC §5, A.6)."""
+    """Outstanding obligations: the most VIS could owe right now (SPEC §5, A.6)."""
 
     user_balances_cr: CreditAmount
-    pending_coffee_tickets_cr: CreditAmount
+    pending_vouchers_cr: CreditAmount
     market_exposure_cr: SignedCreditAmount
     """Over every market not yet settled: max(q_yes, q_no) minus its account balance."""
 
@@ -54,6 +54,12 @@ class RiskMarketRow(ResponseModel):
     exposure_cr: SignedCreditAmount
     """max(q_yes, q_no) minus the account balance: what VIS would have to add if the
     more heavily held outcome won. At most `budget_cr`."""
+
+    void_cost_cr: SignedCreditAmount
+    """What VIS would have to add if the market were voided now: the net stakes a void
+    refunds, minus the account balance. It is what traders who sold above their cost
+    have taken out, which a void does not take back. Never below zero while the books
+    are right, and bounded by the stake limit per trader, not by `budget_cr`."""
 
     volume_cr: CreditAmount
     close_at: datetime

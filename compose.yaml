@@ -1,12 +1,14 @@
 # MarkETH stack (SPEC §9, A.10): nginx in front of web and api, Postgres as the only
-# source of truth, Redis and ScyllaDB as optional speed-ups, Mailpit for magic links.
+# source of truth, Redis and ScyllaDB as optional speed-ups.
 #
-# This file alone is the production-like stack: built images, no source mounts, and only
-# nginx and the Mailpit inbox published.
+# This file alone is the deployed stack: built images, no source mounts, and nginx as the
+# only published port. `make deploy` runs exactly this on the VM, behind the VIScon
+# portal, which signs every visitor in (docs/SERVER_INFRASTRUCTURE.md).
 #
-#   docker compose -f compose.yaml up --build     production-like
+#   docker compose -f compose.yaml up --build     as deployed
 #   docker compose up --build                     development: compose.override.yaml is
-#                                                 merged in and adds hot reload and ports
+#                                                 merged in and adds hot reload, ports
+#                                                 and a stand-in for the portal's sign-in
 #
 # Every value comes from .env (copy .example.env). Compose reads it to fill the ${...}
 # below, and the Python services receive the whole file through env_file. A variable
@@ -14,9 +16,28 @@
 
 name: marketh
 
-# api, relay and migrate run the same image with a different command. Inside the stack
-# the stores are reached by service name on their standard ports, whatever .env
-# publishes them as on the host.
+# Docker keeps a container's output without limit unless told otherwise. Every service
+# rotates it: files of CONTAINER_LOG_MAX_SIZE, CONTAINER_LOG_MAX_FILES of them.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: ${CONTAINER_LOG_MAX_SIZE:?}
+    max-file: "${CONTAINER_LOG_MAX_FILES:?}"
+
+# Inside the stack the stores are reached by service name on their standard ports,
+# whatever .env publishes them as on the host.
+x-stores: &stores
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  SCYLLA_HOSTS: scylla
+  SCYLLA_PORT: "9042"
+
+# api, relay and migrate run the same image with a different command, and each gets the
+# whole of .env. What is built on this block connects as the app role and is handed an
+# empty password for the owner role; migrate, the one service that works as the owner,
+# takes its environment without that line.
 x-backend: &backend
   build:
     context: ./backend
@@ -24,14 +45,9 @@ x-backend: &backend
   init: true
   env_file: .env
   environment:
-    POSTGRES_HOST: postgres
-    POSTGRES_PORT: "5432"
-    REDIS_HOST: redis
-    REDIS_PORT: "6379"
-    SCYLLA_HOSTS: scylla
-    SCYLLA_PORT: "9042"
-    SMTP_HOST: mailpit
-    SMTP_PORT: "1025"
+    <<: *stores
+    POSTGRES_PASSWORD: ""
+  logging: *logging
 
 # The schema must be in place; Redis and ScyllaDB are deliberately absent, because the
 # API and the relay start and keep working without them (SPEC §9).
@@ -41,23 +57,53 @@ x-needs-schema: &needs-schema
   migrate:
     condition: service_completed_successfully
 
+# Each service has a hard memory limit from .env: the VM has 7.6 GiB and no swap, and a
+# leak should restart one container instead of starving the host.
+#
+# Each service also names its networks (they are at the end of this file): nginx is on
+# both, the web app on `edge` alone, everything else on `core` alone.
 services:
+  # Waits for nobody: it resolves web and api per request and answers /api/ with a JSON
+  # 503 while the API starts.
   nginx:
     image: nginx:1.30-alpine
     restart: unless-stopped
+    mem_limit: ${NGINX_MEMORY_LIMIT:?}
+    logging: *logging
+    networks:
+      - edge
+      - core
     environment:
-      # Limits the image's template rendering to the NGINX_* placeholders, so nginx's
-      # own $variables survive it.
+      # Every time the container starts, the image renders each *.template below
+      # /etc/nginx/templates to the same path below this directory. Only placeholders
+      # named NGINX_* are replaced, so nginx's own $variables survive.
+      NGINX_ENVSUBST_OUTPUT_DIR: /etc/nginx
       NGINX_ENVSUBST_FILTER: ^NGINX_
       NGINX_CLIENT_MAX_BODY_SIZE: ${NGINX_CLIENT_MAX_BODY_SIZE:?}
       NGINX_RATE_LIMIT: ${NGINX_RATE_LIMIT:?}
       NGINX_RATE_LIMIT_BURST: ${NGINX_RATE_LIMIT_BURST:?}
       NGINX_SSE_READ_TIMEOUT: ${NGINX_SSE_READ_TIMEOUT:?}
+      NGINX_SSE_STREAMS_PER_CALLER: ${NGINX_SSE_STREAMS_PER_CALLER:?}
       NGINX_CONTENT_SECURITY_POLICY: ${NGINX_CONTENT_SECURITY_POLICY:?}
     volumes:
-      - ./infra/nginx:/etc/nginx/templates:ro
+      # infra/nginx/conf.d is rendered to /etc/nginx/conf.d, which the image's nginx.conf
+      # loads. The directory is mounted, never a single file: a mounted file stays the
+      # one it was when the container was created, a mounted directory shows a replaced
+      # file to the next start.
+      - type: bind
+        source: ./infra/nginx/conf.d
+        target: /etc/nginx/templates/conf.d
+        read_only: true
+        bind:
+          create_host_path: false
     ports:
-      - "${NGINX_HTTP_PORT:?}:80"
+      - "${NGINX_HTTP_BIND:?}:${NGINX_HTTP_PORT:?}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/nginx-health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
 
   web:
     build:
@@ -65,10 +111,44 @@ services:
       target: prod
     init: true
     restart: unless-stopped
+    mem_limit: ${WEB_MEMORY_LIMIT:?}
+    logging: *logging
+    networks:
+      - edge
+    healthcheck:
+      # Healthy when the app answers its start page with anything but a server error.
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/', { redirect: 'manual' }).then((answer) => process.exit(answer.status < 500 ? 0 : 1), () => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   api:
     <<: *backend
+    # The image's command plus a limit on how long a stop waits for requests in flight.
+    # An open event stream never ends by itself: without the limit every restart would
+    # last until Docker kills the process.
+    command:
+      - uvicorn
+      - app.main:create_app
+      - --factory
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - "*"
+      - --timeout-graceful-shutdown
+      - "${API_SHUTDOWN_TIMEOUT_SECONDS:?}"
     restart: unless-stopped
+    mem_limit: ${API_MEMORY_LIMIT:?}
+    networks:
+      - core
     depends_on: *needs-schema
     healthcheck:
       test:
@@ -81,17 +161,35 @@ services:
       retries: 3
       start_period: 30s
 
+  # No port and no healthcheck: a crash ends the process and the restart policy brings it
+  # back, and a backlog shows as unpublished outbox rows.
   relay:
     <<: *backend
     command: ["python", "-m", "app.relay"]
     restart: unless-stopped
+    mem_limit: ${BACKEND_WORKER_MEMORY_LIMIT:?}
+    networks:
+      - core
     depends_on: *needs-schema
 
-  # One-shot: applies the migrations as the owner role, then exits.
+  # One-shot, as the owner role. It builds the schema in an empty database, then proves
+  # that the database at hand was built from the models of this code. The schema has one
+  # revision and no upgrade path, so a database built from other models fails here,
+  # before api and relay start: it has to be wiped and rebuilt (`make reset`, on the VM
+  # `make deploy-wipe`).
   migrate:
     <<: *backend
-    command: ["alembic", "upgrade", "head"]
+    # Where the stores are and nothing else, so the owner role's password is the one
+    # .env holds.
+    environment: *stores
+    command:
+      - sh
+      - -c
+      - alembic upgrade head && alembic check && python -m scripts.check_schema
     restart: "no"
+    mem_limit: ${BACKEND_WORKER_MEMORY_LIMIT:?}
+    networks:
+      - core
     depends_on:
       postgres:
         condition: service_healthy
@@ -99,6 +197,12 @@ services:
   postgres:
     image: postgres:18-alpine
     restart: unless-stopped
+    mem_limit: ${POSTGRES_MEMORY_LIMIT:?}
+    # If the host itself runs out of memory, the store that holds the balances goes last.
+    oom_score_adj: -500
+    logging: *logging
+    networks:
+      - core
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
@@ -108,8 +212,8 @@ services:
       # (/var/lib/postgresql/18/docker), so the volume is mounted one level up.
       - postgres-data:/var/lib/postgresql
     healthcheck:
-      # Over TCP on purpose: while the image initialises a new database it runs a
-      # temporary server on the Unix socket only, which must not count as ready.
+      # Over TCP on purpose: while the image initialises a database it runs a temporary
+      # server on the Unix socket only, which must not count as ready.
       test: ["CMD-SHELL", "pg_isready --host 127.0.0.1 --username \"$$POSTGRES_USER\" --dbname \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 5s
@@ -120,6 +224,10 @@ services:
   redis:
     image: redis:8.8-alpine
     restart: unless-stopped
+    mem_limit: ${REDIS_MEMORY_LIMIT:?}
+    logging: *logging
+    networks:
+      - core
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     environment:
       # Read by `make redis-cli` to open the database the app uses.
@@ -131,9 +239,18 @@ services:
       retries: 5
 
   # 2026.1 is ScyllaDB's long-term-support line; the image is built for arm64 and amd64.
+  # The flags are SPEC §9's. SCYLLA_MEMORY is what ScyllaDB itself is told to use; the
+  # container limit sits well above it, for the processes around it and for the Python
+  # process each cqlsh check starts.
   scylla:
     image: scylladb/scylla:2026.1
     restart: unless-stopped
+    mem_limit: ${SCYLLA_MEMORY_LIMIT:?}
+    # Price history is the part the product works without: first to go.
+    oom_score_adj: 500
+    logging: *logging
+    networks:
+      - core
     command:
       - --smp
       - ${SCYLLA_SMP:?}
@@ -147,19 +264,21 @@ services:
       - scylla-data:/var/lib/scylla
     healthcheck:
       test: ["CMD-SHELL", "cqlsh -e 'SELECT now() FROM system.local' > /dev/null 2>&1"]
-      interval: 10s
+      interval: 30s
       timeout: 10s
-      retries: 6
+      retries: 3
       start_period: 120s
-
-  # Catches every mail the API sends. The inbox holds working magic links, so it is
-  # published on the loopback interface only.
-  mailpit:
-    image: axllent/mailpit:v1.31
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:${MAILPIT_UI_PORT:?}:8025"
 
 volumes:
   postgres-data:
   scylla-data:
+
+# Two networks, so that the web app shares one with the proxy and with nothing else. It
+# serves the same pages to everybody and needs neither the API nor a store, so it cannot
+# open a connection to any of them: Redis and ScyllaDB ask for no password, and the API
+# takes its caller from two request headers. The proxy is all the web app reaches.
+networks:
+  # nginx and web.
+  edge:
+  # nginx, the API and what the API works with.
+  core:

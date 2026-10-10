@@ -1,13 +1,17 @@
-# Development overlay (A.10). A plain `docker compose up` merges this file over
+# Development overlay (SPEC A.10). A plain `docker compose up` merges this file over
 # compose.yaml: dev images, the source mounted into the containers with hot reload, and
 # every service published on the host at the port .env names, so a process started on
 # the host (pytest, alembic, uvicorn, next dev) reaches the stores with the same .env.
+# The proxy also names the caller, because nobody signs in on a laptop.
 #
 # The extra ports are bound to the loopback interface: they are for this machine, and
-# the passwords in .env are development ones.
+# the passwords in .env are development ones. Which service is on which network, and
+# which of them is handed the owner role's password, is as compose.yaml says.
 #
 # The dev images get their own names (Compose's default plus "-dev"), so switching
 # between the two stacks never starts one with the other's image.
+#
+# This file and infra/nginx/dev stay on the laptop: `make deploy` sends neither.
 
 x-backend-dev: &backend-dev
   build:
@@ -16,6 +20,22 @@ x-backend-dev: &backend-dev
     - ./backend:/app
 
 services:
+  # The stand-in for the portal's sign-in. infra/nginx/dev is rendered to /etc/nginx/dev,
+  # where the server block of the proxy includes it: every request then goes to the API
+  # as DEV_USER_ID, or as whoever was picked at /__dev/identity. Both variables are
+  # required here, and the deployed .env leaves both empty.
+  nginx:
+    environment:
+      NGINX_DEV_USER_ID: ${DEV_USER_ID:?}
+      NGINX_DEV_USER_NAME: ${DEV_USER_NAME:?}
+    volumes:
+      - type: bind
+        source: ./infra/nginx/dev
+        target: /etc/nginx/templates/dev
+        read_only: true
+        bind:
+          create_host_path: false
+
   web:
     build:
       target: dev
@@ -49,7 +69,7 @@ services:
       - app
       # An open event stream would otherwise hold every reload until the browser lets go.
       - --timeout-graceful-shutdown
-      - "2"
+      - "${API_SHUTDOWN_TIMEOUT_SECONDS:?}"
     ports:
       - "127.0.0.1:${API_HOST_PORT:?}:8000"
 
@@ -73,10 +93,6 @@ services:
   scylla:
     ports:
       - "127.0.0.1:${SCYLLA_PORT:?}:9042"
-
-  mailpit:
-    ports:
-      - "127.0.0.1:${SMTP_PORT:?}:1025"
 
 volumes:
   web-node-modules:

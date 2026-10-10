@@ -26,11 +26,11 @@ from app.repositories.unit_of_work import UnitOfWork
 class LedgerRef(StrEnum):
     """`journal_entries.ref_type`: the table whose row `ref_id` is the id of."""
 
-    VOUCHER_GRANT = "voucher_grant"
-    """SIGNUP_GRANT and MONTHLY_GRANT: `voucher_grants.id`."""
+    GRANT = "grant"
+    """SIGNUP_GRANT and MONTHLY_GRANT: `grants.id`."""
 
-    VOUCHER_CODE = "voucher_code"
-    """CODE_REDEMPTION: `voucher_codes.id`."""
+    CODE = "code"
+    """CODE_REDEMPTION: `codes.id`."""
 
     TRADE = "trade"
     """TRADE_BUY and TRADE_SELL: `trades.id`."""
@@ -38,8 +38,8 @@ class LedgerRef(StrEnum):
     MARKET = "market"
     """MARKET_RESOLUTION and MARKET_VOID: `markets.id`."""
 
-    COFFEE_TICKET = "coffee_ticket"
-    """COFFEE_TICKET_ISSUE, _REDEEM and _REFUND: `coffee_tickets.id`."""
+    VOUCHER = "voucher"
+    """VOUCHER_ISSUE, _REDEEM and _REFUND: `vouchers.id`."""
 
 
 def signup_grant_key(user_id: UUID) -> str:
@@ -67,16 +67,16 @@ def void_key(market_id: UUID) -> str:
     return f"void:{market_id}"
 
 
-def ticket_issue_key(ticket_id: UUID) -> str:
-    return f"ticket:{ticket_id}:issue"
+def voucher_issue_key(voucher_id: UUID) -> str:
+    return f"voucher:{voucher_id}:issue"
 
 
-def ticket_redeem_key(ticket_id: UUID) -> str:
-    return f"ticket:{ticket_id}:redeem"
+def voucher_redeem_key(voucher_id: UUID) -> str:
+    return f"voucher:{voucher_id}:redeem"
 
 
-def ticket_refund_key(ticket_id: UUID) -> str:
-    return f"ticket:{ticket_id}:refund"
+def voucher_refund_key(voucher_id: UUID) -> str:
+    return f"voucher:{voucher_id}:refund"
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,7 +132,7 @@ class LedgerService:
         time violates `uq_journal_entries_idempotency_key`: the INSERT raises
         `IntegrityError`, which ends the caller's transaction (it must leave the
         `async with` block). So does a posting that would take a market account or one
-        of the two coffee ticket accounts below zero: those are bugs of the caller, not
+        of the two voucher accounts below zero: those are bugs of the caller, not
         answers to a user, and the database is their backstop. `ref_type` is a
         `LedgerRef`.
 

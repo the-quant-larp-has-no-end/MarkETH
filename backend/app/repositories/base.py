@@ -8,9 +8,9 @@ Row locks. `for_update=True` takes Postgres' FOR NO KEY UPDATE lock, the one an 
 of non-key columns takes. It serialises writers of a row exactly like FOR UPDATE, but
 does not conflict with the FOR KEY SHARE lock every foreign-key check takes on the row
 it references. With plain FOR UPDATE, inserting a trade (which references its user)
-would wait on a sign-in holding that user's row while the sign-in waits on the trade's
-account lock: a deadlock. No row locked this way is ever deleted or re-keyed, so the
-weaker lock loses nothing.
+would wait on a profile save holding that user's row while the save waits on the
+trade's account lock: a deadlock. No row locked this way is ever deleted or re-keyed,
+so the weaker lock loses nothing.
 
 Bulk updates. An UPDATE with a condition beyond the primary key runs with
 `MATCHED_BY_DATABASE`: the rows Postgres reports as changed are the ones whose loaded

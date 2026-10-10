@@ -14,37 +14,36 @@ from typing import Self
 from app.core.clock import Clock, SystemClock
 from app.core.config import Settings
 from app.db.database import Database
-from app.integrations.mail.mailer import Mailer, SmtpMailer
 from app.integrations.redis.client import RedisClient
 from app.integrations.redis.market_cache import MarketCache
 from app.integrations.redis.quote_bus import QuoteBus
 from app.integrations.redis.rate_limiter import InProcessRateLimiter, RedisRateLimiter
-from app.integrations.redis.session_cache import SessionCache
 from app.integrations.scylla.client import ScyllaClient
 from app.integrations.scylla.quote_history import QuoteHistoryStore
 from app.repositories.unit_of_work import UnitOfWork
 from app.services import UowFactory
 from app.services.account import AccountService
 from app.services.audit import AuditService
-from app.services.auth import AuthService
-from app.services.coffee_tickets import CoffeeTicketService
+from app.services.codes import CodeService
 from app.services.email_policy import EmailPolicy
 from app.services.grants import GrantService
 from app.services.health import HealthService
 from app.services.history import HistoryService
+from app.services.identity import IdentityService
 from app.services.invariants import InvariantChecker
+from app.services.leaderboard import LeaderboardService
 from app.services.ledger import LedgerService
 from app.services.live_quotes import LiveQuoteService
 from app.services.market_lifecycle import MarketLifecycleService
 from app.services.market_view import MarketView
 from app.services.markets import MarketService
+from app.services.profile import ProfileService
 from app.services.public_config import PublicConfigService
 from app.services.quotes import QuoteService
 from app.services.risk import RiskService
-from app.services.sessions import SessionService
 from app.services.trading import TradingService
 from app.services.upkeep import UserUpkeepService
-from app.services.voucher_codes import VoucherCodeService
+from app.services.vouchers import VoucherService
 
 logger = logging.getLogger(__name__)
 
@@ -55,19 +54,16 @@ class Container:
         settings: Settings,
         *,
         clock: Clock,
-        mailer: Mailer,
         database: Database | None,
     ) -> None:
         self.settings = settings
         self.clock = clock
-        self.mailer = mailer
 
         # Stores and their adapters.
         self._owns_database = database is None
         self.database = database or Database(settings.postgres.app_url, settings.postgres)
         self.uow_factory: UowFactory = self._new_unit_of_work
         self.redis = RedisClient(settings.redis)
-        self.session_cache = SessionCache(self.redis)
         self.market_cache = MarketCache(self.redis, settings.redis)
         self.quote_bus = QuoteBus(self.redis)
         self.rate_limiter = RedisRateLimiter(self.redis)
@@ -86,25 +82,15 @@ class Container:
         self.invariants = InvariantChecker()
 
         self.grants = GrantService(uow_factory, settings, clock, self.ledger, self.audit)
-        self.coffee_tickets = CoffeeTicketService(uow_factory, settings, clock, self.ledger)
-        self.upkeep = UserUpkeepService(uow_factory, self.grants, self.coffee_tickets)
-        self.sessions = SessionService(
-            uow_factory, settings, clock, self.session_cache, self.upkeep
-        )
-        self.auth = AuthService(
-            uow_factory,
-            settings,
-            clock,
-            self.email_policy,
-            self.sessions,
-            self.grants,
-            self.rate_limiter,
-            mailer,
-        )
+        self.vouchers = VoucherService(uow_factory, settings, clock, self.ledger)
+        self.upkeep = UserUpkeepService(uow_factory, settings, clock, self.grants, self.vouchers)
+        self.identity = IdentityService(uow_factory, self.email_policy, self.upkeep)
         self.account = AccountService(uow_factory, settings, clock, self.grants, self.market_view)
-        self.voucher_codes = VoucherCodeService(
+        self.profile = ProfileService(uow_factory, settings, clock, self.grants, self.account)
+        self.codes = CodeService(
             uow_factory, settings, clock, self.ledger, self.audit, self.rate_limiter
         )
+        self.leaderboard = LeaderboardService(uow_factory, settings)
 
         self.live_quotes = LiveQuoteService(
             uow_factory, settings, clock, self.market_view, self.quote_bus
@@ -149,21 +135,14 @@ class Container:
         settings: Settings,
         *,
         clock: Clock | None = None,
-        mailer: Mailer | None = None,
         database: Database | None = None,
     ) -> Self:
         """Construct every adapter and service exactly once.
 
-        `clock` and `mailer` default to the system clock and SMTP; tests pass a frozen
-        clock and a mailer that records. A `database` passed in is shared, not owned:
-        `stop` leaves it open for whoever built it.
+        `clock` defaults to the system clock; tests pass a frozen one. A `database`
+        passed in is shared, not owned: `stop` leaves it open for whoever built it.
         """
-        return cls(
-            settings,
-            clock=clock or SystemClock(),
-            mailer=mailer or SmtpMailer(settings.mail),
-            database=database,
-        )
+        return cls(settings, clock=clock or SystemClock(), database=database)
 
     async def start(self) -> None:
         """Start what runs in the background: the listener for live quotes.

@@ -1,9 +1,17 @@
-"""What a signed-in user sees of themselves: `/me` and its lists (SPEC §10, Appendix A.2)."""
+"""What a user sees of themselves: `/me` and its lists (SPEC §10, Appendix A.2)."""
 
 from datetime import date, datetime
 from uuid import UUID
 
-from app.core.enums import JournalKind, MarketStatus, MarketTier, Outcome, TradeSide, UserRole
+from app.core.enums import (
+    DegreeLevel,
+    JournalKind,
+    MarketStatus,
+    MarketTier,
+    Outcome,
+    TradeSide,
+    UserRole,
+)
 from app.schemas.common import (
     CreditAmount,
     CursorPage,
@@ -20,12 +28,25 @@ class MeResponse(ResponseModel):
 
     id: UUID
     email: str
+    """The address the portal identifies the user by."""
+
+    name: str
+    """The display name the portal sent when the profile was last saved. May be empty."""
+
+    username: str
+    degree_level: DegreeLevel
+    degree_programme: str
+    """A label of `degree_level`, as `GET /config` lists it."""
+
     role: UserRole
+    """What the user may do right now. It follows the server's role lists, not the
+    profile."""
+
     created_at: datetime
     balance_cr: CreditAmount
-    can_get_coffee: bool
-    """Whether the balance covers a coffee ticket right now (SPEC §2: only whole
-    vouchers become tickets). The wallet enables "Get a coffee" from this."""
+    can_get_voucher: bool
+    """Whether the balance covers a voucher for the cheapest product right now
+    (SPEC §2). The wallet enables getting one from this."""
 
     monthly_grant_cr: CreditAmount
     next_monthly_grant_on: date
@@ -93,7 +114,7 @@ class LedgerItem(ResponseModel):
     """Positive when the balance grew, negative when it shrank."""
 
     description: str
-    """A short English label for the line, e.g. "Monthly voucher"."""
+    """A short English label for the line, e.g. "Monthly tokens"."""
 
     created_at: datetime
 

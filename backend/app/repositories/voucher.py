@@ -1,174 +1,71 @@
-"""Queries on `voucher_grants`, `voucher_code_batches` and `voucher_codes` (SPEC §2, A.6)."""
+"""Queries on `vouchers` (SPEC §2, §5, A.6)."""
 
 from collections.abc import Collection, Sequence
-from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import ColumnElement, Select, exists, func, select, update
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import VoucherCodeStatus
-from app.models.voucher import VoucherCode, VoucherCodeBatch, VoucherGrant
-from app.repositories.base import MATCHED_BY_DATABASE, BaseRepository, sum_micro
+from app.core.enums import VoucherStatus
+from app.models.voucher import Voucher
+from app.repositories.base import BaseRepository, sum_micro
 
 
-@dataclass(frozen=True, slots=True)
-class CodeBatchCounts:
-    """A batch and how many of its codes are in each state."""
-
-    batch: VoucherCodeBatch
-    active: int
-    redeemed: int
-    revoked: int
-
-
-class VoucherGrantRepository(BaseRepository[VoucherGrant]):
+class VoucherRepository(BaseRepository[Voucher]):
     def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session, VoucherGrant)
+        super().__init__(session, Voucher)
 
-    async def insert_if_absent(
-        self, user_id: UUID, period: str, now: datetime
-    ) -> VoucherGrant | None:
-        """Record a grant for (user, period); None if that grant already exists.
+    async def get_owned(
+        self, voucher_id: UUID, user_id: UUID, *, for_update: bool = False
+    ) -> Voucher | None:
+        """The voucher with this id if `user_id` holds it, else None.
 
-        Only the caller that gets a row back may book the credit. A concurrent attempt
-        waits in the INSERT for this transaction and then inserts nothing (SPEC §2).
+        The row is selected by its id and its owner together, so a voucher of somebody
+        else is neither read nor locked, and looks exactly like one that does not
+        exist. Lock it before replacing its code.
         """
-        statement = (
-            insert(VoucherGrant)
-            .values(user_id=user_id, period=period, created_at=now)
-            .on_conflict_do_nothing(index_elements=[VoucherGrant.user_id, VoucherGrant.period])
-            .returning(VoucherGrant)
-        )
-        return await self._session.scalar(statement)
-
-    async def list_periods(self, user_id: UUID) -> Sequence[str]:
-        """Periods already granted to a user: `SIGNUP` and `YYYY-MM` values, ascending."""
-        statement = (
-            select(VoucherGrant.period)
-            .where(VoucherGrant.user_id == user_id)
-            .order_by(VoucherGrant.period)
-        )
-        return (await self._session.scalars(statement)).all()
-
-    async def set_entry(self, grant_id: UUID, entry_id: UUID) -> None:
-        """Link a grant to the journal entry that booked it."""
-        await self._session.execute(
-            update(VoucherGrant).where(VoucherGrant.id == grant_id).values(entry_id=entry_id)
-        )
-
-
-class VoucherCodeBatchRepository(BaseRepository[VoucherCodeBatch]):
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session, VoucherCodeBatch)
-
-    async def get(self, batch_id: UUID, *, for_update: bool = False) -> VoucherCodeBatch | None:
-        return await self._get(batch_id, for_update=for_update)
-
-    async def list_with_counts(self) -> Sequence[CodeBatchCounts]:
-        """Every batch with its code counts, newest first."""
-        statement = _batches_with_counts().order_by(
-            VoucherCodeBatch.created_at.desc(), VoucherCodeBatch.id.desc()
-        )
-        return [
-            CodeBatchCounts(batch=batch, active=active, redeemed=redeemed, revoked=revoked)
-            for batch, active, redeemed, revoked in await self._session.execute(statement)
-        ]
-
-    async def get_with_counts(self, batch_id: UUID) -> CodeBatchCounts | None:
-        """One batch with its code counts as they are now, or None if there is no such batch."""
-        statement = _batches_with_counts().where(VoucherCodeBatch.id == batch_id)
-        row = (await self._session.execute(statement)).one_or_none()
-        if row is None:
-            return None
-        batch, active, redeemed, revoked = row
-        return CodeBatchCounts(batch=batch, active=active, redeemed=redeemed, revoked=revoked)
-
-
-def _batches_with_counts() -> Select[VoucherCodeBatch, int, int, int]:
-    """Batches with how many of their codes are active, redeemed and revoked."""
-
-    def count(status: VoucherCodeStatus) -> ColumnElement[int]:
-        return func.count(VoucherCode.id).filter(VoucherCode.status == status)
-
-    return (
-        select(
-            VoucherCodeBatch,
-            count(VoucherCodeStatus.ACTIVE),
-            count(VoucherCodeStatus.REDEEMED),
-            count(VoucherCodeStatus.REVOKED),
-        )
-        .outerjoin(VoucherCode, VoucherCode.batch_id == VoucherCodeBatch.id)
-        .group_by(VoucherCodeBatch.id)
-    )
-
-
-class VoucherCodeRepository(BaseRepository[VoucherCode]):
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session, VoucherCode)
-
-    async def get_by_hash(self, code_hash: str, *, for_update: bool = False) -> VoucherCode | None:
-        """Lock the code before redeeming it, so two parallel redemptions succeed once."""
-        statement = select(VoucherCode).where(VoucherCode.code_hash == code_hash)
+        statement = select(Voucher).where(Voucher.id == voucher_id, Voucher.user_id == user_id)
         return await self._session.scalar(self._locked(statement, for_update))
 
-    async def user_has_redeemed_in_batch(self, user_id: UUID, batch_id: UUID) -> bool:
-        statement = select(
-            exists().where(
-                VoucherCode.batch_id == batch_id,
-                VoucherCode.status == VoucherCodeStatus.REDEEMED,
-                VoucherCode.redeemed_by == user_id,
+    async def get_by_hash(self, code_hash: str, *, for_update: bool = False) -> Voucher | None:
+        """Lock the voucher before redeeming it, so a second scan is rejected."""
+        statement = select(Voucher).where(Voucher.code_hash == code_hash)
+        return await self._session.scalar(self._locked(statement, for_update))
+
+    async def list_for_user(self, user_id: UUID) -> Sequence[Voucher]:
+        """A user's vouchers in every status, newest first."""
+        statement = select(Voucher).where(Voucher.user_id == user_id).order_by(Voucher.id.desc())
+        return (await self._session.scalars(statement)).all()
+
+    async def list_expired_active(
+        self, user_id: UUID, now: datetime, *, for_update: bool = False
+    ) -> Sequence[Voucher]:
+        """A user's vouchers that are still ACTIVE although they expired: refunds owed."""
+        statement = (
+            select(Voucher)
+            .where(
+                Voucher.user_id == user_id,
+                Voucher.status == VoucherStatus.ACTIVE,
+                Voucher.expires_at <= now,
             )
+            .order_by(Voucher.id)
         )
-        return (await self._session.execute(statement)).scalar_one()
+        return (await self._session.scalars(self._locked(statement, for_update))).all()
 
-    async def revoke(self, batch_id: UUID, code_hashes: Collection[str] | None) -> int:
-        """Revoke the still-active codes of a batch and return how many that was.
+    async def product_names(self, voucher_ids: Collection[UUID]) -> dict[UUID, str]:
+        """What each of these vouchers is for, by voucher id, in one query.
 
-        `code_hashes` narrows it to those codes; None means the whole batch. A code that
-        is redeemed, also by a redemption committing while this waits, stays redeemed.
+        For the ledger, whose lines about a voucher name its product. An id that is no
+        voucher's is simply missing from the result.
         """
-        statement = (
-            update(VoucherCode)
-            .where(
-                VoucherCode.batch_id == batch_id,
-                VoucherCode.status == VoucherCodeStatus.ACTIVE,
-            )
-            .values(status=VoucherCodeStatus.REVOKED)
-            .returning(VoucherCode.id)
-            .execution_options(**MATCHED_BY_DATABASE)
-        )
-        if code_hashes is not None:
-            statement = statement.where(VoucherCode.code_hash.in_(code_hashes))
-        return len((await self._session.scalars(statement)).all())
+        statement = select(Voucher.id, Voucher.product_name).where(Voucher.id.in_(voucher_ids))
+        rows = await self._session.execute(statement)
+        return dict(rows.all())
 
-    async def issued_value_since(self, since: datetime) -> int:
-        """Value of the non-revoked codes of batches created at or after `since`.
-
-        This is what counts against `MAX_CODE_ISSUANCE_PER_MONTH` (A.6).
-        """
-        statement = (
-            select(sum_micro(VoucherCodeBatch.value_micro))
-            .select_from(VoucherCode)
-            .join(VoucherCodeBatch, VoucherCodeBatch.id == VoucherCode.batch_id)
-            .where(
-                VoucherCodeBatch.created_at >= since,
-                VoucherCode.status != VoucherCodeStatus.REVOKED,
-            )
-        )
-        return (await self._session.execute(statement)).scalar_one()
-
-    async def unredeemed_value(self, now: datetime) -> int:
-        """Value of the codes that could still be redeemed at `now`: active and unexpired."""
-        statement = (
-            select(sum_micro(VoucherCodeBatch.value_micro))
-            .select_from(VoucherCode)
-            .join(VoucherCodeBatch, VoucherCodeBatch.id == VoucherCode.batch_id)
-            .where(
-                VoucherCode.status == VoucherCodeStatus.ACTIVE,
-                VoucherCodeBatch.expires_at > now,
-            )
+    async def pending_value(self) -> int:
+        """Value of all ACTIVE vouchers: what VIS owes on them (SPEC §5)."""
+        statement = select(sum_micro(Voucher.value_micro)).where(
+            Voucher.status == VoucherStatus.ACTIVE
         )
         return (await self._session.execute(statement)).scalar_one()

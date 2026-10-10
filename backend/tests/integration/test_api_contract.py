@@ -22,11 +22,21 @@ import pytest
 from fastapi import FastAPI
 from pydantic import BaseModel, ValidationError
 
-from app.api.access import DOCUMENTED_SESSION_COOKIE
+from app.api.access import DOCUMENTED_IDENTITY_HEADER
+from app.api.deps import authenticate_request
 from app.container import Container
 from app.core.config import Settings
-from app.core.enums import MarketStatus, MarketTier, Outcome, TradeSide
+from app.core.enums import (
+    DegreeLevel,
+    MarketStatus,
+    MarketTier,
+    Outcome,
+    TradeSide,
+    UserRole,
+    UserStatus,
+)
 from app.core.errors import ErrorCode, NotFoundError, ServiceUnavailableError
+from app.core.identity import USERNAME_PATTERN, AuthenticatedUser, Caller, PortalIdentity
 from app.core.units import MICRO, format_cr, to_cr
 from app.main import create_app
 from app.pricing import lmsr
@@ -46,15 +56,13 @@ from app.schemas.trading import QuoteQuery, QuoteResponse, TradeRequest
 from app.services.live_quotes import Heartbeat, LiveEvent
 from scripts.export_openapi import OPENAPI_FILE, render_openapi
 from tests.support.clock import TEST_NOW, FrozenClock
-from tests.support.mail import MemoryMailer
+from tests.support.economy import MARKET_B
+from tests.support.schema import check_constraint
 
 type Operation = tuple[str, str]
 
 SPEC_SECTION_10: Final[frozenset[Operation]] = frozenset(
     {
-        ("POST", "/api/auth/request-link"),
-        ("POST", "/api/auth/verify"),
-        ("POST", "/api/auth/logout"),
         ("GET", "/api/me"),
         ("GET", "/api/markets"),
         ("GET", "/api/markets/{market_id}"),
@@ -66,8 +74,8 @@ SPEC_SECTION_10: Final[frozenset[Operation]] = frozenset(
         ("GET", "/api/me/trades"),
         ("GET", "/api/me/ledger"),
         ("POST", "/api/markets"),
-        ("POST", "/api/vouchers/redeem-code"),
-        ("POST", "/api/coffee-tickets"),
+        ("POST", "/api/codes/redeem"),
+        ("POST", "/api/vouchers"),
         ("POST", "/api/admin/markets/{market_id}/approve"),
         ("POST", "/api/admin/markets/{market_id}/reject"),
         ("POST", "/api/admin/markets/{market_id}/halt"),
@@ -78,7 +86,7 @@ SPEC_SECTION_10: Final[frozenset[Operation]] = frozenset(
         ("POST", "/api/admin/code-batches"),
         ("POST", "/api/admin/code-batches/{batch_id}/revoke"),
         ("GET", "/api/admin/risk"),
-        ("POST", "/api/barista/coffee-tickets/{code}/redeem"),
+        ("POST", "/api/barista/vouchers/redeem"),
     }
 )
 
@@ -86,8 +94,12 @@ APPENDIX_A2: Final[frozenset[Operation]] = frozenset(
     {
         ("GET", "/api/health"),
         ("GET", "/api/config"),
+        ("PUT", "/api/me/profile"),
         ("GET", "/api/me/proposals"),
-        ("GET", "/api/me/coffee-tickets"),
+        ("GET", "/api/me/vouchers"),
+        ("GET", "/api/vouchers/products"),
+        ("POST", "/api/vouchers/{voucher_id}/code"),
+        ("GET", "/api/leaderboard"),
         ("GET", "/api/admin/code-batches"),
         ("POST", "/api/admin/alerts/{alert_id}/ack"),
         ("POST", "/api/admin/grants/monthly"),
@@ -95,37 +107,160 @@ APPENDIX_A2: Final[frozenset[Operation]] = frozenset(
 )
 
 SUCCESS_STATUS: Final[dict[Operation, str]] = {
-    ("POST", "/api/auth/request-link"): "202",
-    ("POST", "/api/auth/logout"): "204",
     ("POST", "/api/markets"): "201",
     ("POST", "/api/markets/{market_id}/trades"): "201",
-    ("POST", "/api/coffee-tickets"): "201",
+    ("POST", "/api/vouchers"): "201",
     ("POST", "/api/admin/code-batches"): "201",
 }
-"""Operations that do not answer 200: accepted, no content, and the four creations."""
+"""Operations that do not answer 200: the four that create something."""
 
 ERROR_REF: Final[dict[str, str]] = {"$ref": "#/components/schemas/ErrorResponse"}
 
 # Who may call what (Appendix A.2), as the `security` of an operation says it.
-NO_SESSION: Final[list[dict[str, list[str]]]] = []
-VIEWER: Final[list[dict[str, list[str]]]] = [{}, {"session": []}]
-SIGNED_IN: Final[list[dict[str, list[str]]]] = [{"session": []}]
-STAFF: Final[list[dict[str, list[str]]]] = [{"session": ["BARISTA"]}, {"session": ["ADMIN"]}]
-ADMIN: Final[list[dict[str, list[str]]]] = [{"session": ["ADMIN"]}]
+type Security = list[dict[str, list[str]]]
 
-PUBLIC_ACCESS: Final[dict[Operation, list[dict[str, list[str]]]]] = {
-    ("GET", "/api/health"): NO_SESSION,
-    ("GET", "/api/config"): NO_SESSION,
-    ("POST", "/api/auth/request-link"): NO_SESSION,
-    ("POST", "/api/auth/verify"): NO_SESSION,
-    ("POST", "/api/auth/logout"): NO_SESSION,
-    ("GET", "/api/markets"): VIEWER,
-    ("GET", "/api/markets/{market_id}"): VIEWER,
-    ("GET", "/api/markets/{market_id}/quote"): NO_SESSION,
-    ("GET", "/api/markets/{market_id}/history"): NO_SESSION,
-    ("GET", "/api/markets/{market_id}/stream"): NO_SESSION,
+NO_IDENTITY: Final[Security] = []
+IDENTITY: Final[Security] = [{"portal": []}]
+MEMBER: Final[Security] = [{"portal": ["REGISTERED"]}]
+STAFF: Final[Security] = [{"portal": ["BARISTA"]}, {"portal": ["ADMIN"]}]
+ADMIN: Final[Security] = [{"portal": ["ADMIN"]}]
+
+PUBLIC_ACCESS: Final[frozenset[Operation]] = frozenset(
+    {("GET", "/api/health"), ("GET", "/api/config")}
+)
+"""A.2: what needs nobody to be named."""
+
+IDENTITY_ACCESS: Final[frozenset[Operation]] = frozenset({("PUT", "/api/me/profile")})
+"""What whoever the portal named may call, with or without a profile."""
+
+OPERATIONS_PER_ACCESS: Final[dict[str, int]] = {
+    "public": 2,
+    "identity": 1,
+    "member": 18,
+    "staff": 1,
+    "admin": 13,
 }
-"""A.2: "Public, no session needed". Two of them show more to a signed-in viewer."""
+"""How the 35 operations fall into the five access levels of A.2."""
+
+VOUCHER_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "id",
+        "product_id",
+        "product_name",
+        "status",
+        "value_cr",
+        "created_at",
+        "expires_at",
+        "redeemed_at",
+    }
+)
+"""A voucher as its owner lists it: what it is for, never its code."""
+
+MARKET_VIEWER_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "balance_cr",
+        "holdings",
+        "cost_cr",
+        "proceeds_cr",
+        "net_stake_cr",
+        "payout_cr",
+        "refund_cr",
+        "stake_limit_cr",
+        "stake_left_cr",
+        "stake_presets",
+        "sell_presets",
+        "can_trade",
+        "cannot_trade_reason",
+        "can_settle",
+    }
+)
+"""The viewer's side of a market: everything the market page shows of one person."""
+
+CONFIG_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "timezone",
+        "signup_grant_cr",
+        "monthly_grant_cr",
+        "username_min_length",
+        "username_max_length",
+        "degrees",
+        "max_stake_per_market_cr",
+        "stake_presets_cr",
+        "min_trade_cr",
+        "min_trade_shares",
+        "price_display_decimals",
+        "quote_debounce_ms",
+        "live_poll_fallback_seconds",
+        "tiers",
+        "max_market_budget_cr",
+        "max_market_lifetime_days",
+        "max_resolution_delay_days",
+        "max_proposals_per_day",
+        "question_min_length",
+        "question_max_length",
+        "short_text_max_length",
+        "long_text_max_length",
+        "code_length",
+        "code_min_value_cr",
+        "code_max_value_cr",
+        "code_default_value_cr",
+        "max_code_issuance_per_month_cr",
+        "voucher_code_length",
+        "voucher_expiry_days",
+    }
+)
+"""Everything `GET /config` tells the frontend, which reads no environment."""
+
+LEADERBOARD_PARAMETERS: Final[frozenset[str]] = frozenset(
+    {
+        "sort",
+        "order",
+        "min_credits_cr",
+        "max_credits_cr",
+        "min_trades",
+        "max_trades",
+        "min_win_rate",
+        "max_win_rate",
+        "min_avg_payout_ratio",
+        "max_avg_payout_ratio",
+        "degree_level",
+        "degree_programme",
+        "limit",
+        "cursor",
+    }
+)
+
+LEADERBOARD_ENTRY_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "rank",
+        "username",
+        "degree_level",
+        "degree_programme",
+        "credits_cr",
+        "trades",
+        "settled_markets",
+        "win_rate",
+        "avg_payout_ratio",
+        "is_viewer",
+    }
+)
+
+ME_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "id",
+        "email",
+        "name",
+        "username",
+        "degree_level",
+        "degree_programme",
+        "role",
+        "created_at",
+        "balance_cr",
+        "can_get_voucher",
+        "monthly_grant_cr",
+        "next_monthly_grant_on",
+    }
+)
 
 
 @pytest.fixture(scope="module")
@@ -163,7 +298,7 @@ def test_every_endpoint_of_the_spec_is_served_and_nothing_else(document: dict[st
     expected = SPEC_SECTION_10 | APPENDIX_A2
     assert expected - served == set(), "in SPEC §10 or A.2 but not served"
     assert served - expected == set(), "served but in neither SPEC §10 nor A.2"
-    assert len(served) == 34
+    assert len(served) == 35
 
 
 def test_the_document_names_the_api_and_lives_under_api(document: dict[str, Any]) -> None:
@@ -215,6 +350,8 @@ def test_every_operation_declares_the_one_error_shape(
         "UNAUTHENTICATED",
         "FORBIDDEN",
         "NOT_FOUND",
+        "PROFILE_REQUIRED",
+        "USERNAME_TAKEN",
     }
 
 
@@ -223,27 +360,259 @@ def test_every_operation_says_who_may_call_it(document: dict[str, Any]) -> None:
     for operation, spec in each_operation(document):
         _, path = operation
         if operation in PUBLIC_ACCESS:
-            expected = PUBLIC_ACCESS[operation]
+            expected = NO_IDENTITY
+        elif operation in IDENTITY_ACCESS:
+            expected = IDENTITY
         elif path.startswith("/api/admin/"):
             expected = ADMIN
         elif path.startswith("/api/barista/"):
             expected = STAFF
         else:
-            expected = SIGNED_IN
-        assert spec.get("security", NO_SESSION) == expected, operation
+            expected = MEMBER
+        assert spec.get("security", NO_IDENTITY) == expected, operation
         assert spec["description"].startswith("Access: "), operation
         assert ("public" in spec["description"]) == (operation in PUBLIC_ACCESS), operation
 
 
-def test_the_one_security_scheme_is_the_session_cookie(
+def test_the_operations_fall_into_the_five_access_levels(document: dict[str, Any]) -> None:
+    """Two need nobody, one needs a name, eighteen a profile, one a barista, thirteen an
+    admin: a route that moved to another level shows here."""
+    levels = {
+        json.dumps(NO_IDENTITY): "public",
+        json.dumps(IDENTITY): "identity",
+        json.dumps(MEMBER): "member",
+        json.dumps(STAFF): "staff",
+        json.dumps(ADMIN): "admin",
+    }
+    counted = dict.fromkeys(levels.values(), 0)
+    for _, spec in each_operation(document):
+        counted[levels[json.dumps(spec.get("security", NO_IDENTITY))]] += 1
+
+    assert counted == OPERATIONS_PER_ACCESS
+    assert sum(counted.values()) == 35
+
+
+def test_the_one_security_scheme_is_the_header_in_which_the_portal_names_the_caller(
     document: dict[str, Any], base_settings: Settings
 ) -> None:
     schemes = document["components"]["securitySchemes"]
-    assert list(schemes) == ["session"]
-    assert schemes["session"] | {"type": "apiKey", "in": "cookie"} == schemes["session"]
+    assert list(schemes) == ["portal"]
+    assert schemes["portal"] | {"type": "apiKey", "in": "header"} == schemes["portal"]
     # The document is built without settings, so it repeats the name of `.example.env`.
-    assert schemes["session"]["name"] == DOCUMENTED_SESSION_COOKIE
-    assert base_settings.auth.session_cookie_name == DOCUMENTED_SESSION_COOKIE
+    assert schemes["portal"]["name"] == DOCUMENTED_IDENTITY_HEADER
+    assert base_settings.identity.header_user_id == DOCUMENTED_IDENTITY_HEADER
+    for requirement in ("REGISTERED", "BARISTA", "ADMIN"):
+        assert f"`{requirement}`" in schemes["portal"]["description"], requirement
+
+
+def test_the_profile_route_takes_a_profile_and_answers_like_me(
+    document: dict[str, Any], schemas: dict[str, dict[str, Any]]
+) -> None:
+    save = document["paths"]["/api/me/profile"]["put"]
+    sent = save["requestBody"]["content"]["application/json"]["schema"]
+    answered = save["responses"]["200"]["content"]["application/json"]["schema"]
+    assert sent == {"$ref": "#/components/schemas/SaveProfileRequest"}
+    assert answered == {"$ref": "#/components/schemas/ProfileSavedResponse"}
+
+    assert set(schemas["MeResponse"]["properties"]) == ME_FIELDS
+    assert set(schemas["ProfileSavedResponse"]["properties"]) == ME_FIELDS | {"signup_granted"}
+
+
+def test_a_profile_request_states_a_username_and_a_degree(
+    schemas: dict[str, dict[str, Any]],
+) -> None:
+    request = schemas["SaveProfileRequest"]
+    fields = request["properties"]
+    assert (
+        set(request["required"])
+        == set(fields)
+        == {
+            "username",
+            "degree_level",
+            "degree_programme",
+        }
+    )
+    username = fields["username"]
+    assert (username["minLength"], username["maxLength"]) == (1, 32)
+    # Lower case only, and the very expression the database holds the column to.
+    assert username["pattern"] == USERNAME_PATTERN == "^[a-z0-9_]{1,32}$"
+    check = check_constraint("users", "ck_users_username_format")
+    assert str(check.sqltext) == f"username ~ '{USERNAME_PATTERN}'"
+    programme = fields["degree_programme"]
+    assert (programme["minLength"], programme["maxLength"]) == (1, 100)
+    assert schemas["DegreeLevel"]["enum"] == [level.value for level in DegreeLevel]
+    assert len(DegreeLevel) == 6
+
+
+def test_config_offers_the_degree_catalogue_and_the_username_lengths(
+    schemas: dict[str, dict[str, Any]],
+) -> None:
+    config = schemas["PublicConfigResponse"]["properties"]
+    assert config["username_min_length"]["type"] == "integer"
+    assert config["username_max_length"]["type"] == "integer"
+    assert config["degrees"]["items"] == {"$ref": "#/components/schemas/DegreeLevelOption"}
+
+    option = schemas["DegreeLevelOption"]["properties"]
+    assert set(option) == {"level", "name", "programmes"}
+    assert option["programmes"]["items"] == {"type": "string"}, "a programme is its label"
+
+
+def test_config_tells_the_frontend_exactly_these_things(
+    schemas: dict[str, dict[str, Any]],
+) -> None:
+    config = schemas["PublicConfigResponse"]["properties"]
+    assert set(config) == CONFIG_FIELDS
+    # How long the texts of a proposal may be, so the form can say so before a 422 does.
+    for limit in (
+        "question_min_length",
+        "question_max_length",
+        "short_text_max_length",
+        "long_text_max_length",
+    ):
+        assert config[limit]["type"] == "integer", limit
+    # The request model holds a proposal to what `/config` announces.
+    proposal = schemas["ProposeMarketRequest"]["properties"]
+    assert (proposal["question"]["minLength"], proposal["question"]["maxLength"]) == (10, 200)
+    assert proposal["resolution_source"]["maxLength"] == 500
+    assert proposal["resolution_criteria"]["maxLength"] == 2000
+
+
+def test_a_market_always_comes_with_the_viewers_side(schemas: dict[str, dict[str, Any]]) -> None:
+    """Every reader of a market is a user, so `viewer` is an object, never null."""
+    viewer = schemas["MarketDetailResponse"]["properties"]["viewer"]
+    assert viewer["$ref"] == "#/components/schemas/MarketViewer"
+    assert "anyOf" not in viewer
+    assert schemas["TradeBlockReason"]["enum"] == ["MARKET_NOT_OPEN", "OWN_MARKET"]
+
+
+def test_the_viewers_side_says_what_a_settled_market_paid_and_who_may_settle_it(
+    schemas: dict[str, dict[str, Any]],
+) -> None:
+    """The market page shows `payout_cr` or `refund_cr` and the admin screen reads
+    `can_settle`; the frontend derives none of the three."""
+    viewer = schemas["MarketViewer"]["properties"]
+    assert set(viewer) == MARKET_VIEWER_FIELDS
+
+    for amount in ("payout_cr", "refund_cr"):
+        string, null = viewer[amount]["anyOf"]
+        assert string["type"] == "string", amount
+        assert null == {"type": "null"}, amount
+    assert viewer["can_settle"]["type"] == "boolean"
+    assert viewer["can_trade"]["type"] == "boolean"
+    # The portfolio reports the same two amounts for the same market.
+    entry = schemas["PortfolioEntry"]["properties"]
+    assert entry["payout_cr"]["anyOf"] == viewer["payout_cr"]["anyOf"]
+    assert entry["refund_cr"]["anyOf"] == viewer["refund_cr"]["anyOf"]
+
+
+def test_the_market_list_takes_the_status_any_number_of_times(
+    document: dict[str, Any], schemas: dict[str, dict[str, Any]]
+) -> None:
+    """`?status=OPEN&status=HALTED`: one request lists what a filter chip stands for."""
+    listing = document["paths"]["/api/markets"]["get"]
+    (status,) = listing["parameters"]
+    assert (status["name"], status["in"], status["required"]) == ("status", "query", False)
+    several, none = status["schema"]["anyOf"]
+    assert several == {"type": "array", "items": {"$ref": "#/components/schemas/MarketStatus"}}
+    assert none == {"type": "null"}
+    assert schemas["MarketStatus"]["enum"] == [
+        "PROPOSED",
+        "REJECTED",
+        "OPEN",
+        "HALTED",
+        "CLOSED",
+        "RESOLVED",
+        "VOID",
+    ]
+    answered = listing["responses"]["200"]["content"]["application/json"]["schema"]
+    assert answered == {"$ref": "#/components/schemas/MarketListResponse"}
+
+
+def test_the_risk_page_says_what_voiding_a_market_would_cost(
+    schemas: dict[str, dict[str, Any]],
+) -> None:
+    row = schemas["RiskMarketRow"]["properties"]
+    assert {"exposure_cr", "void_cost_cr", "account_balance_cr", "budget_cr"} <= set(row)
+    assert row["void_cost_cr"]["type"] == "string"
+    assert row["void_cost_cr"]["pattern"] == row["exposure_cr"]["pattern"], "signed, like exposure"
+    assert row["void_cost_cr"]["pattern"].startswith("^-?")
+
+
+def test_the_leaderboard_takes_its_order_and_its_filters_as_query_parameters(
+    document: dict[str, Any], schemas: dict[str, dict[str, Any]]
+) -> None:
+    board = document["paths"]["/api/leaderboard"]["get"]
+    assert "requestBody" not in board
+    parameters = {parameter["name"]: parameter for parameter in board["parameters"]}
+    assert set(parameters) == LEADERBOARD_PARAMETERS
+    assert all(parameter["in"] == "query" for parameter in parameters.values())
+    assert not any(parameter["required"] for parameter in parameters.values())
+
+    def kinds(name: str) -> list[dict[str, Any]]:
+        """The alternatives of an optional parameter other than null."""
+        return [
+            option for option in parameters[name]["schema"]["anyOf"] if option != {"type": "null"}
+        ]
+
+    assert parameters["sort"]["schema"]["$ref"] == "#/components/schemas/LeaderboardSort"
+    assert parameters["sort"]["schema"]["default"] == "credits"
+    assert parameters["order"]["schema"]["$ref"] == "#/components/schemas/SortOrder"
+    assert parameters["order"]["schema"]["default"] == "desc"
+    assert schemas["LeaderboardSort"]["enum"] == [
+        "credits",
+        "win_rate",
+        "trades",
+        "avg_payout_ratio",
+    ]
+    assert schemas["SortOrder"]["enum"] == ["asc", "desc"]
+    for credits in ("min_credits_cr", "max_credits_cr"):
+        (amount,) = kinds(credits)
+        assert amount["type"] == "string", credits
+        assert amount["pattern"] == "^[0-9]{1,12}(\\.[0-9]{1,6})?$", credits
+    for trades in ("min_trades", "max_trades"):
+        (count,) = kinds(trades)
+        assert (count["type"], count["minimum"]) == ("integer", 0), trades
+    for rate in ("min_win_rate", "max_win_rate"):
+        assert kinds(rate) == [{"type": "number", "minimum": 0, "maximum": 1}], rate
+    for ratio in ("min_avg_payout_ratio", "max_avg_payout_ratio"):
+        (number,) = kinds(ratio)
+        assert (number["type"], number["minimum"]) == ("number", 0), ratio
+    assert kinds("degree_level") == [{"$ref": "#/components/schemas/DegreeLevel"}]
+    (programme,) = kinds("degree_programme")
+    assert (programme["type"], programme["maxLength"]) == ("string", 100)
+    assert parameters["limit"]["schema"]["maximum"] == 200
+
+
+def test_a_leaderboard_row_names_nobody_and_carries_rates_as_nullable_numbers(
+    document: dict[str, Any], schemas: dict[str, dict[str, Any]]
+) -> None:
+    board = document["paths"]["/api/leaderboard"]["get"]
+    answered = board["responses"]["200"]["content"]["application/json"]["schema"]
+    assert answered == {"$ref": "#/components/schemas/LeaderboardResponse"}
+
+    response = schemas["LeaderboardResponse"]["properties"]
+    assert set(response) == {"items", "next_cursor", "viewer"}, "no total: the list is paged"
+    assert response["items"]["items"] == {"$ref": "#/components/schemas/LeaderboardEntry"}
+    assert response["viewer"]["anyOf"] == [
+        {"$ref": "#/components/schemas/LeaderboardEntry"},
+        {"type": "null"},
+    ]
+
+    entry = schemas["LeaderboardEntry"]["properties"]
+    assert set(entry) == LEADERBOARD_ENTRY_FIELDS
+    assert entry["credits_cr"]["type"] == "string"
+    for count in ("rank", "trades", "settled_markets"):
+        assert entry[count]["type"] == "integer", count
+    assert entry["win_rate"]["anyOf"] == [
+        {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        {"type": "null"},
+    ]
+    assert entry["avg_payout_ratio"]["anyOf"] == [
+        {"type": "number", "minimum": 0.0},
+        {"type": "null"},
+    ]
+    assert entry["is_viewer"]["type"] == "boolean"
+    assert entry["degree_level"] == {"$ref": "#/components/schemas/DegreeLevel"}
 
 
 def test_the_error_schema_says_what_details_carries(schemas: dict[str, dict[str, Any]]) -> None:
@@ -251,6 +620,9 @@ def test_the_error_schema_says_what_details_carries(schemas: dict[str, dict[str,
     description = schemas["ErrorResponse"]["description"]
     for code in (
         ErrorCode.VALIDATION_ERROR,
+        ErrorCode.FORBIDDEN,
+        ErrorCode.PROFILE_REQUIRED,
+        ErrorCode.USERNAME_TAKEN,
         ErrorCode.RATE_LIMITED,
         ErrorCode.QUOTE_STALE,
         ErrorCode.LIMIT_EXCEEDED,
@@ -262,6 +634,8 @@ def test_the_error_schema_says_what_details_carries(schemas: dict[str, dict[str,
         "errors",
         "field",
         "allowed_domains",
+        "name",
+        "email",
         "retry_after_seconds",
         "quote",
         "limit",
@@ -283,8 +657,122 @@ def test_the_redeem_request_says_that_the_client_sends_the_bare_code(
 ) -> None:
     """A scanned code card holds a URL; posted as it is, it would cost an attempt."""
     description = schemas["RedeemCodeRequest"]["description"]
-    assert "#code=" in description
+    assert "/wallet?code=" in description
     assert "CODE_INVALID" in description
+    assert "/wallet?code=" in schemas["CreatedCode"]["properties"]["redeem_url"]["description"]
+    assert set(schemas["RedeemCodeRequest"]["properties"]) == {"code"}
+
+
+def test_a_voucher_is_issued_for_a_product_and_every_answer_names_it(
+    document: dict[str, Any], schemas: dict[str, dict[str, Any]]
+) -> None:
+    issue = document["paths"]["/api/vouchers"]["post"]
+    assert issue["requestBody"]["required"] is True
+    sent = issue["requestBody"]["content"]["application/json"]["schema"]
+    assert sent == {"$ref": "#/components/schemas/IssueVoucherRequest"}
+
+    request = schemas["IssueVoucherRequest"]
+    assert set(request["required"]) == set(request["properties"]) == {"product_id"}
+    product_id = request["properties"]["product_id"]
+    assert (product_id["minLength"], product_id["maxLength"]) == (1, 64)
+
+    assert set(schemas["VoucherItem"]["properties"]) == VOUCHER_FIELDS
+    assert set(schemas["VoucherIssuedResponse"]["properties"]) == VOUCHER_FIELDS | {
+        "code",
+        "balance_cr",
+    }
+    assert set(schemas["VoucherRedeemResponse"]["properties"]) == {
+        "voucher_id",
+        "product_id",
+        "product_name",
+        "value_cr",
+        "redeemed_at",
+    }
+
+
+def test_a_barista_sends_the_code_of_a_voucher_in_the_body(
+    document: dict[str, Any], schemas: dict[str, dict[str, Any]]
+) -> None:
+    redeem = document["paths"]["/api/barista/vouchers/redeem"]["post"]
+    assert "parameters" not in redeem
+    assert redeem["requestBody"]["required"] is True
+    sent = redeem["requestBody"]["content"]["application/json"]["schema"]
+    assert sent == {"$ref": "#/components/schemas/RedeemVoucherRequest"}
+    answered = redeem["responses"]["200"]["content"]["application/json"]["schema"]
+    assert answered == {"$ref": "#/components/schemas/VoucherRedeemResponse"}
+
+    request = schemas["RedeemVoucherRequest"]
+    assert set(request["required"]) == set(request["properties"]) == {"code"}
+    code = request["properties"]["code"]
+    assert (code["type"], code["minLength"], code["maxLength"]) == ("string", 1, 64)
+    assert code == schemas["RedeemCodeRequest"]["properties"]["code"]
+
+
+def test_no_operation_takes_a_code_in_its_path_or_its_query(document: dict[str, Any]) -> None:
+    """The address of a request is what proxies and logs write down. A code that is
+    worth credits, or a product, crosses the API in a body, in both directions."""
+    for path in document["paths"]:
+        assert "code}" not in path, path
+    for operation, spec in each_operation(document):
+        for parameter in spec.get("parameters", []):
+            assert "code" not in parameter["name"].lower(), (operation, parameter["name"])
+    # The one path that speaks of a code names the voucher by its id and takes no body.
+    assert [path for path in document["paths"] if path.endswith("/code")] == [
+        "/api/vouchers/{voucher_id}/code"
+    ]
+
+
+def test_the_products_say_what_each_takes_and_whether_the_caller_can_have_it(
+    document: dict[str, Any], schemas: dict[str, dict[str, Any]]
+) -> None:
+    """The frontend compares no balance with a price: `affordable` and
+    `can_get_voucher` are the comparisons, made by the server for the caller."""
+    listing = document["paths"]["/api/vouchers/products"]["get"]
+    assert "parameters" not in listing
+    answered = listing["responses"]["200"]["content"]["application/json"]["schema"]
+    assert answered == {"$ref": "#/components/schemas/VoucherProductListResponse"}
+    items = schemas["VoucherProductListResponse"]["properties"]["items"]
+    assert items["items"] == {"$ref": "#/components/schemas/VoucherProductItem"}
+
+    product = schemas["VoucherProductItem"]["properties"]
+    assert set(product) == {"id", "name", "price_cr", "affordable"}
+    assert product["affordable"]["type"] == "boolean"
+    assert schemas["MeResponse"]["properties"]["can_get_voucher"]["type"] == "boolean"
+    # What a voucher takes depends on the product and on who asks, so `/config` says
+    # two things about vouchers and neither is a price.
+    config = schemas["PublicConfigResponse"]["properties"]
+    assert {field for field in config if "voucher" in field or "product" in field} == {
+        "voucher_code_length",
+        "voucher_expiry_days",
+    }
+
+
+def test_a_voucher_gets_a_fresh_code_from_a_route_that_takes_no_body(
+    document: dict[str, Any], schemas: dict[str, dict[str, Any]]
+) -> None:
+    """The one way to see a code again: nothing but the voucher's id goes in, and the
+    code comes back in this answer alone. The wallet's list never holds one."""
+    replace = document["paths"]["/api/vouchers/{voucher_id}/code"]["post"]
+    assert "requestBody" not in replace
+    (parameter,) = replace["parameters"]
+    assert (parameter["name"], parameter["in"], parameter["required"]) == (
+        "voucher_id",
+        "path",
+        True,
+    )
+    assert parameter["schema"] | {"type": "string", "format": "uuid"} == parameter["schema"]
+    answered = replace["responses"]["200"]["content"]["application/json"]["schema"]
+    assert answered == {"$ref": "#/components/schemas/VoucherCodeResponse"}
+
+    assert set(schemas["VoucherCodeResponse"]["properties"]) == {
+        "voucher_id",
+        "code",
+        "expires_at",
+    }
+    assert "code" not in schemas["VoucherItem"]["properties"]
+    assert schemas["VoucherListResponse"]["properties"]["items"]["items"] == {
+        "$ref": "#/components/schemas/VoucherItem"
+    }
 
 
 def test_credits_and_shares_are_strings_and_probabilities_numbers(
@@ -510,15 +998,16 @@ def test_a_request_asks_for_less_than_a_response_can_hold() -> None:
     assert Wallet(balance_cr=Decimal("999999999999.999999"), change_cr=Decimal(0))
 
 
-@pytest.mark.parametrize("b_cr", [1, 10, 1442])
-def test_the_largest_budget_a_request_accepts_fits_into_a_quote_response(b_cr: int) -> None:
+@pytest.mark.parametrize("b_micro", [MICRO, *MARKET_B])
+def test_the_largest_budget_a_request_accepts_fits_into_a_quote_response(b_micro: int) -> None:
     """Found in review: the largest accepted budget bought more shares than
-    `QuoteResponse` could carry, a 500 on a public route."""
+    `QuoteResponse` could carry, a 500 on the quote route. Tried at a b of 1 CR, at
+    the b of each fixed tier and at the largest b a market can have."""
     query = QuoteQuery.model_validate(
         {"side": "BUY", "outcome": "YES", "amount_cr": "999999999.999999"}
     )
     assert query.amount_cr is not None
-    trailing = lmsr.MarketState(q_yes=0, q_no=1000 * MICRO, b=b_cr * MICRO)
+    trailing = lmsr.MarketState(q_yes=0, q_no=1000 * MICRO, b=b_micro)
 
     quote = lmsr.quote_buy_for_budget(trailing, Outcome.YES, int(query.amount_cr * MICRO))
 
@@ -724,14 +1213,27 @@ class ScriptedLiveQuotes:
 @pytest.fixture
 async def offline_container(base_settings: Settings) -> AsyncIterator[Container]:
     """A container that is built but never started: it connects to nothing."""
-    container = Container.build(base_settings, clock=FrozenClock(), mailer=MemoryMailer())
+    container = Container.build(base_settings, clock=FrozenClock())
     yield container
     await container.stop()
 
 
 @pytest.fixture
 def offline_app(offline_container: Container) -> FastAPI:
-    return create_app(offline_container)
+    """The application on that container, called by a registered user: the stream is
+    for users, and who is calling would otherwise be asked of Postgres."""
+    app = create_app(offline_container)
+    user = AuthenticatedUser(
+        id=uuid7(),
+        email="viewer@ethz.ch",
+        name="Vera Viewer",
+        username="viewer",
+        role=UserRole.USER,
+        status=UserStatus.ACTIVE,
+    )
+    identity = PortalIdentity(email=user.email, name=user.name, role=user.role)
+    app.dependency_overrides[authenticate_request] = lambda: Caller(identity=identity, user=user)
+    return app
 
 
 @pytest.fixture

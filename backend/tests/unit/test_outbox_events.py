@@ -1,7 +1,13 @@
-"""The `quote.updated` outbox payload (SPEC §8 step 7, §9, A.4)."""
+"""The `quote.updated` outbox payload (SPEC §8 step 7, §9, A.4).
+
+Reading a payload back fails with `KeyError` or `ValueError` and with nothing else: those
+two are what the relay skips a row for, so anything else would block the outbox on a row
+that can never be delivered.
+"""
 
 import json
 from datetime import UTC, datetime, timedelta, timezone
+from typing import Any
 from uuid import uuid7
 
 import pytest
@@ -89,9 +95,84 @@ def test_a_naive_timestamp_is_refused() -> None:
         quote_updated_payload(naive)
 
 
-@pytest.mark.parametrize("missing", ["market_id", "ts", "version", "trade_id"])
+FIELDS = ("market_id", "ts", "version", "p_yes_micro", "q_yes_micro", "q_no_micro", "trade_id")
+
+NOT_WHAT_IS_WRITTEN: dict[str, list[Any]] = {
+    "market_id": [7, None, True, ["0199c1d4"], {"id": 1}, "", "not-a-uuid", "0199c1d4-7a55"],
+    "ts": [
+        1_760_011_200,
+        1_760_011_200.5,
+        None,
+        ["2026-10-09T12:00:00+00:00"],
+        "",
+        "yesterday",
+        "2026-13-45T99:00:00+00:00",
+    ],
+    "version": ["7", 7.0, 7.5, None, True, [7], {"n": 7}, 2**63, -(2**63) - 1],
+    "p_yes_micro": ["547512", 0.547512, None, False],
+    "q_yes_micro": ["1910000", 1_910_000.0, None, 2**64],
+    "q_no_micro": ["0", 0.0, None, [0]],
+    "trade_id": [7, 0, True, ["x"], "", "not-a-uuid"],
+}
+"""Per field, values a payload this module wrote never holds there."""
+
+
+@pytest.mark.parametrize("missing", FIELDS)
 def test_a_payload_with_a_missing_field_is_refused(missing: str) -> None:
     payload = quote_updated_payload(TRADE_POINT)
     del payload[missing]
     with pytest.raises(KeyError):
         quote_point_from_payload(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [(field, value) for field, values in NOT_WHAT_IS_WRITTEN.items() for value in values],
+)
+def test_a_payload_whose_field_holds_something_else_is_refused_with_a_value_error(
+    field: str, value: Any
+) -> None:
+    """Never a `TypeError` or an `AttributeError`: the relay skips a row for a
+    `ValueError` and would retry one of those for ever."""
+    payload = quote_updated_payload(TRADE_POINT) | {field: value}
+
+    with pytest.raises(ValueError, match=r".") as refused:
+        quote_point_from_payload(payload)
+
+    assert type(refused.value) is ValueError
+
+
+@pytest.mark.parametrize(
+    "naive", ["2026-10-09T12:00:00", "2026-10-09 12:00:00.123456", "2026-10-09"]
+)
+def test_a_payload_whose_instant_has_no_timezone_is_refused(naive: str) -> None:
+    """The history store refuses such an instant when it writes; the parse must do it
+    first, where the relay can tell that the row will never be delivered."""
+    payload = quote_updated_payload(TRADE_POINT) | {"ts": naive}
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        quote_point_from_payload(payload)
+
+
+def test_nothing_is_coerced_into_a_point() -> None:
+    """A number written as text is a stranger, not a number: every field of a parsed
+    point is exactly what the payload held."""
+    stored = json.loads(json.dumps(quote_updated_payload(TRADE_POINT)))
+
+    point = quote_point_from_payload(stored)
+
+    for field in ("version", "p_yes_micro", "q_yes_micro", "q_no_micro"):
+        assert type(getattr(point, field)) is int
+        assert getattr(point, field) == stored[field]
+    for field in ("version", "p_yes_micro", "q_yes_micro", "q_no_micro"):
+        with pytest.raises(ValueError, match=f"{field} must be an integer"):
+            quote_point_from_payload(stored | {field: str(stored[field])})
+
+
+def test_the_largest_numbers_a_bigint_holds_are_accepted() -> None:
+    largest, smallest = 2**63 - 1, -(2**63)
+    payload = quote_updated_payload(TRADE_POINT) | {"q_yes_micro": largest, "q_no_micro": smallest}
+
+    point = quote_point_from_payload(payload)
+
+    assert (point.q_yes_micro, point.q_no_micro) == (largest, smallest)

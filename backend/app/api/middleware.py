@@ -1,8 +1,9 @@
 """The Origin check on state-changing requests (SPEC §3, Appendix A.2).
 
-The session lives in a SameSite=Lax cookie; this check is the second line against a
-foreign page making a signed-in browser act. A request with a method other than GET,
-HEAD or OPTIONS must carry an `Origin` header listed in `ALLOWED_ORIGINS`, else 403.
+The portal names the caller for every request a signed-in browser sends, whichever
+page made the browser send it. This check is what stops a foreign page from acting
+as its visitor: a request with a method other than GET, HEAD or OPTIONS must carry
+an `Origin` header listed in `ALLOWED_ORIGINS`, else 403.
 
 Written as a pure ASGI middleware: it looks at the request's headers and either answers
 itself or passes the three ASGI callables on untouched, so a streaming response (the

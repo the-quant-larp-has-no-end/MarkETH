@@ -1,49 +1,56 @@
-"""What a route may ask for: services, the caller's identity, the client's address.
+"""What a route may ask for: services and who is calling.
 
 Each alias below is an `Annotated[..., Depends(...)]`; a route declares a parameter of
 that type and receives the object. Services come from the application's `Container`
 (`app.state.container`), which `create_app` or its lifespan puts there.
 
-Guards (Appendix A.2):
+Who is calling (SPEC §3, Appendix A.2, A.3). The API has no sign-in of its own: the
+portal in front of it names the caller in two request headers, and
+`authenticate_request` is the one place where they are read. Four guards rest on it:
 
-    OptionalUser   the signed-in user, or None: public routes that show more to a user
-    CurrentUser    a signed-in, ACTIVE user, else 401 / 403
-    AdminUser      role ADMIN, else 403
-    BaristaUser    role BARISTA or ADMIN, else 403
+    Identity      whoever the portal named, with or without a profile, else 401 / 403
+    CurrentUser   a caller with a profile whose account is ACTIVE, else 401 / 403
+    AdminUser     role ADMIN, else 403
+    BaristaUser   role BARISTA or ADMIN, else 403
 
-All four rest on `authenticate_request`. Tests replace that one function with
-`app.dependency_overrides` to act as any user (the `as_user` fixture).
+A named caller without a profile gets 403 `PROFILE_REQUIRED` from `CurrentUser`; only
+`PUT /me/profile`, guarded by `Identity`, lets such a caller through. Tests replace
+`authenticate_request` with `app.dependency_overrides` to act as anybody (the `as_user`
+fixture).
 
 Each guard also depends on a marker of `app/api/access.py`. The marker does nothing at
 request time; it is how the OpenAPI document learns which guard protects an operation.
 """
 
-from typing import Annotated, Final
+from typing import Annotated
 
 from fastapi import Depends, Request, Security
 
 from app.api import access
 from app.container import Container
 from app.core.config import Settings
-from app.core.enums import UserStatus
-from app.core.errors import ForbiddenError, UnauthenticatedError
-from app.core.identity import AuthenticatedUser
+from app.core.errors import (
+    SUSPENDED_MESSAGE,
+    ForbiddenError,
+    ProfileRequiredError,
+    UnauthenticatedError,
+)
+from app.core.identity import AuthenticatedUser, Caller, PortalIdentity, display_name
 from app.services.account import AccountService
-from app.services.auth import AuthService
-from app.services.coffee_tickets import CoffeeTicketService
+from app.services.codes import CodeService
 from app.services.grants import GrantService
 from app.services.health import HealthService
 from app.services.history import HistoryService
+from app.services.leaderboard import LeaderboardService
 from app.services.live_quotes import LiveQuoteService
 from app.services.market_lifecycle import MarketLifecycleService
 from app.services.markets import MarketService
+from app.services.profile import ProfileService
 from app.services.public_config import PublicConfigService
 from app.services.quotes import QuoteService
 from app.services.risk import RiskService
 from app.services.trading import TradingService
-from app.services.voucher_codes import VoucherCodeService
-
-SUSPENDED_MESSAGE: Final[str] = "This account is suspended."
+from app.services.vouchers import VoucherService
 
 
 def get_container(request: Request) -> Container:
@@ -66,8 +73,8 @@ def _public_config(container: ContainerDep) -> PublicConfigService:
     return container.public_config
 
 
-def _auth(container: ContainerDep) -> AuthService:
-    return container.auth
+def _profile(container: ContainerDep) -> ProfileService:
+    return container.profile
 
 
 def _account(container: ContainerDep) -> AccountService:
@@ -98,12 +105,16 @@ def _live_quotes(container: ContainerDep) -> LiveQuoteService:
     return container.live_quotes
 
 
-def _voucher_codes(container: ContainerDep) -> VoucherCodeService:
-    return container.voucher_codes
+def _codes(container: ContainerDep) -> CodeService:
+    return container.codes
 
 
-def _coffee_tickets(container: ContainerDep) -> CoffeeTicketService:
-    return container.coffee_tickets
+def _vouchers(container: ContainerDep) -> VoucherService:
+    return container.vouchers
+
+
+def _leaderboard(container: ContainerDep) -> LeaderboardService:
+    return container.leaderboard
 
 
 def _risk(container: ContainerDep) -> RiskService:
@@ -117,7 +128,7 @@ def _grants(container: ContainerDep) -> GrantService:
 SettingsDep = Annotated[Settings, Depends(_settings)]
 HealthServiceDep = Annotated[HealthService, Depends(_health)]
 PublicConfigServiceDep = Annotated[PublicConfigService, Depends(_public_config)]
-AuthServiceDep = Annotated[AuthService, Depends(_auth)]
+ProfileServiceDep = Annotated[ProfileService, Depends(_profile)]
 AccountServiceDep = Annotated[AccountService, Depends(_account)]
 MarketServiceDep = Annotated[MarketService, Depends(_markets)]
 MarketLifecycleServiceDep = Annotated[MarketLifecycleService, Depends(_market_lifecycle)]
@@ -125,60 +136,73 @@ QuoteServiceDep = Annotated[QuoteService, Depends(_quotes)]
 TradingServiceDep = Annotated[TradingService, Depends(_trading)]
 HistoryServiceDep = Annotated[HistoryService, Depends(_history)]
 LiveQuoteServiceDep = Annotated[LiveQuoteService, Depends(_live_quotes)]
-VoucherCodeServiceDep = Annotated[VoucherCodeService, Depends(_voucher_codes)]
-CoffeeTicketServiceDep = Annotated[CoffeeTicketService, Depends(_coffee_tickets)]
+CodeServiceDep = Annotated[CodeService, Depends(_codes)]
+VoucherServiceDep = Annotated[VoucherService, Depends(_vouchers)]
+LeaderboardServiceDep = Annotated[LeaderboardService, Depends(_leaderboard)]
 RiskServiceDep = Annotated[RiskService, Depends(_risk)]
 GrantServiceDep = Annotated[GrantService, Depends(_grants)]
 
 
-def client_ip(request: Request) -> str:
-    """The caller's address, for rate limits: what nginx saw, else the socket's peer.
+def _sent_once(request: Request, header: str) -> str | None:
+    """The value of a header the request carries exactly once, else None.
 
-    nginx sets `X-Real-IP` to the address it accepted the connection from; behind
-    another proxy only `X-Forwarded-For` may be there, whose first entry is the client.
+    A header that arrives twice says two things, and nothing here may pick one: the
+    first would be whatever a client put in front of the portal's own line.
     """
-    real_ip = request.headers.get("x-real-ip", "").strip()
-    if real_ip:
-        return real_ip
-    forwarded_for = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-    if forwarded_for:
-        return forwarded_for
-    return request.client.host if request.client is not None else "unknown"
-
-
-ClientIp = Annotated[str, Depends(client_ip)]
-
-
-def session_token(request: Request, settings: SettingsDep) -> str | None:
-    """The token in the session cookie, or None when the cookie is absent or empty."""
-    return request.cookies.get(settings.auth.session_cookie_name) or None
-
-
-SessionToken = Annotated[str | None, Depends(session_token)]
+    values = request.headers.getlist(header)
+    return values[0] if len(values) == 1 else None
 
 
 async def authenticate_request(
-    token: SessionToken,
-    container: ContainerDep,
-    _documented: Annotated[None, Security(access.MAY_HAVE_SESSION)],
-) -> AuthenticatedUser | None:
-    """Who is calling, from the session cookie; None without a valid session."""
-    if token is None:
+    request: Request, settings: SettingsDep, container: ContainerDep
+) -> Caller | None:
+    """Who is calling, from the two headers of the portal; None when it names nobody.
+
+    Nobody is named when the id header is absent, blank, or there more than once. The
+    identity service is not asked then, and the guards answer 401. Otherwise it gets
+    the id exactly as it arrived, and answers one that is not an allowed address with
+    403.
+
+    The name it gets is `display_name` of the name header: percent-decoded, which is
+    how the portal sends anything outside ASCII, without control and format
+    characters, with its whitespace collapsed, and cut to the width a profile keeps.
+    A name header that is absent, or there more than once, is no name: "".
+    """
+    names = settings.identity
+    user_id = _sent_once(request, names.header_user_id)
+    if user_id is None or not user_id.strip():
         return None
-    return await container.sessions.authenticate(token)
+    user_name = _sent_once(request, names.header_user_name)
+    return await container.identity.authenticate(user_id, display_name(user_name or ""))
 
 
-OptionalUser = Annotated[AuthenticatedUser | None, Depends(authenticate_request)]
+OptionalCaller = Annotated[Caller | None, Depends(authenticate_request)]
+
+
+def require_identity(
+    caller: OptionalCaller, _documented: Annotated[None, Security(access.NEEDS_IDENTITY)]
+) -> PortalIdentity:
+    """Whoever the portal named. A profile is not needed, but a suspended one is refused."""
+    if caller is None:
+        raise UnauthenticatedError
+    if caller.user is not None and not caller.user.is_active:
+        raise ForbiddenError(SUSPENDED_MESSAGE)
+    return caller.identity
+
+
+Identity = Annotated[PortalIdentity, Depends(require_identity)]
 
 
 def require_user(
-    user: OptionalUser, _documented: Annotated[None, Security(access.NEEDS_SESSION)]
+    caller: OptionalCaller, _documented: Annotated[None, Security(access.NEEDS_PROFILE)]
 ) -> AuthenticatedUser:
-    if user is None:
+    if caller is None:
         raise UnauthenticatedError
-    if user.status is not UserStatus.ACTIVE:
+    if caller.user is None:
+        raise ProfileRequiredError(name=caller.identity.name, email=caller.identity.email)
+    if not caller.user.is_active:
         raise ForbiddenError(SUSPENDED_MESSAGE)
-    return user
+    return caller.user
 
 
 CurrentUser = Annotated[AuthenticatedUser, Depends(require_user)]

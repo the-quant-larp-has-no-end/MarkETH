@@ -1,11 +1,11 @@
 """Queries on `positions`, `trades` and `idempotency_keys` (SPEC §4, §5, §8, A.4)."""
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import exists, select, update
+from sqlalchemy import exists, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -64,6 +64,30 @@ class PositionRepository(BaseRepository[Position]):
         for outcome, shares_micro in await self._session.execute(statement):
             totals[outcome] = shares_micro
         return totals
+
+    async def net_stake_totals(self, market_ids: Collection[UUID]) -> dict[UUID, int]:
+        """Per market, the net stakes of its traders added up, in one query.
+
+        A trader's net stake is max(0, Σ cost - Σ proceeds) over both of their positions
+        in the market: what a void refunds them (SPEC §6). Their sum is what a void of
+        the market would pay out in all, which the risk page sets against the market's
+        account (SPEC §5). A market nobody holds a position in is missing from the
+        result.
+        """
+        net_stake_micro = func.greatest(
+            sum_micro(Position.cost_micro) - sum_micro(Position.proceeds_micro), 0
+        )
+        per_trader = (
+            select(Position.market_id, net_stake_micro.label("net_stake_micro"))
+            .where(Position.market_id.in_(market_ids))
+            .group_by(Position.market_id, Position.user_id)
+            .subquery()
+        )
+        statement = select(
+            per_trader.c.market_id, sum_micro(per_trader.c.net_stake_micro)
+        ).group_by(per_trader.c.market_id)
+        rows = await self._session.execute(statement)
+        return dict(rows.all())
 
 
 class TradeRepository(BaseRepository[Trade]):

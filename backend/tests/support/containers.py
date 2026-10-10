@@ -25,10 +25,6 @@ SCYLLA_PORT: Final[int] = 9042
 SCYLLA_COMMAND: Final[str] = "--smp 1 --memory 750M --overprovisioned 1 --developer-mode 1"
 SCYLLA_STARTUP_TIMEOUT_SECONDS: Final[int] = 300
 
-MAILPIT_IMAGE: Final[str] = "axllent/mailpit:v1.31"
-MAILPIT_SMTP_PORT: Final[int] = 1025
-MAILPIT_HTTP_PORT: Final[int] = 8025
-
 LOOPBACK: Final[str] = "127.0.0.1"
 
 PORT_LOOKUP_SECONDS: Final[float] = 10.0

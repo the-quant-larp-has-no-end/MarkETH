@@ -1,12 +1,13 @@
-"""Bring a test Postgres to a known state: migrate it, check it, empty it.
+"""Bring a test Postgres to a known state: build its schema, check it, empty it.
 
 The Alembic helpers are synchronous and safe to call from anywhere, including from
 inside a running event loop: `migrations/env.py` starts its own loop with `asyncio.run`,
 so each command runs in a worker thread and the caller blocks until it is done.
 """
 
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Final
 from uuid import uuid7
@@ -37,22 +38,48 @@ def alembic_config(settings: Settings) -> Config:
     return config
 
 
-def upgrade_database(settings: Settings, revision: str = "head") -> None:
-    """`alembic upgrade`, as the owner role of `settings`."""
+def upgrade_database(settings: Settings) -> None:
+    """`alembic upgrade head`, as the owner role of `settings`: builds the whole schema."""
     config = alembic_config(settings)
-    _in_worker_thread(lambda: command.upgrade(config, revision))
+    _in_worker_thread(lambda: command.upgrade(config, "head"))
 
 
-def downgrade_database(settings: Settings, revision: str = "base") -> None:
-    """`alembic downgrade`, as the owner role of `settings`."""
+def downgrade_database(settings: Settings) -> None:
+    """`alembic downgrade base`, as the owner role of `settings`: removes the whole schema."""
     config = alembic_config(settings)
-    _in_worker_thread(lambda: command.downgrade(config, revision))
+    _in_worker_thread(lambda: command.downgrade(config, "base"))
 
 
 def check_database_matches_models(settings: Settings) -> None:
-    """`alembic check`: raises `CommandError` if autogenerate would still change the schema."""
+    """`alembic check`: raises `CommandError` where the models and the schema differ.
+
+    Alembic does not compare CHECK constraints, and an enum column is a VARCHAR with
+    one. A change there is seen by the fingerprint instead (`app.models.fingerprint`).
+    """
     config = alembic_config(settings)
     _in_worker_thread(lambda: command.check(config))
+
+
+@asynccontextmanager
+async def scratch_database(
+    owner_engine: AsyncEngine, settings: Settings, name: str
+) -> AsyncIterator[Settings]:
+    """An empty database beside the one the tests share, dropped on the way out.
+
+    Yields `settings` pointing at it. For a test that builds or removes a whole schema,
+    which must not happen to the database every other test runs on.
+    """
+    async with owner_engine.connect() as connection:
+        autocommit = await connection.execution_options(isolation_level="AUTOCOMMIT")
+        await autocommit.execute(text(f"CREATE DATABASE {name}"))
+    try:
+        yield settings.model_copy(
+            update={"postgres": settings.postgres.model_copy(update={"database": name})}
+        )
+    finally:
+        async with owner_engine.connect() as connection:
+            autocommit = await connection.execution_options(isolation_level="AUTOCOMMIT")
+            await autocommit.execute(text(f"DROP DATABASE {name} WITH (FORCE)"))
 
 
 async def reset_database(owner_engine: AsyncEngine) -> None:

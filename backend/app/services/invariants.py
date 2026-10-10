@@ -11,6 +11,8 @@ sum of its postings); the checks here are what halts a market cleanly before a
 constraint would merely fail the request.
 """
 
+from app.core.enums import Outcome
+from app.core.errors import InvariantViolationError
 from app.models.market import Market
 from app.repositories.unit_of_work import UnitOfWork
 
@@ -41,5 +43,47 @@ class InvariantChecker:
         The context is stored in `alerts.context` (JSONB): ids as strings, amounts as
         integers. Returns None when all four hold. The caller, not this class, rolls
         back and halts the market.
+
+        A market that trades has its account since its approval. One without is a
+        broken database, not one of the four: it raises `LookupError`.
         """
-        raise NotImplementedError
+        await uow.flush()
+
+        total_balance_micro = await uow.accounts.total_balance()
+        if total_balance_micro != 0:
+            raise InvariantViolationError(
+                "ledger_nets_to_zero", {"total_balance_micro": total_balance_micro}
+            )
+
+        held_micro = await uow.positions.sum_shares_by_outcome(market.id)
+        if (held_micro[Outcome.YES], held_micro[Outcome.NO]) != (
+            market.q_yes_micro,
+            market.q_no_micro,
+        ):
+            raise InvariantViolationError(
+                "positions_match_market",
+                {
+                    "market_id": str(market.id),
+                    "q_yes_micro": market.q_yes_micro,
+                    "q_no_micro": market.q_no_micro,
+                    "positions_yes_micro": held_micro[Outcome.YES],
+                    "positions_no_micro": held_micro[Outcome.NO],
+                },
+            )
+
+        if await uow.accounts.has_negative_user_balance():
+            raise InvariantViolationError("no_negative_user_balance", {})
+
+        account = await uow.accounts.get_market_account(market.id)
+        if account is None:
+            raise LookupError(f"market {market.id} has no ledger account")
+        exposure_micro = max(market.q_yes_micro, market.q_no_micro) - account.balance_micro
+        if exposure_micro > market.budget_micro:
+            raise InvariantViolationError(
+                "market_within_budget",
+                {
+                    "market_id": str(market.id),
+                    "exposure_micro": exposure_micro,
+                    "budget_micro": market.budget_micro,
+                },
+            )

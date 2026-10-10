@@ -1,12 +1,12 @@
-"""Fixed-window rate limits for login, code redemption and trades (SPEC §2, §3, §5, §9).
+"""Fixed-window rate limits for code redemption and trades (SPEC §2, §5, §9).
 
-A rule allows `limit` hits per `window_seconds` for one subject (an email address, an
-IP, a user id). The window starts with the subject's first hit and ends
-`window_seconds` later; hits beyond the limit are counted but rejected.
+A rule allows `limit` hits per `window_seconds` for one subject, a user's id. The
+window starts with the subject's first hit and ends `window_seconds` later; hits beyond
+the limit are counted but rejected.
 
 Two implementations share those semantics. The services choose what an unreachable
-Redis means: login and code redemption fail closed with 503, trades switch to the
-in-process limiter (SPEC §9, "When a dependency fails").
+Redis means: code redemption fails closed with 503, trades switch to the in-process
+limiter (SPEC §9, "When a dependency fails").
 """
 
 import math

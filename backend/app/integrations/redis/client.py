@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 COOLDOWN_SECONDS: Final[float] = 1.0
 """How long every operation fails fast after Redis could not be reached.
 
-Short, because login and code redemption fail closed for as long as it lasts.
+Short, because code redemption fails closed for as long as it lasts.
 """
 
 # OSError includes the builtin TimeoutError that the per-operation deadline raises.
@@ -80,15 +80,6 @@ class RedisClient:
         except RedisUnavailableError:
             return False
         return True
-
-    async def get(self, key: str) -> str | None:
-        """`GET`: the value, or None if the key does not exist."""
-        value = await self._run(lambda: self._redis.get(key))
-        return value if isinstance(value, str) else None
-
-    async def set(self, key: str, value: str, ttl_seconds: int) -> None:
-        """`SET` with an expiry."""
-        await self._run(lambda: self._redis.set(key, value, ex=ttl_seconds))
 
     async def delete(self, *keys: str) -> None:
         """`DEL`: all keys in one command, so they disappear together."""

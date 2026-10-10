@@ -28,11 +28,11 @@ from app.services.ledger import (
     monthly_grant_key,
     resolution_key,
     signup_grant_key,
-    ticket_issue_key,
-    ticket_redeem_key,
-    ticket_refund_key,
     trade_key,
     void_key,
+    voucher_issue_key,
+    voucher_redeem_key,
+    voucher_refund_key,
 )
 from tests.support.clock import TEST_NOW
 from tests.support.factories import Factory
@@ -79,7 +79,7 @@ async def post(
         return await ledger.post(
             uow,
             kind=kind,
-            ref_type=LedgerRef.VOUCHER_CODE,
+            ref_type=LedgerRef.CODE,
             ref_id=uuid7(),
             idempotency_key=key,
             lines=lines,
@@ -98,7 +98,7 @@ async def test_a_balanced_entry_moves_the_balances_and_all_accounts_sum_to_zero(
         entry = await ledger.post(
             uow,
             kind=JournalKind.CODE_REDEMPTION,
-            ref_type=LedgerRef.VOUCHER_CODE,
+            ref_type=LedgerRef.CODE,
             ref_id=uuid7(),
             idempotency_key="code:first",
             lines=[PostingLine(issuance, -3 * CR), PostingLine(user_account.id, 3 * CR)],
@@ -108,7 +108,7 @@ async def test_a_balanced_entry_moves_the_balances_and_all_accounts_sum_to_zero(
         assert user_account.balance_micro == 3 * CR
 
     assert entry.kind is JournalKind.CODE_REDEMPTION
-    assert entry.ref_type == "voucher_code"
+    assert entry.ref_type == "code"
     assert entry.created_at == NOW
     assert await factory.balance_micro(user) == 3 * CR
     assert await balance(uow_factory, issuance) == -3 * CR
@@ -172,7 +172,7 @@ async def test_an_unbalanced_entry_is_refused_before_the_database(
             await ledger.post(
                 uow,
                 kind=JournalKind.CODE_REDEMPTION,
-                ref_type=LedgerRef.VOUCHER_CODE,
+                ref_type=LedgerRef.CODE,
                 ref_id=uuid7(),
                 idempotency_key="code:unbalanced",
                 lines=[PostingLine(issuance, -CR), PostingLine(user_account.id, CR + 1)],
@@ -215,7 +215,7 @@ async def test_lines_on_the_same_account_are_merged_into_one_posting(
         entry = await ledger.post(
             uow,
             kind=JournalKind.CODE_REDEMPTION,
-            ref_type=LedgerRef.VOUCHER_CODE,
+            ref_type=LedgerRef.CODE,
             ref_id=uuid7(),
             idempotency_key="code:merged",
             lines=[
@@ -301,10 +301,10 @@ async def test_a_user_balance_cannot_go_below_zero(
         with pytest.raises(InsufficientBalanceError) as refused:
             await ledger.post(
                 uow,
-                kind=JournalKind.COFFEE_TICKET_ISSUE,
-                ref_type=LedgerRef.COFFEE_TICKET,
+                kind=JournalKind.VOUCHER_ISSUE,
+                ref_type=LedgerRef.VOUCHER,
                 ref_id=uuid7(),
-                idempotency_key="ticket:too-expensive",
+                idempotency_key="voucher:too-expensive",
                 lines=[PostingLine(user_account.id, -CR - 1), PostingLine(pending, CR + 1)],
                 at=NOW,
             )
@@ -325,10 +325,10 @@ async def test_a_user_may_spend_their_whole_balance(
         assert user_account is not None
         await ledger.post(
             uow,
-            kind=JournalKind.COFFEE_TICKET_ISSUE,
-            ref_type=LedgerRef.COFFEE_TICKET,
+            kind=JournalKind.VOUCHER_ISSUE,
+            ref_type=LedgerRef.VOUCHER,
             ref_id=uuid7(),
-            idempotency_key="ticket:all-in",
+            idempotency_key="voucher:all-in",
             lines=[PostingLine(user_account.id, -CR), PostingLine(pending, CR)],
             at=NOW,
         )
@@ -373,7 +373,7 @@ async def test_an_entry_rolls_back_with_its_transaction(
             await ledger.post(
                 uow,
                 kind=JournalKind.CODE_REDEMPTION,
-                ref_type=LedgerRef.VOUCHER_CODE,
+                ref_type=LedgerRef.CODE,
                 ref_id=uuid7(),
                 idempotency_key="code:rolled-back",
                 lines=[PostingLine(issuance, -CR), PostingLine(user_account.id, CR)],
@@ -423,6 +423,6 @@ def test_idempotency_keys_are_those_of_appendix_a8() -> None:
     assert trade_key(ident) == f"trade:{ident}"
     assert resolution_key(ident) == f"resolution:{ident}"
     assert void_key(ident) == f"void:{ident}"
-    assert ticket_issue_key(ident) == f"ticket:{ident}:issue"
-    assert ticket_redeem_key(ident) == f"ticket:{ident}:redeem"
-    assert ticket_refund_key(ident) == f"ticket:{ident}:refund"
+    assert voucher_issue_key(ident) == f"voucher:{ident}:issue"
+    assert voucher_redeem_key(ident) == f"voucher:{ident}:redeem"
+    assert voucher_refund_key(ident) == f"voucher:{ident}:refund"

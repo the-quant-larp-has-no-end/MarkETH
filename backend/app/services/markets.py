@@ -1,21 +1,47 @@
 """Markets as everyone reads them, and how one is proposed (SPEC §6, §9, A.4, A.5).
 
-Reads report the effective status and display prices through `MarketView`. The public
-answers are cached in Redis for `MARKET_CACHE_TTL_SECONDS`; whatever belongs to one
-viewer (holdings, stake, balance) is always read from Postgres.
+Reads report the effective status and display prices through `MarketView`. The lists,
+which are the same for everybody, are cached in Redis for `MARKET_CACHE_TTL_SECONDS`;
+whatever belongs to one viewer (holdings, stake, balance) is always read from Postgres.
+
+Two rules a proposal and its approval share live here as functions, so that
+`MarketLifecycleService` applies the very same ones: `check_market_dates` and
+`refuse_nul`.
 """
 
+from collections.abc import Collection, Sequence
+from datetime import datetime
+from decimal import Decimal
 from typing import Final
 from uuid import UUID
 
-from app.core.clock import Clock
+from pydantic import BaseModel, ValidationError
+
+from app.core.clock import Clock, start_of_day
 from app.core.config import Settings
 from app.core.enums import MarketStatus
+from app.core.errors import (
+    ForbiddenError,
+    LimitExceededError,
+    NotFoundError,
+    ValidationFailedError,
+)
 from app.core.identity import AuthenticatedUser
+from app.core.units import to_cr
 from app.integrations.redis.market_cache import MarketCache
-from app.schemas.markets import MarketDetailResponse, MarketListResponse, ProposeMarketRequest
+from app.models.market import Market, Resolution
+from app.models.trading import Position
+from app.schemas.common import Limit
+from app.schemas.markets import (
+    MarketDetailResponse,
+    MarketListResponse,
+    MarketResolution,
+    MarketViewer,
+    ProposeMarketRequest,
+    TradeBlockReason,
+)
 from app.services import UowFactory
-from app.services.market_view import MarketView
+from app.services.market_view import HIDDEN_STATUSES, SETTLED_STATUSES, MarketView
 
 VOID_RULE: Final[str] = (
     "If VIS voids this market, every trader gets back their net stake in it: what they "
@@ -31,7 +57,70 @@ PUBLIC_STATUSES: Final[tuple[MarketStatus, ...]] = (
     MarketStatus.RESOLVED,
     MarketStatus.VOID,
 )
-"""What `GET /markets` lists without a `status` filter (A.5)."""
+"""What `GET /markets` lists without a `status` filter (A.5): every status that is not
+for admins and the proposer alone."""
+
+PROPOSAL_LIMIT_MESSAGE: Final[str] = (
+    "You have reached today's limit of proposals. Try again tomorrow."
+)
+"""Message of the `LimitExceededError` a proposal beyond
+`MAX_PROPOSALS_PER_USER_PER_DAY` gets."""
+
+UNSTORABLE_TEXT_MESSAGE: Final[str] = "This text has a character that cannot be saved."
+"""Message of the `ValidationFailedError` that `refuse_nul` raises."""
+
+_NUL: Final[str] = "\x00"
+"""The one character Postgres refuses in a text, and so in every wording of a market."""
+
+
+def check_market_dates(
+    settings: Settings, *, now: datetime, close_at: datetime, resolve_by: datetime
+) -> None:
+    """The date rules of a market, at its proposal and again at its approval (SPEC §6,
+    A.5):
+
+        now < close_at <= now + MAX_MARKET_LIFETIME
+        close_at <= resolve_by <= close_at + MAX_RESOLUTION_DELAY_DAYS
+
+    The first one that is broken, in this order, raises `ValidationFailedError` (422)
+    with the field it is about in `details.field`: `close_at` for the first line,
+    `resolve_by` for the second. The message says which rule it was, in the words of
+    the form: a client shows it under that field.
+    """
+    lifetime = settings.risk.max_market_lifetime
+    delay = settings.lifecycle.max_resolution_delay
+    if close_at <= now:
+        raise ValidationFailedError(
+            "Trading has to close in the future.", details={"field": "close_at"}
+        )
+    if close_at > now + lifetime:
+        raise ValidationFailedError(
+            f"Trading can stay open for at most {_days(lifetime.days)}.",
+            details={"field": "close_at"},
+        )
+    if resolve_by < close_at:
+        raise ValidationFailedError(
+            "A market cannot be decided before trading closes.",
+            details={"field": "resolve_by"},
+        )
+    if resolve_by > close_at + delay:
+        raise ValidationFailedError(
+            f"A market has to be decided within {_days(delay.days)} after trading closes.",
+            details={"field": "resolve_by"},
+        )
+
+
+def refuse_nul(request: BaseModel) -> None:
+    """Refuse a request one of whose texts holds a NUL character: `ValidationFailedError`
+    (422, `UNSTORABLE_TEXT_MESSAGE`) with the first such field in `details.field`.
+
+    A NUL is valid in JSON and in no column of Postgres, neither a text nor the JSON of
+    an audit row. Without this check the wording of a market, a reason or a note with
+    one in it would fail in the database and be answered 500.
+    """
+    for field, value in request:
+        if isinstance(value, str) and _NUL in value:
+            raise ValidationFailedError(UNSTORABLE_TEXT_MESSAGE, details={"field": field})
 
 
 class MarketService:
@@ -54,84 +143,296 @@ class MarketService:
     ) -> MarketDetailResponse:
         """Create a PROPOSED market (`POST /markets`, SPEC §6).
 
-        1. Time rules, each a `ValidationFailedError` (422) naming the field in
-           `details.field`: `close_at > now`; `close_at <= now + MAX_MARKET_LIFETIME`;
-           `resolve_by <= close_at + MAX_RESOLUTION_DELAY_DAYS`. (`resolve_by >=
-           close_at` and the fixed tier are already checked by the request model.)
+        1. Rules on the request, each a `ValidationFailedError` (422) naming the field
+           in `details.field`. No text may hold a NUL character (`refuse_nul`). Then
+           the time rules (`check_market_dates`): `close_at > now`; `close_at <= now +
+           MAX_MARKET_LIFETIME`; `resolve_by <= close_at + MAX_RESOLUTION_DELAY_DAYS`.
+           (`resolve_by >= close_at` and the fixed tier are already checked by the
+           request model.)
         2. One transaction. `uow.advisory_lock(f"proposals:{user.id}")`, so two
            proposals of one user cannot both slip under the limit. Then
            `markets.count_created_by_since(user.id, start_of_day(now, APP_TIMEZONE))`:
-           at `MAX_PROPOSALS_PER_USER_PER_DAY` or more, `LimitExceededError` (409)
-           with `details={"limit": Limit.MAX_PROPOSALS_PER_USER_PER_DAY}`.
+           at `MAX_PROPOSALS_PER_USER_PER_DAY` or more, `LimitExceededError` (409,
+           `PROPOSAL_LIMIT_MESSAGE`) with `details={"limit":
+           Limit.MAX_PROPOSALS_PER_USER_PER_DAY}`.
         3. Insert the market: `status=PROPOSED`, the request's wording and dates,
            `requested_tier`, `tier=None`, `created_by=user.id`, `created_at=now`;
            budget, b, quantities, version and volume stay 0.
         4. Return its detail as `detail(user, market.id)` would.
 
+        `now` is read once, before the transaction: it is what the dates are held
+        against, the day the limit counts, and the proposal's `created_at`.
+
         Nothing is cached or published: a proposal is not public.
         """
-        raise NotImplementedError
+        refuse_nul(request)
+        now = self._clock.now()
+        check_market_dates(
+            self._settings, now=now, close_at=request.close_at, resolve_by=request.resolve_by
+        )
+
+        today = start_of_day(now, self._settings.app.timezone)
+        limit = self._settings.lifecycle.max_proposals_per_user_per_day
+        async with self._uow_factory() as uow:
+            await uow.advisory_lock(f"proposals:{user.id}")
+            if await uow.markets.count_created_by_since(user.id, today) >= limit:
+                raise LimitExceededError(
+                    PROPOSAL_LIMIT_MESSAGE,
+                    details={"limit": Limit.MAX_PROPOSALS_PER_USER_PER_DAY},
+                )
+            market = await uow.markets.add(
+                Market(
+                    question=request.question,
+                    yes_def=request.yes_definition,
+                    no_def=request.no_definition,
+                    resolution_criteria=request.resolution_criteria,
+                    resolution_source=request.resolution_source,
+                    status=MarketStatus.PROPOSED,
+                    requested_tier=request.requested_tier,
+                    tier=None,
+                    close_at=request.close_at,
+                    resolve_by=request.resolve_by,
+                    created_by=user.id,
+                    created_at=now,
+                )
+            )
+
+        return await self.detail(user, market.id)
 
     async def list_markets(
-        self, viewer: AuthenticatedUser | None, status: MarketStatus | None
+        self, viewer: AuthenticatedUser, statuses: Collection[MarketStatus] | None
     ) -> MarketListResponse:
         """Markets by effective status, soonest `close_at` first (`GET /markets`).
 
-        * `status=None`: every market whose effective status is in `PUBLIC_STATUSES`.
-        * PROPOSED or REJECTED: admins only. No viewer raises `UnauthenticatedError`
-          (401), a viewer for whom `viewer.is_admin` is false `ForbiddenError` (403).
-          That includes a suspended admin: this route is public, so the guards of
-          `app/api/deps.py` have not turned a suspended account away. Never cached.
-        * Any other status: the markets with that effective status.
+        `statuses` is the `status` query, which a request may repeat
+        (`?status=OPEN&status=HALTED`); None means it was left out.
 
-        The effective status differs from the stored one only for OPEN markets past
-        `close_at`, so OPEN and CLOSED are both read from the stored set
-        `{OPEN, CLOSED}` and filtered with `MarketView.effective_status`.
+        * None: every market whose effective status is one of `PUBLIC_STATUSES`.
+        * Otherwise: the markets whose effective status is one of `statuses`. A status
+          named twice counts once.
+        * PROPOSED and REJECTED are for admins. If either is among `statuses` and
+          `viewer.is_admin` is false: `ForbiddenError` (403), whatever else was asked
+          for with it. A list that holds either is never cached.
 
-        Caching (public lists only): the key is `MarketCache.list_key(status.value if
-        status else None)`. A hit is `MarketListResponse.model_validate_json(text)`. A
-        miss reads Postgres (`markets.list_by_statuses`, plus the `resolutions` rows
-        of the RESOLVED and VOID markets for `MarketView.summary`, all of them in one
-        query: `resolutions.get_many_by_market`) and stores
-        `response.model_dump_json()`. The list holds nothing about the viewer, so one
-        entry serves everybody.
+        The effective status differs from the stored one only for an OPEN market past
+        `close_at`, which is CLOSED. So read the stored statuses that were asked for,
+        and OPEN as well when CLOSED is among them (`markets.list_by_statuses`), and
+        keep the rows whose `MarketView.effective_status` is one that was asked for.
+        `now` is read once, so every market of an answer is judged at one instant.
+
+        Caching, for every list without PROPOSED and REJECTED: the key is
+        `MarketCache.list_key(<the statuses asked for; PUBLIC_STATUSES for None>)`,
+        which is the same for one set of statuses in any order. A hit is
+        `MarketListResponse.model_validate_json(text)`; an entry that does not fit the
+        model (one another version of the API left behind) counts as a miss and is
+        replaced. A miss reads Postgres (the markets, plus the `resolutions` rows of
+        the RESOLVED and VOID ones for `MarketView.summary`, all of them in one query:
+        `resolutions.get_many_by_market`) and stores `response.model_dump_json()`.
+        The list holds nothing about the viewer, so one entry serves everybody.
         """
-        raise NotImplementedError
+        asked = frozenset(PUBLIC_STATUSES if statuses is None else statuses)
+        for_admins = not asked.isdisjoint(HIDDEN_STATUSES)
+        if for_admins and not viewer.is_admin:
+            raise ForbiddenError
 
-    async def detail(
-        self, viewer: AuthenticatedUser | None, market_id: UUID
-    ) -> MarketDetailResponse:
+        cacheable = not for_admins
+        key = MarketCache.list_key(asked)
+        if cacheable:
+            cached = await self._cached_list(key)
+            if cached is not None:
+                return cached
+
+        now = self._clock.now()
+        stored = set(asked)
+        if MarketStatus.CLOSED in asked:
+            stored.add(MarketStatus.OPEN)
+        async with self._uow_factory() as uow:
+            markets = [
+                market
+                for market in await uow.markets.list_by_statuses(stored)
+                if self._view.effective_status(market, now) in asked
+            ]
+            settled = [market.id for market in markets if market.status in SETTLED_STATUSES]
+            resolutions = await uow.resolutions.get_many_by_market(settled) if settled else {}
+
+        response = MarketListResponse(
+            items=[
+                self._view.summary(market, now, resolutions.get(market.id)) for market in markets
+            ]
+        )
+        if cacheable:
+            await self._cache.set(key, response.model_dump_json())
+        return response
+
+    async def detail(self, viewer: AuthenticatedUser, market_id: UUID) -> MarketDetailResponse:
         """One market with its rules, and the viewer's side of it (`GET /markets/{id}`).
 
         Visibility: an unknown market raises `NotFoundError` (404). So does a PROPOSED
-        or REJECTED one unless `viewer.is_admin` (false for a suspended account) or
-        the viewer is its proposer.
+        or REJECTED one unless `viewer.is_admin` or the viewer is its proposer.
 
-        Without a viewer the answer is public and cached under
-        `MarketCache.market_key(market_id)` (not for PROPOSED or REJECTED), stored as
-        `response.model_dump_json()`. With a viewer the cache is skipped and everything
-        is read from Postgres in one transaction, so the viewer's numbers and the price
-        they are valued at come from the same instant.
+        Every answer carries the viewer's side, so none is cached: everything is read
+        from Postgres, in one transaction. Its statements are not one snapshot: a trade
+        that commits between two of them shows until the next request.
 
         Fields beyond `MarketView.summary`: the wording columns (`yes_def` and
         `no_def` are `yes_definition` and `no_definition`), `requested_tier`, `tier`,
         `b_cr`, `max_loss_cr = budget_micro`, `void_rule = VOID_RULE`, the timestamps,
         `rejection_reason`, `resolution` from the `resolutions` row (`resolved_at` is
         its `created_at`), and `proposer_email`: the proposer's `users.email` when
-        `viewer.is_admin`, else null.
+        `viewer.is_admin`, else null. The `resolutions` row is read, and used, only
+        when the market's own row says RESOLVED or VOID.
 
-        `viewer` block (null without a viewer), from the viewer's account and their
-        `positions.list_for_user_market`:
+        `viewer` block, from the viewer's account (`accounts.get_user_account`) and
+        their `positions.list_for_user_market`. Every user has an account, because the
+        profile transaction creates the two together.
+
         * `balance_cr`; `holdings = MarketView.holdings(...)`; `cost_cr` and
-          `proceeds_cr` summed over both positions; `net_stake_cr`; `stake_limit_cr =
-          MAX_STAKE_PER_USER_MARKET`; `stake_left_cr = MarketView.stake_left_micro`.
+          `proceeds_cr` summed over both positions; `net_stake_cr =
+          MarketView.net_stake_micro(...)`; `stake_limit_cr =
+          MarketView.stake_limit_micro`; `stake_left_cr = MarketView.stake_left_micro`.
+        * `payout_cr = MarketView.payout_micro(<the positions>, <the resolution>)` and
+          `refund_cr = MarketView.refund_micro(...)`: the first is set for a RESOLVED
+          market and the second for a VOID one, each null otherwise. They are the
+          figures `AccountService.portfolio` reports for the same market.
         * `can_trade` and `cannot_trade_reason`, the first that applies:
-          `ACCOUNT_SUSPENDED` (status not ACTIVE), `MARKET_NOT_OPEN` (effective status
-          not OPEN), `OWN_MARKET` (`created_by == viewer.id`); otherwise true and null.
-        * `stake_presets`: one per `TRADE_STAKE_PRESETS_CR`, in that order, `allowed`
-          when `can_trade` and the amount is at least `MIN_TRADE_CR`, at most
-          `stake_left` and at most the balance.
+          `MARKET_NOT_OPEN` (effective status not OPEN), `OWN_MARKET` (`created_by ==
+          viewer.id`); otherwise true and null. A suspended account never gets here:
+          the guards of `app/api/deps.py` refuse it.
+        * `stake_presets = MarketView.stake_presets(<stake left>, <balance>,
+          can_trade)`: one per `TRADE_STAKE_PRESETS_CR`, in that order.
         * `sell_presets = MarketView.sell_presets(<the positions>, can_trade)`: half
           and all of each holding, so the client halves and compares nothing (A.11).
+        * `can_settle`: `viewer.is_admin and not trades.exists_for_user_market(
+          viewer.id, market_id)`. It is the rule by which
+          `MarketLifecycleService.resolve` and `void` refuse an admin who traded the
+          market (A.4), asked here so that the admin screen can say so before anyone
+          tries. The query runs only for an admin; everybody else gets false. The
+          market's status plays no part in it.
         """
-        raise NotImplementedError
+        now = self._clock.now()
+        async with self._uow_factory() as uow:
+            market = await uow.markets.get(market_id)
+            if market is None or _hidden_from(viewer, market):
+                raise NotFoundError
+            resolution = (
+                await uow.resolutions.get_by_market(market.id)
+                if market.status in SETTLED_STATUSES
+                else None
+            )
+            proposer = await uow.users.get(market.created_by) if viewer.is_admin else None
+            account = await uow.accounts.get_user_account(viewer.id)
+            positions = await uow.positions.list_for_user_market(viewer.id, market.id)
+            can_settle = viewer.is_admin and not await uow.trades.exists_for_user_market(
+                viewer.id, market.id
+            )
+        if account is None:
+            raise LookupError(f"user {viewer.id} has no ledger account")
+        if viewer.is_admin and proposer is None:
+            raise LookupError(f"market {market.id} was proposed by nobody")
+
+        summary = self._view.summary(market, now, resolution)
+        return MarketDetailResponse(
+            **summary.model_dump(),
+            yes_definition=market.yes_def,
+            no_definition=market.no_def,
+            resolution_criteria=market.resolution_criteria,
+            resolution_source=market.resolution_source,
+            requested_tier=market.requested_tier,
+            tier=market.tier,
+            b_cr=to_cr(market.b_micro),
+            max_loss_cr=to_cr(market.budget_micro),
+            void_rule=VOID_RULE,
+            created_at=market.created_at,
+            opened_at=market.opened_at,
+            closed_at=market.closed_at,
+            rejection_reason=market.rejection_reason,
+            resolution=_resolution(resolution),
+            proposer_email=None if proposer is None else proposer.email,
+            viewer=self._viewer(
+                viewer,
+                market,
+                trading_open=summary.trading_open,
+                balance_micro=account.balance_micro,
+                positions=positions,
+                resolution=resolution,
+                can_settle=can_settle,
+            ),
+        )
+
+    async def _cached_list(self, key: str) -> MarketListResponse | None:
+        """The list cached under `key`; None on a miss, and for an entry that is no
+        `MarketListResponse`."""
+        cached = await self._cache.get(key)
+        if cached is None:
+            return None
+        try:
+            return MarketListResponse.model_validate_json(cached)
+        except ValidationError:
+            return None
+
+    def _viewer(
+        self,
+        viewer: AuthenticatedUser,
+        market: Market,
+        *,
+        trading_open: bool,
+        balance_micro: int,
+        positions: Sequence[Position],
+        resolution: Resolution | None,
+        can_settle: bool,
+    ) -> MarketViewer:
+        """The viewer's side of `market`: `positions` are their rows in it, and
+        `resolution` is how it ended, None while it has not."""
+        reason: TradeBlockReason | None
+        if not trading_open:
+            reason = TradeBlockReason.MARKET_NOT_OPEN
+        elif market.created_by == viewer.id:
+            reason = TradeBlockReason.OWN_MARKET
+        else:
+            reason = None
+        can_trade = reason is None
+
+        net_stake_micro = self._view.net_stake_micro(positions)
+        stake_left_micro = self._view.stake_left_micro(net_stake_micro)
+        return MarketViewer(
+            balance_cr=to_cr(balance_micro),
+            holdings=self._view.holdings(market, positions, resolution),
+            cost_cr=to_cr(sum(position.cost_micro for position in positions)),
+            proceeds_cr=to_cr(sum(position.proceeds_micro for position in positions)),
+            net_stake_cr=to_cr(net_stake_micro),
+            payout_cr=_optional_cr(self._view.payout_micro(positions, resolution)),
+            refund_cr=_optional_cr(self._view.refund_micro(positions, resolution)),
+            stake_limit_cr=to_cr(self._view.stake_limit_micro),
+            stake_left_cr=to_cr(stake_left_micro),
+            stake_presets=self._view.stake_presets(stake_left_micro, balance_micro, can_trade),
+            sell_presets=self._view.sell_presets(positions, can_trade),
+            can_trade=can_trade,
+            cannot_trade_reason=reason,
+            can_settle=can_settle,
+        )
+
+
+def _hidden_from(viewer: AuthenticatedUser, market: Market) -> bool:
+    """Whether `market` is one `viewer` may not know of: a proposal, open or rejected,
+    is for admins and its proposer (A.5)."""
+    if market.status not in HIDDEN_STATUSES:
+        return False
+    return not (viewer.is_admin or market.created_by == viewer.id)
+
+
+def _resolution(resolution: Resolution | None) -> MarketResolution | None:
+    if resolution is None:
+        return None
+    return MarketResolution(
+        outcome=resolution.outcome,
+        evidence=resolution.evidence,
+        resolved_at=resolution.created_at,
+    )
+
+
+def _optional_cr(value_micro: int | None) -> Decimal | None:
+    return None if value_micro is None else to_cr(value_micro)
+
+
+def _days(count: int) -> str:
+    return "1 day" if count == 1 else f"{count} days"

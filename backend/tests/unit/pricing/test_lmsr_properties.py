@@ -2,10 +2,15 @@
 
 Three kinds of market are generated:
 
-* ordinary: b from 1 CR to the largest b SPEC §4 allows, |q|/b up to 50;
+* ordinary: b from 1 CR to the b of MAX_MARKET_BUDGET, the largest a market can have,
+  |q|/b up to 50;
 * lopsided: |q|/b far beyond 50, where one price is 0 or 1 to all 50 digits;
 * extreme: any q a BIGINT column can hold, and any b the quote functions accept with
-  the default 50 digits (up to 10^11 µCR, seventy times the largest b of SPEC §4).
+  the default 50 digits (up to 10^11 µCR, beyond the b of any market).
+
+The b of the three fixed tiers and the largest b are tried by name in every kind that
+draws a b, besides the values drawn from the range. All four come from the test
+settings (`tests/support/economy.py`).
 
 Rules about rounding and bounds run on all three. Rules that compare against a reference
 formula run on ordinary markets, where that reference can be computed to the last digit.
@@ -15,6 +20,7 @@ b a BIGINT can hold.
 
 from decimal import Decimal, localcontext
 from fractions import Fraction
+from itertools import count
 
 import pytest
 from hypothesis import assume, given, settings
@@ -24,10 +30,9 @@ from app.core.enums import Outcome, TradeSide
 from app.core.units import MICRO, ceil_micro, floor_micro
 from app.pricing import lmsr
 from app.pricing.lmsr import MarketState, TradeQuote
+from tests.support.economy import MARKET_B, MAX_B, MAX_MARKET_BUDGET
 
 CR = MICRO
-MAX_B = 1_442_695_040
-"""b of the largest market budget, 1,000 CR (SPEC §4 "Choosing b")."""
 LARGEST_B = 10**11
 """The largest b `lmsr` quotes with its default precision; it refuses a larger one."""
 BIGINT_MAX = 2**63 - 1
@@ -39,9 +44,14 @@ outcomes = st.sampled_from(Outcome)
 bigints = st.integers(min_value=0, max_value=BIGINT_MAX)
 
 
+def market_b(*, min_b: int) -> st.SearchStrategy[int]:
+    """A b a market can have: a tier's or the largest by name, or any from `min_b` up."""
+    return st.one_of(st.sampled_from(MARKET_B), st.integers(min_value=min_b, max_value=MAX_B))
+
+
 @st.composite
 def markets(draw: st.DrawFn, *, min_b: int, max_ratio: int) -> MarketState:
-    b = draw(st.integers(min_value=min_b, max_value=MAX_B))
+    b = draw(market_b(min_b=min_b))
     q = st.integers(min_value=0, max_value=max_ratio * b)
     return MarketState(q_yes=draw(q), q_no=draw(q), b=b)
 
@@ -309,7 +319,7 @@ def test_sell_then_buy_back_never_yields_a_profit(
 
 
 @checks
-@given(b=st.integers(min_value=1, max_value=MAX_B), data=st.data())
+@given(b=market_b(min_b=1), data=st.data())
 def test_random_trading_never_costs_the_market_maker_more_than_b_ln_2(
     b: int, data: st.DataObject
 ) -> None:
@@ -384,22 +394,31 @@ def test_a_b_that_the_digits_cannot_round_reliably_is_refused_not_quoted(
             function(beyond, Outcome.YES, CR, precision=precision)
 
 
-@pytest.mark.parametrize("precision", [28, 32, 44])
-def test_digits_that_do_not_cover_the_largest_b_of_spec_section_4_are_refused(
-    precision: int,
-) -> None:
-    """With 28 to 32 digits a buy at that b was charged below its exact cost, a sale paid
-    above its exact proceeds, and a budget buy tripped its own assertion."""
+FEWEST_DIGITS_FOR_MAX_B = next(digits for digits in count(1) if 10**digits >= MAX_B**3 * 10**17)
+"""The fewest digits the rule above leaves for the largest b a market can have."""
+
+
+@pytest.mark.parametrize("precision", [28, 32, FEWEST_DIGITS_FOR_MAX_B - 1])
+def test_digits_that_do_not_cover_the_largest_market_are_refused(precision: int) -> None:
+    """With 28 to 32 digits a buy was charged below its exact cost, a sale paid above its
+    exact proceeds, and a budget buy tripped its own assertion (the inputs are in
+    test_lmsr_adversarial.py). At the largest b a market can have they are refused, and
+    so is one digit fewer than that b needs."""
     largest_market = MarketState(q_yes=0, q_no=0, b=MAX_B)
 
     for function in QUOTE_FUNCTIONS:
         with pytest.raises(ValueError, match="cannot be quoted"):
             function(largest_market, Outcome.YES, CR, precision=precision)
-        assert function(largest_market, Outcome.YES, CR, precision=45).shares_micro >= CR
+        covered = function(largest_market, Outcome.YES, CR, precision=FEWEST_DIGITS_FOR_MAX_B)
+        assert covered.shares_micro >= CR
+
+
+def test_the_default_precision_covers_the_largest_market() -> None:
+    assert FEWEST_DIGITS_FOR_MAX_B <= lmsr.DEFAULT_PRECISION
 
 
 @checks
-@given(budget=st.integers(min_value=1, max_value=1000 * CR))
+@given(budget=st.integers(min_value=1, max_value=MAX_MARKET_BUDGET))
 def test_b_from_a_budget_is_the_largest_b_whose_loss_bound_fits_the_budget(budget: int) -> None:
     b = lmsr.b_from_budget_micro(budget)
 

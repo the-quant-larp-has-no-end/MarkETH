@@ -1,9 +1,9 @@
 """Markets as the API shows them: list, detail and proposal (SPEC §6, §10, A.4, A.5, A.11).
 
 The frontend computes nothing (golden rule 6), so a market carries every number its
-screens show: display probabilities, the effective status, and for a signed-in viewer
-their holdings, their stake, which buy buttons would be accepted and how many shares
-each sell button stands for.
+screens show: display probabilities, the effective status, and for the viewer their
+holdings, their stake, which buy buttons would be accepted and how many shares each
+sell button stands for.
 """
 
 from datetime import datetime
@@ -92,7 +92,7 @@ class MarketSummary(ResponseModel):
 
 
 class MarketListResponse(ResponseModel):
-    """`GET /markets`: soonest `close_at` first."""
+    """`GET /markets`: the markets in the statuses asked for, soonest `close_at` first."""
 
     items: list[MarketSummary]
 
@@ -121,7 +121,8 @@ class StakePreset(ResponseModel):
     amount_cr: CreditAmount
     allowed: bool
     """Whether a buy for this budget would pass right now: the viewer may trade, has
-    the balance and stays within the stake limit."""
+    the balance and stays within the stake limit, and the amount is no smaller than
+    the minimum trade."""
 
 
 class SellPortion(StrEnum):
@@ -154,11 +155,9 @@ class TradeBlockReason(StrEnum):
     OWN_MARKET = "OWN_MARKET"
     """The viewer proposed this market (A.4, self-dealing)."""
 
-    ACCOUNT_SUSPENDED = "ACCOUNT_SUSPENDED"
-
 
 class MarketViewer(ResponseModel):
-    """The signed-in user's side of a market (SPEC §4, A.4)."""
+    """The viewer's side of a market (SPEC §4, A.4)."""
 
     balance_cr: CreditAmount
     holdings: list[Holding]
@@ -173,17 +172,33 @@ class MarketViewer(ResponseModel):
     net_stake_cr: CreditAmount
     """max(0, cost - proceeds): what a VOID would refund."""
 
+    payout_cr: CreditAmount | None
+    """What the market paid the viewer when it was RESOLVED: 1 CR for every share held
+    of the winning outcome, 0 for someone who held none. Null in any other status."""
+
+    refund_cr: CreditAmount | None
+    """What the viewer got back when the market was VOID: their net stake. Null in any
+    other status."""
+
     stake_limit_cr: CreditAmount
     stake_left_cr: CreditAmount
     """`stake_limit_cr - net_stake_cr`, never below zero."""
 
     stake_presets: list[StakePreset]
+    """One entry per buy button, in the order of `stake_presets_cr` of `GET /config`."""
+
     sell_presets: list[SellPreset]
     """Always four entries: YES half, YES all, NO half, NO all."""
 
     can_trade: bool
     cannot_trade_reason: TradeBlockReason | None
     """Null exactly when `can_trade` is true."""
+
+    can_settle: bool
+    """Whether the viewer is someone who may resolve or void this market: an admin who
+    never traded it (A.4). An admin who did trade it is answered 403 by both actions,
+    and another admin has to settle it. This says who may settle, not when: which
+    actions the market's status allows is SPEC §6. False for everybody who is no admin."""
 
 
 class MarketDetailResponse(MarketSummary):
@@ -212,5 +227,5 @@ class MarketDetailResponse(MarketSummary):
     proposer_email: str | None
     """Who proposed the market. Sent to admins only, null for everyone else."""
 
-    viewer: MarketViewer | None
-    """Null without a session."""
+    viewer: MarketViewer
+    """What the market is to whoever asked: every reader of a market is a user."""

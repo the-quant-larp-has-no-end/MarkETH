@@ -9,8 +9,8 @@ How every service here is built:
 * The acting user is an `AuthenticatedUser`. Results are schema objects (`app.schemas`)
   or ORM rows. Failures are `AppError` subclasses; nothing here knows HTTP.
 * A method that takes a `uow` runs inside its caller's transaction and never commits.
-* What happens after the commit (cache deletes, live events, mail) is best effort and
-  must not fail the request.
+* What happens after the commit (cache deletes, live events) is best effort and must
+  not fail the request.
 """
 
 from collections.abc import Callable

@@ -1,1 +1,1 @@
-"""Tests of the Redis, ScyllaDB and mail adapters against real, throwaway backends."""
+"""Tests of the Redis and ScyllaDB adapters against real, throwaway backends."""

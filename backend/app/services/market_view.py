@@ -5,8 +5,10 @@ all show markets. The rules they must agree on live here, once:
 
 * the effective status: an OPEN market past its deadline is CLOSED everywhere (A.4);
 * display probabilities: rounded once, with NO as the complement of the rounded YES;
-* what a holding is worth, what a user's net stake in a market is, and how many
-  shares the sell buttons of the trade sheet stand for.
+* what a holding is worth, what a user's net stake in a market is and how much of the
+  stake limit it leaves, what a settled market paid or gave back;
+* which buy buttons of the trade sheet would be accepted, and how many shares its sell
+  buttons stand for.
 
 `MarketView` reads rows and settings and computes; it does no I/O. The frontend
 computes nothing (golden rule 6), so every price it shows went through this class.
@@ -23,7 +25,7 @@ from app.core.units import MICRO, complement, display_probability, probability_t
 from app.models.market import Market, Resolution
 from app.models.trading import Position
 from app.pricing import lmsr
-from app.schemas.markets import Holding, MarketSummary, SellPortion, SellPreset
+from app.schemas.markets import Holding, MarketSummary, SellPortion, SellPreset, StakePreset
 
 EVEN_ODDS_MICRO: Final[int] = MICRO // 2
 """The price of a market that was never opened: it has no b yet, so no LMSR price."""
@@ -48,6 +50,8 @@ class MarketView:
         self._display_decimals = settings.pricing.price_display_decimals
         self._precision = settings.pricing.decimal_precision
         self._stake_limit_micro = settings.pricing.max_stake_per_user_market_micro
+        self._stake_presets_micro = tuple(settings.pricing.stake_presets_micro)
+        self._min_trade_micro = settings.pricing.min_trade_micro
         self._min_trade_shares_micro = settings.pricing.min_trade_shares_micro
 
     def effective_status(self, market: Market, now: datetime) -> MarketStatus:
@@ -109,9 +113,65 @@ class MarketView:
         proceeds_micro = sum(position.proceeds_micro for position in positions)
         return max(0, cost_micro - proceeds_micro)
 
+    @property
+    def stake_limit_micro(self) -> int:
+        """`MAX_STAKE_PER_USER_MARKET`: the most a user may have at stake in one market."""
+        return self._stake_limit_micro
+
     def stake_left_micro(self, net_stake_micro: int) -> int:
         """What a user may still put at stake under `MAX_STAKE_PER_USER_MARKET`."""
         return max(0, self._stake_limit_micro - net_stake_micro)
+
+    def stake_presets(
+        self, stake_left_micro: int, balance_micro: int, can_trade: bool
+    ) -> list[StakePreset]:
+        """The buy buttons of the trade sheet: one per `TRADE_STAKE_PRESETS_CR`, in that
+        order (A.11).
+
+        A preset is allowed when the viewer may trade (`can_trade`) and its amount is at
+        least `MIN_TRADE_CR`, at most `stake_left_micro` and at most `balance_micro`.
+        `stake_left_micro` is `stake_left_micro(net_stake_micro(...))` of the viewer's
+        positions, so a buy for an allowed preset passes the stake check of the trade.
+        """
+        return [
+            StakePreset(
+                amount_cr=to_cr(amount_micro),
+                allowed=can_trade
+                and self._min_trade_micro <= amount_micro <= stake_left_micro
+                and amount_micro <= balance_micro,
+            )
+            for amount_micro in self._stake_presets_micro
+        ]
+
+    def payout_micro(
+        self, positions: Sequence[Position], resolution: Resolution | None
+    ) -> int | None:
+        """What a RESOLVED market paid a user: 1 CR for every share they held of the
+        winning outcome, 0 for someone who held none.
+
+        `positions` are that user's rows in that market. None for a market that did not
+        resolve to YES or NO: one that is not settled (no `resolution`), and a VOID one.
+        Resolution leaves positions as they are, so the shares are still there to read.
+        """
+        if resolution is None or resolution.outcome is ResolutionOutcome.VOID:
+            return None
+        return sum(
+            position.shares_micro
+            for position in positions
+            if position.outcome.value == resolution.outcome.value
+        )
+
+    def refund_micro(
+        self, positions: Sequence[Position], resolution: Resolution | None
+    ) -> int | None:
+        """What a VOID market gave a user back: their net stake.
+
+        None for every other market. A void sets the shares of a position to zero and
+        keeps its cost and proceeds, which is what the net stake is read from.
+        """
+        if resolution is None or resolution.outcome is not ResolutionOutcome.VOID:
+            return None
+        return self.net_stake_micro(positions)
 
     def holding_value_micro(
         self, market: Market, outcome: Outcome, shares_micro: int, resolution: Resolution | None

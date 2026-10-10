@@ -331,186 +331,6 @@
         "title": "CodeBatchListResponse",
         "type": "object"
       },
-      "CoffeeTicketIssuedResponse": {
-        "description": "`POST /coffee-tickets`: the new ticket and, this once, its code.",
-        "properties": {
-          "balance_cr": {
-            "description": "The user's balance after the ticket was paid for.",
-            "examples": [
-              "0.25"
-            ],
-            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
-            "title": "Balance Cr",
-            "type": "string"
-          },
-          "code": {
-            "description": "Shown in groups of four (`XXXX-XXXX`). It is also the content of the ticket's QR.\nThe server keeps only its hash and cannot show it again.",
-            "title": "Code",
-            "type": "string"
-          },
-          "created_at": {
-            "format": "date-time",
-            "title": "Created At",
-            "type": "string"
-          },
-          "expires_at": {
-            "format": "date-time",
-            "title": "Expires At",
-            "type": "string"
-          },
-          "id": {
-            "format": "uuid",
-            "title": "Id",
-            "type": "string"
-          },
-          "redeemed_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Redeemed At"
-          },
-          "status": {
-            "$ref": "#/components/schemas/CoffeeTicketStatus",
-            "description": "The effective status: an ACTIVE ticket past `expires_at` is reported EXPIRED,\nwhether or not its refund has been booked yet."
-          },
-          "value_cr": {
-            "examples": [
-              "0.25"
-            ],
-            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
-            "title": "Value Cr",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "status",
-          "value_cr",
-          "created_at",
-          "expires_at",
-          "redeemed_at",
-          "code",
-          "balance_cr"
-        ],
-        "title": "CoffeeTicketIssuedResponse",
-        "type": "object"
-      },
-      "CoffeeTicketItem": {
-        "description": "A ticket in the wallet. It never contains the code.",
-        "properties": {
-          "created_at": {
-            "format": "date-time",
-            "title": "Created At",
-            "type": "string"
-          },
-          "expires_at": {
-            "format": "date-time",
-            "title": "Expires At",
-            "type": "string"
-          },
-          "id": {
-            "format": "uuid",
-            "title": "Id",
-            "type": "string"
-          },
-          "redeemed_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Redeemed At"
-          },
-          "status": {
-            "$ref": "#/components/schemas/CoffeeTicketStatus",
-            "description": "The effective status: an ACTIVE ticket past `expires_at` is reported EXPIRED,\nwhether or not its refund has been booked yet."
-          },
-          "value_cr": {
-            "examples": [
-              "0.25"
-            ],
-            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
-            "title": "Value Cr",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "status",
-          "value_cr",
-          "created_at",
-          "expires_at",
-          "redeemed_at"
-        ],
-        "title": "CoffeeTicketItem",
-        "type": "object"
-      },
-      "CoffeeTicketListResponse": {
-        "description": "`GET /me/coffee-tickets`, newest first.",
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/CoffeeTicketItem"
-            },
-            "title": "Items",
-            "type": "array"
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "title": "CoffeeTicketListResponse",
-        "type": "object"
-      },
-      "CoffeeTicketRedeemResponse": {
-        "description": "`POST /barista/coffee-tickets/{code}/redeem`: the ticket is now used up.",
-        "properties": {
-          "redeemed_at": {
-            "format": "date-time",
-            "title": "Redeemed At",
-            "type": "string"
-          },
-          "ticket_id": {
-            "format": "uuid",
-            "title": "Ticket Id",
-            "type": "string"
-          },
-          "value_cr": {
-            "examples": [
-              "0.25"
-            ],
-            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
-            "title": "Value Cr",
-            "type": "string"
-          }
-        },
-        "required": [
-          "ticket_id",
-          "value_cr",
-          "redeemed_at"
-        ],
-        "title": "CoffeeTicketRedeemResponse",
-        "type": "object"
-      },
-      "CoffeeTicketStatus": {
-        "enum": [
-          "ACTIVE",
-          "REDEEMED",
-          "EXPIRED"
-        ],
-        "title": "CoffeeTicketStatus",
-        "type": "string"
-      },
       "CreateCodeBatchRequest": {
         "additionalProperties": false,
         "description": "`POST /admin/code-batches`.",
@@ -550,7 +370,7 @@
                 "type": "null"
               }
             ],
-            "description": "Value of each code. Left out, it is `VOUCHER_CODE_DEFAULT_VALUE_CR`.",
+            "description": "Value of each code. Left out, it is `CODE_DEFAULT_VALUE_CR`.",
             "title": "Value Cr"
           }
         },
@@ -571,7 +391,7 @@
             "type": "string"
           },
           "redeem_url": {
-            "description": "The card's QR payload: `{PUBLIC_BASE_URL}/wallet#code=XXXX-XXXX-XXXX` (A.6).",
+            "description": "The card's QR payload: `{PUBLIC_BASE_URL}/wallet?code=XXXX-XXXX-XXXX` (A.6). The\ncode travels in the query, which nginx keeps out of its access log.",
             "title": "Redeem Url",
             "type": "string"
           }
@@ -581,6 +401,47 @@
           "redeem_url"
         ],
         "title": "CreatedCode",
+        "type": "object"
+      },
+      "DegreeLevel": {
+        "description": "The levels of the degree catalogue (`app.core.degrees`), in the order they are\noffered. OTHER is for ETH members who are in no programme.",
+        "enum": [
+          "BACHELOR",
+          "MASTER",
+          "DOCTORATE",
+          "CONTINUING_EDUCATION",
+          "TEACHER_EDUCATION",
+          "OTHER"
+        ],
+        "title": "DegreeLevel",
+        "type": "string"
+      },
+      "DegreeLevelOption": {
+        "description": "One level of the degree catalogue and the programmes a profile may name in it.",
+        "properties": {
+          "level": {
+            "$ref": "#/components/schemas/DegreeLevel"
+          },
+          "name": {
+            "description": "How the level is shown, for example \"Continuing education\".",
+            "title": "Name",
+            "type": "string"
+          },
+          "programmes": {
+            "description": "The labels of the level, in the order to offer them. A label is both what is\nshown and what `PUT /me/profile` takes as `degree_programme`.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Programmes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "level",
+          "name",
+          "programmes"
+        ],
+        "title": "DegreeLevelOption",
         "type": "object"
       },
       "DependencyStatus": {
@@ -601,7 +462,8 @@
           "CODE_INVALID",
           "RATE_LIMITED",
           "INSUFFICIENT_SHARES",
-          "LOGIN_LINK_INVALID",
+          "PROFILE_REQUIRED",
+          "USERNAME_TAKEN",
           "IDEMPOTENCY_KEY_REUSED",
           "VALIDATION_ERROR",
           "UNAUTHENTICATED",
@@ -615,7 +477,7 @@
         "type": "string"
       },
       "ErrorResponse": {
-        "description": "The body of every non-2xx response (SPEC §10, Appendix A.2).\n\n`message` is written for the user and can be shown as it is. `details` is an\nobject, empty unless the code is one of these:\n\n* `VALIDATION_ERROR`. A request that does not match its schema: `errors`, a list\n  of `{loc, msg, type}`, one per field. A rule a service checks: `field`, the name\n  of the offending field. An email address that is not allowed: `allowed_domains`,\n  a list.\n* `RATE_LIMITED`: `retry_after_seconds`, an integer, also sent as the\n  `Retry-After` header.\n* `QUOTE_STALE`: `quote`, a fresh `QuoteResponse` for the same trade.\n* `LIMIT_EXCEEDED`: `limit`, which names the limit: `MAX_STAKE_PER_USER_MARKET`,\n  `MAX_PROPOSALS_PER_USER_PER_DAY`, `MAX_OPEN_MARKETS`, `MAX_MARKET_BUDGET`,\n  `MAX_AGGREGATE_LOSS_BUDGET`, `MAX_CODE_ISSUANCE_PER_MONTH` or\n  `ONE_CODE_PER_USER`. With `MAX_STAKE_PER_USER_MARKET` also `stake_limit_cr` and\n  `stake_left_cr`; with `MAX_CODE_ISSUANCE_PER_MONTH` also `issued_cr`,\n  `requested_cr` and `cap_cr`.\n* `INSUFFICIENT_BALANCE`: `balance_cr` and `required_cr`.\n* `SERVICE_UNAVAILABLE`, from `GET /health` only: `postgres`, `redis` and\n  `scylla`, each `up` or `down`.\n\nAmounts in `details` are decimal strings like every `*_cr` field.",
+        "description": "The body of every non-2xx response (SPEC §10, Appendix A.2).\n\n`message` is written for the user and can be shown as it is. `details` is an\nobject, empty unless the code is one of these:\n\n* `VALIDATION_ERROR`. A request that does not match its schema: `errors`, a list\n  of `{loc, msg, type}`, one per field. A rule a service checks: `field`, the name\n  of the offending field.\n* `FORBIDDEN`, when the portal's id is not an address MarkETH is open to:\n  `allowed_domains`, a list of the domains it is open to.\n* `PROFILE_REQUIRED`: `name` and `email`, who the portal says is calling. `name`\n  may be an empty string.\n* `USERNAME_TAKEN`: `field`, which is `username`.\n* `RATE_LIMITED`: `retry_after_seconds`, an integer, also sent as the\n  `Retry-After` header.\n* `QUOTE_STALE`: `quote`, a fresh `QuoteResponse` for the same trade.\n* `LIMIT_EXCEEDED`: `limit`, which names the limit: `MAX_STAKE_PER_USER_MARKET`,\n  `MAX_PROPOSALS_PER_USER_PER_DAY`, `MAX_OPEN_MARKETS`, `MAX_MARKET_BUDGET`,\n  `MAX_AGGREGATE_LOSS_BUDGET`, `MAX_CODE_ISSUANCE_PER_MONTH` or\n  `ONE_CODE_PER_USER`. With `MAX_STAKE_PER_USER_MARKET` also `stake_limit_cr` and\n  `stake_left_cr`; with `MAX_CODE_ISSUANCE_PER_MONTH` also `issued_cr`,\n  `requested_cr` and `cap_cr`.\n* `INSUFFICIENT_BALANCE`: `balance_cr` and `required_cr`.\n* `SERVICE_UNAVAILABLE`, from `GET /health` only: `postgres`, `redis` and\n  `scylla`, each `up` or `down`.\n\nAmounts in `details` are decimal strings like every `*_cr` field.",
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode"
@@ -775,6 +637,24 @@
         "title": "Holding",
         "type": "object"
       },
+      "IssueVoucherRequest": {
+        "additionalProperties": false,
+        "description": "`POST /vouchers`: which product the voucher is for.",
+        "properties": {
+          "product_id": {
+            "description": "The `id` of a product of `GET /vouchers/products`.",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Product Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "product_id"
+        ],
+        "title": "IssueVoucherRequest",
+        "type": "object"
+      },
       "JournalKind": {
         "description": "Why a journal entry exists. One value per way credits can move.",
         "enum": [
@@ -785,11 +665,150 @@
           "TRADE_SELL",
           "MARKET_RESOLUTION",
           "MARKET_VOID",
-          "COFFEE_TICKET_ISSUE",
-          "COFFEE_TICKET_REDEEM",
-          "COFFEE_TICKET_REFUND"
+          "VOUCHER_ISSUE",
+          "VOUCHER_REDEEM",
+          "VOUCHER_REFUND"
         ],
         "title": "JournalKind",
+        "type": "string"
+      },
+      "LeaderboardEntry": {
+        "description": "One user on the leaderboard: a username and a degree, never an address or a real\nname.",
+        "properties": {
+          "avg_payout_ratio": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What those markets returned per credit put in, each market weighing as much as\nwas put into it. Null while `settled_markets` is 0.",
+            "title": "Avg Payout Ratio"
+          },
+          "credits_cr": {
+            "description": "The user's balance right now.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Credits Cr",
+            "type": "string"
+          },
+          "degree_level": {
+            "$ref": "#/components/schemas/DegreeLevel"
+          },
+          "degree_programme": {
+            "description": "A label of `degree_level`, as `GET /config` lists it.",
+            "title": "Degree Programme",
+            "type": "string"
+          },
+          "is_viewer": {
+            "description": "True for the caller's own row.",
+            "title": "Is Viewer",
+            "type": "boolean"
+          },
+          "rank": {
+            "description": "The user's place in the list as it was asked for, 1 being first. It counts within\nthe filters and in the chosen order.",
+            "title": "Rank",
+            "type": "integer"
+          },
+          "settled_markets": {
+            "description": "How many RESOLVED markets the user put credits into: what the two rates are\ntaken over. A VOID market does not count.",
+            "title": "Settled Markets",
+            "type": "integer"
+          },
+          "trades": {
+            "description": "How many trades the user made, over every market.",
+            "title": "Trades",
+            "type": "integer"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          },
+          "win_rate": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The share of those markets that returned more than the user put in, rounded like\na probability. Null while `settled_markets` is 0.",
+            "title": "Win Rate"
+          }
+        },
+        "required": [
+          "rank",
+          "username",
+          "degree_level",
+          "degree_programme",
+          "credits_cr",
+          "trades",
+          "settled_markets",
+          "win_rate",
+          "avg_payout_ratio",
+          "is_viewer"
+        ],
+        "title": "LeaderboardEntry",
+        "type": "object"
+      },
+      "LeaderboardResponse": {
+        "description": "`GET /leaderboard`: one page of the ranking, first rank first.\n\n`next_cursor` is opaque to the client and null on the last page. A page is ranked at\nthe moment of its request: balances move, so two pages fetched apart may not join\nwithout a gap or a repeat.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LeaderboardEntry"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "viewer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LeaderboardEntry"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The caller's own row under the same filters and order, wherever it ranks, also\nbeyond this page. Null when the filters leave the caller out."
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "viewer"
+        ],
+        "title": "LeaderboardResponse",
+        "type": "object"
+      },
+      "LeaderboardSort": {
+        "description": "The measure a leaderboard is ordered by (`GET /leaderboard`, Appendix A.2).",
+        "enum": [
+          "credits",
+          "win_rate",
+          "trades",
+          "avg_payout_ratio"
+        ],
+        "title": "LeaderboardSort",
         "type": "string"
       },
       "LedgerItem": {
@@ -810,7 +829,7 @@
             "type": "string"
           },
           "description": {
-            "description": "A short English label for the line, e.g. \"Monthly voucher\".",
+            "description": "A short English label for the line, e.g. \"Monthly tokens\".",
             "title": "Description",
             "type": "string"
           },
@@ -859,38 +878,6 @@
           "next_cursor"
         ],
         "title": "LedgerListResponse",
-        "type": "object"
-      },
-      "LoginLinkRequest": {
-        "additionalProperties": false,
-        "description": "`POST /auth/request-link`. The address is normalised and checked by the service.",
-        "properties": {
-          "email": {
-            "maxLength": 320,
-            "minLength": 3,
-            "title": "Email",
-            "type": "string"
-          }
-        },
-        "required": [
-          "email"
-        ],
-        "title": "LoginLinkRequest",
-        "type": "object"
-      },
-      "LoginLinkResponse": {
-        "description": "Always the same answer for an allowlisted address, whether an account exists or not.",
-        "properties": {
-          "link_ttl_minutes": {
-            "description": "How long the link in the mail stays valid.",
-            "title": "Link Ttl Minutes",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "link_ttl_minutes"
-        ],
-        "title": "LoginLinkResponse",
         "type": "object"
       },
       "MarketDetailResponse": {
@@ -1059,15 +1046,8 @@
             "type": "integer"
           },
           "viewer": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MarketViewer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Null without a session."
+            "$ref": "#/components/schemas/MarketViewer",
+            "description": "What the market is to whoever asked: every reader of a market is a user."
           },
           "void_rule": {
             "description": "What happens to stakes if the market is voided, shown before anyone trades.",
@@ -1120,7 +1100,7 @@
         "type": "object"
       },
       "MarketListResponse": {
-        "description": "`GET /markets`: soonest `close_at` first.",
+        "description": "`GET /markets`: the markets in the statuses asked for, soonest `close_at` first.",
         "properties": {
           "items": {
             "items": {
@@ -1271,7 +1251,7 @@
         "type": "string"
       },
       "MarketViewer": {
-        "description": "The signed-in user's side of a market (SPEC §4, A.4).",
+        "description": "The viewer's side of a market (SPEC §4, A.4).",
         "properties": {
           "balance_cr": {
             "examples": [
@@ -1280,6 +1260,11 @@
             "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
             "title": "Balance Cr",
             "type": "string"
+          },
+          "can_settle": {
+            "description": "Whether the viewer is someone who may resolve or void this market: an admin who\nnever traded it (A.4). An admin who did trade it is answered 403 by both actions,\nand another admin has to settle it. This says who may settle, not when: which\nactions the market's status allows is SPEC §6. False for everybody who is no admin.",
+            "title": "Can Settle",
+            "type": "boolean"
           },
           "can_trade": {
             "title": "Can Trade",
@@ -1322,6 +1307,22 @@
             "title": "Net Stake Cr",
             "type": "string"
           },
+          "payout_cr": {
+            "anyOf": [
+              {
+                "examples": [
+                  "0.25"
+                ],
+                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the market paid the viewer when it was RESOLVED: 1 CR for every share held\nof the winning outcome, 0 for someone who held none. Null in any other status.",
+            "title": "Payout Cr"
+          },
           "proceeds_cr": {
             "description": "Everything the viewer received for sells in this market.",
             "examples": [
@@ -1330,6 +1331,22 @@
             "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
             "title": "Proceeds Cr",
             "type": "string"
+          },
+          "refund_cr": {
+            "anyOf": [
+              {
+                "examples": [
+                  "0.25"
+                ],
+                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the viewer got back when the market was VOID: their net stake. Null in any\nother status.",
+            "title": "Refund Cr"
           },
           "sell_presets": {
             "description": "Always four entries: YES half, YES all, NO half, NO all.",
@@ -1357,6 +1374,7 @@
             "type": "string"
           },
           "stake_presets": {
+            "description": "One entry per buy button, in the order of `stake_presets_cr` of `GET /config`.",
             "items": {
               "$ref": "#/components/schemas/StakePreset"
             },
@@ -1370,12 +1388,15 @@
           "cost_cr",
           "proceeds_cr",
           "net_stake_cr",
+          "payout_cr",
+          "refund_cr",
           "stake_limit_cr",
           "stake_left_cr",
           "stake_presets",
           "sell_presets",
           "can_trade",
-          "cannot_trade_reason"
+          "cannot_trade_reason",
+          "can_settle"
         ],
         "title": "MarketViewer",
         "type": "object"
@@ -1391,9 +1412,9 @@
             "title": "Balance Cr",
             "type": "string"
           },
-          "can_get_coffee": {
-            "description": "Whether the balance covers a coffee ticket right now (SPEC §2: only whole\nvouchers become tickets). The wallet enables \"Get a coffee\" from this.",
-            "title": "Can Get Coffee",
+          "can_get_voucher": {
+            "description": "Whether the balance covers a voucher for the cheapest product right now\n(SPEC §2). The wallet enables getting one from this.",
+            "title": "Can Get Voucher",
             "type": "boolean"
           },
           "created_at": {
@@ -1401,7 +1422,16 @@
             "title": "Created At",
             "type": "string"
           },
+          "degree_level": {
+            "$ref": "#/components/schemas/DegreeLevel"
+          },
+          "degree_programme": {
+            "description": "A label of `degree_level`, as `GET /config` lists it.",
+            "title": "Degree Programme",
+            "type": "string"
+          },
           "email": {
+            "description": "The address the portal identifies the user by.",
             "title": "Email",
             "type": "string"
           },
@@ -1418,6 +1448,11 @@
             "title": "Monthly Grant Cr",
             "type": "string"
           },
+          "name": {
+            "description": "The display name the portal sent when the profile was last saved. May be empty.",
+            "title": "Name",
+            "type": "string"
+          },
           "next_monthly_grant_on": {
             "description": "First day of the next calendar month in the app's timezone (SPEC §2).",
             "format": "date",
@@ -1425,16 +1460,25 @@
             "type": "string"
           },
           "role": {
-            "$ref": "#/components/schemas/UserRole"
+            "$ref": "#/components/schemas/UserRole",
+            "description": "What the user may do right now. It follows the server's role lists, not the\nprofile."
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
           }
         },
         "required": [
           "id",
           "email",
+          "name",
+          "username",
+          "degree_level",
+          "degree_programme",
           "role",
           "created_at",
           "balance_cr",
-          "can_get_coffee",
+          "can_get_voucher",
           "monthly_grant_cr",
           "next_monthly_grant_on"
         ],
@@ -1479,7 +1523,7 @@
         "type": "object"
       },
       "Obligations": {
-        "description": "Outstanding obligations: the most coffee VIS could owe right now (SPEC §5, A.6).",
+        "description": "Outstanding obligations: the most VIS could owe right now (SPEC §5, A.6).",
         "properties": {
           "above_threshold": {
             "description": "True when `total_cr` exceeds `alert_threshold_cr`. This flag is the alert of\nSPEC §5: the page shows a warning from it, and no `alerts` row is written.",
@@ -1503,12 +1547,12 @@
             "title": "Market Exposure Cr",
             "type": "string"
           },
-          "pending_coffee_tickets_cr": {
+          "pending_vouchers_cr": {
             "examples": [
               "0.25"
             ],
             "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
-            "title": "Pending Coffee Tickets Cr",
+            "title": "Pending Vouchers Cr",
             "type": "string"
           },
           "total_cr": {
@@ -1531,7 +1575,7 @@
         },
         "required": [
           "user_balances_cr",
-          "pending_coffee_tickets_cr",
+          "pending_vouchers_cr",
           "market_exposure_cr",
           "total_cr",
           "alert_threshold_cr",
@@ -1666,6 +1710,96 @@
           "total_value_cr"
         ],
         "title": "PortfolioResponse",
+        "type": "object"
+      },
+      "ProfileSavedResponse": {
+        "description": "The profile as it is after the save, with everything `GET /me` returns.",
+        "properties": {
+          "balance_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Balance Cr",
+            "type": "string"
+          },
+          "can_get_voucher": {
+            "description": "Whether the balance covers a voucher for the cheapest product right now\n(SPEC §2). The wallet enables getting one from this.",
+            "title": "Can Get Voucher",
+            "type": "boolean"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "degree_level": {
+            "$ref": "#/components/schemas/DegreeLevel"
+          },
+          "degree_programme": {
+            "description": "A label of `degree_level`, as `GET /config` lists it.",
+            "title": "Degree Programme",
+            "type": "string"
+          },
+          "email": {
+            "description": "The address the portal identifies the user by.",
+            "title": "Email",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "monthly_grant_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Monthly Grant Cr",
+            "type": "string"
+          },
+          "name": {
+            "description": "The display name the portal sent when the profile was last saved. May be empty.",
+            "title": "Name",
+            "type": "string"
+          },
+          "next_monthly_grant_on": {
+            "description": "First day of the next calendar month in the app's timezone (SPEC §2).",
+            "format": "date",
+            "title": "Next Monthly Grant On",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/UserRole",
+            "description": "What the user may do right now. It follows the server's role lists, not the\nprofile."
+          },
+          "signup_granted": {
+            "description": "True when this save created the profile and booked its signup grant.",
+            "title": "Signup Granted",
+            "type": "boolean"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "name",
+          "username",
+          "degree_level",
+          "degree_programme",
+          "role",
+          "created_at",
+          "balance_cr",
+          "can_get_voucher",
+          "monthly_grant_cr",
+          "next_monthly_grant_on",
+          "signup_granted"
+        ],
+        "title": "ProfileSavedResponse",
         "type": "object"
       },
       "ProposalItem": {
@@ -1827,35 +1961,49 @@
       },
       "PublicConfigResponse": {
         "properties": {
-          "allowed_email_domains": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Allowed Email Domains",
-            "type": "array"
-          },
-          "coffee_ticket_code_length": {
-            "title": "Coffee Ticket Code Length",
-            "type": "integer"
-          },
-          "coffee_ticket_expiry_days": {
-            "title": "Coffee Ticket Expiry Days",
-            "type": "integer"
-          },
-          "coffee_ticket_value_cr": {
+          "code_default_value_cr": {
             "examples": [
               "0.25"
             ],
             "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
-            "title": "Coffee Ticket Value Cr",
+            "title": "Code Default Value Cr",
             "type": "string"
+          },
+          "code_length": {
+            "title": "Code Length",
+            "type": "integer"
+          },
+          "code_max_value_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Code Max Value Cr",
+            "type": "string"
+          },
+          "code_min_value_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Code Min Value Cr",
+            "type": "string"
+          },
+          "degrees": {
+            "description": "Every level, in the order to offer them.",
+            "items": {
+              "$ref": "#/components/schemas/DegreeLevelOption"
+            },
+            "title": "Degrees",
+            "type": "array"
           },
           "live_poll_fallback_seconds": {
             "title": "Live Poll Fallback Seconds",
             "type": "integer"
           },
-          "login_link_ttl_minutes": {
-            "title": "Login Link Ttl Minutes",
+          "long_text_max_length": {
+            "description": "The longest `resolution_criteria` of a proposal, and the longest evidence or\nreason an admin gives when resolving or voiding a market.",
+            "title": "Long Text Max Length",
             "type": "integer"
           },
           "max_code_issuance_per_month_cr": {
@@ -1924,8 +2072,22 @@
             "title": "Price Display Decimals",
             "type": "integer"
           },
+          "question_max_length": {
+            "description": "Characters a market's question may have, from the shortest to the longest.",
+            "title": "Question Max Length",
+            "type": "integer"
+          },
+          "question_min_length": {
+            "title": "Question Min Length",
+            "type": "integer"
+          },
           "quote_debounce_ms": {
             "title": "Quote Debounce Ms",
+            "type": "integer"
+          },
+          "short_text_max_length": {
+            "description": "The longest `yes_definition`, `no_definition` and `resolution_source` of a\nproposal, and the longest reason or note an admin gives when rejecting, halting,\nresuming or closing a market.",
+            "title": "Short Text Max Length",
             "type": "integer"
           },
           "signup_grant_cr": {
@@ -1959,41 +2121,31 @@
             "title": "Timezone",
             "type": "string"
           },
-          "voucher_code_default_value_cr": {
-            "examples": [
-              "0.25"
-            ],
-            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
-            "title": "Voucher Code Default Value Cr",
-            "type": "string"
+          "username_max_length": {
+            "title": "Username Max Length",
+            "type": "integer"
+          },
+          "username_min_length": {
+            "title": "Username Min Length",
+            "type": "integer"
           },
           "voucher_code_length": {
             "title": "Voucher Code Length",
             "type": "integer"
           },
-          "voucher_code_max_value_cr": {
-            "examples": [
-              "0.25"
-            ],
-            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
-            "title": "Voucher Code Max Value Cr",
-            "type": "string"
-          },
-          "voucher_code_min_value_cr": {
-            "examples": [
-              "0.25"
-            ],
-            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
-            "title": "Voucher Code Min Value Cr",
-            "type": "string"
+          "voucher_expiry_days": {
+            "description": "An unused voucher is refunded this many days after it was issued. What a voucher\ncan be for, and what each product takes, is `GET /vouchers/products`.",
+            "title": "Voucher Expiry Days",
+            "type": "integer"
           }
         },
         "required": [
           "timezone",
-          "allowed_email_domains",
-          "login_link_ttl_minutes",
           "signup_grant_cr",
           "monthly_grant_cr",
+          "username_min_length",
+          "username_max_length",
+          "degrees",
           "max_stake_per_market_cr",
           "stake_presets_cr",
           "min_trade_cr",
@@ -2006,14 +2158,17 @@
           "max_market_lifetime_days",
           "max_resolution_delay_days",
           "max_proposals_per_day",
-          "voucher_code_length",
-          "voucher_code_min_value_cr",
-          "voucher_code_max_value_cr",
-          "voucher_code_default_value_cr",
+          "question_min_length",
+          "question_max_length",
+          "short_text_max_length",
+          "long_text_max_length",
+          "code_length",
+          "code_min_value_cr",
+          "code_max_value_cr",
+          "code_default_value_cr",
           "max_code_issuance_per_month_cr",
-          "coffee_ticket_value_cr",
-          "coffee_ticket_code_length",
-          "coffee_ticket_expiry_days"
+          "voucher_code_length",
+          "voucher_expiry_days"
         ],
         "title": "PublicConfigResponse",
         "type": "object"
@@ -2159,7 +2314,7 @@
       },
       "RedeemCodeRequest": {
         "additionalProperties": false,
-        "description": "`POST /vouchers/redeem-code`: the code alone, as typed or as scanned.\n\nA code card's QR holds a URL, `{PUBLIC_BASE_URL}/wallet#code=XXXX-XXXX-XXXX` (A.6).\nThe client cuts the code out of the fragment, in the wallet page a phone camera\nopens and in the in-app scanner alike, and sends only that. A whole URL is not a\ncode: it is answered with `CODE_INVALID` and counts as an attempt.",
+        "description": "`POST /codes/redeem`: the code alone, as typed or as scanned.\n\nA code card's QR holds a URL, `{PUBLIC_BASE_URL}/wallet?code=XXXX-XXXX-XXXX` (A.6).\nThe client cuts the code out of the query, in the wallet page a phone camera opens\nand in the in-app scanner alike, and sends only that. A whole URL is not a code: it\nis answered with `CODE_INVALID` and counts as an attempt.",
         "properties": {
           "code": {
             "description": "Dashes, spaces and case do not matter; O is read as 0, I and L as 1.",
@@ -2201,6 +2356,24 @@
           "balance_cr"
         ],
         "title": "RedeemCodeResponse",
+        "type": "object"
+      },
+      "RedeemVoucherRequest": {
+        "additionalProperties": false,
+        "description": "`POST /barista/vouchers/redeem`: the code of the voucher, as scanned or typed.\n\nThe code travels in the body and never in a path or a query: an address is what\nproxies and browsers write down.",
+        "properties": {
+          "code": {
+            "description": "Dashes, spaces and case do not matter; O is read as 0, I and L as 1.",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "RedeemVoucherRequest",
         "type": "object"
       },
       "RejectMarketRequest": {
@@ -2405,6 +2578,15 @@
               }
             ]
           },
+          "void_cost_cr": {
+            "description": "What VIS would have to add if the market were voided now: the net stakes a void\nrefunds, minus the account balance. It is what traders who sold above their cost\nhave taken out, which a void does not take back. Never below zero while the books\nare right, and bounded by the stake limit per trader, not by `budget_cr`.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^-?[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Void Cost Cr",
+            "type": "string"
+          },
           "volume_cr": {
             "examples": [
               "0.25"
@@ -2426,6 +2608,7 @@
           "q_no",
           "account_balance_cr",
           "exposure_cr",
+          "void_cost_cr",
           "volume_cr",
           "close_at"
         ],
@@ -2521,6 +2704,37 @@
         "title": "RiskResponse",
         "type": "object"
       },
+      "SaveProfileRequest": {
+        "additionalProperties": false,
+        "description": "`PUT /me/profile`: the username and the degree a person states.\n\nThis model checks the shape. The service checks what depends on settings and on\nthe catalogue: the username's length against `username_min_length` and\n`username_max_length`, that the username is not one the server reserves, and the\ndegree as a pair that `degrees` of `GET /config` lists. Each failure is\n`VALIDATION_ERROR` with the field in `details.field`.",
+        "properties": {
+          "degree_level": {
+            "$ref": "#/components/schemas/DegreeLevel"
+          },
+          "degree_programme": {
+            "description": "A label of `degree_level`, exactly as `GET /config` lists it.",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Degree Programme",
+            "type": "string"
+          },
+          "username": {
+            "description": "Lower-case letters, digits and underscore: a capital letter is not accepted. A\nname somebody else holds is answered with `USERNAME_TAKEN`.",
+            "maxLength": 32,
+            "minLength": 1,
+            "pattern": "^[a-z0-9_]{1,32}$",
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "degree_level",
+          "degree_programme"
+        ],
+        "title": "SaveProfileRequest",
+        "type": "object"
+      },
       "SellPortion": {
         "description": "How much of a holding a sell button of the trade sheet stands for.",
         "enum": [
@@ -2563,11 +2777,19 @@
         "title": "SellPreset",
         "type": "object"
       },
+      "SortOrder": {
+        "enum": [
+          "asc",
+          "desc"
+        ],
+        "title": "SortOrder",
+        "type": "string"
+      },
       "StakePreset": {
         "description": "One buy button of the trade sheet (A.11).",
         "properties": {
           "allowed": {
-            "description": "Whether a buy for this budget would pass right now: the viewer may trade, has\nthe balance and stays within the stake limit.",
+            "description": "Whether a buy for this budget would pass right now: the viewer may trade, has\nthe balance and stays within the stake limit, and the amount is no smaller than\nthe minimum trade.",
             "title": "Allowed",
             "type": "boolean"
           },
@@ -2660,8 +2882,7 @@
         "description": "Why `MarketViewer.can_trade` is false.",
         "enum": [
           "MARKET_NOT_OPEN",
-          "OWN_MARKET",
-          "ACCOUNT_SUSPENDED"
+          "OWN_MARKET"
         ],
         "title": "TradeBlockReason",
         "type": "string"
@@ -3020,6 +3241,7 @@
         "type": "string"
       },
       "UserRole": {
+        "description": "What a caller may do. Derived from `ADMIN_EMAILS` and `BARISTA_EMAILS` on every\nrequest and stored nowhere (Appendix A.3).",
         "enum": [
           "USER",
           "ADMIN",
@@ -3027,90 +3249,6 @@
         ],
         "title": "UserRole",
         "type": "string"
-      },
-      "VerifyLoginRequest": {
-        "additionalProperties": false,
-        "description": "`POST /auth/verify`: the token from the link's fragment (A.3).",
-        "properties": {
-          "token": {
-            "maxLength": 256,
-            "minLength": 1,
-            "title": "Token",
-            "type": "string"
-          }
-        },
-        "required": [
-          "token"
-        ],
-        "title": "VerifyLoginRequest",
-        "type": "object"
-      },
-      "VerifyLoginResponse": {
-        "description": "The signed-in user. The session itself travels in the cookie, never in the body.",
-        "properties": {
-          "balance_cr": {
-            "examples": [
-              "0.25"
-            ],
-            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
-            "title": "Balance Cr",
-            "type": "string"
-          },
-          "can_get_coffee": {
-            "description": "Whether the balance covers a coffee ticket right now (SPEC §2: only whole\nvouchers become tickets). The wallet enables \"Get a coffee\" from this.",
-            "title": "Can Get Coffee",
-            "type": "boolean"
-          },
-          "created_at": {
-            "format": "date-time",
-            "title": "Created At",
-            "type": "string"
-          },
-          "email": {
-            "title": "Email",
-            "type": "string"
-          },
-          "id": {
-            "format": "uuid",
-            "title": "Id",
-            "type": "string"
-          },
-          "monthly_grant_cr": {
-            "examples": [
-              "0.25"
-            ],
-            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
-            "title": "Monthly Grant Cr",
-            "type": "string"
-          },
-          "next_monthly_grant_on": {
-            "description": "First day of the next calendar month in the app's timezone (SPEC §2).",
-            "format": "date",
-            "title": "Next Monthly Grant On",
-            "type": "string"
-          },
-          "role": {
-            "$ref": "#/components/schemas/UserRole"
-          },
-          "signup_granted": {
-            "description": "True when this sign-in created the account and booked its signup grant.",
-            "title": "Signup Granted",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "id",
-          "email",
-          "role",
-          "created_at",
-          "balance_cr",
-          "can_get_coffee",
-          "monthly_grant_cr",
-          "next_monthly_grant_on",
-          "signup_granted"
-        ],
-        "title": "VerifyLoginResponse",
-        "type": "object"
       },
       "VoidMarketRequest": {
         "additionalProperties": false,
@@ -3128,19 +3266,316 @@
         ],
         "title": "VoidMarketRequest",
         "type": "object"
+      },
+      "VoucherCodeResponse": {
+        "description": "`POST /vouchers/{voucher_id}/code`: the code the voucher has from now on. The one\nit had before is void.",
+        "properties": {
+          "code": {
+            "description": "Shown in groups of four (`XXXX-XXXX`), and the content of the voucher's QR. The\nserver keeps only its hash, so this answer is the one place it appears.",
+            "title": "Code",
+            "type": "string"
+          },
+          "expires_at": {
+            "description": "Until when the voucher can be redeemed. A fresh code does not move it.",
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "voucher_id": {
+            "format": "uuid",
+            "title": "Voucher Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "voucher_id",
+          "code",
+          "expires_at"
+        ],
+        "title": "VoucherCodeResponse",
+        "type": "object"
+      },
+      "VoucherIssuedResponse": {
+        "description": "`POST /vouchers`: the voucher that was issued, and its code.",
+        "properties": {
+          "balance_cr": {
+            "description": "The user's balance after the voucher was paid for.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Balance Cr",
+            "type": "string"
+          },
+          "code": {
+            "description": "Shown in groups of four (`XXXX-XXXX`). It is also the content of the voucher's QR.\nThe server keeps only its hash; `POST /vouchers/{voucher_id}/code` gives the\nvoucher another one.",
+            "title": "Code",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "product_id": {
+            "title": "Product Id",
+            "type": "string"
+          },
+          "product_name": {
+            "description": "What the voucher is for, as the product was named when the voucher was issued.",
+            "title": "Product Name",
+            "type": "string"
+          },
+          "redeemed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redeemed At"
+          },
+          "status": {
+            "$ref": "#/components/schemas/VoucherStatus",
+            "description": "The effective status: an ACTIVE voucher past `expires_at` is reported EXPIRED,\nwhether or not its refund has been booked yet."
+          },
+          "value_cr": {
+            "description": "What the voucher took from the balance: the product's price when it was issued.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Value Cr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "product_id",
+          "product_name",
+          "status",
+          "value_cr",
+          "created_at",
+          "expires_at",
+          "redeemed_at",
+          "code",
+          "balance_cr"
+        ],
+        "title": "VoucherIssuedResponse",
+        "type": "object"
+      },
+      "VoucherItem": {
+        "description": "A voucher in the wallet. It never contains the code.",
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "product_id": {
+            "title": "Product Id",
+            "type": "string"
+          },
+          "product_name": {
+            "description": "What the voucher is for, as the product was named when the voucher was issued.",
+            "title": "Product Name",
+            "type": "string"
+          },
+          "redeemed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Redeemed At"
+          },
+          "status": {
+            "$ref": "#/components/schemas/VoucherStatus",
+            "description": "The effective status: an ACTIVE voucher past `expires_at` is reported EXPIRED,\nwhether or not its refund has been booked yet."
+          },
+          "value_cr": {
+            "description": "What the voucher took from the balance: the product's price when it was issued.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Value Cr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "product_id",
+          "product_name",
+          "status",
+          "value_cr",
+          "created_at",
+          "expires_at",
+          "redeemed_at"
+        ],
+        "title": "VoucherItem",
+        "type": "object"
+      },
+      "VoucherListResponse": {
+        "description": "`GET /me/vouchers`, newest first.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/VoucherItem"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "VoucherListResponse",
+        "type": "object"
+      },
+      "VoucherProductItem": {
+        "description": "Something a voucher can be for, and whether the caller can have one now.",
+        "properties": {
+          "affordable": {
+            "description": "Whether the caller's balance covers `price_cr` right now. The wallet offers the\nproduct from this and compares nothing itself.",
+            "title": "Affordable",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "What `POST /vouchers` takes as `product_id`.",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "description": "Shown as it is.",
+            "title": "Name",
+            "type": "string"
+          },
+          "price_cr": {
+            "description": "What a voucher for it takes from the balance.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Price Cr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "price_cr",
+          "affordable"
+        ],
+        "title": "VoucherProductItem",
+        "type": "object"
+      },
+      "VoucherProductListResponse": {
+        "description": "`GET /vouchers/products`: every product, in the order to offer them.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/VoucherProductItem"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "VoucherProductListResponse",
+        "type": "object"
+      },
+      "VoucherRedeemResponse": {
+        "description": "`POST /barista/vouchers/redeem`: the voucher is now used up.",
+        "properties": {
+          "product_id": {
+            "title": "Product Id",
+            "type": "string"
+          },
+          "product_name": {
+            "description": "What to hand over: the product the voucher was issued for.",
+            "title": "Product Name",
+            "type": "string"
+          },
+          "redeemed_at": {
+            "format": "date-time",
+            "title": "Redeemed At",
+            "type": "string"
+          },
+          "value_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Value Cr",
+            "type": "string"
+          },
+          "voucher_id": {
+            "format": "uuid",
+            "title": "Voucher Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "voucher_id",
+          "product_id",
+          "product_name",
+          "value_cr",
+          "redeemed_at"
+        ],
+        "title": "VoucherRedeemResponse",
+        "type": "object"
+      },
+      "VoucherStatus": {
+        "enum": [
+          "ACTIVE",
+          "REDEEMED",
+          "EXPIRED"
+        ],
+        "title": "VoucherStatus",
+        "type": "string"
       }
     },
     "securitySchemes": {
-      "session": {
-        "description": "The session cookie that `POST /auth/verify` sets: HttpOnly and SameSite=Lax, so the browser sends it by itself and scripts never see it. Its name is the server's SESSION_COOKIE_NAME setting. Where an operation lists a role, the session must belong to a user with that role. A suspended account is refused wherever a session is needed.",
-        "in": "cookie",
-        "name": "marketh_session",
+      "portal": {
+        "description": "The request header in which the portal names the caller after ETH single sign-on. The portal adds it on the way to the API; a client of this API never sends it. Its name is the server's IDENTITY_HEADER_USER_ID setting. The list of an operation says what the caller needs beyond being named: `REGISTERED` is a saved profile, `BARISTA` and `ADMIN` are roles. A suspended account is refused wherever an identity is needed.",
+        "in": "header",
+        "name": "X-User-Id",
         "type": "apiKey"
       }
     }
   },
   "info": {
-    "description": "Everything sits under `/api`, on the same origin as the app.\n\n* Credits (`*_cr`) and shares are decimal strings with at most six places, never JSON numbers. Probabilities are numbers in [0, 1], already rounded for display.\n* Every error has one shape, `ErrorResponse`: switch on `code`, show `message`.\n* Each operation says who may call it, in its description and in `security`.\n* A request with a method other than GET, HEAD or OPTIONS must carry an `Origin` header the server allows, or it is answered with 403 `FORBIDDEN`.",
+    "description": "Everything sits under `/api`, on the same origin as the app. There is no sign-in here: the portal in front of the API signs a person in and names them in a request header.\n\n* Credits (`*_cr`) and shares are decimal strings with at most six places, never JSON numbers. Probabilities are numbers in [0, 1], already rounded for display.\n* Every error has one shape, `ErrorResponse`: switch on `code`, show `message`.\n* Each operation says who may call it, in its description and in `security`.\n* A request with a method other than GET, HEAD or OPTIONS must carry an `Origin` header the server allows, or it is answered with 403 `FORBIDDEN`.",
     "title": "MarkETH API",
     "version": "0.1.0"
   },
@@ -3187,7 +3622,7 @@
         },
         "security": [
           {
-            "session": [
+            "portal": [
               "ADMIN"
             ]
           }
@@ -3226,7 +3661,7 @@
         },
         "security": [
           {
-            "session": [
+            "portal": [
               "ADMIN"
             ]
           }
@@ -3273,7 +3708,7 @@
         },
         "security": [
           {
-            "session": [
+            "portal": [
               "ADMIN"
             ]
           }
@@ -3334,7 +3769,7 @@
         },
         "security": [
           {
-            "session": [
+            "portal": [
               "ADMIN"
             ]
           }
@@ -3373,12 +3808,12 @@
         },
         "security": [
           {
-            "session": [
+            "portal": [
               "ADMIN"
             ]
           }
         ],
-        "summary": "Grant all owed monthly vouchers to every user",
+        "summary": "Book every owed monthly grant for every user",
         "tags": [
           "admin-grants"
         ]
@@ -3434,7 +3869,7 @@
         },
         "security": [
           {
-            "session": [
+            "portal": [
               "ADMIN"
             ]
           }
@@ -3495,7 +3930,7 @@
         },
         "security": [
           {
-            "session": [
+            "portal": [
               "ADMIN"
             ]
           }
@@ -3556,7 +3991,7 @@
         },
         "security": [
           {
-            "session": [
+            "portal": [
               "ADMIN"
             ]
           }
@@ -3617,7 +4052,7 @@
         },
         "security": [
           {
-            "session": [
+            "portal": [
               "ADMIN"
             ]
           }
@@ -3678,7 +4113,7 @@
         },
         "security": [
           {
-            "session": [
+            "portal": [
               "ADMIN"
             ]
           }
@@ -3739,7 +4174,7 @@
         },
         "security": [
           {
-            "session": [
+            "portal": [
               "ADMIN"
             ]
           }
@@ -3800,7 +4235,7 @@
         },
         "security": [
           {
-            "session": [
+            "portal": [
               "ADMIN"
             ]
           }
@@ -3839,7 +4274,7 @@
         },
         "security": [
           {
-            "session": [
+            "portal": [
               "ADMIN"
             ]
           }
@@ -3850,140 +4285,26 @@
         ]
       }
     },
-    "/api/auth/logout": {
-      "post": {
-        "description": "Access: public. No session is needed or looked at.",
-        "operationId": "logout",
-        "responses": {
-          "204": {
-            "description": "Successful Response"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Any error: `code` says which, `message` is for the user."
-          }
-        },
-        "summary": "End the session and clear its cookie",
-        "tags": [
-          "auth"
-        ]
-      }
-    },
-    "/api/auth/request-link": {
-      "post": {
-        "description": "Access: public. No session is needed or looked at.",
-        "operationId": "request_login_link",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/LoginLinkRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LoginLinkResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Any error: `code` says which, `message` is for the user."
-          }
-        },
-        "summary": "Mail a sign-in link to an ETH address",
-        "tags": [
-          "auth"
-        ]
-      }
-    },
-    "/api/auth/verify": {
-      "post": {
-        "description": "Access: public. No session is needed or looked at.",
-        "operationId": "verify_login",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/VerifyLoginRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VerifyLoginResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Any error: `code` says which, `message` is for the user."
-          }
-        },
-        "summary": "Confirm a sign-in link and open a session",
-        "tags": [
-          "auth"
-        ]
-      }
-    },
-    "/api/barista/coffee-tickets/{code}/redeem": {
+    "/api/barista/vouchers/redeem": {
       "post": {
         "description": "Access: role BARISTA or ADMIN.",
-        "operationId": "redeem_coffee_ticket",
-        "parameters": [
-          {
-            "description": "The ticket's code as scanned or typed; dashes and case do not matter.",
-            "in": "path",
-            "name": "code",
-            "required": true,
-            "schema": {
-              "description": "The ticket's code as scanned or typed; dashes and case do not matter.",
-              "maxLength": 64,
-              "minLength": 1,
-              "title": "Code",
-              "type": "string"
+        "operationId": "redeem_voucher",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RedeemVoucherRequest"
+              }
             }
-          }
-        ],
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CoffeeTicketRedeemResponse"
+                  "$ref": "#/components/schemas/VoucherRedeemResponse"
                 }
               }
             },
@@ -4002,32 +4323,42 @@
         },
         "security": [
           {
-            "session": [
+            "portal": [
               "BARISTA"
             ]
           },
           {
-            "session": [
+            "portal": [
               "ADMIN"
             ]
           }
         ],
-        "summary": "Mark a scanned coffee ticket as used",
+        "summary": "Mark a scanned voucher as used",
         "tags": [
           "barista"
         ]
       }
     },
-    "/api/coffee-tickets": {
+    "/api/codes/redeem": {
       "post": {
-        "description": "Access: any signed-in user whose account is active.",
-        "operationId": "issue_coffee_ticket",
+        "description": "Access: any registered user whose account is active.",
+        "operationId": "redeem_code",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RedeemCodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "201": {
+          "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CoffeeTicketIssuedResponse"
+                  "$ref": "#/components/schemas/RedeemCodeResponse"
                 }
               }
             },
@@ -4046,18 +4377,20 @@
         },
         "security": [
           {
-            "session": []
+            "portal": [
+              "REGISTERED"
+            ]
           }
         ],
-        "summary": "Turn one voucher into a coffee ticket",
+        "summary": "Redeem a code for its value",
         "tags": [
-          "coffee-tickets"
+          "codes"
         ]
       }
     },
     "/api/config": {
       "get": {
-        "description": "Access: public. No session is needed or looked at.",
+        "description": "Access: public. No identity is needed or looked at.",
         "operationId": "get_config",
         "responses": {
           "200": {
@@ -4089,7 +4422,7 @@
     },
     "/api/health": {
       "get": {
-        "description": "Access: public. No session is needed or looked at.",
+        "description": "Access: public. No identity is needed or looked at.",
         "operationId": "get_health",
         "responses": {
           "200": {
@@ -4119,26 +4452,312 @@
         ]
       }
     },
+    "/api/leaderboard": {
+      "get": {
+        "description": "Access: any registered user whose account is active.",
+        "operationId": "get_leaderboard",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "`next_cursor` of the previous page; omit it for the first page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`next_cursor` of the previous page; omit it for the first page.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "description": "The measure to order by. Users who have no value for it (a rate without a\nresolved market) come last, whatever `order` is.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/LeaderboardSort",
+              "default": "credits",
+              "description": "The measure to order by. Users who have no value for it (a rate without a\nresolved market) come last, whatever `order` is."
+            }
+          },
+          {
+            "description": "`desc` puts the highest first.",
+            "in": "query",
+            "name": "order",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SortOrder",
+              "default": "desc",
+              "description": "`desc` puts the highest first."
+            }
+          },
+          {
+            "in": "query",
+            "name": "min_credits_cr",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "examples": [
+                    "0.25"
+                  ],
+                  "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Min Credits Cr"
+            }
+          },
+          {
+            "in": "query",
+            "name": "max_credits_cr",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "examples": [
+                    "0.25"
+                  ],
+                  "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Max Credits Cr"
+            }
+          },
+          {
+            "in": "query",
+            "name": "min_trades",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1000000000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Min Trades"
+            }
+          },
+          {
+            "in": "query",
+            "name": "max_trades",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1000000000,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Max Trades"
+            }
+          },
+          {
+            "description": "A fraction: 0.5 is half of the markets. It is compared with the exact rate, not\nwith the rounded one a row shows.",
+            "in": "query",
+            "name": "min_win_rate",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A fraction: 0.5 is half of the markets. It is compared with the exact rate, not\nwith the rounded one a row shows.",
+              "title": "Min Win Rate"
+            }
+          },
+          {
+            "in": "query",
+            "name": "max_win_rate",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Max Win Rate"
+            }
+          },
+          {
+            "description": "Compared with the exact ratio, not with the one a row shows cut to two places.",
+            "in": "query",
+            "name": "min_avg_payout_ratio",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1000000,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Compared with the exact ratio, not with the one a row shows cut to two places.",
+              "title": "Min Avg Payout Ratio"
+            }
+          },
+          {
+            "in": "query",
+            "name": "max_avg_payout_ratio",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1000000,
+                  "minimum": 0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Max Avg Payout Ratio"
+            }
+          },
+          {
+            "in": "query",
+            "name": "degree_level",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/DegreeLevel"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Degree Level"
+            }
+          },
+          {
+            "description": "A label as `GET /config` lists it. Users are matched on what their profile says;\na label nobody has gives an empty list, not an error.",
+            "in": "query",
+            "name": "degree_programme",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "A label as `GET /config` lists it. Users are matched on what their profile says;\na label nobody has gives an empty list, not an error.",
+              "title": "Degree Programme"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaderboardResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "REGISTERED"
+            ]
+          }
+        ],
+        "summary": "Rank users by credits, win rate, trades or payout ratio",
+        "tags": [
+          "leaderboard"
+        ]
+      }
+    },
     "/api/markets": {
       "get": {
-        "description": "Access: public. With a session the answer also carries what belongs to the viewer.",
+        "description": "Access: any registered user whose account is active.",
         "operationId": "list_markets",
         "parameters": [
           {
-            "description": "Effective status to list. Left out: every public status. PROPOSED and REJECTED are for admins only.",
+            "description": "Effective statuses to list. Repeat the parameter for several: `?status=OPEN&status=HALTED`. Left out: every status but PROPOSED and REJECTED, which are for admins only.",
             "in": "query",
             "name": "status",
             "required": false,
             "schema": {
               "anyOf": [
                 {
-                  "$ref": "#/components/schemas/MarketStatus"
+                  "items": {
+                    "$ref": "#/components/schemas/MarketStatus"
+                  },
+                  "type": "array"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "description": "Effective status to list. Left out: every public status. PROPOSED and REJECTED are for admins only.",
+              "description": "Effective statuses to list. Repeat the parameter for several: `?status=OPEN&status=HALTED`. Left out: every status but PROPOSED and REJECTED, which are for admins only.",
               "title": "Status"
             }
           }
@@ -4166,9 +4785,10 @@
           }
         },
         "security": [
-          {},
           {
-            "session": []
+            "portal": [
+              "REGISTERED"
+            ]
           }
         ],
         "summary": "List markets by effective status",
@@ -4177,7 +4797,7 @@
         ]
       },
       "post": {
-        "description": "Access: any signed-in user whose account is active.",
+        "description": "Access: any registered user whose account is active.",
         "operationId": "propose_market",
         "requestBody": {
           "content": {
@@ -4213,7 +4833,9 @@
         },
         "security": [
           {
-            "session": []
+            "portal": [
+              "REGISTERED"
+            ]
           }
         ],
         "summary": "Propose a market",
@@ -4224,7 +4846,7 @@
     },
     "/api/markets/{market_id}": {
       "get": {
-        "description": "Access: public. With a session the answer also carries what belongs to the viewer.",
+        "description": "Access: any registered user whose account is active.",
         "operationId": "get_market",
         "parameters": [
           {
@@ -4261,12 +4883,13 @@
           }
         },
         "security": [
-          {},
           {
-            "session": []
+            "portal": [
+              "REGISTERED"
+            ]
           }
         ],
-        "summary": "Details, rules and price; with a session, the viewer's stake",
+        "summary": "Details, rules and price, with the viewer's stake",
         "tags": [
           "markets"
         ]
@@ -4274,7 +4897,7 @@
     },
     "/api/markets/{market_id}/history": {
       "get": {
-        "description": "Access: public. No session is needed or looked at.",
+        "description": "Access: any registered user whose account is active.",
         "operationId": "get_market_history",
         "parameters": [
           {
@@ -4310,6 +4933,13 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "portal": [
+              "REGISTERED"
+            ]
+          }
+        ],
         "summary": "Chart data: the price after every trade",
         "tags": [
           "live"
@@ -4318,7 +4948,7 @@
     },
     "/api/markets/{market_id}/quote": {
       "get": {
-        "description": "Access: public. No session is needed or looked at.",
+        "description": "Access: any registered user whose account is active.",
         "operationId": "get_quote",
         "parameters": [
           {
@@ -4412,6 +5042,13 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "portal": [
+              "REGISTERED"
+            ]
+          }
+        ],
         "summary": "Price a trade without executing it",
         "tags": [
           "trading"
@@ -4420,7 +5057,7 @@
     },
     "/api/markets/{market_id}/stream": {
       "get": {
-        "description": "Access: public. No session is needed or looked at.",
+        "description": "Access: any registered user whose account is active.",
         "operationId": "stream_market",
         "parameters": [
           {
@@ -4482,6 +5119,13 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
+        "security": [
+          {
+            "portal": [
+              "REGISTERED"
+            ]
+          }
+        ],
         "summary": "Live quote and status events (server-sent events)",
         "tags": [
           "live"
@@ -4490,7 +5134,7 @@
     },
     "/api/markets/{market_id}/trades": {
       "post": {
-        "description": "Access: any signed-in user whose account is active.",
+        "description": "Access: any registered user whose account is active.",
         "operationId": "create_trade",
         "parameters": [
           {
@@ -4550,7 +5194,9 @@
         },
         "security": [
           {
-            "session": []
+            "portal": [
+              "REGISTERED"
+            ]
           }
         ],
         "summary": "Buy or sell shares, idempotently",
@@ -4561,7 +5207,7 @@
     },
     "/api/me": {
       "get": {
-        "description": "Access: any signed-in user whose account is active.",
+        "description": "Access: any registered user whose account is active.",
         "operationId": "get_me",
         "responses": {
           "200": {
@@ -4587,7 +5233,9 @@
         },
         "security": [
           {
-            "session": []
+            "portal": [
+              "REGISTERED"
+            ]
           }
         ],
         "summary": "Profile, balance and next monthly grant",
@@ -4596,46 +5244,9 @@
         ]
       }
     },
-    "/api/me/coffee-tickets": {
-      "get": {
-        "description": "Access: any signed-in user whose account is active.",
-        "operationId": "list_my_coffee_tickets",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CoffeeTicketListResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Any error: `code` says which, `message` is for the user."
-          }
-        },
-        "security": [
-          {
-            "session": []
-          }
-        ],
-        "summary": "Own coffee tickets, pending and past",
-        "tags": [
-          "coffee-tickets"
-        ]
-      }
-    },
     "/api/me/ledger": {
       "get": {
-        "description": "Access: any signed-in user whose account is active.",
+        "description": "Access: any registered user whose account is active.",
         "operationId": "list_my_ledger",
         "parameters": [
           {
@@ -4695,7 +5306,9 @@
         },
         "security": [
           {
-            "session": []
+            "portal": [
+              "REGISTERED"
+            ]
           }
         ],
         "summary": "Every movement on the balance, newest first",
@@ -4706,7 +5319,7 @@
     },
     "/api/me/positions": {
       "get": {
-        "description": "Access: any signed-in user whose account is active.",
+        "description": "Access: any registered user whose account is active.",
         "operationId": "list_my_positions",
         "responses": {
           "200": {
@@ -4732,7 +5345,9 @@
         },
         "security": [
           {
-            "session": []
+            "portal": [
+              "REGISTERED"
+            ]
           }
         ],
         "summary": "Portfolio: positions per market with their value",
@@ -4741,9 +5356,56 @@
         ]
       }
     },
+    "/api/me/profile": {
+      "put": {
+        "description": "Access: anyone the portal signed in with an allowed address. No profile is needed.",
+        "operationId": "save_profile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveProfileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileSavedResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": []
+          }
+        ],
+        "summary": "Create the caller's profile, or change it",
+        "tags": [
+          "me"
+        ]
+      }
+    },
     "/api/me/proposals": {
       "get": {
-        "description": "Access: any signed-in user whose account is active.",
+        "description": "Access: any registered user whose account is active.",
         "operationId": "list_my_proposals",
         "responses": {
           "200": {
@@ -4769,7 +5431,9 @@
         },
         "security": [
           {
-            "session": []
+            "portal": [
+              "REGISTERED"
+            ]
           }
         ],
         "summary": "Markets the user proposed and their status",
@@ -4780,7 +5444,7 @@
     },
     "/api/me/trades": {
       "get": {
-        "description": "Access: any signed-in user whose account is active.",
+        "description": "Access: any registered user whose account is active.",
         "operationId": "list_my_trades",
         "parameters": [
           {
@@ -4840,7 +5504,9 @@
         },
         "security": [
           {
-            "session": []
+            "portal": [
+              "REGISTERED"
+            ]
           }
         ],
         "summary": "Own trades, newest first",
@@ -4849,26 +5515,16 @@
         ]
       }
     },
-    "/api/vouchers/redeem-code": {
-      "post": {
-        "description": "Access: any signed-in user whose account is active.",
-        "operationId": "redeem_code",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RedeemCodeRequest"
-              }
-            }
-          },
-          "required": true
-        },
+    "/api/me/vouchers": {
+      "get": {
+        "description": "Access: any registered user whose account is active.",
+        "operationId": "list_my_vouchers",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RedeemCodeResponse"
+                  "$ref": "#/components/schemas/VoucherListResponse"
                 }
               }
             },
@@ -4887,10 +5543,151 @@
         },
         "security": [
           {
-            "session": []
+            "portal": [
+              "REGISTERED"
+            ]
           }
         ],
-        "summary": "Redeem a voucher code for its value",
+        "summary": "Own vouchers, pending and past",
+        "tags": [
+          "vouchers"
+        ]
+      }
+    },
+    "/api/vouchers": {
+      "post": {
+        "description": "Access: any registered user whose account is active.",
+        "operationId": "issue_voucher",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IssueVoucherRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoucherIssuedResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "REGISTERED"
+            ]
+          }
+        ],
+        "summary": "Turn credits into a voucher for a product",
+        "tags": [
+          "vouchers"
+        ]
+      }
+    },
+    "/api/vouchers/products": {
+      "get": {
+        "description": "Access: any registered user whose account is active.",
+        "operationId": "list_voucher_products",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoucherProductListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "REGISTERED"
+            ]
+          }
+        ],
+        "summary": "What a voucher can be for, and what the caller can have",
+        "tags": [
+          "vouchers"
+        ]
+      }
+    },
+    "/api/vouchers/{voucher_id}/code": {
+      "post": {
+        "description": "Access: any registered user whose account is active.",
+        "operationId": "replace_voucher_code",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "voucher_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Voucher Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoucherCodeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "REGISTERED"
+            ]
+          }
+        ],
+        "summary": "Give an own voucher a fresh code; the one it had stops working",
         "tags": [
           "vouchers"
         ]

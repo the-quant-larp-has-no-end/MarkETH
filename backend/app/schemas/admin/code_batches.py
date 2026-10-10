@@ -1,4 +1,4 @@
-"""Voucher code batches (SPEC §2, §10, Appendix A.6)."""
+"""Code batches (SPEC §2, §10, Appendix A.6)."""
 
 from datetime import datetime
 from typing import Annotated, Final
@@ -6,8 +6,8 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, Field, StrictBool, StrictInt
 
+from app.schemas.codes import CODE_INPUT_MAX_LENGTH
 from app.schemas.common import CreditAmount, PositiveCreditAmount, RequestModel, ResponseModel
-from app.schemas.vouchers import CODE_INPUT_MAX_LENGTH
 
 LABEL_MAX_LENGTH: Final[int] = 100
 
@@ -23,7 +23,7 @@ class CreateCodeBatchRequest(RequestModel):
     label: str = Field(min_length=1, max_length=LABEL_MAX_LENGTH)
     count: StrictInt = Field(ge=1, le=MAX_CODES_PER_BATCH)
     value_cr: PositiveCreditAmount | None = None
-    """Value of each code. Left out, it is `VOUCHER_CODE_DEFAULT_VALUE_CR`."""
+    """Value of each code. Left out, it is `CODE_DEFAULT_VALUE_CR`."""
 
     expires_at: AwareDatetime
     one_per_user: StrictBool
@@ -57,7 +57,8 @@ class CreatedCode(ResponseModel):
     """As printed on the card: `XXXX-XXXX-XXXX`."""
 
     redeem_url: str
-    """The card's QR payload: `{PUBLIC_BASE_URL}/wallet#code=XXXX-XXXX-XXXX` (A.6)."""
+    """The card's QR payload: `{PUBLIC_BASE_URL}/wallet?code=XXXX-XXXX-XXXX` (A.6). The
+    code travels in the query, which nginx keeps out of its access log."""
 
 
 class CodeBatchCreatedResponse(ResponseModel):

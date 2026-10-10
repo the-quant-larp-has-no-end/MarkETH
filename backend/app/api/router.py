@@ -1,9 +1,15 @@
 """The API's route tree (SPEC §10, Appendix A.2). Everything sits under `/api`.
 
-Who may call what is decided here once, per prefix: `/admin/*` needs role ADMIN and
-`/barista/*` role BARISTA or ADMIN. The other routes guard themselves through the type
-of their user parameter (`CurrentUser`, or `OptionalUser` on public routes). Whatever
-guard a route ends up with is what the OpenAPI document says of it (`app/api/access.py`).
+Who may call what is decided here once, by where a route module is included:
+
+* `/health` and `/config` are public.
+* `PUT /me/profile` takes whoever the portal named: it is how a person gets a profile.
+* Everything under `member_router` needs a profile whose account is active. On top of
+  that `/barista/*` needs role BARISTA or ADMIN and `/admin/*` role ADMIN.
+
+A route added to a module of `member_router` is guarded without anyone remembering to
+guard it, and the guard runs before every other dependency of the route. Whatever guard
+a route ends up with is what the OpenAPI document says of it (`app/api/access.py`).
 
 Every operation declares `ErrorResponse` as its error body. That replaces FastAPI's own
 422 schema in the OpenAPI document, so the generated client knows the one error shape.
@@ -13,16 +19,17 @@ from typing import Any, Final
 
 from fastapi import APIRouter, Depends
 
-from app.api.deps import require_admin, require_staff
+from app.api.deps import require_admin, require_staff, require_user
 from app.api.routes import (
-    auth,
     barista,
-    coffee_tickets,
+    codes,
     config,
     health,
+    leaderboard,
     live,
     markets,
     me,
+    profile,
     trading,
     vouchers,
 )
@@ -47,15 +54,19 @@ admin_router.include_router(admin_code_batches.router)
 admin_router.include_router(admin_risk.router)
 admin_router.include_router(admin_grants.router)
 
+member_router = APIRouter(dependencies=[Depends(require_user)])
+member_router.include_router(me.router)
+member_router.include_router(markets.router)
+member_router.include_router(trading.router)
+member_router.include_router(live.router)
+member_router.include_router(codes.router)
+member_router.include_router(vouchers.router)
+member_router.include_router(leaderboard.router)
+member_router.include_router(barista.router, dependencies=[Depends(require_staff)])
+member_router.include_router(admin_router)
+
 api_router = APIRouter(prefix=API_PREFIX, responses=ERROR_RESPONSES)
 api_router.include_router(health.router)
 api_router.include_router(config.router)
-api_router.include_router(auth.router)
-api_router.include_router(me.router)
-api_router.include_router(markets.router)
-api_router.include_router(trading.router)
-api_router.include_router(live.router)
-api_router.include_router(vouchers.router)
-api_router.include_router(coffee_tickets.router)
-api_router.include_router(barista.router, dependencies=[Depends(require_staff)])
-api_router.include_router(admin_router)
+api_router.include_router(profile.router)
+api_router.include_router(member_router)

@@ -14,18 +14,20 @@ from typing import Any, Final
 from uuid import UUID, uuid7
 
 import pytest
-from sqlalchemy import CheckConstraint, func, select, text
-from sqlalchemy.exc import IntegrityError, ProgrammingError
+from sqlalchemy import CheckConstraint, func, literal_column, select, text
+from sqlalchemy.exc import DBAPIError, IntegrityError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from app.core.config import Settings
+from app.core.config import PRODUCT_ID_MAX_LENGTH, PRODUCT_NAME_MAX_LENGTH, Settings
+from app.core.degrees import CATALOGUE
 from app.core.enums import (
     SIGNUP_GRANT_PERIOD,
     SYSTEM_ACCOUNT_KINDS,
     AccountKind,
     AlertSeverity,
-    CoffeeTicketStatus,
+    CodeStatus,
+    DegreeLevel,
     JournalKind,
     MarketStatus,
     MarketTier,
@@ -33,9 +35,8 @@ from app.core.enums import (
     Outcome,
     ResolutionOutcome,
     TradeSide,
-    UserRole,
     UserStatus,
-    VoucherCodeStatus,
+    VoucherStatus,
 )
 from app.core.security import sha256_hex
 from app.db.base import Base
@@ -44,28 +45,31 @@ from app.models import (
     Account,
     Alert,
     AuditLogEntry,
-    CoffeeTicket,
+    Code,
+    CodeBatch,
+    Grant,
     IdempotencyKey,
     JournalEntry,
-    LoginToken,
     Market,
     Position,
     Posting,
     Resolution,
     Trade,
     User,
-    UserSession,
-    VoucherCode,
-    VoucherCodeBatch,
-    VoucherGrant,
+    Voucher,
 )
+from app.models.fingerprint import schema_fingerprint
 from app.repositories.unit_of_work import UnitOfWork
+from scripts import check_schema
+from scripts.check_schema import stored_fingerprint
 from tests.support.database import (
     check_database_matches_models,
     downgrade_database,
     reset_database,
+    scratch_database,
     upgrade_database,
 )
+from tests.support.schema import check_constraint, enum_check_expression, with_one_more_member
 
 pytestmark = pytest.mark.integration
 
@@ -90,17 +94,20 @@ class World:
     market: Market
     user_account: Account
     market_account: Account
-    batch: VoucherCodeBatch
+    batch: CodeBatch
 
 
-def _user(name: str, role: UserRole = UserRole.USER) -> User:
-    return User(
-        canonical_email=f"{name}@ethz.ch",
-        email=f"{name}@student.ethz.ch",
-        role=role,
-        status=UserStatus.ACTIVE,
-        created_at=NOW,
-    )
+def _user(name: str, **overrides: Any) -> User:
+    values: dict[str, Any] = {
+        "email": f"{name}@ethz.ch",
+        "name": name.capitalize(),
+        "username": name,
+        "degree_level": DegreeLevel.BACHELOR,
+        "degree_programme": "BSc Computer Science",
+        "status": UserStatus.ACTIVE,
+        "created_at": NOW,
+    }
+    return User(**(values | overrides))
 
 
 def _market(created_by: UUID, **overrides: Any) -> Market:
@@ -150,25 +157,27 @@ def _trade(world: World, **overrides: Any) -> Trade:
     return Trade(**(values | overrides))
 
 
-def _ticket(world: World, code: str, **overrides: Any) -> CoffeeTicket:
+def _voucher(world: World, code: str, **overrides: Any) -> Voucher:
     values: dict[str, Any] = {
         "user_id": world.user.id,
+        "product_id": "mate",
+        "product_name": "Mate",
         "code_hash": sha256_hex(code),
-        "status": CoffeeTicketStatus.ACTIVE,
+        "status": VoucherStatus.ACTIVE,
         "value_micro": CR,
         "created_at": NOW,
         "expires_at": NOW + 30 * DAY,
     }
-    return CoffeeTicket(**(values | overrides))
+    return Voucher(**(values | overrides))
 
 
-def _code(world: World, code: str, **overrides: Any) -> VoucherCode:
+def _code(world: World, code: str, **overrides: Any) -> Code:
     values: dict[str, Any] = {
         "batch_id": world.batch.id,
         "code_hash": sha256_hex(code),
-        "status": VoucherCodeStatus.ACTIVE,
+        "status": CodeStatus.ACTIVE,
     }
-    return VoucherCode(**(values | overrides))
+    return Code(**(values | overrides))
 
 
 def _entry_with_legs(world: World, *amounts_micro: int) -> list[Base]:
@@ -212,12 +221,12 @@ async def _grant(uow_factory: UowFactory, world: World, amount_micro: int, key: 
 async def world(uow_factory: UowFactory) -> World:
     async with uow_factory() as uow:
         user = await uow.users.add(_user("alice"))
-        admin = await uow.users.add(_user("admin", UserRole.ADMIN))
+        admin = await uow.users.add(_user("admin"))
         market = await uow.markets.add(_market(user.id))
         user_account = await uow.accounts.create_user_account(user.id)
         market_account = await uow.accounts.create_market_account(market.id)
         batch = await uow.code_batches.add(
-            VoucherCodeBatch(
+            CodeBatch(
                 label="Erstsemestrigen-Apéro",
                 value_micro=2 * CR,
                 count=3,
@@ -230,7 +239,7 @@ async def world(uow_factory: UowFactory) -> World:
     return World(user, admin, market, user_account, market_account, batch)
 
 
-# --- Schema and migration -----------------------------------------------------------
+# --- The schema and the revision that builds it -------------------------------------
 
 
 def test_models_match_the_migrated_schema(settings: Settings, owner_engine: AsyncEngine) -> None:
@@ -270,10 +279,6 @@ async def test_exactly_four_system_accounts_exist(uow_factory: UowFactory) -> No
 async def test_downgrade_removes_everything_but_the_app_role(
     settings: Settings, owner_engine: AsyncEngine
 ) -> None:
-    scratch_name = "marketh_downgrade_check"
-    scratch = settings.model_copy(
-        update={"postgres": settings.postgres.model_copy(update={"database": scratch_name})}
-    )
     app_role = settings.postgres.app_user
     leftovers = text(
         "SELECT"
@@ -283,116 +288,103 @@ async def test_downgrade_removes_everything_but_the_app_role(
         " (SELECT count(*) FROM pg_default_acl),"
         " (SELECT count(*) FROM information_schema.role_table_grants WHERE grantee = :role),"
         " (SELECT count(*) FROM alembic_version),"
+        " (SELECT count(*) FROM pg_description WHERE objoid = 'alembic_version'::regclass),"
         " (SELECT count(*) FROM pg_roles WHERE rolname = :role)"
     )
-    async with owner_engine.connect() as connection:
-        autocommit = await connection.execution_options(isolation_level="AUTOCOMMIT")
-        await autocommit.execute(text(f"CREATE DATABASE {scratch_name}"))
-    scratch_engine = create_async_engine(scratch.postgres.owner_url, poolclass=NullPool)
-    try:
+    async with scratch_database(owner_engine, settings, "marketh_downgrade_check") as scratch:
+        scratch_engine = create_async_engine(scratch.postgres.owner_url, poolclass=NullPool)
+
         await asyncio.to_thread(upgrade_database, scratch)
         await asyncio.to_thread(downgrade_database, scratch)
         async with scratch_engine.connect() as connection:
             row = (await connection.execute(leftovers, {"role": app_role})).one()
-        assert tuple(row) == (0, 0, 0, 0, 0, 1)
+        assert tuple(row) == (0, 0, 0, 0, 0, 0, 1)
 
         await asyncio.to_thread(upgrade_database, scratch)
         async with scratch_engine.connect() as connection:
             assert await connection.scalar(select(func.count()).select_from(Account)) == 4
-    finally:
-        async with owner_engine.connect() as connection:
-            autocommit = await connection.execution_options(isolation_level="AUTOCOMMIT")
-            await autocommit.execute(text(f"DROP DATABASE {scratch_name} WITH (FORCE)"))
+        assert await stored_fingerprint(scratch) == schema_fingerprint()
 
 
-async def test_ledger_guards_migrate_a_database_that_already_holds_entries(
+# --- The fingerprint of the schema (A.10) ---------------------------------------------
+#
+# The schema has one revision, so `alembic upgrade head` leaves a database alone that
+# was built from other models. `scripts.check_schema` is what notices.
+
+
+async def test_a_fresh_database_carries_the_fingerprint_of_the_models(
     settings: Settings, owner_engine: AsyncEngine
 ) -> None:
-    """Revision 0002 on top of a ledger written under 0001: the books carry over, the
-    old entry is sealed, and the way back down works with rows in every table it touches."""
-    scratch_name = "marketh_guards_upgrade_check"
-    scratch = settings.model_copy(
-        update={"postgres": settings.postgres.model_copy(update={"database": scratch_name})}
+    assert await stored_fingerprint(settings) == schema_fingerprint()
+
+
+async def _run_check_schema(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`python -m scripts.check_schema` against the database of `settings`.
+
+    `main` starts an event loop of its own, as it does from the command line, so it runs
+    in a worker thread.
+    """
+    monkeypatch.setattr(check_schema, "get_settings", lambda: settings)
+    await asyncio.to_thread(check_schema.main)
+
+
+async def test_check_schema_accepts_a_database_built_from_these_models(
+    settings: Settings,
+    owner_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    await _run_check_schema(settings, monkeypatch)
+
+    assert capsys.readouterr().out == "The database was built from the schema of this code.\n"
+
+
+def _change_a_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    check = check_constraint("postings", "ck_postings_amount_non_zero")
+    monkeypatch.setattr(check, "sqltext", literal_column("amount_micro > 0"))
+
+
+def _add_an_enum_member(monkeypatch: pytest.MonkeyPatch) -> None:
+    check = check_constraint("journal_entries", "ck_journal_entries_kind")
+    more_kinds = with_one_more_member(JournalKind, "TIP")
+    expression = enum_check_expression("journal_entries", "kind", more_kinds)
+    monkeypatch.setattr(check, "sqltext", expression)
+
+
+@pytest.mark.parametrize(
+    "edit_a_model",
+    [_change_a_check, _add_an_enum_member],
+    ids=["changed-check", "added-enum-member"],
+)
+async def test_check_schema_refuses_a_database_once_a_model_has_changed(
+    settings: Settings,
+    owner_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    edit_a_model: Callable[[pytest.MonkeyPatch], None],
+) -> None:
+    """`alembic check` stays green for both edits: it does not compare CHECK
+    constraints, and an enum column is a VARCHAR with one. Left alone, the database
+    would refuse rows the code writes, or take rows the code forbids."""
+    await _run_check_schema(settings, monkeypatch)
+
+    edit_a_model(monkeypatch)
+
+    await asyncio.to_thread(check_database_matches_models, settings)
+    with pytest.raises(SystemExit) as refusal:
+        await _run_check_schema(settings, monkeypatch)
+    assert refusal.value.code == (
+        "The schema changed since this database was built: wipe and rebuild it (make reset)."
     )
-    user_id, account_id, entry_id = uuid7(), uuid7(), uuid7()
-    under_0001 = [
-        "INSERT INTO users (id, canonical_email, email, role, status, created_at)"
-        " VALUES (:user, 'old@ethz.ch', 'old@ethz.ch', 'USER', 'ACTIVE', now())",
-        "INSERT INTO accounts (id, kind, owner_id, balance_micro)"
-        " VALUES (:account, 'USER', :user, 5000000)",
-        "UPDATE accounts SET balance_micro = -5000000 WHERE kind = 'VIS_ISSUANCE'",
-        "INSERT INTO journal_entries (id, kind, ref_type, ref_id, idempotency_key, created_at)"
-        " VALUES (:entry, 'SIGNUP_GRANT', 'voucher_grant', :entry, 'grant:old:SIGNUP', now())",
-        "INSERT INTO postings (entry_id, account_id, amount_micro)"
-        " SELECT :entry, id, -5000000 FROM accounts WHERE kind = 'VIS_ISSUANCE'",
-        "INSERT INTO postings (entry_id, account_id, amount_micro)"
-        " VALUES (:entry, :account, 5000000)",
-    ]
-    ids = {"user": user_id, "account": account_id, "entry": entry_id, "new": uuid7()}
-    add_to_old_entry = text(
-        "INSERT INTO postings (entry_id, account_id, amount_micro)"
-        " VALUES (:entry, :account, -1), (:entry, :account, 1)"
-    )
-    new_entry = [
-        "INSERT INTO journal_entries (id, kind, ref_type, ref_id, idempotency_key, created_at)"
-        " VALUES (:new, 'MONTHLY_GRANT', 'voucher_grant', :new, 'grant:old:2026-11', now())",
-        "INSERT INTO postings (entry_id, account_id, amount_micro)"
-        " SELECT :new, id, -1000000 FROM accounts WHERE kind = 'VIS_ISSUANCE'",
-        "INSERT INTO postings (entry_id, account_id, amount_micro)"
-        " VALUES (:new, :account, 1000000)",
-    ]
-    balances = text("SELECT kind, balance_micro FROM accounts WHERE balance_micro <> 0 ORDER BY 1")
 
-    async with owner_engine.connect() as connection:
-        autocommit = await connection.execution_options(isolation_level="AUTOCOMMIT")
-        await autocommit.execute(text(f"CREATE DATABASE {scratch_name}"))
-    scratch_owner = create_async_engine(scratch.postgres.owner_url, poolclass=NullPool)
-    scratch_app = create_async_engine(scratch.postgres.app_url, poolclass=NullPool)
-    try:
-        await asyncio.to_thread(upgrade_database, scratch, "0001")
-        async with scratch_owner.begin() as connection:
-            for statement in under_0001:
-                await connection.execute(text(statement), ids)
 
-        await asyncio.to_thread(upgrade_database, scratch)
-
-        with pytest.raises(IntegrityError, match="is sealed"):
-            async with scratch_app.begin() as connection:
-                await connection.execute(add_to_old_entry, ids)
-        async with scratch_app.begin() as connection:
-            for statement in new_entry:
-                await connection.execute(text(statement), ids)
-        async with scratch_app.connect() as connection:
-            assert [tuple(row) for row in await connection.execute(balances)] == [
-                ("USER", 6 * CR),
-                ("VIS_ISSUANCE", -6 * CR),
-            ]
-
-        await asyncio.to_thread(downgrade_database, scratch, "0001")
-        async with scratch_owner.connect() as connection:
-            assert [tuple(row) for row in await connection.execute(balances)] == [
-                ("USER", 6 * CR),
-                ("VIS_ISSUANCE", -6 * CR),
-            ]
-            columns = await connection.scalars(
-                text(
-                    "SELECT column_name FROM information_schema.columns"
-                    " WHERE table_name = 'journal_entries'"
-                )
-            )
-            assert "created_xid" not in set(columns)
-        # Under 0001 again, the app role keeps balances itself.
-        async with scratch_app.begin() as connection:
-            await connection.execute(
-                text("UPDATE accounts SET balance_micro = balance_micro WHERE id = :account"), ids
-            )
-        await asyncio.to_thread(upgrade_database, scratch)
-    finally:
-        await scratch_owner.dispose()
-        await scratch_app.dispose()
-        async with owner_engine.connect() as connection:
-            autocommit = await connection.execution_options(isolation_level="AUTOCOMMIT")
-            await autocommit.execute(text(f"DROP DATABASE {scratch_name} WITH (FORCE)"))
+async def test_check_schema_refuses_a_database_that_carries_no_fingerprint(
+    settings: Settings, owner_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing says what such a database was built from, so nothing vouches for it."""
+    async with scratch_database(owner_engine, settings, "marketh_unbuilt_check") as scratch:
+        assert await stored_fingerprint(scratch) is None
+        with pytest.raises(SystemExit, match="The schema changed since this database was built"):
+            await _run_check_schema(scratch, monkeypatch)
 
 
 # --- The ledger ---------------------------------------------------------------------
@@ -517,10 +509,10 @@ async def test_issuance_and_market_maker_pnl_may_go_negative(
         (AccountKind.VIS_REDEEMED, "ck_accounts_redemption_balance_non_negative"),
     ],
 )
-async def test_market_and_coffee_ticket_accounts_cannot_go_negative(
+async def test_market_and_voucher_accounts_cannot_go_negative(
     uow_factory: UowFactory, world: World, kind: AccountKind, constraint: str
 ) -> None:
-    """A.8: a market account pays out only what it took in, and a ticket leaves
+    """A.8: a market account pays out only what it took in, and a voucher leaves
     `vis:redemption_pending` once. A balanced entry that overdraws one is a bug."""
     source = (
         world.market_account.id
@@ -574,6 +566,69 @@ async def test_app_role_can_insert_and_read_ledger_rows(
     assert (role, entries, postings) == (settings.postgres.app_user, 1, 2)
 
 
+async def test_app_role_holds_exactly_these_privileges(
+    settings: Settings, owner_engine: AsyncEngine
+) -> None:
+    """Everything on every table, less what the ledger keeps to the database (A.10).
+
+    The privileges are granted once, on the tables that exist when the baseline grants
+    them, and nothing is granted by default: a table that missed them would be out of
+    the app's reach.
+    """
+    everything = {"SELECT", "INSERT", "UPDATE", "DELETE"}
+    on_tables = dict.fromkeys(Base.metadata.tables, everything) | {
+        "accounts": {"SELECT"},
+        "journal_entries": {"SELECT"},
+        "postings": {"SELECT", "INSERT"},
+        "alembic_version": {"SELECT"},
+    }
+    on_columns = {
+        ("accounts", "INSERT"): {"id", "kind", "owner_id", "market_id"},
+        ("accounts", "UPDATE"): {"id"},
+        ("journal_entries", "INSERT"): {
+            "id",
+            "kind",
+            "ref_type",
+            "ref_id",
+            "idempotency_key",
+            "created_at",
+        },
+    }
+    granted_to_role = (
+        " JOIN pg_roles r ON r.oid = acl.grantee"
+        " WHERE c.relnamespace = 'public'::regnamespace AND c.relkind = 'r' AND r.rolname = :role"
+    )
+    role = {"role": settings.postgres.app_user}
+
+    async with owner_engine.connect() as connection:
+        table_grants = await connection.execute(
+            text(
+                "SELECT c.relname, acl.privilege_type FROM pg_class c"
+                " CROSS JOIN LATERAL aclexplode(c.relacl) AS acl" + granted_to_role
+            ),
+            role,
+        )
+        column_grants = await connection.execute(
+            text(
+                "SELECT c.relname, acl.privilege_type, a.attname FROM pg_attribute a"
+                " JOIN pg_class c ON c.oid = a.attrelid"
+                " CROSS JOIN LATERAL aclexplode(a.attacl) AS acl" + granted_to_role
+            ),
+            role,
+        )
+        defaults = await connection.scalar(text("SELECT count(*) FROM pg_default_acl"))
+
+    actual_on_tables: dict[str, set[str]] = {}
+    for table, privilege in table_grants:
+        actual_on_tables.setdefault(table, set()).add(privilege)
+    actual_on_columns: dict[tuple[str, str], set[str]] = {}
+    for table, privilege, column in column_grants:
+        actual_on_columns.setdefault((table, privilege), set()).add(column)
+    assert actual_on_tables == on_tables
+    assert actual_on_columns == on_columns
+    assert defaults == 0
+
+
 # --- Rows the database must refuse ----------------------------------------------------
 
 REJECTED_ROWS: Final = [
@@ -593,72 +648,69 @@ REJECTED_ROWS: Final = [
     ),
     pytest.param(
         lambda w: [
-            VoucherGrant(user_id=w.user.id, period=SIGNUP_GRANT_PERIOD, created_at=NOW)
-            for _ in range(2)
+            Grant(user_id=w.user.id, period=SIGNUP_GRANT_PERIOD, created_at=NOW) for _ in range(2)
         ],
-        "uq_voucher_grants_user_id_period",
-        id="duplicate-voucher-grant",
+        "uq_grants_user_id_period",
+        id="duplicate-grant",
     ),
     pytest.param(
-        lambda w: [VoucherGrant(user_id=w.user.id, period="2026-13", created_at=NOW)],
-        "ck_voucher_grants_period_format",
+        lambda w: [Grant(user_id=w.user.id, period="2026-13", created_at=NOW)],
+        "ck_grants_period_format",
         id="grant-period-that-is-no-month",
     ),
     pytest.param(
         lambda w: [_code(w, "SAME-CODE") for _ in range(2)],
-        "uq_voucher_codes_code_hash",
+        "uq_codes_code_hash",
         id="duplicate-code-hash",
     ),
     pytest.param(
-        lambda w: [_code(w, "CODE", status=VoucherCodeStatus.REDEEMED)],
-        "ck_voucher_codes_redeemed_iff_redeemer",
+        lambda w: [_code(w, "CODE", status=CodeStatus.REDEEMED)],
+        "ck_codes_redeemed_iff_redeemer",
         id="redeemed-code-without-redeemer",
     ),
     pytest.param(
         lambda w: [_code(w, "CODE", code_hash="XXXX-XXXX-XXXX")],
-        "ck_voucher_codes_code_hash_sha256_hex",
-        id="plain-voucher-code",
+        "ck_codes_code_hash_sha256_hex",
+        id="plain-code",
     ),
     pytest.param(
-        lambda w: [_ticket(w, "SAME-CODE") for _ in range(2)],
-        "uq_coffee_tickets_code_hash",
-        id="duplicate-ticket-hash",
+        lambda w: [_voucher(w, "SAME-CODE") for _ in range(2)],
+        "uq_vouchers_code_hash",
+        id="duplicate-voucher-hash",
     ),
     pytest.param(
-        lambda w: [_ticket(w, "CODE", status=CoffeeTicketStatus.REDEEMED)],
-        "ck_coffee_tickets_redeemed_iff_redeemer",
-        id="redeemed-ticket-without-barista",
+        lambda w: [_voucher(w, "CODE", status=VoucherStatus.REDEEMED)],
+        "ck_vouchers_redeemed_iff_redeemer",
+        id="redeemed-voucher-without-barista",
     ),
     pytest.param(
-        lambda w: [_user("alice")],
-        "uq_users_canonical_email",
-        id="duplicate-canonical-email",
+        # Another username, so that only the index on the address can fire.
+        lambda w: [_user("alice", username="alice_again")],
+        "uq_users_email",
+        id="duplicate-email",
     ),
     pytest.param(
-        lambda w: [
-            LoginToken(
-                email="alice@student.ethz.ch",
-                token_hash=sha256_hex("token"),
-                created_at=NOW,
-                expires_at=NOW + timedelta(minutes=15),
-            )
-            for _ in range(2)
-        ],
-        "uq_login_tokens_token_hash",
-        id="duplicate-token-hash",
+        lambda w: [_user("alicia", username="alice")],
+        "uq_users_username",
+        id="username-of-someone-else",
     ),
-    pytest.param(
-        lambda w: [
-            UserSession(
-                id="the-raw-session-token",
-                user_id=w.user.id,
-                created_at=NOW,
-                expires_at=NOW + 30 * DAY,
-                last_seen_at=NOW,
-            )
-        ],
-        "ck_sessions_id_sha256_hex",
-        id="session-id-that-is-no-hash",
+    *(
+        pytest.param(
+            lambda w, username=username: [_user("bob", username=username)],
+            "ck_users_username_format",
+            id=f"username-{reason}",
+        )
+        for reason, username in (
+            ("with-a-capital-letter", "Bob"),
+            ("in-upper-case", "BOB"),
+            ("of-someone-else-in-upper-case", "ALICE"),
+            ("with-a-space", "bob smith"),
+            ("with-a-dash", "bob-smith"),
+            ("with-a-letter-outside-ascii", "zo" + chr(0xEB)),
+            ("of-33-characters", "b" * 33),
+            ("that-is-empty", ""),
+            ("that-ends-in-a-line-break", "bob" + chr(0x0A)),
+        )
     ),
     pytest.param(
         lambda w: [_entry("same-key"), _entry("same-key")],
@@ -867,13 +919,19 @@ async def test_approval_sets_budget_and_b_as_it_opens_the_market(
         assert (opened.status, opened.b_micro) == (MarketStatus.OPEN, 5 * CR)
 
 
-async def test_enum_columns_reject_unknown_values(owner_engine: AsyncEngine, world: World) -> None:
-    async def promote() -> None:
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [("status", "BANNED"), ("degree_level", "KINDERGARTEN")],
+)
+async def test_enum_columns_reject_unknown_values(
+    owner_engine: AsyncEngine, world: World, column: str, value: str
+) -> None:
+    async def write() -> None:
         async with owner_engine.begin() as connection:
-            await connection.execute(text("UPDATE users SET role = 'ROOT'"))
+            await connection.execute(text(f"UPDATE users SET {column} = :value"), {"value": value})
 
-    with pytest.raises(IntegrityError, match="ck_users_role"):
-        await promote()
+    with pytest.raises(IntegrityError, match=f"ck_users_{column}"):
+        await write()
 
 
 # --- Unit of work and locking ---------------------------------------------------------
@@ -893,7 +951,7 @@ async def test_unit_of_work_commits_on_exit_and_rolls_back_on_error(
         await fail_after_insert()
 
     async with uow_factory() as uow:
-        assert [user.canonical_email for user in await uow.users.list_all()] == ["alice@ethz.ch"]
+        assert [user.email for user in await uow.users.list_all()] == ["alice@ethz.ch"]
 
 
 async def test_market_lock_makes_a_second_transaction_wait(
@@ -938,17 +996,11 @@ async def test_locking_read_replaces_a_stale_copy(uow_factory: UowFactory, world
 async def test_row_lock_does_not_block_rows_that_reference_it(
     uow_factory: UowFactory, world: World
 ) -> None:
-    session = UserSession(
-        id=sha256_hex("session"),
-        user_id=world.user.id,
-        created_at=NOW,
-        expires_at=NOW + 30 * DAY,
-        last_seen_at=NOW,
-    )
+    grant = Grant(user_id=world.user.id, period="2026-11", created_at=NOW)
     async with uow_factory() as uow:
         assert await uow.users.get(world.user.id, for_update=True) is not None
-        # The foreign-key check on sessions.user_id must not wait for the lock above.
-        await asyncio.wait_for(_insert(uow_factory, [session]), UNBLOCKED_WITHIN)
+        # The foreign-key check on grants.user_id must not wait for the lock above.
+        await asyncio.wait_for(_insert(uow_factory, [grant]), UNBLOCKED_WITHIN)
 
 
 async def test_lock_many_returns_accounts_in_ascending_id_order(
@@ -1136,69 +1188,113 @@ async def test_claim_unpublished_skips_rows_locked_by_another_transaction(
 # --- Repository queries ---------------------------------------------------------------
 
 
-async def test_user_insert_if_absent_keeps_the_first_row(uow_factory: UowFactory) -> None:
-    async def sign_in(email: str, role: UserRole) -> User:
+async def test_user_queries(uow_factory: UowFactory, world: World) -> None:
+    async with uow_factory() as uow:
+        carla = await uow.users.add(_user("carla", username="carla_m"))
+
+    async with uow_factory() as uow:
+        assert (await uow.users.get(carla.id)) is not None
+        by_email = await uow.users.get_by_email("carla@ethz.ch", for_update=True)
+        assert by_email is not None
+        assert by_email.id == carla.id
+        # The address is stored as the id is read; nothing here folds case or a domain.
+        assert await uow.users.get_by_email("Carla@ethz.ch") is None
+        assert await uow.users.get_by_email("carla@student.ethz.ch") is None
+        assert await uow.users.get_by_email("nobody@ethz.ch") is None
+
+        holder = await uow.users.get_by_username("carla_m")
+        assert holder is not None
+        assert (holder.id, holder.username) == (carla.id, "carla_m")
+        # A username has one spelling, so the match is exact: no case is folded.
+        for other_spelling in ("Carla_M", "CARLA_M", "carla_m ", "carla"):
+            assert await uow.users.get_by_username(other_spelling) is None
+        # An underscore is a character of the name, not a wildcard.
+        assert await uow.users.get_by_username("carlaxm") is None
+
+        everyone = await uow.users.list_all()
+        assert [user.id for user in everyone] == [world.user.id, world.admin.id, carla.id]
+
+
+async def test_a_user_row_holds_every_label_of_the_degree_catalogue_as_written(
+    uow_factory: UowFactory,
+) -> None:
+    """The label is the stored value: the longest one fits the column, and what ETH
+    writes with an en dash or an umlaut comes back character for character."""
+    labels = [(entry.level, label) for entry in CATALOGUE for label in entry.programmes]
+    longest = max(labels, key=lambda pair: len(pair[1]))
+    outside_ascii = [pair for pair in labels if not pair[1].isascii()]
+    assert len(outside_ascii) >= 2
+
+    stored: dict[UUID, str] = {}
+    async with uow_factory() as uow:
+        for number, (level, label) in enumerate([longest, *outside_ascii]):
+            user = await uow.users.add(
+                _user(f"student{number}", degree_level=level, degree_programme=label)
+            )
+            stored[user.id] = label
+
+    async with uow_factory() as uow:
+        for user_id, label in stored.items():
+            row = await uow.users.get(user_id)
+            assert row is not None
+            assert row.degree_programme == label
+
+
+async def test_a_username_is_stored_as_written_up_to_32_characters(
+    uow_factory: UowFactory,
+) -> None:
+    of_32_characters = "l" + "o" * 29 + "ng"
+    assert len(of_32_characters) == 32
+    async with uow_factory() as uow:
+        longest = await uow.users.add(_user("lena", username=of_32_characters))
+        mixed = await uow.users.add(_user("max", username="max_muster_99"))
+
+    async with uow_factory() as uow:
+        for user, username in ((longest, of_32_characters), (mixed, "max_muster_99")):
+            row = await uow.users.get(user.id)
+            assert row is not None
+            assert row.username == username
+
+
+async def test_a_username_is_free_again_once_its_holder_takes_another(
+    uow_factory: UowFactory, world: World
+) -> None:
+    async with uow_factory() as uow:
+        alice = await uow.users.get(world.user.id, for_update=True)
+        assert alice is not None
+        alice.username = "alice_2"
+
+    async with uow_factory() as uow:
+        assert await uow.users.get_by_username("alice") is None
+        alicia = await uow.users.add(_user("alicia", username="alice"))
+        holder = await uow.users.get_by_username("alice")
+        assert holder is not None
+        assert holder.id == alicia.id
+
+
+@pytest.mark.parametrize(
+    ("username", "constraint"),
+    [("admin", "uq_users_username"), ("Alice", "ck_users_username_format")],
+    ids=["a-name-somebody-holds", "a-name-with-a-capital-letter"],
+)
+async def test_a_rename_is_held_to_the_rules_a_new_username_is_held_to(
+    uow_factory: UowFactory, world: World, username: str, constraint: str
+) -> None:
+    """The backstop behind the profile service: an UPDATE is refused like an INSERT."""
+
+    async def rename() -> None:
         async with uow_factory() as uow:
-            return await uow.users.insert_if_absent(
-                canonical_email="carla@ethz.ch",
-                email=email,
-                role=role,
-                status=UserStatus.ACTIVE,
-                now=NOW,
-            )
+            alice = await uow.users.get(world.user.id, for_update=True)
+            assert alice is not None
+            alice.username = username
 
-    first = await sign_in("carla@student.ethz.ch", UserRole.USER)
-    again = await sign_in("carla@ethz.ch", UserRole.ADMIN)
-
-    assert again.id == first.id
-    assert (again.email, again.role) == ("carla@student.ethz.ch", UserRole.USER)
-    async with uow_factory() as uow:
-        assert (await uow.users.get(first.id)) is not None
-        assert (
-            await uow.users.get_by_canonical_email("carla@ethz.ch", for_update=True)
-        ) is not None
-        assert await uow.users.get_by_canonical_email("nobody@ethz.ch") is None
-        assert len(await uow.users.list_all()) == 1
-
-
-async def test_login_tokens_and_sessions(uow_factory: UowFactory, world: World) -> None:
-    session_id = sha256_hex("session")
-    async with uow_factory() as uow:
-        await uow.login_tokens.add(
-            LoginToken(
-                email="alice@student.ethz.ch",
-                token_hash=sha256_hex("token"),
-                created_at=NOW,
-                expires_at=NOW + timedelta(minutes=15),
-            )
-        )
-        await uow.sessions.add(
-            UserSession(
-                id=session_id,
-                user_id=world.user.id,
-                created_at=NOW,
-                expires_at=NOW + 30 * DAY,
-                last_seen_at=NOW,
-            )
-        )
+    with pytest.raises(IntegrityError, match=constraint):
+        await rename()
 
     async with uow_factory() as uow:
-        token = await uow.login_tokens.get_by_hash(sha256_hex("token"), for_update=True)
-        assert token is not None
-        assert token.consumed_at is None
-        assert await uow.login_tokens.get_by_hash(sha256_hex("unknown")) is None
-
-        session = await uow.sessions.get(session_id)
-        assert session is not None
-        await uow.sessions.touch(session_id, NOW + DAY)
-        assert session.last_seen_at == NOW + DAY
-        await uow.sessions.touch(session_id, NOW)
-        assert session.last_seen_at == NOW + DAY
-
-    async with uow_factory() as uow:
-        await uow.sessions.delete(session_id)
-        await uow.sessions.touch(session_id, NOW + 2 * DAY)
-        assert await uow.sessions.get(session_id) is None
+        holder = await uow.users.get_by_username("alice")
+        assert holder is not None
+        assert holder.id == world.user.id
 
 
 async def test_market_queries(uow_factory: UowFactory, world: World) -> None:
@@ -1306,6 +1402,55 @@ async def test_position_queries(uow_factory: UowFactory, world: World) -> None:
         }
 
 
+async def test_net_stake_totals_add_up_per_market_what_a_void_would_refund(
+    uow_factory: UowFactory, world: World
+) -> None:
+    """Per trader max(0, cost - proceeds) over both outcomes, then the sum per market:
+    a trader in profit counts as nothing, not as a negative amount (SPEC §6)."""
+
+    def position(
+        user: User, market: Market, outcome: Outcome, cost: int, proceeds: int
+    ) -> Position:
+        return Position(
+            user_id=user.id,
+            market_id=market.id,
+            outcome=outcome,
+            shares_micro=CR,
+            cost_micro=cost,
+            proceeds_micro=proceeds,
+        )
+
+    async with uow_factory() as uow:
+        second = await uow.markets.add(_market(world.admin.id))
+        untouched = await uow.markets.add(_market(world.admin.id))
+        gone = await uow.markets.add(_market(world.admin.id))
+        rows = [
+            # Out of pocket by 80 - 30 + 20 = 70 over both outcomes.
+            position(world.user, world.market, Outcome.YES, 80 * CR, 30 * CR),
+            position(world.user, world.market, Outcome.NO, 20 * CR, 0),
+            # In profit by 50: a void gives this trader nothing and takes nothing back.
+            position(world.admin, world.market, Outcome.YES, 40 * CR, 90 * CR),
+            # One outcome in profit, the other not: 10 - 25 + 30 - 5 = 10 in all.
+            position(world.user, second, Outcome.YES, 10 * CR, 25 * CR),
+            position(world.user, second, Outcome.NO, 30 * CR, 5 * CR),
+            position(world.admin, second, Outcome.NO, 1, 0),
+            # Everybody sold out above their cost.
+            position(world.user, gone, Outcome.YES, 5 * CR, 6 * CR),
+        ]
+        for row in rows:
+            await uow.positions.add(row)
+
+    async with uow_factory() as uow:
+        every_market = [world.market.id, second.id, untouched.id, gone.id, uuid7()]
+        totals = await uow.positions.net_stake_totals(every_market)
+
+        assert totals == {world.market.id: 70 * CR, second.id: 10 * CR + 1, gone.id: 0}
+        assert all(type(total) is int for total in totals.values())
+        assert await uow.positions.net_stake_totals([second.id]) == {second.id: 10 * CR + 1}
+        assert await uow.positions.net_stake_totals([untouched.id]) == {}
+        assert await uow.positions.net_stake_totals([]) == {}
+
+
 async def test_trade_queries(uow_factory: UowFactory, world: World) -> None:
     async with uow_factory() as uow:
         trades = [
@@ -1366,26 +1511,26 @@ async def test_account_and_journal_queries(uow_factory: UowFactory, world: World
         assert [entry.idempotency_key for _, entry in older] == ["grant:alice:SIGNUP"]
 
 
-async def test_voucher_grant_queries(uow_factory: UowFactory, world: World) -> None:
+async def test_grant_queries(uow_factory: UowFactory, world: World) -> None:
     async with uow_factory() as uow:
-        grant = await uow.voucher_grants.insert_if_absent(world.user.id, "2026-11", NOW)
+        grant = await uow.grants.insert_if_absent(world.user.id, "2026-11", NOW)
         assert grant is not None
         assert grant.entry_id is None
-        assert await uow.voucher_grants.insert_if_absent(world.user.id, "2026-11", NOW) is None
-        assert await uow.voucher_grants.insert_if_absent(world.user.id, "SIGNUP", NOW) is not None
-        assert await uow.voucher_grants.insert_if_absent(world.admin.id, "2026-11", NOW) is not None
+        assert await uow.grants.insert_if_absent(world.user.id, "2026-11", NOW) is None
+        assert await uow.grants.insert_if_absent(world.user.id, "SIGNUP", NOW) is not None
+        assert await uow.grants.insert_if_absent(world.admin.id, "2026-11", NOW) is not None
 
         entry = await uow.journal.add_entry(_entry("grant:alice:2026-11"))
-        await uow.voucher_grants.set_entry(grant.id, entry.id)
+        await uow.grants.set_entry(grant.id, entry.id)
         assert grant.entry_id == entry.id
-        assert await uow.voucher_grants.list_periods(world.user.id) == ["2026-11", "SIGNUP"]
+        assert await uow.grants.list_periods(world.user.id) == ["2026-11", "SIGNUP"]
 
 
-async def test_voucher_code_queries(uow_factory: UowFactory, world: World) -> None:
+async def test_code_queries(uow_factory: UowFactory, world: World) -> None:
     async with uow_factory() as uow:
         await uow.codes.add_all([_code(world, code) for code in ("A", "B", "C")])
         expired = await uow.code_batches.add(
-            VoucherCodeBatch(
+            CodeBatch(
                 label="Last semester's quiz",
                 value_micro=5 * CR,
                 count=1,
@@ -1396,16 +1541,14 @@ async def test_voucher_code_queries(uow_factory: UowFactory, world: World) -> No
             )
         )
         await uow.codes.add(
-            VoucherCode(
-                batch_id=expired.id, code_hash=sha256_hex("OLD"), status=VoucherCodeStatus.ACTIVE
-            )
+            Code(batch_id=expired.id, code_hash=sha256_hex("OLD"), status=CodeStatus.ACTIVE)
         )
 
     async with uow_factory() as uow:
         code = await uow.codes.get_by_hash(sha256_hex("A"), for_update=True)
         assert code is not None
         assert not await uow.codes.user_has_redeemed_in_batch(world.user.id, world.batch.id)
-        code.status = VoucherCodeStatus.REDEEMED
+        code.status = CodeStatus.REDEEMED
         code.redeemed_by = world.user.id
         code.redeemed_at = NOW
         await uow.flush()
@@ -1423,7 +1566,7 @@ async def test_voucher_code_queries(uow_factory: UowFactory, world: World) -> No
         assert await uow.codes.revoke(world.batch.id, None) == 1
         assert await uow.codes.revoke(world.batch.id, None) == 0
         assert await uow.codes.unredeemed_value(NOW) == 0
-        assert code.status is VoucherCodeStatus.REDEEMED
+        assert code.status is CodeStatus.REDEEMED
 
         batch = await uow.code_batches.get(world.batch.id, for_update=True)
         assert batch is not None
@@ -1438,34 +1581,126 @@ async def test_voucher_code_queries(uow_factory: UowFactory, world: World) -> No
         assert await uow.code_batches.get_with_counts(uuid7()) is None
 
 
-async def test_coffee_ticket_queries(uow_factory: UowFactory, world: World) -> None:
+async def test_voucher_queries(uow_factory: UowFactory, world: World) -> None:
     async with uow_factory() as uow:
-        fresh = await uow.coffee_tickets.add(_ticket(world, "FRESH"))
-        overdue = await uow.coffee_tickets.add(
-            _ticket(world, "OVERDUE", created_at=NOW - 31 * DAY, expires_at=NOW - DAY)
+        fresh = await uow.vouchers.add(_voucher(world, "FRESH"))
+        overdue = await uow.vouchers.add(
+            _voucher(
+                world,
+                "OVERDUE",
+                product_id="iced-tea",
+                product_name="Iced Tea",
+                created_at=NOW - 31 * DAY,
+                expires_at=NOW - DAY,
+            )
         )
-        await uow.coffee_tickets.add(
-            _ticket(
+        await uow.vouchers.add(
+            _voucher(
                 world,
                 "USED",
-                status=CoffeeTicketStatus.REDEEMED,
+                status=VoucherStatus.REDEEMED,
                 redeemed_at=NOW,
                 redeemed_by=world.admin.id,
             )
         )
 
     async with uow_factory() as uow:
-        ticket = await uow.coffee_tickets.get_by_hash(sha256_hex("FRESH"), for_update=True)
-        assert ticket is not None
-        assert ticket.id == fresh.id
-        assert await uow.coffee_tickets.get_by_hash(sha256_hex("unknown")) is None
-        assert len(await uow.coffee_tickets.list_for_user(world.user.id)) == 3
-        assert await uow.coffee_tickets.list_for_user(world.admin.id) == []
-        refundable = await uow.coffee_tickets.list_expired_active(
-            world.user.id, NOW, for_update=True
-        )
+        voucher = await uow.vouchers.get_by_hash(sha256_hex("FRESH"), for_update=True)
+        assert voucher is not None
+        assert voucher.id == fresh.id
+        assert (voucher.product_id, voucher.product_name) == ("mate", "Mate")
+        assert await uow.vouchers.get_by_hash(sha256_hex("unknown")) is None
+        assert await uow.vouchers.get_owned(fresh.id, world.user.id, for_update=True) is voucher
+        assert await uow.vouchers.get_owned(overdue.id, world.user.id) is not None
+        assert await uow.vouchers.get_owned(uuid7(), world.user.id) is None
+        # Somebody else's voucher is found as little as one that does not exist.
+        assert await uow.vouchers.get_owned(fresh.id, world.admin.id) is None
+        assert await uow.vouchers.get_owned(fresh.id, world.admin.id, for_update=True) is None
+        assert len(await uow.vouchers.list_for_user(world.user.id)) == 3
+        assert await uow.vouchers.list_for_user(world.admin.id) == []
+        refundable = await uow.vouchers.list_expired_active(world.user.id, NOW, for_update=True)
         assert [t.id for t in refundable] == [overdue.id]
-        assert await uow.coffee_tickets.pending_value() == 2 * CR
+        assert await uow.vouchers.pending_value() == 2 * CR
+        assert await uow.vouchers.product_names([fresh.id, overdue.id, uuid7()]) == {
+            fresh.id: "Mate",
+            overdue.id: "Iced Tea",
+        }
+        assert await uow.vouchers.product_names([]) == {}
+
+
+async def test_a_voucher_gets_another_code_and_is_found_under_that_one_alone(
+    uow_factory: UowFactory, world: World
+) -> None:
+    """What replacing a code comes to in the database: one column of one row."""
+    async with uow_factory() as uow:
+        issued = await uow.vouchers.add(_voucher(world, "FIRST"))
+
+    async with uow_factory() as uow:
+        voucher = await uow.vouchers.get_owned(issued.id, world.user.id, for_update=True)
+        assert voucher is not None
+        voucher.code_hash = sha256_hex("SECOND")
+
+    async with uow_factory() as uow:
+        assert await uow.vouchers.get_by_hash(sha256_hex("FIRST")) is None
+        found = await uow.vouchers.get_by_hash(sha256_hex("SECOND"))
+        assert found is not None
+        assert (found.id, found.status, found.expires_at) == (
+            issued.id,
+            VoucherStatus.ACTIVE,
+            issued.expires_at,
+        )
+
+
+async def test_asking_for_somebody_elses_voucher_takes_no_lock_on_it(
+    uow_factory: UowFactory, world: World
+) -> None:
+    """The row is selected by its id and its owner together. Whoever names a voucher
+    that is not theirs holds nothing afterwards, so its owner and the barista who
+    scans it never wait for a stranger."""
+    async with uow_factory() as uow:
+        issued = await uow.vouchers.add(_voucher(world, "MINE"))
+
+    async def owner_locks() -> UUID:
+        async with uow_factory() as uow:
+            voucher = await uow.vouchers.get_owned(issued.id, world.user.id, for_update=True)
+            assert voucher is not None
+            return voucher.id
+
+    async with uow_factory() as stranger:
+        asked = await stranger.vouchers.get_owned(issued.id, world.admin.id, for_update=True)
+        assert asked is None
+        assert await asyncio.wait_for(owner_locks(), UNBLOCKED_WITHIN) == issued.id
+
+    # The owner's own lock is one: a second transaction of theirs waits for it.
+    async with uow_factory() as first:
+        assert await first.vouchers.get_owned(issued.id, world.user.id, for_update=True)
+        second = asyncio.create_task(owner_locks())
+        await asyncio.sleep(BLOCKED_FOR)
+        assert not second.done()
+
+    assert await asyncio.wait_for(second, UNBLOCKED_WITHIN) == issued.id
+
+
+async def test_a_voucher_keeps_a_product_as_long_as_its_columns_are_wide(
+    uow_factory: UowFactory, world: World
+) -> None:
+    """`product_id` VARCHAR(64) and `product_name` VARCHAR(100), the lengths
+    `VOUCHER_PRODUCTS` is held to when it is loaded."""
+    longest_id, longest_name = "p" * PRODUCT_ID_MAX_LENGTH, "N" * PRODUCT_NAME_MAX_LENGTH
+    async with uow_factory() as uow:
+        kept = await uow.vouchers.add(
+            _voucher(world, "WIDE", product_id=longest_id, product_name=longest_name)
+        )
+
+    async with uow_factory() as uow:
+        assert await uow.vouchers.product_names([kept.id]) == {kept.id: longest_name}
+
+    for too_wide in ({"product_id": longest_id + "p"}, {"product_name": longest_name + "N"}):
+        with pytest.raises(DBAPIError, match="value too long"):
+            await _insert(uow_factory, [_voucher(world, "WIDER", **too_wide)])
+    for missing in ("product_id", "product_name"):
+        with pytest.raises(IntegrityError, match=missing):
+            await _insert(uow_factory, [_voucher(world, "BARE", **{missing: None})])
 
 
 async def test_audit_log_and_alert_queries(uow_factory: UowFactory, world: World) -> None:

@@ -1,4 +1,4 @@
-"""`/me` and its lists: what a signed-in user reads about themselves (SPEC §10, A.2)."""
+"""`/me` and its lists: what a user reads about themselves (SPEC §10, A.2)."""
 
 from typing import Annotated
 

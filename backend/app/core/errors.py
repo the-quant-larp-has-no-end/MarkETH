@@ -6,7 +6,7 @@ Services raise them; `app/api/errors.py` turns them into the one response shape
 
 from collections.abc import Mapping
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Final
 
 
 class ErrorCode(StrEnum):
@@ -20,7 +20,8 @@ class ErrorCode(StrEnum):
     RATE_LIMITED = "RATE_LIMITED"
     # Codes the implementation adds.
     INSUFFICIENT_SHARES = "INSUFFICIENT_SHARES"
-    LOGIN_LINK_INVALID = "LOGIN_LINK_INVALID"
+    PROFILE_REQUIRED = "PROFILE_REQUIRED"
+    USERNAME_TAKEN = "USERNAME_TAKEN"
     IDEMPOTENCY_KEY_REUSED = "IDEMPOTENCY_KEY_REUSED"
     VALIDATION_ERROR = "VALIDATION_ERROR"
     UNAUTHENTICATED = "UNAUTHENTICATED"
@@ -54,7 +55,7 @@ class AppError(Exception):
 class InsufficientBalanceError(AppError):
     code = ErrorCode.INSUFFICIENT_BALANCE
     status_code = 409
-    default_message = "Not enough vouchers for this."
+    default_message = "Not enough tokens for this."
 
 
 class InsufficientSharesError(AppError):
@@ -110,12 +111,6 @@ class RateLimitedError(AppError):
         )
 
 
-class LoginLinkInvalidError(AppError):
-    code = ErrorCode.LOGIN_LINK_INVALID
-    status_code = 400
-    default_message = "This sign-in link is invalid or has expired. Request a new one."
-
-
 class IdempotencyKeyReusedError(AppError):
     code = ErrorCode.IDEMPOTENCY_KEY_REUSED
     status_code = 422
@@ -131,13 +126,30 @@ class ValidationFailedError(AppError):
 class UnauthenticatedError(AppError):
     code = ErrorCode.UNAUTHENTICATED
     status_code = 401
-    default_message = "Sign in to continue."
+    default_message = "Sign in through the ETH portal to continue."
 
 
 class ForbiddenError(AppError):
     code = ErrorCode.FORBIDDEN
     status_code = 403
     default_message = "You are not allowed to do this."
+
+
+SUSPENDED_MESSAGE: Final[str] = "This account is suspended."
+"""Message of the `ForbiddenError` that refuses a suspended account, in the guards of
+`app/api/deps.py` and in the one service that meets such an account behind them."""
+
+
+class ProfileRequiredError(AppError):
+    """The portal named somebody who has no profile yet. `details` says who, so the
+    set-up screen can show it: `name` (may be empty) and `email`."""
+
+    code = ErrorCode.PROFILE_REQUIRED
+    status_code = 403
+    default_message = "Set up your profile to continue."
+
+    def __init__(self, *, name: str, email: str) -> None:
+        super().__init__(details={"name": name, "email": email})
 
 
 class NotFoundError(AppError):
@@ -150,6 +162,17 @@ class ConflictError(AppError):
     code = ErrorCode.CONFLICT
     status_code = 409
     default_message = "This is not possible in the current state."
+
+
+class UsernameTakenError(AppError):
+    """Somebody else holds the username."""
+
+    code = ErrorCode.USERNAME_TAKEN
+    status_code = 409
+    default_message = "This username is taken."
+
+    def __init__(self) -> None:
+        super().__init__(details={"field": "username"})
 
 
 class ServiceUnavailableError(AppError):

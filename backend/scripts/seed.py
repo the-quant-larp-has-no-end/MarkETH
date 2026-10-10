@@ -32,13 +32,13 @@ async def seed(container: Container) -> None:
     Everything goes through the services of `container`, as the user who would do it:
 
     1. People. For each address of `ADMIN_EMAILS` and `BARISTA_EMAILS` and three demo
-       students (`demo1@…` to `demo3@…` on the first allowed domain): if
-       `users.get_by_canonical_email` finds nobody, sign the address in with
-       `AuthService.request_link` and `AuthService.verify`. The token comes from a
-       mailer that keeps the mail instead of sending it (build the container with one;
-       see `Container.build(settings, mailer=...)`). That creates the user, the
-       account and the signup grant in one transaction. Throw the session away
-       (`AuthService.logout`).
+       students (`demo1@…` to `demo3@…` at the first of `ALLOWED_EMAIL_DOMAINS`): ask
+       `IdentityService.authenticate(address, name)` who that is, as a request with
+       the portal's headers would. A caller without a profile gets one through
+       `ProfileService.save(caller.identity, SaveProfileRequest(...))`, with a
+       username that is lower case and not one of `RESERVED_USERNAMES`, and a degree
+       of the catalogue. That creates the user, the account and the signup grant in
+       one transaction.
     2. Markets, proposed by a demo student with `MarketService.propose` and opened by
        the admin with `MarketLifecycleService.approve`: one per fixed tier, closing in
        7, 14 and 30 days. One more proposal is left PROPOSED and one is rejected, so
@@ -46,7 +46,7 @@ async def seed(container: Container) -> None:
     3. Trades. Each demo student buys YES or NO for one of the stake presets in two of
        the markets (`TradingService.trade`, a fresh Idempotency-Key per trade), so
        prices have moved and charts have points.
-    4. A voucher code batch of five codes (`VoucherCodeService.create_batch`). Print
+    4. A code batch of five codes (`CodeService.create_batch`). Print
        the codes to stdout: this is the only time they exist in the clear.
 
     Idempotent: step 1 skips who exists; steps 2 to 4 run only while no market exists

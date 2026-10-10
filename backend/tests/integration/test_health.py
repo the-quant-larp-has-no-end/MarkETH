@@ -9,8 +9,12 @@ import pytest
 
 from app.container import Container
 from app.core.config import Settings
+from app.core.degrees import CATALOGUE
+from app.core.units import MICRO, format_cr
+from app.pricing import lmsr
 from app.schemas.config import PublicConfigResponse
 from app.schemas.health import HealthResponse
+from app.schemas.markets import ProposeMarketRequest
 
 pytestmark = pytest.mark.integration
 
@@ -29,7 +33,7 @@ async def test_health_reports_postgres_and_redis_up_and_scylla_down_with_200(
     HealthResponse.model_validate(response.json())
 
 
-async def test_health_needs_no_session_and_no_origin(client: httpx.AsyncClient) -> None:
+async def test_health_needs_no_identity_and_no_origin(client: httpx.AsyncClient) -> None:
     del client.headers["Origin"]
     response = await client.get("/api/health")
     assert response.status_code == 200
@@ -60,42 +64,106 @@ async def test_health_is_503_with_the_error_shape_when_postgres_is_down(
     }
 
 
+def loss_bound_cr(b_cr: int) -> str:
+    """b · ln 2 rounded up, as the API writes it: computed, not typed in."""
+    return format_cr(lmsr.max_loss_micro(b_cr * MICRO))
+
+
 async def test_public_config_returns_the_values_of_the_example_env(
     client: httpx.AsyncClient,
 ) -> None:
     response = await client.get("/api/config")
     assert response.status_code == 200
-    assert response.json() == {
+    body = response.json()
+    degrees = body.pop("degrees")
+    assert body == {
         "timezone": "Europe/Zurich",
-        "allowed_email_domains": ["student.ethz.ch", "ethz.ch"],
-        "login_link_ttl_minutes": 15,
-        "signup_grant_cr": "5",
-        "monthly_grant_cr": "1",
-        "max_stake_per_market_cr": "1",
-        "stake_presets_cr": ["0.25", "0.5", "1"],
-        "min_trade_cr": "0.01",
-        "min_trade_shares": "0.01",
+        "signup_grant_cr": "500",
+        "monthly_grant_cr": "200",
+        "username_min_length": 3,
+        "username_max_length": 20,
+        "max_stake_per_market_cr": "100",
+        "stake_presets_cr": ["25", "50", "100"],
+        "min_trade_cr": "1",
+        "min_trade_shares": "1",
         "price_display_decimals": 1,
         "quote_debounce_ms": 300,
         "live_poll_fallback_seconds": 10,
         "tiers": [
-            {"tier": "TIGHT", "b_cr": "5", "max_loss_cr": "3.465736"},
-            {"tier": "DEFAULT", "b_cr": "10", "max_loss_cr": "6.931472"},
-            {"tier": "MEDIUM", "b_cr": "20", "max_loss_cr": "13.862944"},
+            {"tier": "TIGHT", "b_cr": "500", "max_loss_cr": loss_bound_cr(500)},
+            {"tier": "DEFAULT", "b_cr": "1000", "max_loss_cr": loss_bound_cr(1000)},
+            {"tier": "MEDIUM", "b_cr": "2000", "max_loss_cr": loss_bound_cr(2000)},
         ],
-        "max_market_budget_cr": "1000",
+        "max_market_budget_cr": "5000",
         "max_market_lifetime_days": 90,
         "max_resolution_delay_days": 14,
         "max_proposals_per_day": 3,
-        "voucher_code_length": 12,
-        "voucher_code_min_value_cr": "1",
-        "voucher_code_max_value_cr": "5",
-        "voucher_code_default_value_cr": "1",
-        "max_code_issuance_per_month_cr": "200",
-        "coffee_ticket_value_cr": "1",
-        "coffee_ticket_code_length": 8,
-        "coffee_ticket_expiry_days": 30,
+        "question_min_length": 10,
+        "question_max_length": 200,
+        "short_text_max_length": 500,
+        "long_text_max_length": 2000,
+        "code_length": 12,
+        "code_min_value_cr": "5",
+        "code_max_value_cr": "500",
+        "code_default_value_cr": "35",
+        "max_code_issuance_per_month_cr": "7000",
+        "voucher_code_length": 8,
+        "voucher_expiry_days": 30,
     }
+    assert degrees == [
+        {"level": entry.level.value, "name": entry.name, "programmes": list(entry.programmes)}
+        for entry in CATALOGUE
+    ]
+
+
+async def test_public_config_offers_every_degree_level_with_its_programmes(
+    client: httpx.AsyncClient,
+) -> None:
+    """What the set-up screen builds its two selects from: six levels, each with the
+    labels a profile may name, written the way ETH writes them."""
+    degrees = (await client.get("/api/config")).json()["degrees"]
+
+    assert [(level["level"], level["name"]) for level in degrees] == [
+        ("BACHELOR", "Bachelor"),
+        ("MASTER", "Master"),
+        ("DOCTORATE", "Doctorate"),
+        ("CONTINUING_EDUCATION", "Continuing education"),
+        ("TEACHER_EDUCATION", "Teacher education"),
+        ("OTHER", "Other"),
+    ]
+    assert sum(len(level["programmes"]) for level in degrees) == 192
+    assert "BSc Computer Science" in degrees[0]["programmes"]
+    assert degrees[5]["programmes"] == ["Exchange student", "ETH staff", "Other"]
+
+
+async def test_public_config_carries_the_text_limits_a_proposal_is_held_to(
+    client: httpx.AsyncClient,
+) -> None:
+    """The propose form shows how long each text may be. What it shows is what the
+    request model enforces: the numbers are read from one and compared with the other."""
+    config = (await client.get("/api/config")).json()
+    fields = ProposeMarketRequest.model_json_schema()["properties"]
+
+    def lengths(field: str) -> tuple[int, int]:
+        return fields[field]["minLength"], fields[field]["maxLength"]
+
+    assert lengths("question") == (config["question_min_length"], config["question_max_length"])
+    for short in ("yes_definition", "no_definition", "resolution_source"):
+        assert lengths(short) == (1, config["short_text_max_length"]), short
+    assert lengths("resolution_criteria") == (1, config["long_text_max_length"])
+    assert config["question_min_length"] < config["question_max_length"]
+    assert config["short_text_max_length"] < config["long_text_max_length"]
+
+
+async def test_public_config_needs_no_identity_and_is_the_same_for_everybody(
+    client: httpx.AsyncClient, settings: Settings
+) -> None:
+    names = settings.identity
+    anonymous = await client.get("/api/config")
+    named = await client.get("/api/config", headers={names.header_user_id: names.admin_emails[0]})
+
+    assert anonymous.status_code == named.status_code == 200
+    assert anonymous.json() == named.json()
 
 
 async def test_public_config_exposes_nothing_about_people_or_infrastructure(
@@ -103,8 +171,8 @@ async def test_public_config_exposes_nothing_about_people_or_infrastructure(
 ) -> None:
     text = (await client.get("/api/config")).text
     for secret in (
-        *settings.auth.admin_emails,
-        *settings.auth.barista_emails,
+        *settings.identity.admin_emails,
+        *settings.identity.barista_emails,
         settings.postgres.app_password,
         settings.postgres.owner_password,
         settings.postgres.host,

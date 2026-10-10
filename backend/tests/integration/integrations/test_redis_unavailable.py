@@ -14,11 +14,11 @@ import pytest
 from redis.asyncio import Redis
 
 from app.core.config import RedisSettings, Settings
+from app.core.enums import MarketStatus
 from app.integrations.redis.client import COOLDOWN_SECONDS, RedisClient, RedisUnavailableError
 from app.integrations.redis.market_cache import MarketCache
 from app.integrations.redis.quote_bus import QuoteBus
 from app.integrations.redis.rate_limiter import RateLimit, RedisRateLimiter
-from app.integrations.redis.session_cache import SessionCache
 from tests.support.containers import LOOPBACK
 from tests.support.network import SilentServer
 
@@ -38,29 +38,23 @@ async def test_rate_limiter_raises_quickly_so_the_caller_can_decide(
     unreachable_redis: RedisClient, base_settings: Settings
 ) -> None:
     limiter = RedisRateLimiter(unreachable_redis)
-    rule = RateLimit(name="login-link-email", limit=3, window_seconds=900)
+    rule = RateLimit(name="code-redeem-user", limit=5, window_seconds=600)
 
-    elapsed = await seconds_until_unavailable(limiter.hit(rule, "alice@ethz.ch"))
+    elapsed = await seconds_until_unavailable(limiter.hit(rule, str(uuid7())))
 
     assert elapsed < base_settings.redis.timeout_seconds + 0.25
 
 
-async def test_caches_report_a_miss_and_never_raise(
+async def test_the_market_cache_reports_a_miss_and_never_raises(
     unreachable_redis: RedisClient, base_settings: Settings
 ) -> None:
     markets = MarketCache(unreachable_redis, base_settings.redis)
-    sessions = SessionCache(unreachable_redis)
-    market_id = uuid7()
+    key = MarketCache.list_key([MarketStatus.OPEN, MarketStatus.HALTED])
 
-    await markets.set(MarketCache.market_key(market_id), "{}")
-    await markets.set(MarketCache.list_key("OPEN"), "[]")
-    await markets.invalidate_market(market_id)
-    await sessions.set("session-id", {"user_id": "u"}, ttl_seconds=60)
-    await sessions.delete("session-id")
+    await markets.set(key, '{"items":[]}')
+    await markets.invalidate_lists()
 
-    assert await markets.get(MarketCache.market_key(market_id)) is None
-    assert await markets.get(MarketCache.list_key("OPEN")) is None
-    assert await sessions.get("session-id") is None
+    assert await markets.get(key) is None
 
 
 async def test_publish_is_dropped_and_subscribe_is_refused(
@@ -87,10 +81,10 @@ async def test_ping_reports_false_instead_of_raising(unreachable_redis: RedisCli
 async def test_calls_during_the_cooldown_return_almost_immediately(
     unreachable_redis: RedisClient,
 ) -> None:
-    await seconds_until_unavailable(unreachable_redis.get("key"))
+    await seconds_until_unavailable(unreachable_redis.hash_get("key", "field"))
 
     for _ in range(20):
-        elapsed = await seconds_until_unavailable(unreachable_redis.get("key"))
+        elapsed = await seconds_until_unavailable(unreachable_redis.hash_get("key", "field"))
         assert elapsed < ALMOST_IMMEDIATELY_SECONDS
 
 
@@ -100,17 +94,18 @@ async def test_hanging_redis_costs_one_timeout_per_cooldown(
     settings = base_settings.redis.model_copy(update={"host": LOOPBACK, "port": silent_server.port})
     client = RedisClient(settings)
     try:
-        first = await seconds_until_unavailable(client.get("key"))
+        first = await seconds_until_unavailable(client.hash_get("key", "field"))
         assert settings.timeout_seconds * 0.8 <= first < settings.timeout_seconds + 0.25
         assert silent_server.connections == 1
 
         for _ in range(20):
-            assert await seconds_until_unavailable(client.get("key")) < ALMOST_IMMEDIATELY_SECONDS
+            waited = await seconds_until_unavailable(client.hash_get("key", "field"))
+            assert waited < ALMOST_IMMEDIATELY_SECONDS
         assert silent_server.connections == 1, "a call during the cool-down reached the network"
 
         await asyncio.sleep(COOLDOWN_SECONDS)
         probes = await asyncio.gather(
-            *(client.get("key") for _ in range(5)), return_exceptions=True
+            *(client.hash_get("key", "field") for _ in range(5)), return_exceptions=True
         )
         assert all(isinstance(outcome, RedisUnavailableError) for outcome in probes)
         assert silent_server.connections == 2, "exactly one call may probe after the cool-down"
@@ -122,14 +117,14 @@ async def test_client_works_again_once_redis_answers_after_the_cooldown(
     redis_client: RedisClient, raw_redis: Redis, redis_settings: RedisSettings
 ) -> None:
     key = f"test:{uuid4().hex}"
-    await redis_client.set(key, "kept", ttl_seconds=60)
+    await redis_client.hash_set(key, "field", "kept", ttl_seconds=60)
 
     await raw_redis.client_pause(redis_settings.timeout_ms * 2)
-    await seconds_until_unavailable(redis_client.get(key))
+    await seconds_until_unavailable(redis_client.hash_get(key, "field"))
     assert await redis_client.ping() is False, "the cool-down must not wait for Redis"
 
     await asyncio.sleep(COOLDOWN_SECONDS + 0.05)
-    assert await redis_client.get(key) == "kept"
+    assert await redis_client.hash_get(key, "field") == "kept"
     assert await redis_client.ping() is True
 
 

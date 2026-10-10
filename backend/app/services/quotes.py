@@ -9,11 +9,20 @@ from uuid import UUID
 
 from app.core.clock import Clock
 from app.core.config import Settings
+from app.core.enums import Outcome, TradeSide
+from app.core.errors import (
+    InsufficientSharesError,
+    MarketNotOpenError,
+    NotFoundError,
+    TradeTooSmallError,
+)
+from app.core.units import to_cr, to_micro
 from app.models.market import Market
+from app.pricing import lmsr
 from app.pricing.lmsr import TradeQuote
 from app.schemas.trading import QuoteQuery, QuoteResponse, TradeSize
 from app.services import UowFactory
-from app.services.market_view import MarketView
+from app.services.market_view import HIDDEN_STATUSES, MarketView
 
 
 class QuoteService:
@@ -32,8 +41,8 @@ class QuoteService:
     async def quote(self, market_id: UUID, query: QuoteQuery) -> QuoteResponse:
         """What a trade would cost or return right now (`GET /markets/{id}/quote`).
 
-        Public and about nobody: it checks neither a balance nor a stake limit, and a
-        sell is priced whether or not anyone holds the shares.
+        About nobody in particular: it checks neither a balance nor a stake limit, and
+        a sell is priced whether or not anyone holds the shares.
 
         1. Read the market without a lock. Unknown, PROPOSED or REJECTED:
            `NotFoundError` (404).
@@ -42,7 +51,13 @@ class QuoteService:
 
         Not cached: a quote must come from the current quantities.
         """
-        raise NotImplementedError
+        async with self._uow_factory() as uow:
+            market = await uow.markets.get(market_id)
+        if market is None or market.status in HIDDEN_STATUSES:
+            raise NotFoundError
+        if not self._view.is_trading_open(market, self._clock.now()):
+            raise MarketNotOpenError
+        return self.to_response(market, self.price(market, query))
 
     def price(self, market: Market, size: TradeSize) -> TradeQuote:
         """Price `size` against the row's quantities with `app.pricing.lmsr`. No I/O.
@@ -70,7 +85,27 @@ class QuoteService:
         Whether this trader holds the shares, has the balance or stays within the
         stake limit is the trading service's check.
         """
-        raise NotImplementedError
+        state = lmsr.MarketState(q_yes=market.q_yes_micro, q_no=market.q_no_micro, b=market.b_micro)
+        precision = self._pricing.decimal_precision
+
+        if size.amount_cr is not None:
+            budget_micro = to_micro(size.amount_cr)
+            if budget_micro < self._pricing.min_trade_micro:
+                raise TradeTooSmallError
+            return lmsr.quote_buy_for_budget(state, size.outcome, budget_micro, precision=precision)
+
+        if size.shares is None:
+            raise ValueError("a trade is sized by amount_cr or by shares; this one by neither")
+        shares_micro = to_micro(size.shares)
+        if shares_micro < self._pricing.min_trade_shares_micro:
+            raise TradeTooSmallError
+        if size.side is TradeSide.BUY:
+            return lmsr.quote_buy_shares(state, size.outcome, shares_micro, precision=precision)
+
+        sold_micro = market.q_yes_micro if size.outcome is Outcome.YES else market.q_no_micro
+        if shares_micro > sold_micro:
+            raise InsufficientSharesError
+        return lmsr.quote_sell_shares(state, size.outcome, shares_micro, precision=precision)
 
     def to_response(self, market: Market, quote: TradeQuote) -> QuoteResponse:
         """A `TradeQuote` as the API shows it. No I/O.
@@ -81,4 +116,18 @@ class QuoteService:
         `p_yes_after_micro`; `quote_version = market.version`, read before the trade
         changes it. `details.quote` of `QUOTE_STALE` is this, `model_dump(mode="json")`.
         """
-        raise NotImplementedError
+        p_yes_before, p_no_before = self._view.probabilities(quote.p_yes_before_micro)
+        p_yes_after, p_no_after = self._view.probabilities(quote.p_yes_after_micro)
+        return QuoteResponse(
+            market_id=market.id,
+            side=quote.side,
+            outcome=quote.outcome,
+            shares=to_cr(quote.shares_micro),
+            amount_cr=to_cr(quote.amount_micro),
+            average_price=self._view.average_price(quote.amount_micro, quote.shares_micro),
+            p_yes_before=p_yes_before,
+            p_no_before=p_no_before,
+            p_yes_after=p_yes_after,
+            p_no_after=p_no_after,
+            quote_version=market.version,
+        )

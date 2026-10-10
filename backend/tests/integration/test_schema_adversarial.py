@@ -5,8 +5,7 @@ guarantee the database gives whatever the code above it does:
 
 * a balance cannot move without a posting, nor a posting without its balance;
 * a committed journal entry cannot gain postings;
-* hashes are hashes and timestamps are instants;
-* a CHECK or index the models changed must change in a migration too.
+* hashes are hashes and timestamps are instants.
 """
 
 import time
@@ -20,14 +19,11 @@ from zoneinfo import ZoneInfo
 import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError, ProgrammingError, StatementError
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
-from sqlalchemy.pool import NullPool
+from sqlalchemy.ext.asyncio import AsyncEngine
 
-from app.core.config import Settings
-from app.core.enums import AccountKind, JournalKind, OutboxTopic, UserRole, UserStatus
-from app.db.base import Base
+from app.core.enums import AccountKind, DegreeLevel, JournalKind, OutboxTopic, UserStatus
 from app.db.database import Database
-from app.models import Account, CoffeeTicket, JournalEntry, Posting, User
+from app.models import Account, JournalEntry, Posting, User, Voucher
 from app.repositories.unit_of_work import UnitOfWork
 
 pytestmark = pytest.mark.integration
@@ -40,20 +36,8 @@ IDEMPOTENCY_KEY: Final[str] = "0199c1d4-7a55-7f0e-9a53-3f1f0c7f7a10"
 
 LARGE_ENTRY_LEGS: Final[int] = 20_000
 LARGE_ENTRY_SECONDS: Final[float] = 10.0
-"""Generous: the commit takes a fraction of a second. When every posting re-summed its
-entry, the same commit took 27 seconds."""
-
-CHECK_DEFINITIONS: Final[str] = (
-    "SELECT conrelid::regclass::text, conname, pg_get_constraintdef(oid)"
-    " FROM pg_constraint"
-    " WHERE contype = 'c' AND connamespace = 'public'::regnamespace"
-    " ORDER BY 1, 2"
-)
-INDEX_DEFINITIONS: Final[str] = (
-    "SELECT indexname, indexdef FROM pg_indexes"
-    " WHERE schemaname = 'public' AND tablename <> 'alembic_version'"
-    " ORDER BY 1"
-)
+"""Generous: the commit takes a fraction of a second. A check that sums the entry once
+for every posting takes 27 seconds for the same commit (`app.models.triggers`)."""
 
 BALANCES_THAT_DIFFER_FROM_THEIR_POSTINGS: Final[str] = (
     "SELECT count(*) FROM accounts a"
@@ -75,9 +59,11 @@ class Books:
 
 def _user(name: str) -> User:
     return User(
-        canonical_email=f"{name}@ethz.ch",
-        email=f"{name}@student.ethz.ch",
-        role=UserRole.USER,
+        email=f"{name}@ethz.ch",
+        name=name.capitalize(),
+        username=name,
+        degree_level=DegreeLevel.BACHELOR,
+        degree_programme="BSc Computer Science",
         status=UserStatus.ACTIVE,
         created_at=NOW,
     )
@@ -341,9 +327,10 @@ async def test_a_large_entry_commits_in_one_pass(
     async with owner_engine.begin() as connection:
         await connection.execute(
             text(
-                "INSERT INTO users (id, canonical_email, email, role, status, created_at)"
-                " SELECT gen_random_uuid(), 'holder' || n || '@ethz.ch',"
-                "        'holder' || n || '@ethz.ch', 'USER', 'ACTIVE', :now"
+                "INSERT INTO users (id, email, name, username, degree_level,"
+                "                   degree_programme, status, created_at)"
+                " SELECT gen_random_uuid(), 'holder' || n || '@ethz.ch', 'Holder ' || n,"
+                "        'holder' || n, 'BACHELOR', 'BSc Computer Science', 'ACTIVE', :now"
                 " FROM generate_series(1, :holders) AS n"
             ),
             {"holders": LARGE_ENTRY_LEGS, "now": NOW},
@@ -352,7 +339,7 @@ async def test_a_large_entry_commits_in_one_pass(
             text(
                 "INSERT INTO accounts (id, kind, owner_id)"
                 " SELECT gen_random_uuid(), 'USER', id FROM users"
-                " WHERE canonical_email LIKE 'holder%'"
+                " WHERE email LIKE 'holder%'"
             )
         )
 
@@ -369,7 +356,7 @@ async def test_a_large_entry_commits_in_one_pass(
             text(
                 "INSERT INTO postings (entry_id, account_id, amount_micro)"
                 " SELECT :entry, a.id, 1 FROM accounts a JOIN users u ON u.id = a.owner_id"
-                " WHERE u.canonical_email LIKE 'holder%'"
+                " WHERE u.email LIKE 'holder%'"
             ),
             {"entry": entry_id},
         )
@@ -465,9 +452,9 @@ async def test_naive_datetime_is_refused_in_a_comparison_too(
 
     async with uow_factory() as uow:
         with pytest.raises(StatementError, match="needs a timezone"):
-            await uow.coffee_tickets.list_expired_active(books.alice.id, naive)
+            await uow.vouchers.list_expired_active(books.alice.id, naive)
         with pytest.raises(StatementError, match="needs a timezone"):
-            await uow.session.execute(select(CoffeeTicket).where(CoffeeTicket.expires_at <= naive))
+            await uow.session.execute(select(Voucher).where(Voucher.expires_at <= naive))
 
 
 async def test_an_instant_in_any_timezone_is_stored_as_that_instant(
@@ -482,42 +469,3 @@ async def test_an_instant_in_any_timezone_is_stored_as_that_instant(
         assert stored.id == event.id
         assert stored.created_at == NOW
         assert stored.created_at.utcoffset() is not None
-
-
-# --- Drift between the models and the migrated schema -----------------------------------
-
-
-async def test_check_and_index_definitions_match_the_models(
-    settings: Settings, owner_engine: AsyncEngine
-) -> None:
-    """A CHECK the models changed must change in a migration too.
-
-    `alembic check` does not compare CHECK constraints, and autogenerate writes nothing
-    when an enum gains a member or a hand-written CHECK is edited. Comparing names, as
-    `test_schema.py` does, cannot see that either. So build the schema straight from the
-    models next to the migrated one and compare what Postgres stored for each.
-    """
-    scratch_name = "marketh_definitions_check"
-    scratch = settings.postgres.model_copy(update={"database": scratch_name})
-    scratch_engine = create_async_engine(scratch.owner_url, poolclass=NullPool)
-
-    async def definitions(engine: AsyncEngine) -> tuple[list[tuple[str, ...]], ...]:
-        async with engine.connect() as connection:
-            checks = (await connection.execute(text(CHECK_DEFINITIONS))).all()
-            indexes = (await connection.execute(text(INDEX_DEFINITIONS))).all()
-        return [tuple(row) for row in checks], [tuple(row) for row in indexes]
-
-    async with owner_engine.connect() as connection:
-        autocommit = await connection.execution_options(isolation_level="AUTOCOMMIT")
-        await autocommit.execute(text(f"CREATE DATABASE {scratch_name}"))
-    try:
-        async with scratch_engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
-        from_models = await definitions(scratch_engine)
-        migrated = await definitions(owner_engine)
-    finally:
-        async with owner_engine.connect() as connection:
-            autocommit = await connection.execution_options(isolation_level="AUTOCOMMIT")
-            await autocommit.execute(text(f"DROP DATABASE {scratch_name} WITH (FORCE)"))
-
-    assert migrated == from_models

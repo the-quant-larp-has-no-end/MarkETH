@@ -34,12 +34,13 @@ budget form is the demanding one: with m = 1 - e^(-c/b), the error of m is magni
 b/m, about b²/c, and for an outcome far behind the result creeps towards its limit in
 steps of about 1/b, so whole runs of market states put it next to a whole number. The
 noise, relative to that distance, is about b³ · 10^-precision / c. The quote functions
-therefore refuse a b for which b³ · 10^-precision exceeds 10^-17 (`_require_digits`)
-with `ValueError`, instead of quoting an amount that may be one micro-unit off:
+therefore refuse a b for which b³ · 10^-precision exceeds 10^-17 with `ValueError`,
+instead of quoting an amount that may be one micro-unit off. `is_quotable` says which
+b they take, so that no market is ever opened with one they refuse:
 
     precision 50 (the default, SPEC §4)   b up to 10^11 µCR, a budget of about 69,000 CR
-    precision 45                          the fewest digits that cover the largest b of
-                                          SPEC §4, 1,442.695040 CR
+    precision 45                          the fewest digits that cover a budget of
+                                          1,000 CR, b = 1,442.695040 CR
 
 With 28 to 32 digits, quotes at that b were shown to round against the market maker
 and to trip the assertion in `quote_buy_for_budget`; the inputs are kept in
@@ -211,6 +212,21 @@ def b_from_budget_micro(budget_micro: int, *, precision: int = DEFAULT_PRECISION
         return floor_micro(budget_micro / Decimal(2).ln())
 
 
+def is_quotable(b_micro: int, *, precision: int = DEFAULT_PRECISION) -> bool:
+    """Whether the quote functions price a market with this b at `precision` digits.
+
+    False for a b so large that `precision` digits cannot round its amounts reliably
+    (see "How many digits are enough" above): the quote functions raise `ValueError`
+    for exactly those. Ask before a market is opened. The database keeps a market's b
+    while it is OPEN, so one opened with such a b could be neither quoted nor traded.
+    """
+    _require_positive("b_micro", b_micro)
+    # `int ** int` is typed as Any, because a negative exponent gives a float.
+    scaled_cube: int = b_micro**3 * 10**_GUARD_DIGITS
+    bound: int = 10**precision
+    return scaled_cube <= bound
+
+
 @dataclass(frozen=True, slots=True)
 class _Amount:
     """A real number of micro-units as `whole + rest`, to be rounded in one direction.
@@ -283,7 +299,7 @@ def _require_positive(name: str, value: int) -> None:
 
 def _require_digits(b: int, precision: int) -> None:
     """Refuse a b that `precision` digits cannot round reliably (see the module docstring)."""
-    if b**3 * 10**_GUARD_DIGITS > 10**precision:
+    if not is_quotable(b, precision=precision):
         raise ValueError(
             f"b = {b} µCR cannot be quoted with {precision} digits: "
             f"b³ must stay below 10^{precision - _GUARD_DIGITS}"

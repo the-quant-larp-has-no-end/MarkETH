@@ -2,7 +2,8 @@
 
 Every credit movement is a journal entry whose postings sum to zero. A positive posting
 increases the balance of its account. What the database itself guarantees, whatever the
-code above it does (the triggers and privileges are in the migrations):
+code above it does (the triggers are in `app.models.triggers`, the privileges in
+`app.models.privileges`):
 
 * An entry nets to zero at commit, or the transaction fails.
 * `accounts.balance_micro` is the sum of the account's postings. A trigger adds every
@@ -12,8 +13,8 @@ code above it does (the triggers and privileges are in the migrations):
   transaction can add a posting to it. Entries and postings are append-only; the app
   role has no UPDATE or DELETE on them.
 
-User accounts cannot go negative, and neither can a market account or the two coffee
-ticket accounts (A.8: a market account only takes in costs and pays out proceeds, and
+User accounts cannot go negative, and neither can a market account or the two
+voucher accounts (A.8: a market account only takes in costs and pays out proceeds, and
 its loss is booked to `vis:mm_pnl` when it settles). `vis:issuance` and `vis:mm_pnl` can.
 """
 
@@ -29,7 +30,7 @@ from app.db.base import Base, enum_column
 
 REF_TYPE_MAX_LENGTH: Final[int] = 32
 JOURNAL_IDEMPOTENCY_KEY_MAX_LENGTH: Final[int] = 128
-"""The longest key of A.8, `ticket:{uuid}:redeem`, has 50 characters."""
+"""The longest key of A.8, `voucher:{uuid}:redeem`, has 50 characters."""
 
 CURRENT_TRANSACTION_ID: Final[str] = "(pg_current_xact_id())::text::bigint"
 """SQL for the id of the running top-level transaction, as a BIGINT."""

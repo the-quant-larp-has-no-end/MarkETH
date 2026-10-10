@@ -1,0 +1,305 @@
+# MarkETH reverse proxy (SPEC §9): one origin for the Next.js app and the API.
+#
+# It runs behind the VIScon portal (docs/SERVER_INFRASTRUCTURE.md). The portal signs
+# every visitor in, names them in two request headers and forwards the request as plain
+# HTTP over a private network; this proxy is the first thing of ours that request meets.
+#
+# The nginx image renders this template with envsubst every time the container starts.
+# compose.yaml sets NGINX_ENVSUBST_FILTER=^NGINX_, so only placeholders named NGINX_* are
+# replaced and nginx's own $variables are left alone. The values come from the Nginx
+# section of .env.
+
+# Docker's embedded DNS. The upstreams below are named through variables, which makes
+# nginx resolve them per request instead of once at start-up: it starts before api and
+# web exist and follows them to another address when they restart.
+resolver 127.0.0.11 valid=5s ipv6=off;
+
+# --- Who may speak for a visitor ---------------------------------------------------
+# The portal is the only way in (docs/SERVER_INFRASTRUCTURE.md §6), and what it sends
+# reaches this container from a private address: whatever connects to the published port
+# arrives here from the address of Docker's gateway. Only such a peer is believed when it
+# names the visitor's address or scheme. A peer with a public address is itself the
+# visitor.
+#
+# The list stands twice because the two directives differ in syntax;
+# backend/tests/unit/test_stack_files.py keeps both the same.
+set_real_ip_from 127.0.0.0/8;
+set_real_ip_from 10.0.0.0/8;
+set_real_ip_from 172.16.0.0/12;
+set_real_ip_from 192.168.0.0/16;
+set_real_ip_from fc00::/7;
+geo $realip_remote_addr $peer_is_trusted {
+    default        0;
+    127.0.0.0/8    1;
+    10.0.0.0/8     1;
+    172.16.0.0/12  1;
+    192.168.0.0/16 1;
+    fc00::/7       1;
+}
+
+# The visitor's address: the last entry of X-Original-Forwarded-For, the address the
+# portal's edge accepted the connection from. Whatever stands before it was supplied by
+# the client, hence no recursion. From here on $remote_addr is the visitor.
+real_ip_header X-Original-Forwarded-For;
+real_ip_recursive off;
+
+# The visitor's scheme. nginx itself speaks plain HTTP. The portal names the real scheme
+# in X-Forwarded-Scheme (its X-Forwarded-Proto describes a hop inside the portal); an
+# HTTPS tunnel in front of a local stack (SPEC A.10) names it in X-Forwarded-Proto.
+map $http_x_forwarded_proto $tunnel_scheme {
+    default $scheme;
+    https   https;
+}
+map $http_x_forwarded_scheme $forwarded_scheme {
+    default $tunnel_scheme;
+    https   https;
+}
+map $peer_is_trusted $client_scheme {
+    default $scheme;
+    1       $forwarded_scheme;
+}
+
+# HSTS only for a visitor who arrived over TLS. An empty value sends no header.
+map $client_scheme $hsts {
+    default "";
+    https   "max-age=31536000";
+}
+
+# The portal's request id where it looks like one, otherwise one made here (the same 32
+# hex digits), so that a request can be followed from the portal's logs into this one.
+map $http_x_request_id $request_ref {
+    default                    $request_id;
+    "~^[0-9A-Fa-f-]{16,64}$"   $http_x_request_id;
+}
+
+# The Next.js dev server pushes hot reloads over a WebSocket, the only upgrade let
+# through. Every other request goes upstream without a Connection header at all, which
+# is what an event stream needs.
+map $http_upgrade $connection_upgrade {
+    default   "";
+    websocket upgrade;
+}
+
+# --- Requests another site makes with a visitor's browser ----------------------------
+# The portal signs a browser in for every team's app at once, and it names the visitor
+# on each request that browser sends here, whichever page made it send one. A browser
+# says whose page that was in Sec-Fetch-Site: `same-origin` is this app, `none` an
+# address typed in or a bookmark, `same-site` another host under the same domain, which
+# every other team's app is, and `cross-site` anything else.
+#
+# The API answers this app's own pages. What another site makes a browser ask of it is
+# refused in the two /api/ locations below, before it counts against the limits of the
+# visitor whose browser was used. One request of that kind is let through: the visitor's
+# own window opening an address (Sec-Fetch-Mode `navigate` into Sec-Fetch-Dest
+# `document`), which is how a link from elsewhere and the way back from the sign-in
+# arrive. A frame, an <object> and an <embed> navigate too; they say so in
+# Sec-Fetch-Dest and are refused.
+#
+# A client that sends no Sec-Fetch-Site (curl, a browser that does not know the header)
+# is not refused here. The API's Origin check on requests that change something
+# (SPEC A.2) stands on its own and needs none of these headers.
+map $http_sec_fetch_site $from_another_site {
+    default     0;
+    same-site   1;
+    cross-site  1;
+}
+# What a navigation loads into. One that does not say is taken for the window's own.
+map $http_sec_fetch_dest $navigation_from_another_site {
+    default   $from_another_site;
+    ""        0;
+    document  0;
+}
+map $http_sec_fetch_mode $foreign_request {
+    default   $from_another_site;
+    navigate  $navigation_from_another_site;
+}
+
+# --- Limits: the second layer behind the API's own (SPEC §9) -------------------------
+# Counted per signed-in user, so that visitors who share an address (a lecture hall, a
+# Wi-Fi) do not share a bucket. A request that names nobody, which the API refuses
+# anyway, is counted by client address; so is one whose id is longer than the 255 bytes
+# a connection limit accepts as a key.
+map $http_x_user_id $caller {
+    default         $binary_remote_addr;
+    "~^.{1,255}$"   $http_x_user_id;
+}
+limit_req_zone  $caller zone=api_per_caller:10m rate=${NGINX_RATE_LIMIT};
+limit_req_status 429;
+limit_conn_zone $caller zone=streams_per_caller:10m;
+limit_conn_status 429;
+
+# --- Access log --------------------------------------------------------------------
+# One JSON object per request, without the query string, the Referer and the cookies: a
+# code to redeem arrives as /wallet?code=..., the requests that page makes repeat it in
+# their Referer, and a cookie of the portal is a visitor's sign-in.
+map $request_uri $request_path {
+    "~^(?<path_without_query>[^?]*)" $path_without_query;
+}
+
+# The one thing the log says about cookies: whether one of the portal's came along.
+# oauth2-proxy, which keeps the portal's sessions, names its cookies _oauth2_proxy...
+# (docs/SERVER_INFRASTRUCTURE.md §3.1). A request that carries a cookie of such a name is
+# logged with `true`, every other with `false`, and nothing of a cookie is written. The
+# lines of the first signed-in visitors answer open check 8 of that document.
+map $http_cookie $portal_cookie {
+    default                    false;
+    "~(^|;) *_oauth2_proxy"    true;
+}
+log_format marketh escape=json
+    '{"time":"$time_iso8601","id":"$request_ref","client":"$remote_addr",'
+    '"forwarded_for":"$http_x_original_forwarded_for","user":"$http_x_user_id",'
+    '"method":"$request_method","path":"$request_path","status":$status,'
+    '"bytes":$body_bytes_sent,"seconds":$request_time,'
+    '"upstream_seconds":"$upstream_response_time","limited":"$limit_req_status",'
+    '"portal_cookie":$portal_cookie}';
+
+server {
+    listen 80 default_server;
+    server_name _;
+    server_tokens off;
+    access_log /var/log/nginx/access.log marketh;
+
+    # The portal's edge accepts bodies of many megabytes; this is where the limit holds.
+    client_max_body_size ${NGINX_CLIENT_MAX_BODY_SIZE};
+
+    gzip on;
+    gzip_comp_level 5;
+    gzip_min_length 1024;
+    gzip_proxied any;
+    gzip_vary on;
+    gzip_types application/json application/javascript application/manifest+json
+               image/svg+xml text/css text/javascript text/plain text/x-component;
+
+    # Response headers of every answer. `merge` lets a location add one of its own and
+    # keep these; without it nginx gives such a location only its own.
+    add_header_inherit merge;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+    add_header Content-Security-Policy "${NGINX_CONTENT_SECURITY_POLICY}" always;
+    add_header Strict-Transport-Security $hsts always;
+    add_header X-Request-Id $request_ref always;
+
+    # Request headers for the API. nginx has no `merge` for these: a location that sets
+    # one gets none of the server's. The two /api/ locations set none, so this list is
+    # theirs. The location of the web app needs two lines more and repeats the list;
+    # backend/tests/unit/test_stack_files.py keeps both the same.
+    proxy_http_version 1.1;
+    proxy_set_header Host              $http_host;
+    proxy_set_header X-Forwarded-Host  $http_host;
+    proxy_set_header X-Forwarded-Proto $client_scheme;
+    proxy_set_header X-Forwarded-Port  "";
+    proxy_set_header X-Real-IP         $remote_addr;
+    proxy_set_header X-Forwarded-For   $remote_addr;
+    proxy_set_header X-Request-Id      $request_ref;
+    # No cookie that arrives is ours, and neither app reads one.
+    proxy_set_header Cookie            "";
+    proxy_set_header Upgrade           $http_upgrade;
+    proxy_set_header Connection        $connection_upgrade;
+
+    # Who is calling. The portal names the visitor in X-User-Id and X-User-Name
+    # (docs/SERVER_INFRASTRUCTURE.md §3). The list above names neither header, so both
+    # reach the API exactly as they arrived, a repeated line included, and the API
+    # refuses a request without them.
+    #
+    # On a laptop nobody signs in. compose.override.yaml mounts infra/nginx/dev, which is
+    # rendered into the directory below and names the caller instead. compose.yaml
+    # mounts nothing there, so in the deployed stack this line includes no file.
+    include /etc/nginx/dev/*.conf;
+
+    set $web_upstream web:3000;
+    set $api_upstream api:8000;
+
+    # Answered by nginx itself, for the container's healthcheck.
+    location = /nginx-health {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    # The web app serves the same pages to everybody and is told nothing about the
+    # caller: the server's list, and the two identity headers taken out.
+    location / {
+        proxy_set_header Host              $http_host;
+        proxy_set_header X-Forwarded-Host  $http_host;
+        proxy_set_header X-Forwarded-Proto $client_scheme;
+        proxy_set_header X-Forwarded-Port  "";
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $remote_addr;
+        proxy_set_header X-Request-Id      $request_ref;
+        proxy_set_header Cookie            "";
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        $connection_upgrade;
+        proxy_set_header X-User-Id         "";
+        proxy_set_header X-User-Name       "";
+        proxy_pass http://$web_upstream;
+
+        # The dev server's hot-reload WebSocket lives under /_next/ and says nothing
+        # between edits. It gets the patience of the event stream; the default 60 s would
+        # drop it once a minute. It sets no request header, so it sends the list of the
+        # location around it.
+        location /_next/ {
+            proxy_read_timeout ${NGINX_SSE_READ_TIMEOUT};
+            proxy_pass http://$web_upstream;
+        }
+    }
+
+    # The API. A request another site makes is refused first ($foreign_request above):
+    # nginx decides that before it counts a request, so the refusal costs the caller
+    # nothing of the limit that follows.
+    location /api/ {
+        if ($foreign_request) {
+            return 403;
+        }
+        limit_req zone=api_per_caller burst=${NGINX_RATE_LIMIT_BURST} nodelay;
+        error_page 403 = @api_forbidden;
+        error_page 413 = @api_too_large;
+        error_page 429 = @api_rate_limited;
+        error_page 502 504 = @api_unavailable;
+        proxy_pass http://$api_upstream;
+    }
+
+    # Event streams: unbuffered and long-lived. A regex location wins over the /api/
+    # prefix above and takes nothing from it, so the refusal and the request limit stand
+    # here again: opening a stream counts like any other call. On top of that a caller
+    # holds a limited number of streams open at once. nginx acts on the API's
+    # "X-Accel-Buffering: no" and would then keep it to itself; the portal's own proxy
+    # has to see it too.
+    location ~ ^/api/(.+/)?stream$ {
+        if ($foreign_request) {
+            return 403;
+        }
+        limit_req zone=api_per_caller burst=${NGINX_RATE_LIMIT_BURST} nodelay;
+        limit_conn streams_per_caller ${NGINX_SSE_STREAMS_PER_CALLER};
+        proxy_buffering off;
+        proxy_pass_header X-Accel-Buffering;
+        proxy_read_timeout ${NGINX_SSE_READ_TIMEOUT};
+        error_page 403 = @api_forbidden;
+        error_page 413 = @api_too_large;
+        error_page 429 = @api_rate_limited;
+        error_page 502 504 = @api_unavailable;
+        proxy_pass http://$api_upstream;
+    }
+
+    # What nginx itself answers under /api/ keeps the API's error shape (SPEC A.2). The
+    # API's own answers pass through untouched, a 403 of its own included.
+    location @api_forbidden {
+        default_type application/json;
+        return 403 '{"code":"FORBIDDEN","message":"This request did not come from the MarkETH app.","details":{}}';
+    }
+
+    location @api_too_large {
+        default_type application/json;
+        return 413 '{"code":"VALIDATION_ERROR","message":"The request is too large.","details":{}}';
+    }
+
+    location @api_rate_limited {
+        default_type application/json;
+        add_header Retry-After 1 always;
+        return 429 '{"code":"RATE_LIMITED","message":"Too many attempts. Try again later.","details":{"retry_after_seconds":1}}';
+    }
+
+    location @api_unavailable {
+        default_type application/json;
+        return 503 '{"code":"SERVICE_UNAVAILABLE","message":"This is temporarily unavailable. Try again shortly.","details":{}}';
+    }
+}

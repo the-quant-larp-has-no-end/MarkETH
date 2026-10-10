@@ -9,8 +9,8 @@ It fixes three things for the whole schema, so no model can get them wrong:
   (`AwareDateTime`).
 * Enum-like columns are VARCHAR with a named CHECK constraint, built by `enum_column`.
 
-`sha256_hex_check` backs up SPEC §2 and §3: tokens, session IDs and codes are stored as
-hashes, and the database refuses anything that is not shaped like one.
+`sha256_hex_check` backs up SPEC §2: a code is stored as its hash, and the database
+refuses anything that is not shaped like one.
 """
 
 from datetime import datetime

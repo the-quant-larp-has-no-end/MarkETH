@@ -14,7 +14,6 @@ dependencies = [
     "pydantic-settings>=2.15",
     "redis>=8.1",
     "scylla-driver>=3.29",
-    "aiosmtplib>=5.1",
 ]
 
 [dependency-groups]
@@ -45,7 +44,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"migrations/versions/*.py" = ["E501"]
+# ETH writes some programme names with an en dash, and the catalogue keeps its labels.
+"app/core/degrees.py" = ["RUF001"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app", "scripts", "tests"]

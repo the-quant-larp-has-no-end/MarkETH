@@ -6,7 +6,8 @@ a client only ever parses one kind of error.
 
 One translation is a rule of the spec rather than a courtesy: with Postgres down,
 "everything returns 503" (SPEC §9). No service catches a lost connection (it has to
-leave the unit of work anyway); `_database_error` recognises it here, once.
+leave the unit of work anyway); `_database_error` recognises it here, once. A lock that
+was not granted within `POSTGRES_LOCK_TIMEOUT_MS` takes the same road and is 503 too.
 """
 
 import logging
@@ -100,14 +101,15 @@ async def _not_implemented(request: Request, exc: Exception) -> JSONResponse:
 
 
 async def _database_error(request: Request, exc: Exception) -> JSONResponse:
-    """503 when Postgres is unreachable (SPEC §9); every other such error is a bug.
+    """503 when Postgres is unreachable or did not grant a lock in time (SPEC §9); every
+    other such error is a bug.
 
     A bug is raised again, so it takes the same road as any unexpected error: logged
     with its traceback and answered with 500 by `_unexpected_error`.
     """
     if not database.is_unavailable(exc):
         raise exc
-    logger.warning("Postgres is unavailable in %s %s: %r", request.method, request.url.path, exc)
+    logger.warning("Postgres could not serve %s %s: %r", request.method, request.url.path, exc)
     return error_response(
         ServiceUnavailableError.status_code,
         ServiceUnavailableError.code,

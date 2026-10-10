@@ -1,0 +1,45 @@
+# What `make deploy-sync` keeps off the VM. One pattern per line, plain excludes only
+# (the laptop's rsync is openrsync). A leading "/" anchors a pattern at the repository
+# root; a trailing "/" matches directories only.
+#
+# The sync runs with --delete, so the VM's tree is a mirror of this one. A path excluded
+# here is also left alone on the VM: that is what keeps the VM's .env between deploys.
+
+# The environment of this machine. The VM renders its own (make deploy-env).
+.env
+
+# The development stand-in for the portal's sign-in must not exist on the VM.
+/compose.override.yaml
+/infra/nginx/dev/
+
+# Version control, CI and editors
+/.git/
+/.github/
+/.claude/
+.idea/
+.vscode/
+.DS_Store
+
+# Python: environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.import_linter_cache/
+.coverage
+htmlcov/
+
+# Node: dependencies and build output (the image builds its own)
+node_modules/
+.next/
+/frontend/out/
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*
+
+# Local artefacts
+*.log
+/tmp/

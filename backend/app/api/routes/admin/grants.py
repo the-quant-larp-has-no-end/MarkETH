@@ -8,6 +8,6 @@ from app.schemas.admin.grants import MonthlyGrantRunResponse
 router = APIRouter(prefix="/grants", tags=["admin-grants"])
 
 
-@router.post("/monthly", summary="Grant all owed monthly vouchers to every user")
+@router.post("/monthly", summary="Book every owed monthly grant for every user")
 async def run_monthly_grants(admin: AdminUser, grants: GrantServiceDep) -> MonthlyGrantRunResponse:
     return await grants.run_monthly(admin)
