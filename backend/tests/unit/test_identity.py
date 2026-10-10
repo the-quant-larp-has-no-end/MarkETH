@@ -1,7 +1,7 @@
 """Who is calling, as plain values (SPEC §3, Appendix A.2, A.3).
 
-A registered caller keeps the role `.env` gives them only while their account is
-active. A caller the portal named who has no profile is a `Caller` without a user.
+A registered caller has the rights of their role only while their account is active.
+A caller the portal named who has no profile is a `Caller` without a user.
 
 Then the two readings of the portal's headers: the display name a profile stores, and
 the id. How strictly an id is read is `tests/unit/test_email_policy.py`.
@@ -63,7 +63,7 @@ def test_a_caller_without_a_user_is_an_identity_without_a_profile() -> None:
     caller = Caller(identity=identity, user=None)
 
     assert caller.user is None
-    assert caller.identity.role is UserRole.ADMIN, "a role does not wait for a profile"
+    assert caller.identity.role is UserRole.ADMIN, "a bootstrap admin is one before a profile"
     assert caller.identity.name == "", "the portal may send no name"
 
 

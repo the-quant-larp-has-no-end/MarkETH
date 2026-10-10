@@ -4,6 +4,7 @@ import { describe, expect, test, vi } from "vitest";
 import { keys } from "@/lib/api/keys";
 import type { MarketDetailResponse } from "@/lib/api/schema";
 import {
+  adminMarketDetail,
   holdings,
   MARKET_ID,
   marketDetail,
@@ -30,6 +31,9 @@ import {
   sellChip,
   sideSegment,
   stakeChip,
+  stakeField,
+  stakeRefusal,
+  stakeSlider,
   ticketFrame,
   TRADE,
 } from "./test-harness";
@@ -53,26 +57,27 @@ const chipNames = (group: string) =>
     .map((chip) => chip.textContent);
 
 describe("the form", () => {
-  test("shows, top to bottom: the question, Buy and Sell, the outcome, the stakes with what is left, the quote, the balance and Confirm", () => {
+  test("shows, top to bottom: Buy and Sell, the outcome, the stake entry with what is left, the quote, the balance and Confirm", () => {
     const market = marketDetail({
       viewer: marketViewer({ balance_cr: "240", stake_left_cr: "74.123456" }),
     });
     openTicket({ market });
-
-    const question = screen.getByText(market.question);
-    expect(question).toHaveClass("truncate", "type-body-sm", "text-muted-foreground");
 
     expect(sideSegment("Buy")).toHaveAttribute("aria-checked", "true");
     expect(sideSegment("Sell")).toHaveAttribute("aria-checked", "false");
     expect(outcomeSegment("YES")).toHaveAttribute("aria-pressed", "true");
     expect(outcomeSegment("NO")).toHaveAttribute("aria-pressed", "false");
 
-    expect(chipNames("Stake")).toEqual(["2525 tokens", "5050 tokens", "100100 tokens"]);
+    const stake = screen.getByRole("group", { name: "Stake" });
+    expect(stake).toContainElement(stakeSlider());
+    expect(stake).toContainElement(stakeField());
+    expect(chipNames("Quick amounts")).toEqual(["2525 tokens", "5050 tokens", "100100 tokens"]);
     for (const amount of ["25", "50", "100"]) {
       expect(stakeChip(amount)).toBeEnabled();
       expect(stakeChip(amount)).toHaveAttribute("aria-pressed", "false");
     }
     const stakeLeft = screen.getByText("74.12 of 100 tokens left in this market");
+    expect(stake).toContainElement(stakeLeft);
 
     const balance = row("Balance");
     expect(balance).toHaveTextContent("240 tokens");
@@ -81,9 +86,10 @@ describe("the form", () => {
     expect(confirm).toBeDisabled();
 
     expectInOrder([
-      question,
       sideSegment("Buy"),
       outcomeSegment("YES"),
+      stakeSlider(),
+      stakeField(),
       stakeChip("25"),
       stakeLeft,
       row("You pay"),
@@ -94,8 +100,18 @@ describe("the form", () => {
     ]);
   });
 
-  test("before a chip is chosen the quote rows are there without figures, and nothing is asked", async () => {
+  test("has no question of its own: the surface it stands on has it in its header", () => {
+    const market = marketDetail();
+    openTicket({ market });
+
+    expect(screen.queryByText(market.question)).not.toBeInTheDocument();
+  });
+
+  test("opens with an empty field: the quote rows are there without figures, and nothing is asked", async () => {
     const { api } = openTicket();
+
+    expect(stakeField()).toHaveValue("");
+    expect(stakeSlider()).toHaveAttribute("aria-valuetext", "not set");
 
     for (const label of ["You pay", "Shares", "Average price", "New probability"]) {
       expect(within(row(label)).getByText("none yet")).toBeInTheDocument();
@@ -118,7 +134,7 @@ describe("the form", () => {
     expect(screen.getByText("Each share pays 1 token if NO wins.")).toBeInTheDocument();
   });
 
-  test("the stakes are the market's presets, and only the server's flag disables one", () => {
+  test("the presets are the market's, and only the server's flag disables one", () => {
     const viewer = marketViewer({
       // The smallest is refused and a larger one allowed: no rule of the frontend's would say so.
       stake_presets: [
@@ -133,7 +149,11 @@ describe("the form", () => {
       tunables: { stake_presets_cr: ["1", "2", "3"] },
     });
 
-    expect(chipNames("Stake")).toEqual(["1010 tokens", "1,250.51,250.5 tokens", "4040 tokens"]);
+    expect(chipNames("Quick amounts")).toEqual([
+      "1010 tokens",
+      "1,250.51,250.5 tokens",
+      "4040 tokens",
+    ]);
     expect(stakeChip("10")).toBeDisabled();
     expect(stakeChip("1,250.5")).toBeEnabled();
     expect(stakeChip("40")).toBeDisabled();
@@ -169,11 +189,35 @@ describe("the form", () => {
     expect(screen.queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
   });
 
+  test("the slider runs over the range the market sends for it", () => {
+    openTicket({
+      market: marketDetail({ viewer: marketViewer({ buy_slider: { min: 5, max: 85, step: 5 } }) }),
+      // The range comes from the market, not from /config.
+      tunables: { stake_step_cr: "1", max_stake_per_market_cr: "100" },
+    });
+
+    expect(stakeSlider()).toHaveAttribute("aria-valuemin", "5");
+    expect(stakeSlider()).toHaveAttribute("aria-valuemax", "85");
+  });
+
+  test("without a range from the market there is no slider; the field and the presets stay", () => {
+    openTicket({
+      // The balance is below the smallest buy: the server sends no range, and may still
+      // quote. Nothing here works that out.
+      market: marketDetail({ viewer: marketViewer({ balance_cr: "0.5", buy_slider: null }) }),
+    });
+
+    expect(screen.queryByRole("slider")).not.toBeInTheDocument();
+    expect(stakeField()).toBeEnabled();
+    expect(stakeChip("25")).toBeInTheDocument();
+  });
+
   test("brings its own scrolling body and its pinned footer, with Confirm in the footer", () => {
     openTicket();
 
     const body = ticketFrame()!.querySelector("[data-slot=sheet-body]")!;
     const footer = ticketFrame()!.querySelector("[data-slot=sheet-footer]")!;
+    expect(body).toContainElement(stakeField());
     expect(body).toContainElement(stakeChip("25"));
     expect(body).toContainElement(row("Balance"));
     expect(footer).toContainElement(button("Buy YES"));
@@ -311,13 +355,16 @@ describe("a viewer who cannot trade", () => {
           { amount_cr: "50", allowed: false },
           { amount_cr: "100", allowed: false },
         ],
+        buy_slider: null,
       }),
     });
 
-  test("finds every chip disabled and Confirm disabled, and no quote is asked for", async () => {
+  test("finds the stake entry switched off and Confirm disabled, and no quote is asked for", async () => {
     const { api } = openTicket({ market: paused() });
 
     for (const amount of ["25", "50", "100"]) expect(stakeChip(amount)).toBeDisabled();
+    expect(stakeField()).toBeDisabled();
+    expect(screen.queryByRole("slider")).not.toBeInTheDocument();
     expect(sideSegment("Sell")).toBeDisabled();
     expect(button("Buy YES")).toBeDisabled();
 
@@ -325,8 +372,20 @@ describe("a viewer who cannot trade", () => {
     expect(api.calls(QUOTE)).toHaveLength(0);
   });
 
-  test("a chip that was chosen is no longer chosen once the server stops allowing it", async () => {
-    const { user, client } = openTicket({ routes: { [QUOTE]: json(200, quote()) } });
+  test("the entry follows can_trade alone: a slider the server still sent is switched off with the rest", () => {
+    openTicket({
+      market: marketDetail({
+        viewer: marketViewer({ can_trade: false, cannot_trade_reason: "OWN_MARKET" }),
+      }),
+    });
+
+    expect(stakeField()).toBeDisabled();
+    expect(document.querySelector("[data-slot=slider]")).toHaveAttribute("data-disabled");
+    expect(button("Buy YES")).toBeDisabled();
+  });
+
+  test("when the market stops trading behind the ticket, the entry is switched off and its quote counts for nothing", async () => {
+    const { user, api, client } = openTicket({ routes: { [QUOTE]: json(200, quote()) } });
     await user.click(stakeChip("25"));
     await waitFor(() => expect(button("Buy YES")).toBeEnabled());
 
@@ -334,18 +393,25 @@ describe("a viewer who cannot trade", () => {
     act(() => client.setQueryData(keys.markets.detail(MARKET_ID), paused()));
 
     await waitFor(() => expect(stakeChip("25")).toBeDisabled());
-    expect(stakeChip("25")).toHaveAttribute("aria-pressed", "false");
+    // The amount is the user's and stays in the field; nothing can be done with it.
+    expect(stakeField()).toHaveValue("25");
+    expect(stakeField()).toBeDisabled();
     expect(button("Buy YES")).toBeDisabled();
     expect(within(row("You pay")).getByText("none yet")).toBeInTheDocument();
+    // The quote that was read is not asked for again, and no trade goes out.
+    await user.click(button("Buy YES"));
+    expect(api.calls(QUOTE)).toHaveLength(1);
+    expect(api.calls(TRADE)).toHaveLength(0);
   });
 });
 
 describe("the quote", () => {
-  test("is asked for with the side, the outcome and the chip as it arrived; skeleton bars, then its figures", async () => {
+  test("is asked for with the side, the outcome and the amount the field holds; skeleton bars, then its figures", async () => {
     const answer = deferred();
     const { user, api } = openTicket({ routes: { [QUOTE]: answer.handler } });
 
     await user.click(stakeChip("50"));
+    expect(stakeField()).toHaveValue("50");
     expect(stakeChip("50")).toHaveAttribute("aria-pressed", "true");
     expect(stakeChip("50").className).toContain("data-[state=on]:bg-foreground");
 
@@ -384,7 +450,7 @@ describe("the quote", () => {
     expect(button("Buy YES")).toBeEnabled();
   });
 
-  test("the panel shows the quote, not the chip", async () => {
+  test("the panel shows the quote, not the input", async () => {
     const { user } = openTicket({
       routes: { [QUOTE]: json(200, quote({ amount_cr: "24.987654" })) },
     });
@@ -574,17 +640,121 @@ describe("the quote", () => {
     }
   });
 
-  test.each([
-    ["MARKET_NOT_OPEN", "This market is not open for trading."],
-    ["INSUFFICIENT_SHARES", "You cannot sell more shares than you hold."],
-  ] as const)("answered %s shows the message and reads the market again", async (code, message) => {
-    const { user, api } = openTicket({ routes: { [QUOTE]: apiError(409, code, message) } });
-    await waitFor(() => expect(api.calls(MARKET)).toHaveLength(1));
+  describe("that says the market on screen is behind", () => {
+    const BEHIND = [
+      [409, "MARKET_NOT_OPEN", "This market is not open for trading."],
+      [409, "INSUFFICIENT_SHARES", "You cannot sell more shares than you hold."],
+      [403, "FORBIDDEN", "You proposed this market, so you cannot trade it."],
+    ] as const;
 
-    await user.click(stakeChip("25"));
+    test.each(BEHIND)(
+      "a %i %s stands above the button as a trade's refusal does, and the market is read again",
+      async (status, code, message) => {
+        const { user, api } = openTicket({ routes: { [QUOTE]: apiError(status, code, message) } });
+        await waitFor(() => expect(api.calls(MARKET)).toHaveLength(1));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(message);
-    await waitFor(() => expect(api.calls(MARKET)).toHaveLength(2));
+        await user.click(stakeChip("25"));
+
+        const alert = await screen.findByRole("alert");
+        expect(alert).toHaveTextContent(message);
+        expect(alert).toHaveAttribute("data-slot", "inline-error");
+        expect(alert).toHaveClass("text-no-text");
+        const footer = ticketFrame()!.querySelector("[data-slot=sheet-footer]")!;
+        expect(footer).toContainElement(alert);
+        expect(alert.compareDocumentPosition(button("Buy YES")) & 4).toBeTruthy();
+        // It is a verdict, not a failure: there is nothing to try again.
+        expect(screen.queryByRole("button", { name: /Try again/ })).not.toBeInTheDocument();
+        expect(button("Buy YES")).toBeDisabled();
+        // Nothing is said about the amount: the stake entry is as it was.
+        expect(stakeRefusal()).not.toBeInTheDocument();
+        expect(stakeField()).not.toHaveAttribute("aria-invalid");
+
+        await waitFor(() => expect(api.calls(MARKET)).toHaveLength(2));
+        // Once, not again and again.
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        expect(api.calls(MARKET)).toHaveLength(2);
+        expect(api.calls(QUOTE)).toHaveLength(1);
+      },
+    );
+
+    test("the message is still there once the market that was read again says the same", async () => {
+      const closed = marketDetail({
+        status: "CLOSED",
+        trading_open: false,
+        viewer: marketViewer({
+          can_trade: false,
+          cannot_trade_reason: "MARKET_NOT_OPEN",
+          stake_presets: [
+            { amount_cr: "25", allowed: false },
+            { amount_cr: "50", allowed: false },
+            { amount_cr: "100", allowed: false },
+          ],
+          buy_slider: null,
+        }),
+      });
+      const { user, api } = openTicket({
+        routes: {
+          [QUOTE]: apiError(409, "MARKET_NOT_OPEN", "This market is not open for trading."),
+        },
+      });
+      await waitFor(() => expect(api.calls(MARKET)).toHaveLength(1));
+      api.on(MARKET, json(200, closed));
+
+      await user.click(stakeChip("25"));
+
+      // The sheet shows what can still be done: nothing, and why.
+      await waitFor(() => expect(stakeField()).toBeDisabled());
+      expect(screen.getByRole("alert")).toHaveTextContent("This market is not open for trading.");
+      expect(screen.queryByRole("slider")).not.toBeInTheDocument();
+      expect(button("Buy YES")).toBeDisabled();
+    });
+
+    test("when selling, a holding that changed is said above the button and the sell presets are read again", async () => {
+      const after = marketDetail({
+        viewer: marketViewerWithPosition({
+          sell_presets: [
+            { outcome: "YES", portion: "HALF", shares: "20", allowed: true },
+            { outcome: "YES", portion: "ALL", shares: "40", allowed: true },
+            { outcome: "NO", portion: "HALF", shares: "0", allowed: false },
+            { outcome: "NO", portion: "ALL", shares: "0", allowed: false },
+          ],
+        }),
+      });
+      const { user, api } = openTicket({
+        market: withPosition(),
+        start: SELL_YES,
+        routes: {
+          [QUOTE]: apiError(409, "INSUFFICIENT_SHARES", "You cannot sell more shares than you hold."),
+        },
+      });
+      await waitFor(() => expect(api.calls(MARKET)).toHaveLength(1));
+      api.on(MARKET, json(200, after));
+
+      await user.click(sellChip("All"));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "You cannot sell more shares than you hold.",
+      );
+      await waitFor(() => expect(sellChip("All")).toHaveTextContent("40 shares"));
+      expect(button("Sell YES shares")).toBeDisabled();
+    });
+  });
+
+  test("a quote of a sale that fails for any reason is the banner: selling has no stake entry to say it with", async () => {
+    const { user } = openTicket({
+      market: withPosition(),
+      start: SELL_YES,
+      routes: {
+        [QUOTE]: apiError(422, "TRADE_TOO_SMALL", "This trade is below the minimum size."),
+      },
+    });
+
+    await user.click(sellChip("Half"));
+
+    const banner = await screen.findByRole("alert");
+    expect(banner).toHaveTextContent("This trade is below the minimum size.");
+    expect(within(banner).getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(button("Sell YES shares")).toBeDisabled();
   });
 });
 

@@ -263,15 +263,46 @@ describe("VoucherRow", () => {
     expect(screen.getByText("Coffee").closest("div")).toHaveClass("text-muted-foreground");
   });
 
-  test("an expired voucher says that it was refunded", () => {
+  test.each([
+    [true, "Expired, refunded"],
+    [false, "Expired, refund on its way"],
+  ])(
+    "an expired voucher says whether its refund is booked: refunded %s reads '%s'",
+    (refunded, text) => {
+      renderWithProviders(
+        <RowList>
+          <VoucherRow
+            voucher={voucherItem({
+              status: "EXPIRED",
+              refunded,
+              expires_at: "2026-11-03T10:00:00Z",
+            })}
+            onShowQr={() => {}}
+          />
+        </RowList>,
+      );
+
+      const row = screen.getByRole("listitem");
+      expect(within(row).getByText(text)).toBeInTheDocument();
+      // One of the two, never both, and with it the time the voucher expired.
+      expect(row.textContent).toBe(`Coffee3 Nov 2026, 11:00${text}`);
+      expect(screen.queryByRole("button")).not.toBeInTheDocument();
+      expect(screen.getByText("Coffee").closest("div")).toHaveClass("text-muted-foreground");
+    },
+  );
+
+  test("`refunded` speaks for an expired voucher alone: a redeemed one says Redeemed either way", () => {
     renderWithProviders(
       <RowList>
-        <VoucherRow voucher={voucherItem({ status: "EXPIRED" })} onShowQr={() => {}} />
+        <VoucherRow
+          voucher={voucherItem({ status: "REDEEMED", refunded: false })}
+          onShowQr={() => {}}
+        />
       </RowList>,
     );
 
-    expect(screen.getByText("Expired, refunded")).toBeInTheDocument();
-    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.getByText("Redeemed")).toBeInTheDocument();
+    expect(screen.queryByText(/Expired/)).not.toBeInTheDocument();
   });
 
   test("Show QR shows a spinner while its code is on the way", () => {

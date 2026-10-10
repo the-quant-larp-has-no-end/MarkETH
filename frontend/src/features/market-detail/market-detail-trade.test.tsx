@@ -489,7 +489,7 @@ describe("MarketDetailScreen and the trade ticket", () => {
       navigation.go(`${PATH}?sell=YES`);
       const { api } = await open(marketDetail({ viewer: marketViewerWithPosition() }));
       act(() => streams.latest().open());
-      // Everything was sold: no sell preset is allowed any more.
+      // Everything was sold: no sell preset is allowed.
       api.on(MARKET, json(200, marketDetail({ viewer: marketViewer({ cost_cr: "50" }) })));
 
       act(() =>
@@ -646,7 +646,9 @@ describe("MarketDetailScreen and the trade ticket", () => {
 
       act(() => scrolling.scrolledPast(place()));
 
-      expect(within(pinned() as HTMLElement).getByRole("button", { name: "YES 54.8%" })).toBeEnabled();
+      expect(
+        within(pinned() as HTMLElement).getByRole("button", { name: "YES 54.8%" }),
+      ).toBeEnabled();
 
       act(() => scrolling.notReached(place()));
       expect(pinned()).not.toBeInTheDocument();

@@ -17,7 +17,8 @@ The rules are proven three ways:
   has to be the one `answer_of` works out in Python from the rows as they are stored.
 
 What a figure should be is read from the stored rows (`standings`), with the payout of a
-position taken from `MarketView`; nothing here prices a trade a second time.
+position taken from `MarketView` and the price of a market that is not settled from
+`app.pricing.lmsr`; nothing here prices a trade a second time.
 """
 
 from collections import Counter, defaultdict
@@ -27,7 +28,7 @@ from dataclasses import dataclass, replace
 from datetime import timedelta
 from decimal import ROUND_DOWN, Decimal
 from itertools import groupby
-from typing import Any, Final
+from typing import Any, Final, Literal
 from uuid import UUID, uuid7
 
 import httpx
@@ -35,6 +36,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import event, select
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.container import Container
 from app.core.degrees import CATALOGUE
@@ -67,8 +69,11 @@ from app.schemas.leaderboard import (
 )
 from app.services.leaderboard import CURSOR_MAX, PAYOUT_RATIO_PLACES
 from app.services.ledger import LedgerRef, PostingLine, resolution_key, trade_key, void_key
+from app.services.market_view import SETTLED_STATUSES
 from tests.support.books import assert_books_balance
 from tests.support.clock import TEST_NOW, FrozenClock
+from tests.support.database import reset_database
+from tests.support.economy import MARKET_B, PRECISION
 from tests.support.factories import ActAs, Factory
 
 pytestmark = pytest.mark.integration
@@ -333,10 +338,18 @@ class Figures:
     without a settled market."""
 
     credits_micro: int
+    """What the user has: the balance plus what the open positions are worth."""
+
     trades: int
     settled_markets: int
     win_rate_micro: int | None
     avg_payout_ratio_micro: int | None
+    positions_value_micro: int = 0
+    """The part of `credits_micro` that is in open positions. The rest is the balance."""
+
+    @property
+    def balance_micro(self) -> int:
+        return self.credits_micro - self.positions_value_micro
 
 
 @dataclass(frozen=True, slots=True)
@@ -348,13 +361,35 @@ class Standing:
 
 
 def figures_of(row: LeaderboardRow) -> Figures:
+    assert row.credits_micro == row.balance_micro + row.positions_value_micro
     return Figures(
         credits_micro=row.credits_micro,
         trades=row.trades,
         settled_markets=row.settled_markets,
         win_rate_micro=row.win_rate_micro,
         avg_payout_ratio_micro=row.avg_payout_ratio_micro,
+        positions_value_micro=row.positions_value_micro,
     )
+
+
+def open_value_micro(market: Market, rows: Sequence[Position], precision: int) -> int:
+    """What a user's holdings in a market that is not settled are worth: each one its
+    shares at the price of its outcome, rounded down. The price is lmsr's."""
+    state = lmsr.MarketState(q_yes=market.q_yes_micro, q_no=market.q_no_micro, b=market.b_micro)
+    p_yes_micro = lmsr.price_yes_micro(state, precision=precision)
+    return sum(
+        row.shares_micro
+        * (p_yes_micro if row.outcome is Outcome.YES else MICRO - p_yes_micro)
+        // MICRO
+        for row in rows
+    )
+
+
+async def open_prices(container: Container, uow: UnitOfWork) -> dict[UUID, int]:
+    """The prices `LeaderboardService` hands its statement: of every market that is not
+    settled and of which somebody holds shares."""
+    held = await uow.markets.list_held_outside(SETTLED_STATUSES)
+    return container.market_view.open_prices_micro(held)
 
 
 async def standings(container: Container) -> list[Standing]:
@@ -363,8 +398,10 @@ async def standings(container: Container) -> list[Standing]:
 
     In the order of registration. What a resolved position paid is `MarketView`'s
     answer, so the figures rest on the same reading of a position as the portfolio.
+    What an open position is worth is worked out here, from lmsr's price.
     """
     view = container.market_view
+    precision = container.settings.pricing.decimal_precision
     async with container.uow_factory() as uow:
         session = uow.session
         users = (await session.scalars(select(User).order_by(User.created_at, User.id))).all()
@@ -389,9 +426,11 @@ async def standings(container: Container) -> list[Standing]:
     for user in users:
         if user.status is not UserStatus.ACTIVE:
             continue
-        settled = wins = cost_micro = returned_micro = 0
+        settled = wins = cost_micro = returned_micro = open_micro = 0
         for market_id, rows in held[user.id].items():
             put_in = sum(row.cost_micro for row in rows)
+            if markets[market_id].status not in SETTLED_STATUSES:
+                open_micro += open_value_micro(markets[market_id], rows, precision)
             if markets[market_id].status is not MarketStatus.RESOLVED or put_in == 0:
                 continue
             payout = view.payout_micro(rows, resolutions[market_id])
@@ -402,11 +441,12 @@ async def standings(container: Container) -> list[Standing]:
             cost_micro += put_in
             returned_micro += got_back
         figures = Figures(
-            credits_micro=balances[user.id],
+            credits_micro=balances[user.id] + open_micro,
             trades=trades[user.id],
             settled_markets=settled,
             win_rate_micro=wins * MICRO // settled if settled else None,
             avg_payout_ratio_micro=returned_micro * MICRO // cost_micro if settled else None,
+            positions_value_micro=open_micro,
         )
         result.append(Standing(user=user, figures=figures))
     return result
@@ -427,6 +467,7 @@ async def figures_by_name(container: Container) -> dict[str, Figures]:
             after_rank=0,
             limit=MAX_PAGE_SIZE,
             viewer_id=uuid7(),
+            p_yes_micro=await open_prices(container, uow),
         )
     return {row.username: figures_of(row) for row in rows}
 
@@ -444,6 +485,12 @@ async def ask(
     return await container.leaderboard.ranking(
         factory.identity(viewer), LeaderboardQuery.model_validate(query)
     )
+
+
+async def portfolio_total_micro(container: Container, factory: Factory, user: User) -> int:
+    """`total_value_cr` of the user's `GET /me/positions`, in micro-units."""
+    portfolio = await container.account.portfolio(factory.identity(user))
+    return to_micro(portfolio.total_value_cr)
 
 
 def names(answer: LeaderboardResponse) -> list[str]:
@@ -636,6 +683,9 @@ async def test_the_api_sends_the_league_by_credits_with_rounded_win_rates_and_cu
             "degree_level": level,
             "degree_programme": programme,
             "credits_cr": credits_cr,
+            # Every market of the league is resolved: nothing is in an open position.
+            "balance_cr": credits_cr,
+            "positions_value_cr": "0",
             "trades": figures.trades,
             "settled_markets": figures.settled_markets,
             "win_rate": display_probability(figures.win_rate_micro, decimals),
@@ -658,6 +708,8 @@ async def test_the_api_sends_the_league_by_credits_with_rounded_win_rates_and_cu
     }
     for sent in response.json()["items"]:
         assert isinstance(sent["credits_cr"], str)
+        assert isinstance(sent["balance_cr"], str)
+        assert isinstance(sent["positions_value_cr"], str)
         assert isinstance(sent["win_rate"], float)
         assert isinstance(sent["avg_payout_ratio"], float)
     await assert_books_balance(container.uow_factory)
@@ -1161,6 +1213,24 @@ async def test_a_cursor_that_is_no_rank_is_refused_and_names_the_field(
     assert refused.value.details == {"field": "cursor"}
 
 
+async def test_a_lower_bound_above_its_upper_bound_is_a_422_of_the_api_on_the_lower_one(
+    factory: Factory, client: httpx.AsyncClient, as_user: ActAs
+) -> None:
+    """What the filter sheet gets back: the field to mark, and the sentence for it."""
+    as_user(await factory.user())
+
+    crossed = await client.get(LEADERBOARD, params={"min_win_rate": "0.6", "max_win_rate": "0.5"})
+    equal = await client.get(LEADERBOARD, params={"min_win_rate": "0.5", "max_win_rate": "0.5"})
+
+    assert crossed.status_code == 422
+    assert crossed.json() == {
+        "code": "VALIDATION_ERROR",
+        "message": "Enter a lower bound that is not above the upper one.",
+        "details": {"field": "min_win_rate"},
+    }
+    assert equal.status_code == 200
+
+
 async def test_a_cursor_that_is_no_rank_is_a_422_of_the_api(
     factory: Factory, client: httpx.AsyncClient, as_user: ActAs
 ) -> None:
@@ -1199,6 +1269,8 @@ async def test_a_user_who_never_traded_is_listed_with_no_trades_and_no_rates(
             degree_level=newcomer.degree_level,
             degree_programme=newcomer.degree_programme,
             credits_cr=to_cr(cr(500)),
+            balance_cr=to_cr(cr(500)),
+            positions_value_cr=to_cr(0),
             trades=0,
             settled_markets=0,
             win_rate=None,
@@ -1229,21 +1301,292 @@ async def test_a_suspended_user_is_not_listed_and_takes_no_rank(
     await assert_books_balance(container.uow_factory)
 
 
-async def test_credits_are_the_balance_as_it_is_now(
+async def test_credits_are_the_balance_plus_what_the_open_positions_are_worth(
     desk: Desk, container: Container, factory: Factory
 ) -> None:
-    """After a buy and after the payout of a resolution, each time the account's balance."""
+    """After a buy the credits that went into the market still count, at what the
+    shares are worth now: the total of the trader's portfolio. After the resolution
+    the payout is in the balance and nothing is in an open position any more."""
     trader = await factory.user(username="trader", balance_micro=cr(100))
     market = await desk.market()
 
     await desk.buy(trader, market, Outcome.YES, cr(10), cr(6))
-    after_the_buy = (await ask(container, factory, trader)).items[0].credits_cr
-    balance_after_the_buy = await factory.balance_micro(trader)
+    held = (await ask(container, factory, trader)).items[0]
+    worth_micro = await portfolio_total_micro(container, factory, trader)
     await desk.resolve(market, Outcome.YES)
-    after_the_payout = (await ask(container, factory, trader)).items[0].credits_cr
+    paid = (await ask(container, factory, trader)).items[0]
 
-    assert after_the_buy == to_cr(balance_after_the_buy) == to_cr(cr(94))
-    assert after_the_payout == to_cr(await factory.balance_micro(trader)) == to_cr(cr(104))
+    assert worth_micro == open_value_micro(
+        market, await stored_positions(container, trader, market), PRECISION
+    )
+    assert 0 < worth_micro < cr(10)
+    assert (held.balance_cr, held.positions_value_cr) == (to_cr(cr(94)), to_cr(worth_micro))
+    assert held.credits_cr == to_cr(cr(94) + worth_micro)
+    assert (paid.balance_cr, paid.positions_value_cr) == (to_cr(cr(104)), to_cr(0))
+    assert paid.credits_cr == to_cr(cr(104)) == to_cr(await factory.balance_micro(trader))
+    assert await portfolio_total_micro(container, factory, trader) == 0
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_user_without_positions_has_nothing_in_open_positions(
+    desk: Desk, container: Container, factory: Factory
+) -> None:
+    """Also while other people hold shares of a market that is not settled."""
+    saver = await factory.user(username="saver", balance_micro=cr(70))
+    trader = await factory.user(username="trader", balance_micro=cr(100))
+    await desk.buy(trader, await desk.market(), Outcome.NO, cr(10))
+
+    entry = entry_named(await ask(container, factory, saver), "saver")
+
+    assert (entry.credits_cr, entry.balance_cr) == (to_cr(cr(70)), to_cr(cr(70)))
+    assert entry.positions_value_cr == to_cr(0)
+    assert await portfolio_total_micro(container, factory, saver) == 0
+    await assert_books_balance(container.uow_factory)
+
+
+@pytest.mark.parametrize(
+    "status", [MarketStatus.OPEN, MarketStatus.HALTED, MarketStatus.CLOSED], ids=str
+)
+async def test_a_position_counts_in_every_market_that_is_not_settled(
+    desk: Desk, container: Container, factory: Factory, clock: FrozenClock, status: MarketStatus
+) -> None:
+    """Halted, closed by an admin or past its deadline: the shares are still held and
+    still worth their price, as the portfolio says."""
+    holder = await factory.user(username="holder", balance_micro=cr(100))
+    market = await desk.market(status=status)
+    await desk.buy(holder, market, Outcome.NO, cr(12))
+
+    clock.advance(timedelta(days=30))
+    entry = entry_named(await ask(container, factory, holder), "holder")
+    worth_micro = await portfolio_total_micro(container, factory, holder)
+
+    assert worth_micro > 0
+    assert entry.positions_value_cr == to_cr(worth_micro)
+    assert entry.credits_cr == to_cr(await factory.balance_micro(holder) + worth_micro)
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_the_shares_of_a_settled_market_are_worth_nothing_beside_what_it_paid(
+    desk: Desk, container: Container, factory: Factory
+) -> None:
+    """A resolved position keeps its shares (A.5). They were paid out into the balance
+    and must not be counted a second time; a voided one has none left."""
+    winner = await factory.user(username="winner", balance_micro=cr(100))
+    loser = await factory.user(username="loser", balance_micro=cr(100))
+    refunded = await factory.user(username="refunded", balance_micro=cr(100))
+    resolved, voided = await desk.market(), await desk.market()
+    await desk.buy(winner, resolved, Outcome.YES, cr(10), cr(6))
+    await desk.buy(loser, resolved, Outcome.NO, cr(10), cr(6))
+    await desk.buy(refunded, voided, Outcome.YES, cr(10), cr(6))
+    await desk.resolve(resolved, Outcome.YES)
+    await desk.void(voided)
+
+    answer = await ask(container, factory, winner)
+
+    (kept,) = await stored_positions(container, winner, resolved)
+    assert kept.shares_micro == cr(10)
+    assert {item.username: item.positions_value_cr for item in answer.items} == {
+        "winner": to_cr(0),
+        "loser": to_cr(0),
+        "refunded": to_cr(0),
+    }
+    assert {item.username: item.credits_cr for item in answer.items} == {
+        "winner": to_cr(cr(104)),
+        "loser": to_cr(cr(94)),
+        "refunded": to_cr(cr(100)),
+    }
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_each_holding_is_rounded_down_by_itself(
+    desk: Desk, container: Container, factory: Factory
+) -> None:
+    """One micro-share of each outcome of a market at even odds: each is worth half a
+    micro-credit, which rounds down to nothing. Rounded together they would be a whole
+    micro-credit, and the leaderboard would show more than the portfolio adds up."""
+    holder = await factory.user(username="holder", balance_micro=cr(1))
+    market = await desk.market()
+    await desk.buy(holder, market, Outcome.YES, 1)
+    await desk.buy(holder, market, Outcome.NO, 1)
+
+    entry = entry_named(await ask(container, factory, holder), "holder")
+    portfolio = await container.account.portfolio(factory.identity(holder))
+
+    price_micro = container.market_view.p_yes_micro(market)
+    assert 0 < price_micro < MICRO
+    assert (1 * price_micro + 1 * (MICRO - price_micro)) // MICRO == 1
+    assert [holding.value_cr for holding in portfolio.items[0].holdings] == [to_cr(0), to_cr(0)]
+    assert portfolio.total_value_cr == to_cr(0)
+    assert entry.positions_value_cr == to_cr(0)
+    assert entry.credits_cr == entry.balance_cr == to_cr(await factory.balance_micro(holder))
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_holding_too_large_for_a_bigint_times_its_price_is_still_valued(
+    desk: Desk, container: Container, factory: Factory
+) -> None:
+    """Ten million shares times a price in millionths is beyond a BIGINT, so the
+    statement has to multiply in NUMERIC."""
+    whale = await factory.user(username="whale", balance_micro=cr(20_000_000))
+    market = await desk.market()
+    await desk.buy(whale, market, Outcome.YES, cr(10_000_000))
+
+    entry = entry_named(await ask(container, factory, whale), "whale")
+    worth_micro = await portfolio_total_micro(container, factory, whale)
+
+    (held,) = await stored_positions(container, whale, market)
+    assert held.shares_micro * container.market_view.p_yes_micro(market) > BIGINT_MAX
+    assert worth_micro > 0
+    assert entry.positions_value_cr == to_cr(worth_micro)
+    assert entry.credits_cr == to_cr(await factory.balance_micro(whale) + worth_micro)
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_the_order_by_credits_follows_the_sum_and_not_the_balance(
+    desk: Desk, container: Container, factory: Factory
+) -> None:
+    """`invested` has the smaller balance and, with what her shares are worth, more
+    than `saver`: she comes first, and last when the list runs the other way."""
+    saver = await factory.user(username="saver", balance_micro=cr(100))
+    invested = await factory.user(username="invested", balance_micro=cr(130))
+    await desk.buy(invested, await desk.market(), Outcome.YES, cr(80))
+
+    richest_first = await ask(container, factory, saver)
+    poorest_first = await ask(container, factory, saver, order="asc")
+
+    balance_micro = await factory.balance_micro(invested)
+    worth_micro = await portfolio_total_micro(container, factory, invested)
+    assert balance_micro < cr(100) < balance_micro + worth_micro
+    assert [(item.rank, item.username) for item in richest_first.items] == [
+        (1, "invested"),
+        (2, "saver"),
+    ]
+    assert [(item.rank, item.username) for item in poorest_first.items] == [
+        (1, "saver"),
+        (2, "invested"),
+    ]
+    assert richest_first.items[0].credits_cr == to_cr(balance_micro + worth_micro)
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_the_bounds_on_credits_compare_with_the_sum(
+    desk: Desk, container: Container, factory: Factory
+) -> None:
+    """A bound exactly on what `invested` has in all keeps her; a millionth beyond it
+    does not, in either direction. Her balance alone would decide every one of these
+    the other way."""
+    saver = await factory.user(username="saver", balance_micro=cr(100))
+    invested = await factory.user(username="invested", balance_micro=cr(130))
+    await desk.buy(invested, await desk.market(), Outcome.YES, cr(80))
+    balance_micro = await factory.balance_micro(invested)
+    total_micro = balance_micro + await portfolio_total_micro(container, factory, invested)
+    assert balance_micro < cr(100) < total_micro
+
+    async def kept(**bounds: int) -> list[str]:
+        query = {name: format_cr(bound) for name, bound in bounds.items()}
+        return names(await ask(container, factory, saver, **query))
+
+    assert await kept(min_credits_cr=total_micro) == ["invested"]
+    assert await kept(min_credits_cr=total_micro + 1) == []
+    assert await kept(max_credits_cr=total_micro) == ["invested", "saver"]
+    assert await kept(max_credits_cr=total_micro - 1) == ["saver"]
+    assert await kept(min_credits_cr=cr(100) + 1, max_credits_cr=total_micro) == ["invested"]
+    assert await kept(max_credits_cr=balance_micro) == []
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_suspended_user_stays_out_whatever_they_hold(
+    desk: Desk, container: Container, factory: Factory
+) -> None:
+    listed = await factory.user(username="listed", balance_micro=cr(50))
+    banned = await factory.user(
+        username="banned", balance_micro=cr(500), status=UserStatus.SUSPENDED
+    )
+    await desk.buy(banned, await desk.market(), Outcome.YES, cr(100))
+
+    answer = await ask(container, factory, listed)
+
+    assert await portfolio_total_micro(container, factory, banned) > 0
+    assert [(item.rank, item.username) for item in answer.items] == [(1, "listed")]
+    assert set(await figures_by_name(container)) == {"listed"}
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_ranking_prices_each_market_that_is_held_and_not_settled_once(
+    desk: Desk,
+    container: Container,
+    factory: Factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Thirty players in two such markets: two prices are computed, by lmsr, whatever
+    the number of players. A market nobody holds shares of, one whose shares were all
+    sold and a settled one are not priced at all."""
+    players = [
+        await factory.user(username=f"player{number}", balance_micro=cr(100))
+        for number in range(30)
+    ]
+    first, second, untouched, sold_out, settled = [await desk.market() for _ in range(5)]
+    for number, player in enumerate(players):
+        await desk.buy(player, first if number % 2 else second, Outcome.YES, cr(3))
+    await desk.buy(players[0], sold_out, Outcome.NO, cr(5))
+    await desk.sell(players[0], sold_out, Outcome.NO, cr(5))
+    await desk.buy(players[1], settled, Outcome.YES, cr(5))
+    await desk.resolve(settled, Outcome.NO)
+    priced: list[tuple[int, int, int]] = []
+    price_yes_micro = lmsr.price_yes_micro
+
+    def spy(state: lmsr.MarketState, *, precision: int) -> int:
+        priced.append((state.q_yes, state.q_no, state.b))
+        return price_yes_micro(state, precision=precision)
+
+    monkeypatch.setattr(lmsr, "price_yes_micro", spy)
+
+    answer = await ask(container, factory, players[0], limit=MAX_PAGE_SIZE)
+
+    assert len(answer.items) == 30
+    assert all(item.positions_value_cr > 0 for item in answer.items)
+    assert sorted(priced) == sorted(
+        (market.q_yes_micro, market.q_no_micro, market.b_micro) for market in (first, second)
+    )
+    assert untouched.id != sold_out.id
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_the_statement_values_only_markets_that_are_priced_and_not_settled(
+    desk: Desk, container: Container, factory: Factory
+) -> None:
+    """`LeaderboardRepository.rank` itself. A market it is given no price for counts
+    for nothing, and so does one that was settled after its price was worked out: its
+    payout is in the balance by then. Without any price nobody has an open position."""
+    holder = await factory.user(username="holder", balance_micro=cr(100))
+    still_open, resolved = await desk.market(), await desk.market()
+    await desk.buy(holder, still_open, Outcome.YES, cr(10))
+    await desk.buy(holder, resolved, Outcome.YES, cr(10))
+    price_micro = container.market_view.p_yes_micro(still_open)
+    stale_price_micro = container.market_view.p_yes_micro(resolved)
+    await desk.resolve(resolved, Outcome.YES)
+    balance_micro = await factory.balance_micro(holder)
+
+    async def valued_with(prices: dict[UUID, int]) -> tuple[int, int, int]:
+        async with container.uow_factory() as uow:
+            (row,) = await uow.leaderboard.rank(
+                sort=LeaderboardSort.CREDITS,
+                order=SortOrder.DESC,
+                filters=LeaderboardFilter(),
+                after_rank=0,
+                limit=MAX_PAGE_SIZE,
+                viewer_id=holder.id,
+                p_yes_micro=prices,
+            )
+        return row.credits_micro, row.balance_micro, row.positions_value_micro
+
+    worth_micro = cr(10) * price_micro // MICRO
+    both = {still_open.id: price_micro, resolved.id: stale_price_micro}
+    assert await valued_with(both) == (balance_micro + worth_micro, balance_micro, worth_micro)
+    assert await valued_with({still_open.id: price_micro}) == await valued_with(both)
+    assert await valued_with({resolved.id: stale_price_micro}) == (balance_micro, balance_micro, 0)
+    assert await valued_with({}) == (balance_micro, balance_micro, 0)
+    assert await valued_with({uuid7(): 1}) == (balance_micro, balance_micro, 0)
     await assert_books_balance(container.uow_factory)
 
 
@@ -1288,14 +1631,18 @@ async def test_a_market_that_did_not_resolve_gives_no_rate(
 
     figures = (await figures_by_name(container))["trader"]
     entry = (await ask(container, factory, trader)).items[0]
+    worth_micro = await portfolio_total_micro(container, factory, trader)
 
+    assert (worth_micro == 0) == (status is MarketStatus.VOID)
     assert figures == Figures(
-        # A void gave the stake back; in the other markets it is still at stake.
-        credits_micro=cr(100) if status is MarketStatus.VOID else cr(92),
+        # A void gave the stake back; in the other markets it is still at stake, and
+        # the shares it bought are worth what the portfolio says.
+        credits_micro=cr(100) if status is MarketStatus.VOID else cr(92) + worth_micro,
         trades=1,
         settled_markets=0,
         win_rate_micro=None,
         avg_payout_ratio_micro=None,
+        positions_value_micro=worth_micro,
     )
     assert (entry.settled_markets, entry.win_rate, entry.avg_payout_ratio) == (0, None, None)
     await assert_books_balance(container.uow_factory)
@@ -1638,6 +1985,191 @@ async def test_users_who_tie_and_registered_at_the_same_instant_are_ordered_by_i
     await assert_books_balance(container.uow_factory)
 
 
+# --- Any book: the leaderboard, the wallet and the portfolio say the same -------------
+
+
+type Happening = Literal["buy", "sell", "halt", "close", "resolve_yes", "resolve_no", "void"]
+
+
+@dataclass(frozen=True, slots=True)
+class Step:
+    """One thing that happens in a book. A step that cannot happen as the book stands
+    (a buy nobody can pay for, a sale of nothing, anything in a settled market) is
+    passed over."""
+
+    happening: Happening
+    player: int
+    market: int
+    outcome: Outcome
+    shares_micro: int
+
+
+@dataclass(frozen=True, slots=True)
+class Script:
+    """A book to build: who starts with how much, which of them are suspended, the b
+    of each market, and what happens in which order."""
+
+    balances_micro: Sequence[int]
+    suspended: frozenset[int]
+    markets_b_micro: Sequence[int]
+    steps: Sequence[Step]
+
+
+@st.composite
+def scripts(draw: st.DrawFn) -> Script:
+    """Two to five players and one to four markets. Buys and sales are the bulk of what
+    happens, in sizes from a micro-share to fifty shares; now and then a market is
+    halted, closed, resolved or voided. The first player is never suspended: that is
+    who asks."""
+    balances = draw(st.lists(st.integers(min_value=0, max_value=cr(400)), min_size=2, max_size=5))
+    markets = draw(st.lists(st.sampled_from(MARKET_B), min_size=1, max_size=4))
+    weighted: list[tuple[Happening, int]] = [
+        ("buy", 8),
+        ("sell", 3),
+        ("halt", 1),
+        ("close", 1),
+        ("resolve_yes", 1),
+        ("resolve_no", 1),
+        ("void", 1),
+    ]
+    happenings = [happening for happening, weight in weighted for _ in range(weight)]
+    step = st.builds(
+        Step,
+        happening=st.sampled_from(happenings),
+        player=st.integers(min_value=0, max_value=len(balances) - 1),
+        market=st.integers(min_value=0, max_value=len(markets) - 1),
+        outcome=st.sampled_from(Outcome),
+        shares_micro=st.one_of(
+            st.integers(min_value=1, max_value=cr(50)),
+            st.integers(min_value=1, max_value=1000),
+            st.integers(min_value=1, max_value=50).map(cr),
+        ),
+    )
+    return Script(
+        balances_micro=balances,
+        suspended=frozenset(
+            draw(st.sets(st.integers(min_value=1, max_value=len(balances) - 1), max_size=1))
+        ),
+        markets_b_micro=markets,
+        steps=draw(st.lists(step, max_size=14)),
+    )
+
+
+async def build(
+    script: Script, desk: Desk, container: Container, factory: Factory, clock: FrozenClock
+) -> list[User]:
+    """Put the book of `script` in place and return its players, in the order of their
+    registration, a minute apart."""
+    players: list[User] = []
+    for index, balance_micro in enumerate(script.balances_micro):
+        status = UserStatus.SUSPENDED if index in script.suspended else UserStatus.ACTIVE
+        players.append(
+            await factory.user(username=f"p{index}", balance_micro=balance_micro, status=status)
+        )
+        clock.advance(MINUTE)
+    markets = [await desk.market(b_micro=b_micro) for b_micro in script.markets_b_micro]
+
+    for step in script.steps:
+        player, market = players[step.player], markets[step.market]
+        if market.status in SETTLED_STATUSES:
+            continue
+        match step.happening:
+            case "buy":
+                state = lmsr.MarketState(
+                    q_yes=market.q_yes_micro, q_no=market.q_no_micro, b=market.b_micro
+                )
+                quote = lmsr.quote_buy_shares(
+                    state, step.outcome, step.shares_micro, precision=PRECISION
+                )
+                if quote.amount_micro <= await factory.balance_micro(player):
+                    await desk.buy(player, market, step.outcome, step.shares_micro)
+            case "sell":
+                held = {
+                    position.outcome: position.shares_micro
+                    for position in await stored_positions(container, player, market)
+                }
+                size_micro = min(step.shares_micro, held.get(step.outcome, 0))
+                if size_micro:
+                    await desk.sell(player, market, step.outcome, size_micro)
+            case "halt" | "close":
+                stored = MarketStatus.HALTED if step.happening == "halt" else MarketStatus.CLOSED
+                async with container.uow_factory() as uow:
+                    row = await uow.markets.get_for_update(market.id)
+                    assert row is not None
+                    row.status = stored
+                market.status = stored
+            case "resolve_yes":
+                await desk.resolve(market, Outcome.YES)
+            case "resolve_no":
+                await desk.resolve(market, Outcome.NO)
+            case "void":
+                await desk.void(market)
+    return players
+
+
+@settings(
+    max_examples=40,
+    deadline=None,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
+)
+@given(script=scripts(), data=st.data())
+async def test_in_any_book_the_leaderboard_shows_the_balance_and_the_total_of_the_portfolio(
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    owner_engine: AsyncEngine,
+    script: Script,
+    data: st.DataObject,
+) -> None:
+    """Whatever was bought, sold, halted, closed, resolved and voided: for every player
+    the row of the leaderboard carries the balance `GET /me` shows and the total
+    `GET /me/positions` shows, and their sum as the credits. The list is in the order
+    of that sum, and a bound on credits compares with it. The figures are asked of the
+    three services; nothing is worked out here but the sum and the order."""
+    await reset_database(owner_engine)
+    players = await build(script, Desk(container, factory), container, factory, clock)
+    viewer = players[0]
+
+    answer = await ask(container, factory, viewer, limit=MAX_PAGE_SIZE)
+
+    listed = {item.username: item for item in answer.items}
+    totals_micro: dict[str, int] = {}
+    for player in players:
+        identity = factory.identity(player)
+        me = await container.account.me(identity)
+        portfolio = await container.account.portfolio(identity)
+        if player.status is UserStatus.SUSPENDED:
+            assert player.username not in listed
+            continue
+        row = listed[player.username]
+        assert row.balance_cr == me.balance_cr
+        assert row.positions_value_cr == portfolio.total_value_cr
+        assert row.credits_cr == me.balance_cr + portfolio.total_value_cr
+        if not portfolio.items:
+            assert row.positions_value_cr == to_cr(0)
+        totals_micro[player.username] = to_micro(row.credits_cr)
+
+    assert set(listed) == set(totals_micro)
+    registered = [player.username for player in players if player.username in totals_micro]
+    richest_first = sorted(registered, key=lambda name: -totals_micro[name])
+    assert names(answer) == richest_first
+    assert ranks(answer) == list(range(1, len(richest_first) + 1))
+
+    bound_micro = data.draw(
+        st.builds(
+            lambda total, beside: max(total + beside, 0),
+            st.sampled_from(sorted(totals_micro.values())),
+            st.sampled_from([-1, 0, 1]),
+        ),
+        label="a bound on credits",
+    )
+    at_least = await ask(container, factory, viewer, min_credits_cr=format_cr(bound_micro))
+    at_most = await ask(container, factory, viewer, max_credits_cr=format_cr(bound_micro))
+    assert names(at_least) == [n for n in richest_first if totals_micro[n] >= bound_micro]
+    assert names(at_most) == [n for n in richest_first if totals_micro[n] <= bound_micro]
+    await assert_books_balance(container.uow_factory)
+
+
 # --- The statement -------------------------------------------------------------------
 
 
@@ -1683,6 +2215,7 @@ async def test_the_statement_returns_the_stretch_asked_for_and_the_viewers_row_o
             after_rank=after_rank,
             limit=limit,
             viewer_id=viewer_id,
+            p_yes_micro=await open_prices(container, uow),
         )
 
     by_credits = ["dan", "ada", "ben", "cleo"]
@@ -1702,6 +2235,7 @@ async def test_the_statement_leaves_the_viewer_out_when_the_filters_do(
             after_rank=0,
             limit=1,
             viewer_id=league.dan.id,
+            p_yes_micro=await open_prices(container, uow),
         )
 
     assert [(row.rank, row.username) for row in rows] == [(1, "ada")]
@@ -1724,18 +2258,22 @@ def statements_sent(container: Container) -> Iterator[list[str]]:
         event.remove(engine, "before_cursor_execute", record)
 
 
-async def test_a_ranking_is_read_with_one_statement(
+async def test_a_ranking_is_read_with_one_statement_after_the_markets_to_price(
     league: League, container: Container, factory: Factory
 ) -> None:
-    """The page, the row read ahead and the viewer's row come from one snapshot."""
+    """The page, the row read ahead and the viewer's row come from one snapshot. The
+    one statement before it reads the markets whose prices that statement is given."""
     with statements_sent(container) as statements:
         answer = await ask(container, factory, league.cleo, sort="win_rate", min_trades=1, limit=2)
 
     assert names(answer) == ["ben", "cleo"]
     assert answer.next_cursor == "2"
     assert answer.viewer is not None
-    assert len(statements) == 1, statements
-    assert statements[0].startswith("WITH ")
+    assert len(statements) == 2, statements
+    to_price, ranking = statements
+    assert to_price.startswith("SELECT markets.")
+    assert "FROM positions" in to_price
+    assert ranking.startswith("WITH ")
     await assert_books_balance(container.uow_factory)
 
 
@@ -1745,8 +2283,9 @@ async def test_no_value_of_a_request_is_planned_into_the_joins_of_the_statement(
     """Postgres plans a statement it has run a few times without the values of its
     parameters. With a filter among the joins it then expected a single user and joined
     the aggregates row by row: a second on 5,000 users instead of a tenth. So `board`,
-    which holds every join, is materialised and takes no parameter at all; whatever a
-    request sends is compared with its result."""
+    which holds every join, is materialised and takes nothing a request sends; whatever
+    that is, it is compared with the result of `board`. The one thing the joins are
+    given is the prices the service worked out, as two arrays."""
     with statements_sent(container) as statements:
         await ask(
             container,
@@ -1767,14 +2306,15 @@ async def test_no_value_of_a_request_is_planned_into_the_joins_of_the_statement(
             cursor="0",
         )
 
-    (statement,) = statements
+    (_, statement) = statements
     the_joins, the_rest = statement.split("ranked AS", maxsplit=1)
-    filters, the_stretch_and_the_viewer = 10, 3
+    the_prices, filters, the_stretch_and_the_viewer = 2, 10, 3
     assert "board AS MATERIALIZED" in the_joins
-    assert "$" not in the_joins
+    assert "unnest($1::UUID[], $2::BIGINT[]) AS prices(market_id, p_yes_micro)" in the_joins
+    assert the_joins.count("$") == the_prices
     assert the_rest.count("$") == filters + the_stretch_and_the_viewer
     # What the statement itself fixes is written out, so the planner knows it.
-    for constant in ("'RESOLVED'", "'YES'", "'NO'", "'USER'", "'ACTIVE'"):
+    for constant in ("'RESOLVED'", "'VOID'", "'YES'", "'NO'", "'USER'", "'ACTIVE'"):
         assert constant in the_joins
     await assert_books_balance(container.uow_factory)
 
@@ -1894,6 +2434,8 @@ def entry_of(standing: Standing, rank: int, viewer: User, decimals: int) -> Lead
         degree_level=user.degree_level,
         degree_programme=user.degree_programme,
         credits_cr=to_cr(figures.credits_micro),
+        balance_cr=to_cr(figures.balance_micro),
+        positions_value_cr=to_cr(figures.positions_value_micro),
         trades=figures.trades,
         settled_markets=figures.settled_markets,
         win_rate=None if win_rate is None else display_probability(win_rate, decimals),
@@ -2054,7 +2596,7 @@ def whole_bounds(values: Sequence[int]) -> st.SearchStrategy[int]:
 
 def pairs[T: (int, Decimal)](values: st.SearchStrategy[T]) -> st.SearchStrategy[Bounds[T]]:
     """A lowest and a highest bound, either of which may be left open, and never the
-    lowest above the highest: the query refuses that."""
+    lowest above the highest: the service refuses that."""
 
     def uncrossed(drawn: Bounds[T]) -> Bounds[T]:
         lowest, highest = drawn

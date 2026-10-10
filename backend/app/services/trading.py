@@ -7,7 +7,6 @@ only limits the rate before the transaction and spreads the news after it.
 
 import json
 import logging
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Final
@@ -20,17 +19,11 @@ from app.core.enums import (
     JournalKind,
     MarketStatus,
     OutboxTopic,
-    Outcome,
     TradeSide,
 )
 from app.core.errors import (
-    ForbiddenError,
     IdempotencyKeyReusedError,
-    InsufficientBalanceError,
-    InsufficientSharesError,
     InvariantViolationError,
-    LimitExceededError,
-    MarketNotOpenError,
     NotFoundError,
     QuoteStaleError,
     RateLimitedError,
@@ -49,7 +42,6 @@ from app.models.ops import Alert
 from app.models.trading import Position, Trade
 from app.pricing.lmsr import TradeQuote
 from app.repositories.unit_of_work import UnitOfWork
-from app.schemas.common import Limit
 from app.schemas.trading import TradeRequest, TradeResponse
 from app.services import UowFactory
 from app.services.audit import AuditAction, AuditService, AuditTarget
@@ -58,16 +50,12 @@ from app.services.ledger import LedgerRef, LedgerService, PostingLine, trade_key
 from app.services.live_quotes import LiveQuoteService
 from app.services.market_view import HIDDEN_STATUSES, MarketView
 from app.services.outbox_events import quote_updated_payload
-from app.services.quotes import QuoteService
+from app.services.quotes import QuoteService, position_of
 
 logger = logging.getLogger(__name__)
 
 ORDER_WINDOW_SECONDS: Final[int] = 60
 """`MAX_ORDERS_PER_MINUTE` counts per minute."""
-
-OWN_MARKET_MESSAGE: Final[str] = "You proposed this market, so you cannot trade it."
-"""Message of the `ForbiddenError` a trade by the market's proposer gets (A.4).
-`MarketViewer.cannot_trade_reason` says `OWN_MARKET` to that user beforehand."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,19 +140,20 @@ class TradingService:
            has an account, because the profile transaction creates the two together;
            one that is missing is a broken database and raises `LookupError`.
 
-        4. May this trade happen at all?
+        4. May this trade happen at all? Read the user's positions in this market
+           once: `positions.list_for_user_market(user.id, market.id)`, without a lock
+           of its own, because nobody writes a market's positions without holding its
+           row. The same rows serve the check here, the stake check of step 6 and
+           the write of step 7. Then `quote = QuoteService.admit(user, market, <the
+           positions>, request, now)` on the locked row, which refuses the first of
+           these that applies:
            * `market.created_by == user.id`: `ForbiddenError(OWN_MARKET_MESSAGE)`
              (403, self-dealing).
            * Effective status not OPEN, which includes `now >= close_at`:
              `MarketNotOpenError` (409).
-           * Read the user's positions in this market once:
-             `positions.list_for_user_market(user.id, market.id)`, without a lock of
-             its own, because nobody writes a market's positions without holding its
-             row. The same rows serve the check here, the stake check of step 6 and
-             the write of step 7. A sell of more shares than the position of that
-             outcome holds: `InsufficientSharesError` (409).
-           Then `quote = QuoteService.price(market, request)` on the locked row, which
-           raises `TradeTooSmallError` (422) below the minimum size.
+           * A sell of more shares than the position of that outcome holds:
+             `InsufficientSharesError` (409).
+           * A size below the minimum of its mode: `TradeTooSmallError` (422).
 
         5. Slippage guard, when the request carries one. BUY by `amount_cr`:
            `quote.shares_micro < to_micro(min_shares)`. BUY by `shares`:
@@ -173,19 +162,16 @@ class TradingService:
            `details={"quote": QuoteService.to_response(market, quote).model_dump(
            mode="json")}`.
 
-        6. Buys only, two checks. With the positions of step 4: if `Σ cost - Σ
-           proceeds + quote.amount_micro > MarketView.stake_limit_micro`,
-           `LimitExceededError` (409) with `details={"limit":
-           Limit.MAX_STAKE_PER_USER_MARKET, "stake_limit_cr": to_cr(...),
-           "stake_left_cr": to_cr(...)}`, the stake left being the one before this
-           trade, `MarketView.stake_left_micro(MarketView.net_stake_micro(...))`. That
-           figure is never more than this check allows, so a buy for a stake preset
-           the market's detail marked allowed passes it. Then, if the account's
-           balance is below `quote.amount_micro`, `InsufficientBalanceError` (409)
-           with `details={"balance_cr": to_cr(...), "required_cr": to_cr(...)}`, the
-           keys `LedgerService` uses. Sells are never limited. "The market's limits"
-           of SPEC §8 are not checked here: the LMSR bounds what a market can lose,
-           and step 8 verifies that it did (A.4).
+        6. Buys only: `QuoteService.check_buy(<the positions of step 4>, <the
+           balance of the locked account>, quote)`. If `Σ cost - Σ proceeds +
+           quote.amount_micro > MarketView.stake_limit_micro`, `LimitExceededError`
+           (409) with `details={"limit": Limit.MAX_STAKE_PER_USER_MARKET,
+           "stake_limit_cr": to_cr(...), "stake_left_cr": to_cr(...)}`, the stake
+           left being the one before this trade. Then, if the balance is below
+           `quote.amount_micro`, `InsufficientBalanceError` (409) with
+           `details={"balance_cr": to_cr(...), "required_cr": to_cr(...)}`. Sells are
+           never limited. "The market's limits" of SPEC §8 are not checked here: the
+           LMSR bounds what a market can lose, and step 8 verifies that it did (A.4).
 
         7. Write, with `trade_id = uuid7()`:
            * Ledger. BUY: `TRADE_BUY`, user -cost, market account +cost. SELL:
@@ -225,6 +211,11 @@ class TradingService:
         that is wrong: 429, 422 `IDEMPOTENCY_KEY_REUSED`, 404, 403, 409
         `MARKET_NOT_OPEN`, 409 `INSUFFICIENT_SHARES`, 422 `TRADE_TOO_SMALL`, 409
         `QUOTE_STALE`, 409 `LIMIT_EXCEEDED`, 409 `INSUFFICIENT_BALANCE`.
+
+        Steps 4 and 6 are also what `GET /markets/{id}/quote` applies to whoever asks
+        (`QuoteService.quote`), on rows it does not lock, so a quote answers what
+        this would. Whatever a quote answered, the trade decides again here, on the
+        rows it holds.
 
         Any error in steps 2 to 8 rolls the transaction back, the claimed key
         included, so the client may retry with the same key.
@@ -294,16 +285,8 @@ class TradingService:
             if account is None:
                 raise LookupError(f"user {user.id} has no ledger account")
 
-            if market.created_by == user.id:
-                raise ForbiddenError(OWN_MARKET_MESSAGE)
-            if not self._view.is_trading_open(market, now):
-                raise MarketNotOpenError
             positions = list(await uow.positions.list_for_user_market(user.id, market.id))
-            if request.side is TradeSide.SELL:
-                held = _position_of(positions, request.outcome)
-                if held is None or held.shares_micro < _sell_size_micro(request):
-                    raise InsufficientSharesError
-            quote = self._quotes.price(market, request)
+            quote = self._quotes.admit(user, market, positions, request, now)
             # Made of the row before the trade changes it: these are the figures the
             # quote endpoint gives for the same trade, and the ones the response repeats.
             quoted = self._quotes.to_response(market, quote)
@@ -311,11 +294,11 @@ class TradingService:
             if _moved_past_guard(request, quote):
                 raise QuoteStaleError(details={"quote": quoted.model_dump(mode="json")})
             if quote.side is TradeSide.BUY:
-                self._check_buy(positions, account, quote)
+                self._quotes.check_buy(positions, account.balance_micro, quote)
 
             trade_id = uuid7()
             await self._book(uow, market, account, quote, trade_id, now)
-            position = _position_of(positions, quote.outcome)
+            position = position_of(positions, quote.outcome)
             first_of_its_outcome = position is None
             if position is None:
                 position = Position(
@@ -388,31 +371,6 @@ class TradingService:
             )
             await uow.idempotency.store_response(user.id, key, response.model_dump(mode="json"))
         return _Executed(response, market)
-
-    def _check_buy(
-        self, positions: Sequence[Position], account: Account, quote: TradeQuote
-    ) -> None:
-        """Step 6: the stake limit, then the balance. `positions` are the buyer's rows
-        in the market before the trade, `account` is their locked account."""
-        cost_micro = sum(position.cost_micro for position in positions)
-        proceeds_micro = sum(position.proceeds_micro for position in positions)
-        stake_limit_micro = self._view.stake_limit_micro
-        if cost_micro - proceeds_micro + quote.amount_micro > stake_limit_micro:
-            stake_left_micro = self._view.stake_left_micro(self._view.net_stake_micro(positions))
-            raise LimitExceededError(
-                details={
-                    "limit": Limit.MAX_STAKE_PER_USER_MARKET,
-                    "stake_limit_cr": to_cr(stake_limit_micro),
-                    "stake_left_cr": to_cr(stake_left_micro),
-                }
-            )
-        if account.balance_micro < quote.amount_micro:
-            raise InsufficientBalanceError(
-                details={
-                    "balance_cr": to_cr(account.balance_micro),
-                    "required_cr": to_cr(quote.amount_micro),
-                }
-            )
 
     async def _book(
         self,
@@ -503,21 +461,6 @@ def _request_hash(market_id: UUID, request: TradeRequest) -> str:
     `"25.000000"` are one request."""
     body = {"market_id": str(market_id), **request.model_dump(mode="json")}
     return sha256_hex(json.dumps(body, sort_keys=True, separators=(",", ":")))
-
-
-def _position_of(positions: Sequence[Position], outcome: Outcome) -> Position | None:
-    """The row of `outcome` among a user's positions in one market, if there is one."""
-    for position in positions:
-        if position.outcome is outcome:
-            return position
-    return None
-
-
-def _sell_size_micro(request: TradeRequest) -> int:
-    """µshares a sell asks for. The request model sizes every sell by `shares`."""
-    if request.shares is None:
-        raise ValueError("a sell is sized by shares; this one has none")
-    return to_micro(request.shares)
 
 
 def _moved_past_guard(request: TradeRequest, quote: TradeQuote) -> bool:

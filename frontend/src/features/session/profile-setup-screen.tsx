@@ -10,7 +10,7 @@ import { ProfileForm } from "./profile-form";
  * `PROFILE_REQUIRED`, which is the first visit. No top bar, no tab bar, and the address
  * stays as it was opened, so someone who scanned a code card arrives in the Wallet with
  * the code once the profile is saved. This is the one thing that may stand in front of
- * the Markets list: a logo, three fields and one button.
+ * the Markets list: a logo, three fields, one checkbox and one button.
  */
 export function ProfileSetupScreen({
   identity,
@@ -40,7 +40,7 @@ export function ProfileSetupScreen({
         <p className="type-body-sm text-muted-foreground">Signed in as {signedInAs}</p>
       )}
 
-      <ProfileForm submitLabel="Create profile" wideSubmit onSaved={onCreated} />
+      <ProfileForm creating submitLabel="Create profile" wideSubmit onSaved={onCreated} />
 
       <footer className="flex flex-col items-center gap-2 pt-2 text-center">
         <Illustration name="dome" />

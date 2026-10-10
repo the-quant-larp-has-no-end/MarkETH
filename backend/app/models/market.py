@@ -15,7 +15,7 @@ from uuid import UUID, uuid7
 from sqlalchemy import CheckConstraint, ForeignKey, Index, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.enums import MarketStatus, MarketTier, ResolutionOutcome
+from app.core.enums import STORED_MARKET_STATUSES, MarketStatus, MarketTier, ResolutionOutcome
 from app.db.base import Base, enum_column
 
 LN_2_ROUNDED_DOWN: Final[str] = "0.693147180559945309417232121458"
@@ -50,8 +50,9 @@ class Market(Base):
     no_def: Mapped[str] = mapped_column(Text)
     resolution_criteria: Mapped[str] = mapped_column(Text)
     resolution_source: Mapped[str] = mapped_column(Text)
-    status: Mapped[MarketStatus] = mapped_column(enum_column(MarketStatus, "status"))
-    requested_tier: Mapped[MarketTier] = mapped_column(enum_column(MarketTier, "requested_tier"))
+    status: Mapped[MarketStatus] = mapped_column(
+        enum_column(MarketStatus, "status", members=STORED_MARKET_STATUSES)
+    )
     tier: Mapped[MarketTier | None] = mapped_column(enum_column(MarketTier, "tier"))
     budget_micro: Mapped[int] = mapped_column(default=0)
     b_micro: Mapped[int] = mapped_column(default=0)

@@ -3,17 +3,25 @@
 A query string carries text, so the query is validated here from strings, the way a
 request delivers it. Credits are decimal strings in both directions; the two rates are
 JSON numbers, or null for a user without a resolved market.
+
+One rule about a query is the service's and is held here too, because it needs no
+database: a lower bound above its upper bound.
 """
 
 import json
 from decimal import Decimal
 from typing import Any
+from uuid import uuid7
 
 import pytest
 from pydantic import ValidationError
 
-from app.core.enums import DegreeLevel, LeaderboardSort, SortOrder
+from app.core.config import Settings
+from app.core.enums import DegreeLevel, LeaderboardSort, SortOrder, UserRole, UserStatus
+from app.core.errors import ErrorCode, ValidationFailedError
+from app.core.identity import AuthenticatedUser
 from app.core.units import MICRO, to_cr
+from app.repositories.unit_of_work import UnitOfWork
 from app.schemas.leaderboard import (
     MEASURES_WITH_BOUNDS,
     PAYOUT_RATIO_FILTER_MAX,
@@ -22,6 +30,23 @@ from app.schemas.leaderboard import (
     LeaderboardQuery,
     LeaderboardResponse,
 )
+from app.services.leaderboard import BOUNDS_OUT_OF_ORDER_MESSAGE, LeaderboardService
+from app.services.market_view import MarketView
+
+VIEWER = AuthenticatedUser(
+    id=uuid7(),
+    email="trinity@ethz.ch",
+    name="Trinity",
+    username="trinity",
+    role=UserRole.USER,
+    status=UserStatus.ACTIVE,
+)
+
+
+def never_asked() -> UnitOfWork:
+    """Stands where the database is, for a query that is refused before it is read."""
+    raise AssertionError("a query that is refused asks the database nothing")
+
 
 FILTERS = (
     "min_credits_cr",
@@ -44,6 +69,8 @@ def entry(**overrides: Any) -> LeaderboardEntry:
         "degree_level": DegreeLevel.MASTER,
         "degree_programme": "MSc Computer Science",
         "credits_cr": to_cr(612_500_000),
+        "balance_cr": to_cr(600_000_000),
+        "positions_value_cr": to_cr(12_500_000),
         "trades": 14,
         "settled_markets": 3,
         "win_rate": 0.667,
@@ -185,19 +212,40 @@ def test_a_json_float_is_no_bound_on_credits() -> None:
     ],
     ids=MEASURES_WITH_BOUNDS,
 )
-def test_a_minimum_above_its_maximum_is_rejected(low: dict[str, str], high: dict[str, str]) -> None:
-    (minimum,), (maximum,) = low, high
-
-    with pytest.raises(ValidationError) as rejected:
-        LeaderboardQuery.model_validate(low | high)
-
-    (error,) = rejected.value.errors()
-    assert error["type"] == "value_error"
-    assert error["loc"] == (), "it is about two parameters, so it names the query as a whole"
-    assert f"{minimum} must not be above {maximum}" in error["msg"]
-    # Each bound alone is fine.
+async def test_a_minimum_above_its_maximum_is_refused_by_the_service_on_the_minimum(
+    base_settings: Settings, low: dict[str, str], high: dict[str, str]
+) -> None:
+    """Each bound is fine by itself, so the model takes the two. The service refuses
+    them before it reads anything, with the lower bound as the field a form marks and
+    a sentence to show under it."""
+    (minimum,) = low
+    query = LeaderboardQuery.model_validate(low | high)
     assert LeaderboardQuery.model_validate(low)
     assert LeaderboardQuery.model_validate(high)
+    service = LeaderboardService(never_asked, base_settings, MarketView(base_settings))
+
+    with pytest.raises(ValidationFailedError) as refused:
+        await service.ranking(VIEWER, query)
+
+    assert (refused.value.status_code, refused.value.code) == (422, ErrorCode.VALIDATION_ERROR)
+    assert refused.value.message == BOUNDS_OUT_OF_ORDER_MESSAGE
+    assert refused.value.details == {"field": minimum}
+
+
+async def test_of_several_pairs_out_of_order_the_first_measure_is_the_one_named(
+    base_settings: Settings,
+) -> None:
+    query = LeaderboardQuery.model_validate(
+        {"min_win_rate": "0.9", "max_win_rate": "0.1", "min_trades": "5", "max_trades": "1"}
+    )
+    service = LeaderboardService(never_asked, base_settings, MarketView(base_settings))
+
+    with pytest.raises(ValidationFailedError) as refused:
+        await service.ranking(VIEWER, query)
+
+    assert refused.value.details == {"field": "min_trades"}
+    assert MEASURES_WITH_BOUNDS.index("trades") < MEASURES_WITH_BOUNDS.index("win_rate")
+    assert BOUNDS_OUT_OF_ORDER_MESSAGE == "Enter a lower bound that is not above the upper one."
 
 
 @pytest.mark.parametrize(
@@ -252,6 +300,8 @@ def test_an_entry_has_exactly_the_fields_of_the_contract() -> None:
         "degree_level",
         "degree_programme",
         "credits_cr",
+        "balance_cr",
+        "positions_value_cr",
         "trades",
         "settled_markets",
         "win_rate",
@@ -270,6 +320,8 @@ def test_credits_leave_as_a_decimal_string_and_the_rates_as_numbers() -> None:
         "degree_level": "MASTER",
         "degree_programme": "MSc Computer Science",
         "credits_cr": "612.5",
+        "balance_cr": "600",
+        "positions_value_cr": "12.5",
         "trades": 14,
         "settled_markets": 3,
         "win_rate": 0.667,
@@ -277,6 +329,8 @@ def test_credits_leave_as_a_decimal_string_and_the_rates_as_numbers() -> None:
         "is_viewer": False,
     }
     assert isinstance(sent["credits_cr"], str)
+    assert isinstance(sent["balance_cr"], str)
+    assert isinstance(sent["positions_value_cr"], str)
     assert isinstance(sent["win_rate"], float)
     assert isinstance(sent["avg_payout_ratio"], float)
 

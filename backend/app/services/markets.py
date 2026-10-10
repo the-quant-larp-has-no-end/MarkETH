@@ -33,6 +33,7 @@ from app.models.market import Market, Resolution
 from app.models.trading import Position
 from app.schemas.common import Limit
 from app.schemas.markets import (
+    DECIDED_BEFORE_CLOSE_MESSAGE,
     MarketDetailResponse,
     MarketListResponse,
     MarketResolution,
@@ -99,10 +100,7 @@ def check_market_dates(
             details={"field": "close_at"},
         )
     if resolve_by < close_at:
-        raise ValidationFailedError(
-            "A market cannot be decided before trading closes.",
-            details={"field": "resolve_by"},
-        )
+        raise ValidationFailedError(DECIDED_BEFORE_CLOSE_MESSAGE, details={"field": "resolve_by"})
     if resolve_by > close_at + delay:
         raise ValidationFailedError(
             f"A market has to be decided within {_days(delay.days)} after trading closes.",
@@ -147,8 +145,9 @@ class MarketService:
            in `details.field`. No text may hold a NUL character (`refuse_nul`). Then
            the time rules (`check_market_dates`): `close_at > now`; `close_at <= now +
            MAX_MARKET_LIFETIME`; `resolve_by <= close_at + MAX_RESOLUTION_DELAY_DAYS`.
-           (`resolve_by >= close_at` and the fixed tier are already checked by the
-           request model.)
+           (`resolve_by >= close_at` and the accepted usage policy are already
+           checked by the request model. Nothing of the acceptance is stored with
+           the market: every proposal states it again.)
         2. One transaction. `uow.advisory_lock(f"proposals:{user.id}")`, so two
            proposals of one user cannot both slip under the limit. Then
            `markets.count_created_by_since(user.id, start_of_day(now, APP_TIMEZONE))`:
@@ -156,8 +155,9 @@ class MarketService:
            `PROPOSAL_LIMIT_MESSAGE`) with `details={"limit":
            Limit.MAX_PROPOSALS_PER_USER_PER_DAY}`.
         3. Insert the market: `status=PROPOSED`, the request's wording and dates,
-           `requested_tier`, `tier=None`, `created_by=user.id`, `created_at=now`;
-           budget, b, quantities, version and volume stay 0.
+           `tier=None`, `created_by=user.id`, `created_at=now`; budget, b,
+           quantities, version and volume stay 0. A proposal says nothing about
+           liquidity: the admin who approves it picks the tier.
         4. Return its detail as `detail(user, market.id)` would.
 
         `now` is read once, before the transaction: it is what the dates are held
@@ -188,7 +188,6 @@ class MarketService:
                     resolution_criteria=request.resolution_criteria,
                     resolution_source=request.resolution_source,
                     status=MarketStatus.PROPOSED,
-                    requested_tier=request.requested_tier,
                     tier=None,
                     close_at=request.close_at,
                     resolve_by=request.resolve_by,
@@ -210,17 +209,21 @@ class MarketService:
         * None: every market whose effective status is one of `PUBLIC_STATUSES`.
         * Otherwise: the markets whose effective status is one of `statuses`. A status
           named twice counts once.
-        * PROPOSED and REJECTED are for admins. If either is among `statuses` and
-          `viewer.is_admin` is false: `ForbiddenError` (403), whatever else was asked
-          for with it. A list that holds either is never cached.
+        * PROPOSED, EXPIRED and REJECTED are for admins: a list of any of them reads
+          rows only admins and their proposer may see (`HIDDEN_STATUSES`). If one of
+          them is among `statuses` and `viewer.is_admin` is false: `ForbiddenError`
+          (403), whatever else was asked for with it. Such a list is never cached.
 
-        The effective status differs from the stored one only for an OPEN market past
-        `close_at`, which is CLOSED. So read the stored statuses that were asked for,
-        and OPEN as well when CLOSED is among them (`markets.list_by_statuses`), and
-        keep the rows whose `MarketView.effective_status` is one that was asked for.
-        `now` is read once, so every market of an answer is judged at one instant.
+        The effective status differs from the stored one for a market past `close_at`:
+        an OPEN one is CLOSED and a PROPOSED one is EXPIRED. So read the stored
+        statuses a market of the statuses asked for can have
+        (`MarketView.stored_statuses`, `markets.list_by_statuses`), and keep the rows
+        whose `MarketView.effective_status` is one that was asked for. A list of
+        PROPOSED is therefore the proposals an admin can still decide on, and one
+        whose deadline has passed is listed under EXPIRED and nowhere else. `now` is
+        read once, so every market of an answer is judged at one instant.
 
-        Caching, for every list without PROPOSED and REJECTED: the key is
+        Caching, for every list that reads no row of `HIDDEN_STATUSES`: the key is
         `MarketCache.list_key(<the statuses asked for; PUBLIC_STATUSES for None>)`,
         which is the same for one set of statuses in any order. A hit is
         `MarketListResponse.model_validate_json(text)`; an entry that does not fit the
@@ -231,7 +234,8 @@ class MarketService:
         The list holds nothing about the viewer, so one entry serves everybody.
         """
         asked = frozenset(PUBLIC_STATUSES if statuses is None else statuses)
-        for_admins = not asked.isdisjoint(HIDDEN_STATUSES)
+        stored = self._view.stored_statuses(asked)
+        for_admins = not stored.isdisjoint(HIDDEN_STATUSES)
         if for_admins and not viewer.is_admin:
             raise ForbiddenError
 
@@ -243,9 +247,6 @@ class MarketService:
                 return cached
 
         now = self._clock.now()
-        stored = set(asked)
-        if MarketStatus.CLOSED in asked:
-            stored.add(MarketStatus.OPEN)
         async with self._uow_factory() as uow:
             markets = [
                 market
@@ -275,12 +276,16 @@ class MarketService:
         that commits between two of them shows until the next request.
 
         Fields beyond `MarketView.summary`: the wording columns (`yes_def` and
-        `no_def` are `yes_definition` and `no_definition`), `requested_tier`, `tier`,
-        `b_cr`, `max_loss_cr = budget_micro`, `void_rule = VOID_RULE`, the timestamps,
-        `rejection_reason`, `resolution` from the `resolutions` row (`resolved_at` is
-        its `created_at`), and `proposer_email`: the proposer's `users.email` when
-        `viewer.is_admin`, else null. The `resolutions` row is read, and used, only
-        when the market's own row says RESOLVED or VOID.
+        `no_def` are `yes_definition` and `no_definition`), `void_rule = VOID_RULE`,
+        the timestamps, `rejection_reason`, `resolution` from the `resolutions` row
+        (`resolved_at` is its `created_at`), and what admins alone are told. The
+        `resolutions` row is read, and used, only when the market's own row says
+        RESOLVED or VOID.
+
+        For admins only, null to everyone else, the proposer included: `tier`, `b_cr`
+        and `max_loss_cr = budget_micro`, which is how much liquidity VIS gave the
+        market (to an admin `tier` is null and the two amounts are 0 until the
+        approval), and `proposer_email`, the proposer's `users.email`.
 
         `viewer` block, from the viewer's account (`accounts.get_user_account`) and
         their `positions.list_for_user_market`. Every user has an account, because the
@@ -300,6 +305,9 @@ class MarketService:
           the guards of `app/api/deps.py` refuse it.
         * `stake_presets = MarketView.stake_presets(<stake left>, <balance>,
           can_trade)`: one per `TRADE_STAKE_PRESETS_CR`, in that order.
+        * `buy_slider = MarketView.buy_slider(<stake left>, <balance>, can_trade)`:
+          the whole credits between which a buy passes right now, in steps of
+          `TRADE_STAKE_STEP_CR`; null when the viewer cannot buy anything.
         * `sell_presets = MarketView.sell_presets(<the positions>, can_trade)`: half
           and all of each holding, so the client halves and compares nothing (A.11).
         * `can_settle`: `viewer.is_admin and not trades.exists_for_user_market(
@@ -337,10 +345,10 @@ class MarketService:
             no_definition=market.no_def,
             resolution_criteria=market.resolution_criteria,
             resolution_source=market.resolution_source,
-            requested_tier=market.requested_tier,
-            tier=market.tier,
-            b_cr=to_cr(market.b_micro),
-            max_loss_cr=to_cr(market.budget_micro),
+            tier=market.tier if viewer.is_admin else None,
+            b_cr=to_cr(market.b_micro) if viewer.is_admin else None,
+            max_loss_cr=to_cr(market.budget_micro) if viewer.is_admin else None,
+            void_cost_cr=None,
             void_rule=VOID_RULE,
             created_at=market.created_at,
             opened_at=market.opened_at,
@@ -405,6 +413,7 @@ class MarketService:
             stake_limit_cr=to_cr(self._view.stake_limit_micro),
             stake_left_cr=to_cr(stake_left_micro),
             stake_presets=self._view.stake_presets(stake_left_micro, balance_micro, can_trade),
+            buy_slider=self._view.buy_slider(stake_left_micro, balance_micro, can_trade),
             sell_presets=self._view.sell_presets(positions, can_trade),
             can_trade=can_trade,
             cannot_trade_reason=reason,
@@ -413,8 +422,8 @@ class MarketService:
 
 
 def _hidden_from(viewer: AuthenticatedUser, market: Market) -> bool:
-    """Whether `market` is one `viewer` may not know of: a proposal, open or rejected,
-    is for admins and its proposer (A.5)."""
+    """Whether `market` is one `viewer` may not know of: a proposal, whether it is
+    still to be decided, expired or rejected, is for admins and its proposer (A.5)."""
     if market.status not in HIDDEN_STATUSES:
         return False
     return not (viewer.is_admin or market.created_by == viewer.id)

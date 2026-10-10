@@ -114,6 +114,7 @@ class HistoryService:
                 for version, (at, p_yes_micro) in sorted(points.items())
             ],
             source=HistorySource.SCYLLA if stored else HistorySource.POSTGRES,
+            until=self._clock.now(),
         )
 
 

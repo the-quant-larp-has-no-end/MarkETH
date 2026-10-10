@@ -5,7 +5,7 @@ import { useState } from "react";
 
 import { FilterChips } from "@/components/controls";
 import { EmptyState, QueryState } from "@/components/feedback";
-import { MarketCard, MarketCardSkeleton } from "@/components/market";
+import { MarketCard, MarketCardSkeleton, useAskAtClose } from "@/components/market";
 import { Link, Screen } from "@/components/shell";
 import { Button } from "@/components/ui/button";
 import { marketsQuery } from "@/lib/api/queries";
@@ -46,12 +46,23 @@ function MarketsSkeleton() {
  *
  * Each chip sends its statuses to `GET /markets` (`statusesOf`). The list is not live: it
  * is read when the screen opens, when a chip is chosen and when the window gets the focus
- * back, and a pull to refresh is the browser's own reload. Nothing here sorts, filters or
- * counts markets, and every figure on a card is the API's.
+ * back, and a pull to refresh is the browser's own reload. One thing happens to it without
+ * anybody acting: a market reaches its `close_at`. So the list is read again at the
+ * earliest close time among the cards it shows as open for trading, and after the answer
+ * at the earliest one that is left (`useAskAtClose`). Whether a card keeps its "Yes" and
+ * "No" is `trading_open` of the answer.
+ *
+ * Nothing here sorts, filters or counts markets, and every figure on a card is the API's.
  */
 export function MarketsScreen() {
   const [filter, setFilter] = useState<StatusFilter>(DEFAULT_FILTER);
   const markets = useQuery(marketsQuery(statusesOf(filter)));
+  const { refetch } = markets;
+
+  const closeTimes = (markets.data?.items ?? [])
+    .filter((market) => market.trading_open)
+    .map((market) => market.close_at);
+  useAskAtClose(closeTimes, () => void refetch({ cancelRefetch: false }));
 
   return (
     <Screen top="main" title="Markets">

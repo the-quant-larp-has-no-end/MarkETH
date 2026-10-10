@@ -1,7 +1,9 @@
 """Secrets: generation, hashing and the Crockford Base32 code format (SPEC §2).
 
-Nothing secret is ever stored in the clear. Codes and the codes of vouchers are
-persisted as SHA-256 hashes of the value the user holds.
+A code and the code of a voucher are looked up by the SHA-256 hash of the value the
+user holds. The code of a voucher is stored as that hash alone. A code that gives
+credits is also kept as it is while it can still be redeemed, so that an admin can
+print its card again (`app.models.code`).
 """
 
 import hashlib

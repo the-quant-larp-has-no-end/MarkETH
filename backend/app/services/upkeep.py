@@ -4,8 +4,8 @@ A user's owed monthly grants are booked and their expired vouchers refunded in o
 transaction, started by a request of that user. `IdentityService` asks for it on every
 request of a registered caller; this service runs it at most once per
 `UPKEEP_INTERVAL_SECONDS` per user, so every other request pays one dictionary lookup.
-A run that could not get its locks in time does not count: the user's next request
-starts it again.
+A run that Postgres or the connection pool did not let through does not count: the
+user's next request starts it again.
 """
 
 import logging
@@ -50,18 +50,21 @@ class UserUpkeepService:
         2. Store `now` for `user.id` before anything is awaited, so two requests of one
            user that arrive together cannot both pass step 1.
         3. `await self.run(user)`, inline: the request that starts the upkeep sees its
-           result, for example the grant of a month that has just begun.
+           result, for example a monthly grant that has just fallen due.
         4. If `run` raises, the first of these that applies:
-           * `database.is_lock_timeout(error)`: another transaction held a lock the
-             upkeep needs, the user's account or an account of VIS, for longer than
-             `POSTGRES_LOCK_TIMEOUT_MS`. Postgres is up and nothing was written. Log a
-             warning with the user's id and swallow it: the request goes on without
-             its upkeep. Take the instant of step 2 back
+           * `database.is_transient(error)`: the run did not get through and Postgres
+             is up. Another transaction held a lock the upkeep needs, the user's
+             account or an account of VIS, for longer than
+             `POSTGRES_LOCK_TIMEOUT_MS`; or Postgres ended the run as the victim of a
+             deadlock or for a concurrent update; or the pool had no connection free
+             for `POSTGRES_POOL_TIMEOUT_SECONDS`. Nothing was written. Log a warning
+             with the user's id and swallow it: the request goes on without its
+             upkeep. Take the instant of step 2 back
              (`_last_attempt.pop(user.id, None)`), so the user's next request tries
              again instead of waiting out an interval. What was owed is still owed.
            * `database.is_unavailable(error)`: a lost connection, or a Postgres that
              does not serve. Raise it again; it becomes the API's 503. Ask in this
-             order: a lock timeout is one of the errors `is_unavailable` recognises.
+             order: a transient error is one of those `is_unavailable` recognises.
              The instant of step 2 stays: a Postgres in trouble is not asked again
              by every request, and the next attempt is one interval away.
            * Anything else: log it with its traceback and the user's id and swallow
@@ -85,10 +88,10 @@ class UserUpkeepService:
         try:
             await self.run(user)
         except Exception as error:
-            if database.is_lock_timeout(error):
+            if database.is_transient(error):
                 self._last_attempt.pop(user.id, None)
                 logger.warning(
-                    "Upkeep of user %s skipped, a lock was not granted in time: %r",
+                    "Upkeep of user %s skipped, it did not get through this time: %r",
                     user.id,
                     error,
                 )

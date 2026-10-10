@@ -27,15 +27,16 @@ const VALUE = "inline-flex items-center";
 /**
  * The quote panel of the trade sheet (DESIGN.md §12): a `--background` inset block with
  * what the trade would do right now. Every value is a field of the quote, shown as sent:
- * "You pay" is the quote's `amount_cr`, not the chip that was tapped.
+ * "You pay" is the quote's `amount_cr`, not what the amount field holds.
  *
  * The labels stay put in each of its three states, so the sheet does not jump:
  *
  * - With a quote: its values. One that changes flashes, which is how a `QUOTE_STALE`
  *   answer shows what moved.
  * - Without one (`null`), while it is on its way: skeleton bars.
- * - `idle`, when nothing is on its way either (no chip is chosen yet, or the quote could
- *   not be read): an en dash, read out as "none yet". A skeleton would pulse for ever.
+ * - `idle`, with nothing to quote and nothing on its way: no amount is set, the server
+ *   refused the amount, or the quote could not be read. No row has a value then: each
+ *   shows the en dash of a missing figure, read out as "none yet", and nothing pulses.
  */
 export function QuotePanel({
   side,

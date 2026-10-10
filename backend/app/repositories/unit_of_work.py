@@ -37,6 +37,7 @@ from app.repositories.grant import GrantRepository
 from app.repositories.leaderboard import LeaderboardRepository
 from app.repositories.ledger import AccountRepository, JournalRepository
 from app.repositories.market import MarketRepository, ResolutionRepository
+from app.repositories.notice import NoticeRepository
 from app.repositories.ops import AlertRepository, AuditLogRepository, OutboxRepository
 from app.repositories.trading import IdempotencyRepository, PositionRepository, TradeRepository
 from app.repositories.user import UserRepository
@@ -61,6 +62,7 @@ class UnitOfWork:
         self.outbox = OutboxRepository(self._session)
         self.audit = AuditLogRepository(self._session)
         self.alerts = AlertRepository(self._session)
+        self.notices = NoticeRepository(self._session)
         self.leaderboard = LeaderboardRepository(self._session)
 
     @property

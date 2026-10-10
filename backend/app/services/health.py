@@ -29,7 +29,10 @@ class HealthService:
         Postgres up: `status` is `ok` when Redis and ScyllaDB answer too, else
         `degraded`. Postgres down: raises `ServiceUnavailableError` (503) whose details
         carry the three statuses. Each probe is bounded by its client's own timeout, so
-        the slowest answer takes about one ScyllaDB request timeout.
+        the slowest answer takes about one ScyllaDB request timeout while the pool has
+        a connection free. While every connection of the pool is in use, the probe
+        of Postgres waits for one like any request, `POSTGRES_POOL_TIMEOUT_SECONDS`
+        at most, and then reports Postgres down.
         """
         postgres, redis, scylla = await asyncio.gather(
             self._database.ping(), self._redis.ping(), self._scylla_answers()

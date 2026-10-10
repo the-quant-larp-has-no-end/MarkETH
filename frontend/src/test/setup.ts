@@ -3,7 +3,7 @@ import { cleanup } from "@testing-library/react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, vi } from "vitest";
 
-import { verifyApiMock } from "./http";
+import { mockApi, verifyApiMock } from "./http";
 import { installMatchMedia, resetMedia } from "./media";
 import { resetNavigation } from "./navigation";
 import { installObservers, resetObservers } from "./observers";
@@ -22,6 +22,9 @@ Element.prototype.setPointerCapture ??= () => {};
 Element.prototype.releasePointerCapture ??= () => {};
 
 beforeEach(() => {
+  // Until the test names its routes there is none: a request fails the test that made it
+  // and never leaves for the network.
+  mockApi();
   resetMedia();
   resetNavigation();
   resetObservers();

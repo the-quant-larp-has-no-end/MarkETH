@@ -6,12 +6,14 @@ the API starts and answers with ScyllaDB down.
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from app.container import Container
 from app.core.config import Settings
 from app.core.degrees import CATALOGUE
 from app.core.units import MICRO, format_cr
 from app.pricing import lmsr
+from app.schemas.admin.code_batches import CreateCodeBatchRequest
 from app.schemas.config import PublicConfigResponse
 from app.schemas.health import HealthResponse
 from app.schemas.markets import ProposeMarketRequest
@@ -84,6 +86,7 @@ async def test_public_config_returns_the_values_of_the_example_env(
         "username_max_length": 20,
         "max_stake_per_market_cr": "100",
         "stake_presets_cr": ["25", "50", "100"],
+        "stake_step_cr": "1",
         "min_trade_cr": "1",
         "min_trade_shares": "1",
         "price_display_decimals": 1,
@@ -107,6 +110,8 @@ async def test_public_config_returns_the_values_of_the_example_env(
         "code_max_value_cr": "500",
         "code_default_value_cr": "35",
         "max_code_issuance_per_month_cr": "7000",
+        "code_batch_max_count": 10000,
+        "code_label_max_length": 100,
         "voucher_code_length": 8,
         "voucher_expiry_days": 30,
     }
@@ -155,6 +160,25 @@ async def test_public_config_carries_the_text_limits_a_proposal_is_held_to(
     assert config["short_text_max_length"] < config["long_text_max_length"]
 
 
+async def test_public_config_carries_the_bounds_a_batch_of_codes_is_held_to(
+    client: httpx.AsyncClient,
+) -> None:
+    """The form for a batch shows how many codes it may have and how long its label may
+    be. What it shows is what the request model enforces: a batch at each bound passes
+    and one beyond it does not."""
+    config = (await client.get("/api/config")).json()
+    most, longest = config["code_batch_max_count"], config["code_label_max_length"]
+    fields = CreateCodeBatchRequest.model_json_schema()["properties"]
+    batch = {"label": "x", "count": 1, "expires_at": "2026-12-01T00:00:00Z", "one_per_user": False}
+
+    assert (fields["count"]["minimum"], fields["count"]["maximum"]) == (1, most)
+    assert (fields["label"]["minLength"], fields["label"]["maxLength"]) == (1, longest)
+    assert CreateCodeBatchRequest.model_validate(batch | {"count": most, "label": "x" * longest})
+    for beyond in ({"count": most + 1}, {"label": "x" * (longest + 1)}):
+        with pytest.raises(ValidationError):
+            CreateCodeBatchRequest.model_validate(batch | beyond)
+
+
 async def test_public_config_needs_no_identity_and_is_the_same_for_everybody(
     client: httpx.AsyncClient, settings: Settings
 ) -> None:
@@ -172,7 +196,6 @@ async def test_public_config_exposes_nothing_about_people_or_infrastructure(
     text = (await client.get("/api/config")).text
     for secret in (
         *settings.identity.admin_emails,
-        *settings.identity.barista_emails,
         settings.postgres.app_password,
         settings.postgres.owner_password,
         settings.postgres.host,

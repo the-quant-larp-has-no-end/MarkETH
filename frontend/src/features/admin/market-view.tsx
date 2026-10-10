@@ -2,10 +2,12 @@
 
 import { type ReactNode, useId } from "react";
 
-import { StatusBadge, tierName } from "@/components/market";
+import { tierName } from "@/components/market";
 import { Amount, Missing } from "@/components/money";
 import { DateTime } from "@/components/time";
 import type { MarketDetailResponse, MarketResolution } from "@/lib/api/schema";
+
+import { MarketStatusBadge } from "./market-status";
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   const id = useId();
@@ -70,7 +72,7 @@ export function Resolution({ resolution }: { resolution: MarketResolution }) {
   return (
     <Section title="Resolution">
       <div className="flex flex-col items-start gap-2">
-        <StatusBadge
+        <MarketStatusBadge
           status={resolution.outcome === "VOID" ? "VOID" : "RESOLVED"}
           outcome={resolution.outcome}
         />
@@ -82,27 +84,23 @@ export function Resolution({ resolution }: { resolution: MarketResolution }) {
 }
 
 /**
- * The facts only an admin needs (DESIGN.md §13): who proposed the market, the tier that
- * was asked for and the one it got, its liquidity and loss budget, and its dates. Every
- * value is the API's, shown as sent; one it has not got yet is a dash.
+ * The facts only an admin needs (DESIGN.md §13): who proposed the market, its dates, the
+ * reason it was rejected with, and how it is priced: its tier, its liquidity b and its
+ * loss budget, which the API sends to admins alone. Every value is the API's, shown as
+ * sent; one it has not got yet is a dash.
  *
- * A market gets its liquidity and its loss budget together with its tier, when VIS
- * approves it. Until then the API has no tier and nothing to say about the two, and the
- * screen shows a dash for all three.
+ * A market has its three pricing figures from its approval on. Until then the API names
+ * no tier, and the screen shows a dash for all three.
  */
 export function MarketFacts({ market }: { market: MarketDetailResponse }) {
-  const approved = market.tier !== null;
+  // The two figures of a tier count only once there is a tier.
+  const liquidity = market.tier === null ? null : market.b_cr;
+  const lossBudget = market.tier === null ? null : market.max_loss_cr;
 
   return (
     <Section title="Details">
       <dl className="flex flex-col">
         <Fact term="Proposed by">{market.proposer_email ?? <Missing />}</Fact>
-        <Fact term="Requested liquidity">{tierName(market.requested_tier)}</Fact>
-        <Fact term="Liquidity">{market.tier === null ? <Missing /> : tierName(market.tier)}</Fact>
-        <Fact term="Liquidity b">{approved ? <Amount value={market.b_cr} /> : <Missing />}</Fact>
-        <Fact term="Loss budget">
-          {approved ? <Amount value={market.max_loss_cr} /> : <Missing />}
-        </Fact>
         <Fact term="Proposed">
           <DateTime value={market.created_at} />
         </Fact>
@@ -115,6 +113,13 @@ export function MarketFacts({ market }: { market: MarketDetailResponse }) {
         {market.rejection_reason !== null && (
           <Fact term="Rejection reason">{market.rejection_reason}</Fact>
         )}
+        <Fact term="Tier">{market.tier === null ? <Missing /> : tierName(market.tier)}</Fact>
+        <Fact term="Liquidity b">
+          {liquidity === null ? <Missing /> : <Amount value={liquidity} />}
+        </Fact>
+        <Fact term="Loss budget">
+          {lossBudget === null ? <Missing /> : <Amount value={lossBudget} />}
+        </Fact>
       </dl>
     </Section>
   );

@@ -5,7 +5,8 @@ A.3).
 has said who is calling. Here nobody says it for the application. In the first half a
 request carries the two headers the portal would send (`portal_headers`), the real
 `authenticate_request` reads them, and the application's own `IdentityService` looks
-the caller up in Postgres and derives the role from the lists of the test settings.
+the caller up in Postgres and gives them the role of their row, or ADMIN if their
+address is a bootstrap admin of the test settings.
 
 What the services behind the guards answer is not the point. A caller was refused if
 the answer is 401 or 403 and was let in if it is neither. Where a test wants to be exact
@@ -47,7 +48,7 @@ from app.services.upkeep import UserUpkeepService
 from tests.support.books import assert_books_balance
 from tests.support.clock import FrozenClock
 from tests.support.factories import Factory, PortalHeaders
-from tests.support.settings import TEST_ADMIN_EMAILS, TEST_BARISTA_EMAILS
+from tests.support.settings import TEST_ADMIN_EMAILS
 
 pytestmark = pytest.mark.integration
 
@@ -77,15 +78,17 @@ MEMBER_OPERATIONS: Final[tuple[Operation, ...]] = (
 """Routes behind the member guard, of every kind: read and write, plain, barista and
 admin."""
 
-PROFILE_BODY: Final[dict[str, str]] = {
+PROFILE_BODY: Final[dict[str, object]] = {
     "username": "newcomer",
     "degree_level": "BACHELOR",
     "degree_programme": "BSc Computer Science",
+    "policy_accepted": True,
 }
 
 PATH_VALUES: Final[dict[str, str]] = {
     "market_id": str(uuid7()),
     "batch_id": str(uuid7()),
+    "user_id": str(uuid7()),
     "alert_id": "1",
 }
 """A value for every path parameter of an admin route."""
@@ -237,8 +240,8 @@ async def test_an_unregistered_caller_gets_403_profile_required_with_name_and_em
         assert details == {"name": "Nora Newcomer", "email": "newcomer@ethz.ch"}
 
 
-@pytest.mark.parametrize("address", [*TEST_ADMIN_EMAILS, *TEST_BARISTA_EMAILS])
-async def test_a_role_opens_nothing_before_the_profile_exists(
+@pytest.mark.parametrize("address", TEST_ADMIN_EMAILS)
+async def test_a_bootstrap_admin_gets_nowhere_before_the_profile_exists(
     client: httpx.AsyncClient, settings: Settings, address: str
 ) -> None:
     """An address of ADMIN_EMAILS sets up a profile like everybody else."""
@@ -352,20 +355,31 @@ async def test_a_suspended_caller_is_refused_on_member_routes_and_on_the_profile
     assert_suspended(await client.put(PROFILE, json={}, headers=headers))
 
 
-@pytest.mark.parametrize("address", [*TEST_ADMIN_EMAILS, *TEST_BARISTA_EMAILS])
 async def test_a_suspended_account_keeps_its_role_and_none_of_its_rights(
-    client: httpx.AsyncClient, factory: Factory, portal_headers: PortalHeaders, address: str
+    client: httpx.AsyncClient, factory: Factory, portal_headers: PortalHeaders
 ) -> None:
-    suspended = await factory.user(email=address, status=UserStatus.SUSPENDED)
-    headers = portal_headers(suspended)
+    """Whether the role is in the row or comes with the address."""
+    suspended = [
+        await factory.user(email=TEST_ADMIN_EMAILS[0], status=UserStatus.SUSPENDED),
+        await factory.user(email=TEST_ADMIN_EMAILS[1], status=UserStatus.SUSPENDED),
+        await factory.user(role=UserRole.ADMIN, status=UserStatus.SUSPENDED),
+        await factory.user(role=UserRole.BARISTA, status=UserStatus.SUSPENDED),
+    ]
 
-    assert_suspended(await client.get(ADMIN_ROUTE, headers=headers))
-    assert_suspended(await client.post(approve_a_market(), json={}, headers=headers))
-    assert_suspended(await client.post(BARISTA_ROUTE, json=SCANNED, headers=headers))
-    assert_suspended(await client.get(ME, headers=headers))
+    for account in suspended:
+        headers = portal_headers(account)
+        assert_suspended(await client.get(ADMIN_ROUTE, headers=headers))
+        assert_suspended(await client.post(approve_a_market(), json={}, headers=headers))
+        assert_suspended(await client.post(BARISTA_ROUTE, json=SCANNED, headers=headers))
+        assert_suspended(await client.get(ME, headers=headers))
 
 
-# --- Roles: ADMIN_EMAILS and BARISTA_EMAILS -------------------------------------------------
+# --- Roles: the row, and the bootstrap admins ----------------------------------------------
+
+
+def set_role(user: User, role: UserRole) -> tuple[str, dict[str, str]]:
+    """The admin route that gives `user` a role, and its body."""
+    return f"/api/admin/users/{user.id}/role", {"role": role.value}
 
 
 async def test_admin_routes_answer_403_to_a_user_and_to_a_barista(
@@ -373,7 +387,7 @@ async def test_admin_routes_answer_403_to_a_user_and_to_a_barista(
 ) -> None:
     student, barista = await factory.user(), await factory.barista()
     routes = admin_operations(app)
-    assert len(routes) == 13
+    assert len(routes) == 19
 
     for method, path in routes:
         for outsider in (student, barista):
@@ -390,7 +404,9 @@ async def test_admin_routes_let_every_address_of_admin_emails_in(
     portal_headers: PortalHeaders,
     index: int,
 ) -> None:
+    """A bootstrap admin: the row says USER, and the address is on the list."""
     admin = await factory.admin(index)
+    assert admin.role is UserRole.USER
     headers = portal_headers(admin)
 
     assert_let_in(await client.post(approve_a_market(), json={}, headers=headers))
@@ -398,14 +414,34 @@ async def test_admin_routes_let_every_address_of_admin_emails_in(
     await assert_books_balance(container.uow_factory)
 
 
-async def test_the_barista_route_lets_the_barista_and_every_admin_in_and_nobody_else(
+async def test_admin_routes_let_a_user_in_whose_row_says_admin(
+    client: httpx.AsyncClient,
+    container: Container,
+    factory: Factory,
+    portal_headers: PortalHeaders,
+) -> None:
+    """An admin the panel made: no list of `.env` names the address."""
+    made_admin = await factory.user(role=UserRole.ADMIN)
+    assert made_admin.email not in TEST_ADMIN_EMAILS
+    headers = portal_headers(made_admin)
+
+    assert_let_in(await client.post(approve_a_market(), json={}, headers=headers))
+    assert (await client.get(ADMIN_ROUTE, headers=headers)).status_code not in REFUSED
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_the_barista_route_lets_baristas_and_every_admin_in_and_nobody_else(
     client: httpx.AsyncClient,
     container: Container,
     factory: Factory,
     portal_headers: PortalHeaders,
 ) -> None:
     student, barista = await factory.user(), await factory.barista()
-    admins = [await factory.admin(), await factory.admin(1)]
+    admins = [
+        await factory.admin(),
+        await factory.admin(1),
+        await factory.user(role=UserRole.ADMIN),
+    ]
 
     for body in ({}, SCANNED):
         refused = await client.post(BARISTA_ROUTE, json=body, headers=portal_headers(student))
@@ -418,20 +454,46 @@ async def test_the_barista_route_lets_the_barista_and_every_admin_in_and_nobody_
     await assert_books_balance(container.uow_factory)
 
 
-async def test_the_same_rows_under_other_lists_have_other_roles(
+async def test_a_bootstrap_admin_is_an_admin_whatever_its_row_says(
+    client: httpx.AsyncClient,
+    factory: Factory,
+    owner_engine: AsyncEngine,
+    portal_headers: PortalHeaders,
+) -> None:
+    """No admin route writes the role of such an account. Whatever the row holds, the
+    address decides."""
+    admin = await factory.admin()
+    headers = portal_headers(admin)
+
+    for stored in UserRole:
+        async with owner_engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE users SET role = :role WHERE id = :id"),
+                {"role": stored.value, "id": admin.id},
+            )
+
+        me = await client.get(ME, headers=headers)
+
+        assert (me.status_code, me.json()["role"]) == (200, "ADMIN"), stored
+        assert (await client.get(ADMIN_ROUTE, headers=headers)).status_code not in REFUSED
+
+
+async def test_under_another_list_a_bootstrap_admin_has_the_role_of_its_row(
     factory: Factory,
     settings: Settings,
     database: Database,
     clock: FrozenClock,
     portal_headers: PortalHeaders,
 ) -> None:
-    """The role is in no column: it is what `.env` said when the process started. An
-    address taken off ADMIN_EMAILS is a plain user at the next start of the API, and
-    one put on it is an admin."""
-    was_admin, student = await factory.admin(), await factory.user()
-    swapped = settings.identity.model_copy(
-        update={"admin_emails": [student.email], "barista_emails": [was_admin.email]}
+    """Who is a bootstrap admin is what `.env` said when the process started. An
+    address taken off ADMIN_EMAILS is what its row says at the next start of the API,
+    one put on it is an admin, and a role an admin gave stays what it is."""
+    was_admin, student, barista = (
+        await factory.admin(),
+        await factory.user(),
+        await factory.barista(),
     )
+    swapped = settings.identity.model_copy(update={"admin_emails": [student.email]})
     restarted = Container.build(
         settings.model_copy(update={"identity": swapped}), clock=clock, database=database
     )
@@ -444,15 +506,19 @@ async def test_the_same_rows_under_other_lists_have_other_roles(
             approve = approve_a_market()
             demoted = await client.post(approve, json={}, headers=portal_headers(was_admin))
             promoted = await client.post(approve, json={}, headers=portal_headers(student))
-            behind_the_bar = await client.post(
+            at_the_bar = await client.post(
                 BARISTA_ROUTE, json={}, headers=portal_headers(was_admin)
+            )
+            still_a_barista = await client.post(
+                BARISTA_ROUTE, json={}, headers=portal_headers(barista)
             )
     finally:
         await restarted.stop()
 
     assert assert_error(demoted, 403, "FORBIDDEN") == {}
     assert_let_in(promoted)
-    assert_let_in(behind_the_bar)
+    assert assert_error(at_the_bar, 403, "FORBIDDEN") == {}
+    assert_let_in(still_a_barista)
 
 
 # --- Nothing is remembered between requests -----------------------------------------------
@@ -471,26 +537,60 @@ async def test_a_profile_holds_from_the_request_after_it_was_created(
 
 async def test_a_suspension_holds_from_the_next_request_on_and_so_does_its_end(
     client: httpx.AsyncClient,
+    container: Container,
     factory: Factory,
-    owner_engine: AsyncEngine,
     portal_headers: PortalHeaders,
 ) -> None:
-    """Suspending has no route: it is a change of the row, made in the database."""
-    user = await factory.user()
+    """An admin suspends the account and reinstates it, through the routes of the
+    panel. Nothing tells the user's session: there is none."""
+    user, admin = await factory.user(), await factory.admin()
     headers = portal_headers(user)
-
-    async def set_status(status: UserStatus) -> None:
-        async with owner_engine.begin() as connection:
-            await connection.execute(
-                text("UPDATE users SET status = :status WHERE id = :id"),
-                {"status": status.value, "id": user.id},
-            )
+    reason = {"reason": "Looked into."}
 
     assert_let_in(await client.get(NOT_A_MARKET, headers=headers))
-    await set_status(UserStatus.SUSPENDED)
+    suspended = await client.post(
+        f"/api/admin/users/{user.id}/suspend", json=reason, headers=portal_headers(admin)
+    )
+    assert suspended.status_code == 200, suspended.text
     assert_suspended(await client.get(NOT_A_MARKET, headers=headers))
-    await set_status(UserStatus.ACTIVE)
+    reinstated = await client.post(
+        f"/api/admin/users/{user.id}/reinstate", json=reason, headers=portal_headers(admin)
+    )
+    assert reinstated.status_code == 200, reinstated.text
     assert_let_in(await client.get(NOT_A_MARKET, headers=headers))
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_role_an_admin_sets_holds_from_the_next_request_on(
+    client: httpx.AsyncClient,
+    container: Container,
+    factory: Factory,
+    portal_headers: PortalHeaders,
+) -> None:
+    """From a plain user to a barista, to an admin and back, each with one request of
+    an admin and nothing else."""
+    user, admin = await factory.user(), await factory.admin()
+    headers, as_admin = portal_headers(user), portal_headers(admin)
+
+    async def may_do() -> tuple[bool, bool, str]:
+        """Whether the user gets past the barista guard and past the admin guard, and
+        the role `/me` reports."""
+        at_the_bar = await client.post(BARISTA_ROUTE, json={}, headers=headers)
+        in_the_panel = await client.post(approve_a_market(), json={}, headers=headers)
+        me = await client.get(ME, headers=headers)
+        return at_the_bar.status_code == 422, in_the_panel.status_code == 422, me.json()["role"]
+
+    assert await may_do() == (False, False, "USER")
+    for role, rights in (
+        (UserRole.BARISTA, (True, False, "BARISTA")),
+        (UserRole.ADMIN, (True, True, "ADMIN")),
+        (UserRole.USER, (False, False, "USER")),
+    ):
+        path, body = set_role(user, role)
+        changed = await client.post(path, json=body, headers=as_admin)
+        assert (changed.status_code, changed.json()["role"]) == (200, role.value), changed.text
+        assert await may_do() == rights
+    await assert_books_balance(container.uow_factory)
 
 
 # --- Upkeep must not stand between a caller and the application --------------------------------
@@ -611,16 +711,20 @@ def stood_in_client(
     return client
 
 
-async def test_a_registered_caller_is_the_row_with_the_role_of_its_address(
+async def test_a_registered_caller_is_the_row_with_the_role_it_has_in_effect(
     container: Container, factory: Factory
 ) -> None:
-    """Through the application's own wiring, its upkeep included."""
+    """Through the application's own wiring, its upkeep included. The role is the
+    row's own, and ADMIN for the two bootstrap admins, whose rows say USER."""
     student, barista = await factory.user(), await factory.barista()
     admin, second_admin = await factory.admin(), await factory.admin(1)
+    made_admin = await factory.user(role=UserRole.ADMIN)
+    assert admin.role is second_admin.role is UserRole.USER
 
     for row, role in (
         (student, UserRole.USER),
         (barista, UserRole.BARISTA),
+        (made_admin, UserRole.ADMIN),
         (admin, UserRole.ADMIN),
         (second_admin, UserRole.ADMIN),
     ):
@@ -670,7 +774,6 @@ async def test_the_name_is_taken_as_it_is(
     ("address", "role"),
     [
         (NEWCOMER.email, UserRole.USER),
-        (TEST_BARISTA_EMAILS[0], UserRole.BARISTA),
         (TEST_ADMIN_EMAILS[0], UserRole.ADMIN),
         (TEST_ADMIN_EMAILS[1], UserRole.ADMIN),
     ],
@@ -682,8 +785,9 @@ async def test_a_caller_without_a_row_is_an_identity_without_a_user_and_starts_n
     address: str,
     role: UserRole,
 ) -> None:
-    """The identity has the role of its address all the same; the guards make nothing
-    of it before the profile exists."""
+    """A bootstrap admin is one before it has a profile, and everybody else is a plain
+    user until a row says otherwise. The guards make nothing of either before the
+    profile exists."""
     await factory.user()  # somebody else has a profile; this caller has none
 
     caller = await identity.authenticate(address.upper(), "Nora Newcomer")

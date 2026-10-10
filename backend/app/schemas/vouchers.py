@@ -53,6 +53,11 @@ class VoucherItem(ResponseModel):
     """The effective status: an ACTIVE voucher past `expires_at` is reported EXPIRED,
     whether or not its refund has been booked yet."""
 
+    refunded: bool
+    """Whether the refund of an EXPIRED voucher has been booked: its value is back on
+    the balance. False while that refund is still to come, and for a voucher in any
+    other status."""
+
     value_cr: CreditAmount
     """What the voucher took from the balance: the product's price when it was issued."""
 
@@ -78,6 +83,9 @@ class VoucherCodeResponse(ResponseModel):
     it had before is void."""
 
     voucher_id: UUID
+    product_name: str
+    """What the voucher is for, as the product was named when the voucher was issued."""
+
     code: str
     """Shown in groups of four (`XXXX-XXXX`), and the content of the voucher's QR. The
     server keeps only its hash, so this answer is the one place it appears."""

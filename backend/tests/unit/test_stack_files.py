@@ -1,19 +1,28 @@
 """The stack files (SPEC §9, A.10): `compose.yaml`, `compose.override.yaml` and the proxy
 configuration under `infra/nginx/`.
 
-Nothing here starts a container. The tests read the files and hold the rules whose
-breach nobody would notice until it mattered: who may tell the API who is calling and
-who is told, which service can reach which, who is handed the owner role's password,
-that the deployed stack carries nothing of the development one, what the proxy writes
-into its log, and that every value still comes from `.env`.
+The tests read the files and hold the rules whose breach nobody would notice until it
+mattered: who may tell the API who is calling and who is told, which service can reach
+which, that the web app's container gets no answer from the API through the proxy, who
+is handed the owner role's password, that the deployed stack carries nothing of the
+development one, what the proxy and the API write into their logs, that ScyllaDB is
+given a container it starts in, and that every value still comes from `.env`.
 
 The compose files are read as text, the way they are written: two spaces per level, a
 comment always on a line of its own. The nginx files are parsed into their directives.
+
+One test, the last of the file, asks nginx itself: `nginx -t` on each configuration as
+the stack renders it, in a container of the stack's image that has no network and
+starts no server. Where Docker does not run it is skipped; every other test needs
+nothing but the files. The `Stack` job of `.github/workflows/ci.yml` asks nginx the same
+about what Compose resolves.
 """
 
 import ipaddress
 import json
 import re
+import shutil
+import subprocess
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -32,6 +41,9 @@ DEVELOPMENT_DIRECTORY: Final[Path] = REPO_ROOT / "infra" / "nginx" / "dev"
 COMPOSE: Final[str] = (REPO_ROOT / "compose.yaml").read_text(encoding="utf-8")
 OVERRIDE: Final[str] = (REPO_ROOT / "compose.override.yaml").read_text(encoding="utf-8")
 EXAMPLE_ENV: Final[str] = (REPO_ROOT / ".example.env").read_text(encoding="utf-8")
+PRODUCTION_ENV: Final[str] = (REPO_ROOT / "infra" / "deploy" / "env.production").read_text(
+    encoding="utf-8"
+)
 MAKEFILE: Final[str] = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
 BACKEND_DOCKERFILE: Final[str] = (REPO_ROOT / "backend" / "Dockerfile").read_text(encoding="utf-8")
 PROXY: Final[str] = (PROXY_DIRECTORY / "default.conf.template").read_text(encoding="utf-8")
@@ -58,6 +70,11 @@ def assigned(env_file: str) -> dict[str, str]:
 
 
 EXAMPLE: Final[dict[str, str]] = assigned(EXAMPLE_ENV)
+DEPLOYED: Final[dict[str, str]] = EXAMPLE | assigned(PRODUCTION_ENV)
+"""`.example.env` with what `infra/deploy/env.production` sets differently: the
+environment of the deployed stack, apart from the passwords and the admins, which only
+the VM knows."""
+
 ID_HEADER: Final[str] = EXAMPLE["IDENTITY_HEADER_USER_ID"]
 NAME_HEADER: Final[str] = EXAMPLE["IDENTITY_HEADER_USER_NAME"]
 IDENTITY_HEADERS: Final[frozenset[str]] = frozenset({ID_HEADER.lower(), NAME_HEADER.lower()})
@@ -72,6 +89,31 @@ def listed(variable: str) -> list[str]:
 def request_variable(header: str) -> str:
     """The nginx variable that holds a request header as the client sent it."""
     return "$http_" + header.lower().replace("-", "_")
+
+
+MIB: Final[int] = 1024 * 1024
+
+
+def docker_bytes(size: str) -> int:
+    """A memory limit as Docker reads one: bytes, or a number of `k`, `m` or `g` in
+    either case, with or without a `b` behind it. The units count in powers of 1024."""
+    found = re.fullmatch(r"(\d+)(?:([kmg])b?|b)?", size.lower())
+    assert found is not None, f"{size} is not a memory limit of Docker"
+    number, unit = found.groups()
+    return int(number) << 10 * "bkmg".index(unit or "b")
+
+
+def scylla_bytes(size: str) -> int:
+    """A size as ScyllaDB reads its `--memory`: bytes, or a number of `M` or `G`.
+
+    The letter is a capital one. Docker's spelling of the same size, `2g`, ends ScyllaDB
+    at once ("Could not initialize seastar: ... bad lexical cast"), and so does `2048m`:
+    both tried with the image of the stack.
+    """
+    found = re.fullmatch(r"(\d+)([MG]?)", size)
+    assert found is not None, f"ScyllaDB does not start with --memory {size}: write 2G or 2048M"
+    number, unit = found.groups()
+    return int(number) * {"": 1, "M": MIB, "G": 1024 * MIB}[unit]
 
 
 # --- Reading the compose files --------------------------------------------------------
@@ -151,12 +193,28 @@ def passed_to_nginx(service: str) -> set[str]:
     return set(re.findall(r"^      (NGINX_[A-Z0-9_]+):", service, re.MULTILINE))
 
 
-def networks_of(compose: str) -> list[str]:
-    """The networks a compose file defines, in its top-level `networks:` block."""
+def handed_to_nginx(service: str, environment: Mapping[str, str]) -> dict[str, str]:
+    """NGINX_* name to value, as a compose file hands them to the nginx container when
+    Compose reads `environment` as its `.env`."""
+    return {
+        name: REFERENCE.sub(lambda reference: environment[reference.group(1)], value)
+        for name, value in re.findall(r"^      (NGINX_[A-Z0-9_]+): (.+)$", service, re.MULTILINE)
+    }
+
+
+def network_definitions(compose: str) -> dict[str, str]:
+    """Network name to the text a compose file holds under it, in its top-level
+    `networks:` block. A network that is left to Docker has no text."""
     found = re.search(r"^networks:\n((?:  .*\n)+)", code_of(compose), re.MULTILINE)
     if found is None:
-        return []
-    return re.findall(r"^  ([a-z][a-z0-9-]*):", found.group(1), re.MULTILINE)
+        return {}
+    pieces = re.split(r"^  ([a-z][a-z0-9-]*):\n", found.group(1), flags=re.MULTILINE)
+    return dict(zip(pieces[1::2], pieces[2::2], strict=True))
+
+
+def networks_of(compose: str) -> list[str]:
+    """The networks a compose file defines, in its top-level `networks:` block."""
+    return list(network_definitions(compose))
 
 
 STACK: Final[dict[str, str]] = services_of(COMPOSE)
@@ -247,9 +305,18 @@ def named(tree: Iterable[Directive], name: str) -> list[Directive]:
     return [directive for directive in all_of(tree) if directive.name == name]
 
 
+PLACEHOLDER: Final[re.Pattern[str]] = re.compile(r"\$\{(NGINX_[A-Z0-9_]+)\}")
+
+
 def placeholders(template: str) -> set[str]:
     """The `${NGINX_*}` placeholders the nginx image fills in when it renders a template."""
-    return set(re.findall(r"\$\{(NGINX_[A-Z0-9_]+)\}", template))
+    return set(PLACEHOLDER.findall(template))
+
+
+def rendered(template: str, handed: Mapping[str, str]) -> str:
+    """A template as the nginx image renders it: every `${NGINX_*}` placeholder replaced
+    by the value the container was handed, and nothing else touched."""
+    return PLACEHOLDER.sub(lambda placeholder: handed[placeholder.group(1)], template)
 
 
 PROXY_TREE: Final[tuple[Directive, ...]] = parse(PROXY)
@@ -269,6 +336,28 @@ def maps_to(variable: str) -> Directive:
     """The one `map` of the proxy that defines `variable`."""
     [found] = [d for d in PROXY_TREE if d.name == "map" and d.arguments[1] == variable]
     return found
+
+
+def geo_of(tree: Iterable[Directive], variable: str) -> Directive:
+    """The one `geo` among the directives of `tree` that defines `variable`."""
+    [found] = [d for d in tree if d.name == "geo" and d.arguments[-1] == variable]
+    return found
+
+
+def located(peers: Directive, address: str) -> str:
+    """What a `geo` makes of an address. nginx takes the value of the most specific
+    network that holds the address, wherever it stands in the block, else `default`."""
+    peer = ipaddress.ip_address(address)
+    [(value,)] = peers.inner("default")
+    longest = -1
+    for entry in peers.block:
+        if entry.name == "default":
+            continue
+        network = ipaddress.ip_network(entry.name)
+        if peer.version == network.version and peer in network and network.prefixlen > longest:
+            [value] = entry.arguments
+            longest = network.prefixlen
+    return value
 
 
 def looked_up(variable: str, headers: Mapping[str, str]) -> str:
@@ -407,6 +496,55 @@ def test_every_service_has_a_memory_limit_from_the_env() -> None:
         assert re.fullmatch(r"\$\{[A-Z_]+_MEMORY_LIMIT:\?\}", limit), f"{name}: {limit}"
 
 
+SCYLLA_SETS_ASIDE: Final[int] = 1536 * MIB
+"""What ScyllaDB keeps of its container's memory for everything that is not its own,
+before the share of the kernel: 1.5 GiB. (Seastar, which it is built on, keeps 7% where
+that is more, which is above 21 GiB; no container of this stack comes near it.)"""
+
+ROOM_FOR_THE_KERNEL: Final[int] = 256 * MIB
+"""Room for what the kernel of the host keeps free (`vm.min_free_kbytes`), which ScyllaDB
+sets aside as well. How much that is, is the host's to say: 44 MiB under Docker Desktop
+on the laptop the rule was measured on, 66 MiB on the VM (docs/SERVER_INFRASTRUCTURE.md
+§13, check 9). 256 MiB is the ceiling of the kernel's default rule for it."""
+
+
+@pytest.mark.parametrize("environment", [EXAMPLE, DEPLOYED], ids=["example", "production"])
+def test_the_scylla_container_leaves_room_for_the_memory_scylla_is_told_to_use(
+    environment: Mapping[str, str],
+) -> None:
+    """ScyllaDB refuses to start ("insufficient physical memory: needed ... available
+    ...") unless the limit of its container, less what it sets aside, is at least its
+    `--memory`. Its container then stays up without it, unhealthy.
+
+    What it sets aside is 1.5 GiB and what the kernel of the host keeps free
+    (`vm.min_free_kbytes`, which its binary reads). Measured with the image of the
+    stack under Docker Desktop, where the kernel keeps 44 MiB: asked for more than its
+    container held, ScyllaDB named as available the limit less 1580 MiB and less 50 MiB
+    per shard (one shard under limits from 2130 MiB to 6 GiB; two and four shards under
+    4 GiB). What it needs is `--memory` less the same 50 MiB per shard, so the shards
+    drop out of the rule. `--memory 2G` was refused under 3627 MiB and started under
+    3628 MiB, which is 2 GiB and 1580 MiB.
+
+    The kernel's share differs from host to host, and the VM is another host than the
+    laptop, so the rule here allows `ROOM_FOR_THE_KERNEL` for it. It holds for
+    `.example.env` and for what `infra/deploy/env.production` makes of it.
+    """
+    assert scalar(STACK["scylla"], "mem_limit") == "${SCYLLA_MEMORY_LIMIT:?}"
+    flags = entries(STACK["scylla"], "command")
+    assert flags[flags.index("--memory") + 1] == "${SCYLLA_MEMORY:?}"
+
+    memory = scylla_bytes(environment["SCYLLA_MEMORY"])
+    limit = docker_bytes(environment["SCYLLA_MEMORY_LIMIT"])
+    needed = memory + SCYLLA_SETS_ASIDE + ROOM_FOR_THE_KERNEL
+    assert limit >= needed, (
+        f"SCYLLA_MEMORY_LIMIT={environment['SCYLLA_MEMORY_LIMIT']} is {limit // MIB} MiB, and "
+        f"SCYLLA_MEMORY={environment['SCYLLA_MEMORY']} takes a limit of {needed // MIB} MiB: "
+        f"its own {memory // MIB} MiB, the {SCYLLA_SETS_ASIDE // MIB} MiB ScyllaDB sets "
+        f"aside and {ROOM_FOR_THE_KERNEL // MIB} MiB for what the kernel keeps free. "
+        "ScyllaDB might not start"
+    )
+
+
 def test_every_service_rotates_its_log() -> None:
     rotation = anchor_of(COMPOSE, "logging")
     assert "  driver: json-file\n" in rotation
@@ -469,11 +607,23 @@ def test_the_api_runs_the_command_of_its_image_with_a_limit_on_a_graceful_stop()
     assert 0 < int(EXAMPLE["API_SHUTDOWN_TIMEOUT_SECONDS"]) < 10
 
 
+def test_the_deployed_api_writes_no_access_log_of_its_own() -> None:
+    """uvicorn's access line is the whole request line, query string included, and a
+    query can hold the name an admin searches for. The access log of the stack is the
+    proxy's, which leaves the query out. The flag stands in the command of the image,
+    which is the command the deployed stack runs (the test above holds the two equal)."""
+    found = re.search(r"^CMD (\[.+\])$", BACKEND_DOCKERFILE, re.MULTILINE)
+    assert found is not None
+    assert "--no-access-log" in json.loads(found.group(1))
+    assert "--no-access-log" in entries(STACK["api"], "command")
+
+
 def test_the_web_app_shares_a_network_with_the_proxy_alone() -> None:
     """Two networks: `edge` holds nginx and web, `core` holds nginx, the API and what the
     API works with. The web app is on no network with the API or a store, so it cannot
     open a connection to any of them: Redis and ScyllaDB ask for no password, and the
-    API takes its caller from two request headers."""
+    API takes its caller from two request headers. What the web app can reach is the
+    proxy, which refuses it under /api/ (the tests of the edge network below)."""
     assert sorted(networks_of(COMPOSE)) == ["core", "edge"]
     joined = {name: entries(service, "networks") for name, service in STACK.items()}
     assert joined.pop("web") == ["edge"]
@@ -481,6 +631,54 @@ def test_the_web_app_shares_a_network_with_the_proxy_alone() -> None:
     assert set(joined) == {"api", "relay", "migrate", "postgres", "redis", "scylla"}
     for name, networks in joined.items():
         assert networks == ["core"], name
+
+
+EDGE_ADDRESSES: Final[str] = (
+    "    ipam:\n"
+    "      config:\n"
+    "        - subnet: ${EDGE_SUBNET:?}\n"
+    "          gateway: ${EDGE_GATEWAY:?}\n"
+)
+"""What `compose.yaml` holds under the network `edge`."""
+
+
+@pytest.mark.parametrize("environment", [EXAMPLE, DEPLOYED], ids=["example", "production"])
+def test_the_edge_network_has_a_range_of_its_own_and_its_gateway_lies_inside(
+    environment: Mapping[str, str],
+) -> None:
+    """The proxy refuses /api/ to a peer on `edge`, so it has to know which addresses
+    those are: `compose.yaml` gives the network the range and the gateway `.env` names
+    instead of leaving both to Docker, and hands the proxy the same two values. The
+    range is a private IPv4 network written as one (no bit set behind its prefix), the
+    gateway is one of its hosts, and besides the gateway it has room for the proxy and
+    the web app. `core` is left to Docker: nothing has to know its addresses."""
+    assert network_definitions(COMPOSE) == {"edge": EDGE_ADDRESSES, "core": ""}
+    handed = handed_to_nginx(STACK["nginx"], environment)
+    assert handed["NGINX_EDGE_SUBNET"] == environment["EDGE_SUBNET"]
+    assert handed["NGINX_EDGE_GATEWAY"] == environment["EDGE_GATEWAY"]
+
+    subnet = ipaddress.ip_network(environment["EDGE_SUBNET"])
+    gateway = ipaddress.ip_address(environment["EDGE_GATEWAY"])
+    assert subnet.version == 4, "nginx listens on IPv4 alone"
+    assert subnet.is_private, subnet
+    hosts = list(subnet.hosts())
+    assert gateway in hosts, f"{gateway} is no host of {subnet}"
+    on_the_network = [name for name in STACK if "edge" in entries(STACK[name], "networks")]
+    assert len(hosts) - 1 >= len(on_the_network)
+
+
+@pytest.mark.parametrize("environment", [EXAMPLE, DEPLOYED], ids=["example", "production"])
+def test_the_gateway_of_the_edge_network_is_a_peer_the_proxy_believes(
+    environment: Mapping[str, str],
+) -> None:
+    """Depending on how Docker passes on what arrives on the published port, the proxy
+    sees it coming from the gateway of one of its two networks. When that is the gateway
+    of `edge`, the portal's request arrives from this address, and the proxy has to take
+    the visitor's address and scheme from it as it does from any other private peer."""
+    gateway = ipaddress.ip_address(environment["EDGE_GATEWAY"])
+    believed = [d.arguments[0] for d in PROXY_TREE if d.name == "set_real_ip_from"]
+    assert any(gateway in ipaddress.ip_network(network) for network in believed)
+    assert located(geo_of(PROXY_TREE, "$peer_is_trusted"), str(gateway)) == "1"
 
 
 def test_nothing_reaches_around_the_two_networks() -> None:
@@ -711,12 +909,16 @@ def test_the_switcher_stores_exactly_the_two_cookies_the_proxy_reads() -> None:
     assert SWITCHER.count("document.cookie") == 1
 
 
-def test_the_switcher_offers_the_admin_and_the_barista_of_the_example_env() -> None:
-    offered = set(re.findall(r'data-id="([^"]+)"', SWITCHER))
+def test_the_switcher_calls_the_admins_of_the_example_env_admins_and_nobody_else() -> None:
+    """`ADMIN_EMAILS` names the bootstrap admins, and it is the one role `.env` knows.
+    A role given in the admin panel is kept with the account, where this page cannot see
+    it. Each person offered has one label; the caller of `DEV_USER_ID` is among them."""
+    offered = dict(re.findall(r'data-id="([^"]+)".*?<em>([^<]*)</em>', SWITCHER, re.DOTALL))
+    assert len(offered) == len(re.findall(r"data-id=", SWITCHER))
     assert listed("ADMIN_EMAILS")
-    assert listed("BARISTA_EMAILS")
-    for address in (*listed("ADMIN_EMAILS"), *listed("BARISTA_EMAILS"), EXAMPLE["DEV_USER_ID"]):
-        assert address in offered, address
+    assert EXAMPLE["DEV_USER_ID"] in offered
+    called_admin = {address for address, label in offered.items() if label == "admin"}
+    assert called_admin == set(listed("ADMIN_EMAILS"))
 
 
 def test_the_switcher_loads_nothing_from_elsewhere() -> None:
@@ -758,6 +960,20 @@ def test_a_location_that_adds_a_response_header_keeps_the_security_headers() -> 
     assert {"Referrer-Policy", "Strict-Transport-Security"} <= set(always)
 
 
+def test_a_browser_is_told_to_name_the_origin_alone_in_a_referer() -> None:
+    """An address of the app can hold a code to redeem (`/wallet?code=...`). Under
+    `strict-origin` the Referer of every request a page makes is the origin without path
+    and query, to this app as to any other site, so the code travels in none. The
+    policy is the server's, on every answer, and no location sets another."""
+    policies = [
+        directive.arguments
+        for directive in (*all_of(PROXY_TREE), *all_of(IDENTITY_TREE))
+        if directive.name == "add_header" and directive.arguments[0].lower() == "referrer-policy"
+    ]
+    assert policies == [("Referrer-Policy", "strict-origin", "always")]
+    assert policies[0] in SERVER.inner("add_header")
+
+
 def test_the_body_limit_comes_from_the_env_and_holds_for_every_location() -> None:
     assert SERVER.inner("client_max_body_size") == [("${NGINX_CLIENT_MAX_BODY_SIZE}",)]
     assert len(named(PROXY_TREE, "client_max_body_size")) == 1
@@ -774,7 +990,7 @@ def test_the_visitors_address_is_the_last_entry_of_the_portals_header() -> None:
 
 def test_address_and_scheme_are_believed_from_the_same_private_peers_only() -> None:
     for_the_address = {d.arguments[0] for d in PROXY_TREE if d.name == "set_real_ip_from"}
-    [peers] = [directive for directive in PROXY_TREE if directive.name == "geo"]
+    peers = geo_of(PROXY_TREE, "$peer_is_trusted")
     peer_address, trusted = peers.arguments
     for_the_scheme = {entry.name for entry in peers.block if entry.arguments == ("1",)}
     assert peer_address == "$realip_remote_addr"
@@ -859,28 +1075,111 @@ def test_a_request_is_foreign_when_another_site_made_the_browser_send_it(
     `Sec-Fetch-Site` says whose page it was; the window itself may come from anywhere."""
     headers = {name: value for name, value in ((SITE, site), (MODE, mode), (DEST, dest)) if value}
 
-    assert looked_up("$foreign_request", headers) == foreign
+    assert looked_up(FOREIGN_REQUEST, headers) == foreign
 
 
-def test_both_api_locations_refuse_a_foreign_request_before_they_count_it() -> None:
+FROM_THE_WEB_NETWORK: Final[str] = "$from_the_web_network"
+FOREIGN_REQUEST: Final[str] = "$foreign_request"
+REFUSED_UNDER_API: Final[tuple[str, ...]] = (FROM_THE_WEB_NETWORK, FOREIGN_REQUEST)
+"""The two flags on which the proxy answers 403 under /api/ without asking the API: the
+peer is on the network of the web app, or another site made the browser send the
+request."""
+
+
+def test_every_api_location_starts_with_the_two_refusals_of_the_proxy() -> None:
+    """Each location that passes requests to the API, the event stream included, begins
+    with one `if` per flag, and each of them does one thing: `return 403`. No other
+    `if` stands in the file, so nothing else is decided this way."""
+    assert len(API_LOCATIONS) == 2
+    for location in API_LOCATIONS:
+        refusals = location.block[: len(REFUSED_UNDER_API)]
+        assert [(refusal.name, refusal.arguments) for refusal in refusals] == [
+            ("if", (f"({flag})",)) for flag in REFUSED_UNDER_API
+        ], location.arguments
+        for refusal in refusals:
+            assert [(inside.name, inside.arguments) for inside in refusal.block] == [
+                ("return", ("403",))
+            ]
+    assert len(named(PROXY_TREE, "if")) == len(REFUSED_UNDER_API) * len(API_LOCATIONS)
+
+
+def test_a_refusal_of_the_proxy_is_answered_before_the_request_is_counted() -> None:
     """Another team's page could otherwise use up the request limit, or the streams, of
     whoever looks at it. `return` belongs to the phase in which nginx rewrites a
     request, which is over before `limit_req` and `limit_conn` see it; the named
     location that answers has no limit of its own and inherits none."""
-    assert len(API_LOCATIONS) == 2
     for location in API_LOCATIONS:
-        refusal = location.block[0]
-        assert (refusal.name, refusal.arguments) == ("if", ("($foreign_request)",))
-        assert [(inside.name, inside.arguments) for inside in refusal.block] == [
-            ("return", ("403",))
-        ]
         assert location.inner("limit_req"), location.arguments
         answer = answers_of_nginx(location)[403]
         assert answer.arguments == ("@api_forbidden",)
         assert named(answer.block, "limit_req") + named(answer.block, "limit_conn") == []
-    assert len(named(PROXY_TREE, "if")) == len(API_LOCATIONS)
     assert SERVER.inner("limit_req") + SERVER.inner("limit_conn") == []
     assert [d.name for d in PROXY_TREE if d.name in {"limit_req", "limit_conn"}] == []
+
+
+@pytest.mark.parametrize("environment", [EXAMPLE, DEPLOYED], ids=["example", "production"])
+def test_a_peer_on_the_edge_network_other_than_its_gateway_is_from_the_web_network(
+    environment: Mapping[str, str],
+) -> None:
+    """The proxy listens on the network it shares with the web app and hands a request
+    under /api/ on with the headers it came with. A request from the web app's container
+    never passed the portal, so the proxy refuses it there: every address of `edge`
+    raises the flag, except the gateway, from which Docker may hand over what arrives on
+    the published port.
+
+    The flag is read from the peer of the connection. `$remote_addr` would be whatever
+    the web app's container names in the portal's header, because its address is a
+    private one.
+
+    The template is read as the nginx image renders it for this environment.
+    """
+    tree = parse(rendered(PROXY, handed_to_nginx(STACK["nginx"], environment)))
+    peers = geo_of(tree, FROM_THE_WEB_NETWORK)
+    assert peers.arguments == ("$realip_remote_addr", FROM_THE_WEB_NETWORK)
+    assert {entry.name: entry.arguments for entry in peers.block} == {
+        "default": ("0",),
+        environment["EDGE_SUBNET"]: ("1",),
+        environment["EDGE_GATEWAY"]: ("0",),
+    }
+
+    subnet = ipaddress.ip_network(environment["EDGE_SUBNET"])
+    gateway = ipaddress.ip_address(environment["EDGE_GATEWAY"])
+    for address in subnet:
+        assert located(peers, str(address)) == ("0" if address == gateway else "1"), address
+    for elsewhere in (
+        subnet.network_address - 1,
+        subnet.broadcast_address + 1,
+        "127.0.0.1",
+        "10.0.0.20",
+        "172.18.0.1",
+        "188.245.14.160",
+        "fd00::1",
+    ):
+        assert located(peers, str(elsewhere)) == "0", elsewhere
+
+
+@pytest.mark.parametrize(
+    ("environment", "with_the_overlay"),
+    [(EXAMPLE, False), (DEPLOYED, False), (EXAMPLE, True)],
+    ids=["example", "production", "development"],
+)
+def test_a_rendered_configuration_has_no_placeholder_left_and_no_empty_value(
+    environment: Mapping[str, str], with_the_overlay: bool
+) -> None:
+    """The nginx image replaces the `${NGINX_*}` placeholders it was handed a variable
+    for and leaves every other `${...}` as it stands. What a compose file hands over
+    has to fill the templates it mounts completely, with a value for each."""
+    handed = handed_to_nginx(STACK["nginx"], environment)
+    templates = [PROXY]
+    if with_the_overlay:
+        handed |= handed_to_nginx(OVERLAY["nginx"], environment)
+        templates.append(IDENTITY)
+    for template in templates:
+        for placeholder in placeholders(template):
+            assert handed[placeholder] != "", placeholder
+        text = rendered(template, handed)
+        assert "${" not in code_of(text)
+        assert parse(text)
 
 
 def test_event_streams_are_unbuffered_patient_and_limited_per_caller() -> None:
@@ -902,8 +1201,14 @@ def test_event_streams_are_unbuffered_patient_and_limited_per_caller() -> None:
 
 
 def test_the_access_log_holds_no_query_string_no_referer_and_no_cookie() -> None:
-    """A code to redeem arrives as `/wallet?code=...`, the Referer of the requests that
-    page makes repeats it, and a cookie of the portal is a visitor's sign-in."""
+    """A code to redeem arrives as `/wallet?code=...`, a Referer can repeat such an
+    address, and the cookies that come along are a visitor's sessions with other
+    services of ETH: a browser sends what it holds for `.ethz.ch` to every host below
+    it.
+
+    The rule is about the access log, the one log the proxy shapes. A line of nginx's
+    error log that is about a request holds the request line as it arrived; the
+    template says so, and that it is accepted."""
     [log_format] = named(PROXY_TREE, "log_format")
     name, *parts = log_format.arguments
     written = "".join(parts)
@@ -928,8 +1233,9 @@ def test_the_access_log_holds_no_query_string_no_referer_and_no_cookie() -> None
 
 
 def test_the_access_log_says_whether_a_cookie_of_the_portal_arrived_and_no_more() -> None:
-    """Whether the portal hands its session cookie on to a team's VM is an open check
-    (docs/SERVER_INFRASTRUCTURE.md §13). The log answers it with one word per request,
+    """The portal keeps its session cookie, `_oauth2_proxy`, to itself: a request reaches
+    the VM without it. That is what the organizers state (docs/SERVER_INFRASTRUCTURE.md
+    §13, check 8), and the log is the standing confirmation: one word per request,
     `true` or `false`, taken from the names of the cookies and never from a value."""
     [log_format] = named(PROXY_TREE, "log_format")
     written = "".join(log_format.arguments[1:])
@@ -988,3 +1294,60 @@ def test_what_nginx_answers_under_api_has_the_error_shape_of_the_api() -> None:
         assert status == 413
         assert body["code"] == ErrorCode.VALIDATION_ERROR
         assert set(body) == {"code", "message", "details"}
+
+
+# --- nginx's own verdict ----------------------------------------------------------------
+
+NGINX_TEST_SECONDS: Final[int] = 180
+"""Room for Docker to fetch the nginx image where it is not there yet."""
+
+DOCKER_ITSELF_FAILED: Final[int] = 125
+"""The exit status of `docker run` when Docker could not run the container at all: no
+daemon, or no image and no way to fetch one. What nginx says comes with its own status."""
+
+
+@pytest.mark.parametrize(
+    ("environment", "with_the_overlay"),
+    [(EXAMPLE, False), (DEPLOYED, False), (EXAMPLE, True)],
+    ids=["example", "production", "development"],
+)
+def test_nginx_accepts_the_configuration_as_the_stack_renders_it(
+    environment: Mapping[str, str], with_the_overlay: bool
+) -> None:
+    """`nginx -t`, asked of the image the stack runs. The container is handed what the
+    compose files hand the nginx service, its NGINX_* variables and its mounts, so the
+    image's own start-up renders the templates exactly as it does in the stack, and
+    nginx then reads the result the way it would at start. A directive it does not know,
+    a variable nobody defines, a value it cannot read as an address: each of them would
+    otherwise show when the proxy of a deployment fails to come up.
+
+    The container has no network, publishes nothing and is removed when nginx has
+    answered. Without Docker the test is skipped.
+    """
+    docker = shutil.which("docker")
+    if docker is None:
+        pytest.skip("Docker is not installed: nginx was not asked")
+
+    handed = handed_to_nginx(STACK["nginx"], environment)
+    mounts = mounts_of(STACK["nginx"])
+    if with_the_overlay:
+        handed |= handed_to_nginx(OVERLAY["nginx"], environment)
+        mounts |= mounts_of(OVERLAY["nginx"])
+    command = [docker, "run", "--rm", "--network", "none"]
+    for name, value in sorted(handed.items()):
+        command += ["--env", f"{name}={value}"]
+    for source, target in mounts.items():
+        command += ["--volume", f"{(REPO_ROOT / source).resolve()}:{target}:ro"]
+    command += [scalar(STACK["nginx"], "image"), "nginx", "-t"]
+
+    try:
+        asked = subprocess.run(
+            command, capture_output=True, text=True, timeout=NGINX_TEST_SECONDS, check=False
+        )
+    except subprocess.TimeoutExpired:
+        pytest.skip(f"Docker did not answer within {NGINX_TEST_SECONDS} seconds")
+    if asked.returncode == DOCKER_ITSELF_FAILED:
+        pytest.skip(f"Docker could not run the nginx image: {asked.stderr.strip()[-200:]}")
+
+    assert asked.returncode == 0, asked.stderr
+    assert "test is successful" in asked.stderr

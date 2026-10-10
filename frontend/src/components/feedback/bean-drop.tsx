@@ -22,7 +22,7 @@ export type BeanDropProps = {
   arrival: string | number | null;
   /**
    * The figure the beans fall into. As a function it is told whether they are still
-   * falling, so it can show the old figure until they have landed:
+   * falling, so it can show the figure from before until they have landed:
    * `(falling) => <Amount value={falling ? before : balance_cr} />`.
    */
   children: ReactNode | ((falling: boolean) => ReactNode);

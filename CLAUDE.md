@@ -1,34 +1,41 @@
 # MarkETH
 
-A mobile-first prediction market for ETH Zurich students. Users trade YES/NO shares with free vouchers against an LMSR market maker run by VIS; a winning share pays 1 voucher, redeemable for a coffee. No real money is involved anywhere.
+A mobile-first prediction market for ETH Zurich students. Users trade YES/NO shares with free tokens against an LMSR market maker run by VIS; a winning share pays 1 token, and tokens buy vouchers for products at the bar. No real money is involved anywhere. The app runs behind the VIScon portal, which signs every visitor in and tells the API who is calling.
 
-`docs/SPEC.md` is the source of truth for behaviour. Cite it as "SPEC §N" in docstrings and commit messages. Its Appendix A records the decisions taken while building; read it before changing behaviour.
+`docs/SPEC.md` is the source of truth for behaviour. Cite it as "SPEC §N" in docstrings and commit messages. Its Appendix A records the decisions behind the build; read it before changing behaviour.
 
 ## Map
 
 | Path | What lives there |
 | --- | --- |
 | `docs/SPEC.md` | The engineering spec (§1 to §12) and Appendix A (build decisions) |
+| `docs/SERVER_INFRASTRUCTURE.md` | The VM, the portal and the firewall in front of it, and how to deploy |
 | `.env`, `.example.env` | Every tunable of the system. Identical keys; `.env` is gitignored |
-| `compose.yaml`, `compose.override.yaml` | The whole stack; the override adds hot reload and published ports |
-| `infra/nginx/` | Reverse proxy template |
-| `backend/` | FastAPI API and the outbox relay. Rules in `backend/CLAUDE.md` |
+| `compose.yaml`, `compose.override.yaml` | The whole stack. `compose.yaml` alone is what is deployed; the override adds hot reload, published ports and the development identity |
+| `infra/nginx/` | Reverse proxy template, and in `infra/nginx/dev/` the stand-in for the portal's sign-in |
+| `infra/deploy/` | What the deployed stack sets differently, and the backup, check and smoke scripts |
+| `backend/` | FastAPI API, the outbox relay and the scripts. Rules in `backend/CLAUDE.md` |
 | `frontend/` | Next.js app. Rules in `frontend/CLAUDE.md`, design system in `frontend/DESIGN.md` |
 | `Makefile` | The commands below |
 
 ## Commands
 
-Run from the repository root.
+Run from the repository root. `make` alone lists them.
 
 | Command | Does |
 | --- | --- |
-| `make up` / `make down` / `make logs` | Start, stop, tail the stack (app at http://localhost:8080, mail at http://localhost:8025) |
-| `make migrate` / `make seed` | Apply migrations / load demo data |
+| `make up` / `make down` / `make logs` | Start, stop, tail the stack (app at http://localhost:8080, who is calling at http://localhost:8080/__dev/identity) |
+| `make migrate` / `make seed` | Build the schema and check that it is the one of this code / load demo data |
 | `make test` | Backend and frontend tests (`make test-backend`, `make test-frontend`, `make test-scylla`) |
 | `make lint` / `make fmt` | Check / fix style, types and architecture rules |
 | `make api-client` | Export `backend/openapi.json` and regenerate the frontend's API types |
 | `make psql` / `make redis-cli` / `make cqlsh` | Shells into the data stores |
 | `make reset` | Stop the stack and delete its volumes |
+| `make deploy` / `make deploy-check` | Deploy to the VM / check the stack that runs there |
+| `make deploy-status` / `make deploy-logs` | Containers, memory and disk on the VM / tail its logs |
+| `make deploy-smoke` / `make deploy-wipe` / `make deploy-rollback` | Walk an empty database on the VM / dump and delete its databases / go back to the organizers' template |
+
+`make deploy` runs `deploy-backup`, `deploy-sync`, `deploy-env`, `deploy-build`, `deploy-pull`, `deploy-migrate`, `deploy-stop-template`, `deploy-up` and `deploy-check` in that order; `docs/SERVER_INFRASTRUCTURE.md` §14 walks through them.
 
 ## Golden rules
 
@@ -41,24 +48,33 @@ These protect SPEC §1: no credit is created or destroyed outside an audited led
 5. **Rounding favours the market maker.** Costs round up, proceeds round down, shares bought round down.
 6. **The frontend never computes a price, balance or limit.** It formats what the API returns.
 7. **Every tunable is in `.env`.** No defaults in code. Adding one means editing `.env`, `.example.env` and `Settings` together.
-8. **Async I/O only.** No blocking database, Redis, Scylla or SMTP call on the event loop.
+8. **Async I/O only.** No blocking database, Redis or ScyllaDB call on the event loop.
 9. **Vouchers and codes are never sold.** Do not add any payment or purchase flow (SPEC §2).
+
+Two things follow from where the app runs (SPEC §3):
+
+- **A credit is a "token" on screen** and a credit (`*_cr`, µCR) in the code, the API and the database.
+- **The portal is the sign-in.** The API believes the two request headers in which the portal names the caller, and reads them in one place, `authenticate_request`. Do not add a sign-in or a development bypass to the backend: on a laptop the proxy names the caller (`infra/nginx/dev/`).
 
 ## Where does this go?
 
 | I need to... | Put it in |
 | --- | --- |
-| Add or change an endpoint | `backend/app/api/routes/`, with its schemas in `backend/app/schemas/` |
+| Add or change an endpoint | `backend/app/api/routes/`, with its schemas in `backend/app/schemas/`; then `make api-client` |
 | Add a business rule | A class in `backend/app/services/` |
 | Add a query | The matching class in `backend/app/repositories/` |
-| Add a table or column | `backend/app/models/` plus an Alembic migration |
+| Add a table or column | `backend/app/models/`. The single baseline revision builds the schema from the models, so a changed schema needs a wiped database (`make reset`); the fingerprint check of `make migrate` says so |
 | Change pricing maths | `backend/app/pricing/lmsr.py` only |
 | Add a setting | `.env`, `.example.env`, `backend/app/core/config.py` |
-| Add a screen | A thin page in `frontend/src/app/`, logic in `frontend/src/features/` |
+| Add a product or change what one takes | `VOUCHER_PRODUCTS` in `.env` and `.example.env` |
+| Change the proxy | `infra/nginx/conf.d/default.conf.template` |
+| Change what the deployed stack sets differently | `infra/deploy/env.production` |
+| Add a screen | `frontend/DESIGN.md` first, then a thin page in `frontend/src/app/`, logic in `frontend/src/features/` |
 | Change a colour, font or radius | `frontend/DESIGN.md` and the tokens in `frontend/src/app/globals.css` |
 
 ## Working agreements
 
 - Finish with `make lint` and `make test` green.
-- A behaviour change updates the test that covers it; a new rule gets a test.
+- A behaviour change updates the test that covers it and the section of `docs/SPEC.md` that states it; a rule that is added gets a test.
+- Describe what is: code, comments and documents are written in the present tense.
 - Do not commit or push unless asked.

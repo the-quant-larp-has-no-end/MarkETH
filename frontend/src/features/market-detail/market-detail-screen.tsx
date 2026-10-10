@@ -5,9 +5,16 @@ import { PauseIcon } from "lucide-react";
 import { useState } from "react";
 
 import { Banner, QueryState } from "@/components/feedback";
-import { Deadline, OutcomeButtons, Price, StatusBadge } from "@/components/market";
+import {
+  Deadline,
+  isProposal,
+  OutcomeButtons,
+  Price,
+  StatusBadge,
+  useAskAtClose,
+} from "@/components/market";
 import { Amount } from "@/components/money";
-import { ResponsiveSheet } from "@/components/sheet";
+import { ResponsiveSheet, sheetHeaderClasses } from "@/components/sheet";
 import { NotFoundScreen, Screen, useHideTabBar } from "@/components/shell";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TradeTicket } from "@/features/trade";
@@ -35,10 +42,10 @@ export type MarketDetailScreenProps = {
 
 /**
  * A market that was opened for trading at some point: it has a price, a chart and
- * positions. The other two statuses are a proposal's, which the API shows to its proposer
- * and to admins only.
+ * positions. Every other status is a proposal's (in review, not approved, or expired
+ * before anybody reviewed it), which the API shows to its proposer and to admins only.
  */
-const isListed = (status: MarketStatus) => status !== "PROPOSED" && status !== "REJECTED";
+const isListed = (status: MarketStatus) => !isProposal(status);
 
 /** The outcome buttons are shown, and with them the ticket (DESIGN.md §13). */
 const isTrading = (status: MarketStatus) => status === "OPEN" || status === "HALTED";
@@ -59,6 +66,22 @@ const isMissing = (error: ApiError | null) =>
 const WITH_PANEL = "grid grid-cols-[minmax(0,1fr)_22.5rem] items-start gap-6";
 const PANEL =
   "sticky top-[calc(var(--top-bar-space)+1rem)] flex max-h-[calc(100dvh-var(--top-bar-space)-2rem)] flex-col overflow-hidden rounded-lg border bg-card text-card-foreground";
+
+/**
+ * The first line of the trade ticket's surface (DESIGN.md §13): the question, on one line.
+ * In the sheet it stands in the header row beside the close cross; in the panel it stands
+ * alone. Either way it is above what scrolls.
+ */
+function TicketQuestion({ question, className }: { question: string; className?: string }) {
+  return (
+    <p
+      data-slot="ticket-question"
+      className={cn("truncate type-body-sm text-muted-foreground", className)}
+    >
+      {question}
+    </p>
+  );
+}
 
 /**
  * Whether a list of markets that was read before already holds this market as one that
@@ -111,10 +134,14 @@ function StatusBanner({ market }: { market: MarketDetailResponse }) {
  * The screen owns the trade ticket's surroundings. The address says which trade is asked
  * for (`?buy=YES`, `?buy=NO`, `?sell=YES`, `?sell=NO`); below 1024 px `TradeTicket` of
  * `@/features/trade` stands in a `ResponsiveSheet` that is open while it does, from
- * 1024 px in the sticky panel beside the content.
+ * 1024 px in the sticky panel beside the content. The surface has the question as its
+ * header, and the sheet cannot be closed while its trade is on its way.
  *
  * It is live: the Price, the chart and the volume follow the market's event stream, and
- * a `status` event reads the market again (`useMarketStream`). Every figure is the API's.
+ * a `status` event reads the market again (`useMarketStream`). No event says that the
+ * market's `close_at` has passed, so the screen asks again at that moment (`useAskAtClose`)
+ * and shows what the answer says. Every figure is the API's, and nothing on the screen
+ * says how the market is priced.
  */
 export function MarketDetailScreen({ marketId }: MarketDetailScreenProps) {
   // What the screen remembers (the sheet, a payout that just arrived) belongs to one market.
@@ -122,6 +149,7 @@ export function MarketDetailScreen({ marketId }: MarketDetailScreenProps) {
 }
 
 function MarketDetail({ marketId }: MarketDetailScreenProps) {
+  const client = useQueryClient();
   const query = useQuery(marketQuery(marketId));
   const market = query.data;
   const wide = useMediaQuery(WIDE_QUERY);
@@ -148,7 +176,15 @@ function MarketDetail({ marketId }: MarketDetailScreenProps) {
     },
   });
 
-  const surface = useTradeSurface(market, { desktop, panel });
+  // DESIGN.md §14, "Close time": while the market is shown as open for trading, the
+  // market and its chart are asked for again when its close time passes. The timer asks;
+  // the badge, the banner, the buttons and the deadline follow the answer.
+  useAskAtClose(market?.trading_open === true ? [market.close_at] : [], () => {
+    void client.invalidateQueries({ queryKey: keys.markets.detail(marketId), exact: true });
+    void client.invalidateQueries({ queryKey: keys.markets.history(marketId), exact: true });
+  });
+
+  const surface = useTradeSurface(marketId, market, { desktop, panel });
   useHideTabBar(surface.sheetOpen);
 
   // On a phone the outcome buttons move to the bottom of the screen once the place they
@@ -206,7 +242,9 @@ function MarketDetail({ marketId }: MarketDetailScreenProps) {
 
                 {isListed(data.status) && (
                   <QueryState query={history} skeleton={<ChartSkeleton />}>
-                    {({ points }) => <ProbabilityChart points={points} market={data} />}
+                    {({ points, until }) => (
+                      <ProbabilityChart points={points} until={until} market={data} />
+                    )}
                   </QueryState>
                 )}
 
@@ -262,6 +300,8 @@ function MarketDetail({ marketId }: MarketDetailScreenProps) {
           }}
           title="Trade"
           hideTitle
+          header={<TicketQuestion question={market.question} />}
+          dismissible={!surface.sheetLocked}
         >
           <TradeTicket
             market={market}
@@ -277,11 +317,14 @@ function MarketDetail({ marketId }: MarketDetailScreenProps) {
 /**
  * The trade ticket from 1024 px (DESIGN.md §6): a panel beside the content that stays in
  * view while the content scrolls. The ticket brings its own body and footer, so the
- * panel is nothing but the surface: its body scrolls inside when the window is short.
+ * panel is the surface and its header: the question stands alone there, since a panel is
+ * part of the page and has nothing to close. The ticket's body scrolls under it when the
+ * window is short.
  */
 function TradePanel({ market, surface }: { market: MarketDetailResponse; surface: TradeSurface }) {
   return (
-    <aside aria-label="Trade" data-slot="trade-panel" className={PANEL}>
+    <aside aria-label="Trade" data-slot="trade-panel" className={cn(PANEL, sheetHeaderClasses)}>
+      <TicketQuestion question={market.question} className="shrink-0 px-4 pt-4 pb-2" />
       <TradeTicket market={market} intent={surface.panelIntent} onIntentChange={surface.change} />
     </aside>
   );

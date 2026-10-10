@@ -410,6 +410,7 @@ describe("a value the API rejects", () => {
         msg: "Input should be less than or equal to 1",
       }),
     );
+    const intoView = vi.spyOn(Element.prototype, "scrollIntoView");
     const { user } = await renderOpen();
 
     await user.type(from("Win rate"), "50");
@@ -418,6 +419,10 @@ describe("a value the API rejects", () => {
 
     await waitFor(() => expect(to("Win rate")).toBeInvalid());
     expect(to("Win rate")).toHaveAccessibleDescription("Input should be less than or equal to 1");
+    // The fields scroll under the buttons: the refused one is brought into view and
+    // takes the focus, so that its message is seen and read out.
+    await waitFor(() => expect(to("Win rate")).toHaveFocus());
+    expect(intoView.mock.contexts).toContain(to("Win rate"));
     expect(within(sheet()).getByRole("alert")).toHaveTextContent(
       "Input should be less than or equal to 1",
     );
@@ -529,6 +534,7 @@ describe("a value the API rejects", () => {
       screen.getByRole("button", { name: "Remove filter: Win rate to 6670%" }),
     ).toBeInTheDocument();
 
+    const intoView = vi.spyOn(Element.prototype, "scrollIntoView");
     await openSheet(user);
 
     expect(to("Win rate")).toBeInvalid();
@@ -536,6 +542,9 @@ describe("a value the API rejects", () => {
     expect(to("Win rate")).toHaveAccessibleDescription("Input should be less than or equal to 1");
     expect(from("Trades")).toHaveValue("3");
     expect(from("Trades")).not.toBeInvalid();
+    // Opening is no answer to "Show results": no field takes the focus, no keyboard slides up.
+    expect(to("Win rate")).not.toHaveFocus();
+    expect(intoView.mock.contexts).not.toContain(to("Win rate"));
   });
 });
 

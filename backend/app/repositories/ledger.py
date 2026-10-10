@@ -7,12 +7,13 @@ account's `balance_micro` (a trigger), and the app role cannot write that column
 """
 
 from collections.abc import Collection, Sequence
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.enums import SYSTEM_ACCOUNT_KINDS, AccountKind
+from app.core.enums import SYSTEM_ACCOUNT_KINDS, AccountKind, JournalKind
 from app.models.ledger import Account, JournalEntry, Posting
 from app.repositories.base import BaseRepository, sum_micro
 
@@ -130,6 +131,23 @@ class JournalRepository(BaseRepository[JournalEntry]):
     async def get_entry_by_idempotency_key(self, idempotency_key: str) -> JournalEntry | None:
         statement = select(JournalEntry).where(JournalEntry.idempotency_key == idempotency_key)
         return await self._session.scalar(statement)
+
+    async def net_adjustments_since(self, since: datetime) -> int:
+        """What the `ADMIN_ADJUSTMENT` entries booked at or after `since` added to users'
+        balances, minus what they took away: the sum of their postings on user accounts.
+        Below zero when the debits outweigh the credits; 0 without such an entry."""
+        statement = (
+            select(sum_micro(Posting.amount_micro))
+            .select_from(Posting)
+            .join(JournalEntry, JournalEntry.id == Posting.entry_id)
+            .join(Account, Account.id == Posting.account_id)
+            .where(
+                JournalEntry.kind == JournalKind.ADMIN_ADJUSTMENT,
+                JournalEntry.created_at >= since,
+                Account.kind == AccountKind.USER,
+            )
+        )
+        return (await self._session.execute(statement)).scalar_one()
 
     async def list_postings_for_account(
         self, account_id: UUID, *, limit: int, before_id: int | None = None

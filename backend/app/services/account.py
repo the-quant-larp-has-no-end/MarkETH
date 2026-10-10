@@ -12,11 +12,11 @@ from uuid import UUID
 
 from app.core.clock import Clock
 from app.core.config import Settings
-from app.core.enums import JournalKind
+from app.core.enums import JournalKind, ResolutionOutcome
 from app.core.errors import ValidationFailedError
 from app.core.identity import AuthenticatedUser
 from app.core.units import to_cr, to_micro
-from app.models.market import Market
+from app.models.market import Market, Resolution
 from app.models.trading import Position
 from app.schemas.common import PageQuery
 from app.schemas.me import (
@@ -34,6 +34,7 @@ from app.services import UowFactory
 from app.services.grants import GrantService
 from app.services.ledger import LedgerRef
 from app.services.market_view import SETTLED_STATUSES, MarketView
+from app.services.notices import NoticeService
 
 LEDGER_DESCRIPTIONS: Final[Mapping[JournalKind, str]] = {
     JournalKind.SIGNUP_GRANT: "Welcome tokens",
@@ -46,6 +47,7 @@ LEDGER_DESCRIPTIONS: Final[Mapping[JournalKind, str]] = {
     JournalKind.VOUCHER_ISSUE: "Voucher",
     JournalKind.VOUCHER_REDEEM: "Voucher redeemed",
     JournalKind.VOUCHER_REFUND: "Voucher expired, refunded",
+    JournalKind.ADMIN_ADJUSTMENT: "Adjustment by VIS",
 }
 """What a ledger line is called, by the kind of its journal entry. A line about a
 voucher also says what the voucher is for: `ledger_description` puts the two together."""
@@ -87,6 +89,7 @@ class AccountService:
         clock: Clock,
         grants: GrantService,
         view: MarketView,
+        notices: NoticeService,
     ) -> None:
         self._uow_factory = uow_factory
         self._monthly_grant_micro = settings.grants.monthly_grant_micro
@@ -94,26 +97,29 @@ class AccountService:
         self._clock = clock
         self._grants = grants
         self._view = view
+        self._notices = notices
 
     async def me(self, user: AuthenticatedUser) -> MeResponse:
         """Profile, balance and the next monthly grant (`GET /me`).
 
         One read transaction: the `users` row and the user's account. `id`, `email`,
-        `name`, `username`, `degree_level`, `degree_programme` and `created_at` come
-        from the row. `role` is `user.role`, the role of this request: it is derived
-        from `.env` and is in no column. `balance_cr` comes from the account.
+        `name`, `username`, `degree_level`, `degree_programme`, `created_at` and
+        `policy_accepted_at` come from the row. `role` is `user.role`, the role this
+        request was let in with: the row's own, or ADMIN for a bootstrap admin
+        (`IdentityService.authenticate`). `balance_cr` comes from the account.
         `can_get_voucher` is `balance >= settings.vouchers.lowest_price_micro`: the
         balance covers the cheapest product of `VOUCHER_PRODUCTS`. Which products it
         covers is `VoucherService.products`. `monthly_grant_cr` comes from
-        `MONTHLY_GRANT_CR` and `next_monthly_grant_on` from
-        `GrantService.next_grant_date()`. Every user has a row and an account: the
-        profile transaction creates the two together and nothing deletes either.
+        `MONTHLY_GRANT_CR` and `next_monthly_grant_at` from
+        `GrantService.next_grant_at(<the row>)`. Every user has a row and an account:
+        the profile transaction creates the two together and nothing deletes either.
 
         `ProfileService.save` answers with this too, right after its commit.
         """
         async with self._uow_factory() as uow:
             row = await uow.users.get(user.id)
             account = await uow.accounts.get_user_account(user.id)
+            notices = await self._notices.unseen(uow, user.id)
         if row is None:
             raise LookupError(f"user {user.id} has no row")
         if account is None:
@@ -127,10 +133,12 @@ class AccountService:
             degree_programme=row.degree_programme,
             role=user.role,
             created_at=row.created_at,
+            policy_accepted_at=row.policy_accepted_at,
             balance_cr=to_cr(account.balance_micro),
             can_get_voucher=account.balance_micro >= self._lowest_voucher_price_micro,
             monthly_grant_cr=to_cr(self._monthly_grant_micro),
-            next_monthly_grant_on=self._grants.next_grant_date(),
+            next_monthly_grant_at=self._grants.next_grant_at(row),
+            notices=notices,
         )
 
     async def portfolio(self, user: AuthenticatedUser) -> PortfolioResponse:
@@ -264,7 +272,9 @@ class AccountService:
 
         A user's ledger shows two kinds of voucher lines, the issue ("Voucher: Mate")
         and the refund ("Voucher expired, refunded: Mate"). A redemption moves credit
-        between two accounts of VIS and touches no user's balance.
+        between two accounts of VIS and touches no user's balance. What an admin
+        added to or took from the balance is a line of its own, "Adjustment by
+        VIS", with the sign of its amount saying which.
         """
         before_id = _posting_cursor(page.cursor)
         async with self._uow_factory() as uow:
@@ -302,10 +312,18 @@ class AccountService:
         """The markets the user proposed, in every status, newest first
         (`GET /me/proposals`): `markets.list_created_by(user.id)`, each with its
         effective status (`MarketView.effective_status`).
+
+        `outcome` is how a settled market ended: YES, NO or VOID from its
+        `resolutions` row, and null for every market whose row does not say RESOLVED
+        or VOID. The rows of the settled ones are read in one query
+        (`resolutions.get_many_by_market`), after the markets: a settlement that
+        commits between the two shows with the next request, whole.
         """
         now = self._clock.now()
         async with self._uow_factory() as uow:
             markets = await uow.markets.list_created_by(user.id)
+            settled = [market.id for market in markets if market.status in SETTLED_STATUSES]
+            resolutions = await uow.resolutions.get_many_by_market(settled) if settled else {}
         return ProposalListResponse(
             items=[
                 ProposalItem(
@@ -316,7 +334,7 @@ class AccountService:
                     resolution_criteria=market.resolution_criteria,
                     resolution_source=market.resolution_source,
                     status=self._view.effective_status(market, now),
-                    requested_tier=market.requested_tier,
+                    outcome=_outcome(market, resolutions),
                     close_at=market.close_at,
                     resolve_by=market.resolve_by,
                     created_at=market.created_at,
@@ -329,6 +347,20 @@ class AccountService:
 
 def _optional_cr(value_micro: int | None) -> Decimal | None:
     return None if value_micro is None else to_cr(value_micro)
+
+
+def _outcome(market: Market, resolutions: Mapping[UUID, Resolution]) -> ResolutionOutcome | None:
+    """How `market` ended, None while its row does not say RESOLVED or VOID.
+
+    A settlement writes the status and the `resolutions` row in one transaction, so a
+    settled market without that row is a broken book and raises `LookupError`.
+    """
+    if market.status not in SETTLED_STATUSES:
+        return None
+    resolution = resolutions.get(market.id)
+    if resolution is None:
+        raise LookupError(f"market {market.id} is {market.status} but has no resolution")
+    return resolution.outcome
 
 
 def _refused_cursor() -> ValidationFailedError:

@@ -14,6 +14,7 @@ from app.models.code import Code, CodeBatch
 from app.models.grant import Grant
 from app.models.ledger import Account, JournalEntry, Posting
 from app.models.market import Market, Resolution
+from app.models.notice import Notice
 from app.models.ops import Alert, AuditLogEntry, OutboxEvent
 from app.models.trading import IdempotencyKey, Position, Trade
 from app.models.user import User
@@ -29,6 +30,7 @@ __all__ = [
     "IdempotencyKey",
     "JournalEntry",
     "Market",
+    "Notice",
     "OutboxEvent",
     "Position",
     "Posting",

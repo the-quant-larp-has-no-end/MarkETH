@@ -38,10 +38,30 @@ export interface paths {
         get: operations["list_code_batches"];
         put?: never;
         /**
-         * Create a batch; the plain codes are returned this once
+         * Create a batch and get its codes
          * @description Access: role ADMIN.
          */
         post: operations["create_code_batch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/code-batches/{batch_id}/codes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The codes of a batch that can still be redeemed; every read is audited
+         * @description Access: role ADMIN.
+         */
+        get: operations["list_batch_codes"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -248,6 +268,106 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Users with their role, status and balance, newest first
+         * @description Access: role ADMIN.
+         */
+        get: operations["list_users"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/users/{user_id}/adjustments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Credit or debit a user's balance, idempotently
+         * @description Access: role ADMIN.
+         */
+        post: operations["adjust_user_balance"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/users/{user_id}/reinstate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Lift the suspension of a user's account
+         * @description Access: role ADMIN.
+         */
+        post: operations["reinstate_user"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/users/{user_id}/role": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set a user's role
+         * @description Access: role ADMIN.
+         */
+        post: operations["set_user_role"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/users/{user_id}/suspend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Suspend a user's account
+         * @description Access: role ADMIN.
+         */
+        post: operations["suspend_user"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/barista/vouchers/redeem": {
         parameters: {
             query?: never;
@@ -420,7 +540,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Price a trade without executing it
+         * Price a trade for the caller, or answer the error the trade would get
          * @description Access: any registered user whose account is active.
          */
         get: operations["get_quote"];
@@ -480,7 +600,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Profile, balance and next monthly grant
+         * Profile, balance, next monthly grant and unseen notices
          * @description Access: any registered user whose account is active.
          */
         get: operations["get_me"];
@@ -506,6 +626,26 @@ export interface paths {
         get: operations["list_my_ledger"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/notices/{notice_id}/seen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mark a notice as seen
+         * @description Access: any registered user whose account is active.
+         */
+        post: operations["mark_notice_seen"];
         delete?: never;
         options?: never;
         head?: never;
@@ -676,6 +816,82 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AdjustBalanceRequest
+         * @description `POST /admin/users/{id}/adjustments`: credit or debit a user's balance.
+         */
+        AdjustBalanceRequest: {
+            /**
+             * Amount Cr
+             * @description Above zero to add to the balance, below zero to take from it. A debit of more
+             *     than the account holds is refused with `INSUFFICIENT_BALANCE`.
+             * @example 0.25
+             */
+            amount_cr: string;
+            /**
+             * Reason
+             * @description Why. It goes to the audit log; the user's ledger shows the amount, not this.
+             */
+            reason: string;
+        };
+        /**
+         * AdminUserItem
+         * @description A user as the admin panel shows them.
+         */
+        AdminUserItem: {
+            /**
+             * Balance Cr
+             * @example 0.25
+             */
+            balance_cr: string;
+            /**
+             * Bootstrap Admin
+             * @description True for an address the server's configuration names as an admin. Nobody can
+             *     change the role of such an account or suspend it.
+             */
+            bootstrap_admin: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            degree_level: components["schemas"]["DegreeLevel"];
+            /** Degree Programme */
+            degree_programme: string;
+            /**
+             * Email
+             * @description The address the portal identifies the user by.
+             */
+            email: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Name
+             * @description The display name the portal sent when the profile was last saved. May be empty.
+             */
+            name: string;
+            /**
+             * @description The role the user has in effect: ADMIN for a bootstrap admin, otherwise the role
+             *     that was set for the account.
+             */
+            role: components["schemas"]["UserRole"];
+            status: components["schemas"]["UserStatus"];
+            /** Username */
+            username: string;
+        };
+        /**
+         * AdminUserListResponse
+         * @description `GET /admin/users`, newest profile first.
+         */
+        AdminUserListResponse: {
+            /** Items */
+            items: components["schemas"]["AdminUserItem"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
         /** AlertItem */
         AlertItem: {
             /** Acked At */
@@ -730,6 +946,59 @@ export interface components {
             yes_definition?: string | null;
         };
         /**
+         * BalanceAdjustmentResponse
+         * @description A booked adjustment. Sending the same Idempotency-Key again returns it unchanged.
+         */
+        BalanceAdjustmentResponse: {
+            /**
+             * Amount Cr
+             * @description What was booked, with its sign.
+             * @example 0.25
+             */
+            amount_cr: string;
+            /**
+             * Balance Cr
+             * @description The user's balance right after the adjustment.
+             * @example 0.25
+             */
+            balance_cr: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+        };
+        /**
+         * BuySlider
+         * @description The slider and the number field of a buy on the trade sheet (A.11): the whole
+         *     credits between which the viewer can buy right now, and the step between two
+         *     positions. JSON integers, as a range input takes them. Every multiple of `step`
+         *     from `min` to `max` is a budget a buy passes with: send it as `amount_cr`.
+         */
+        BuySlider: {
+            /**
+             * Max
+             * @description The largest multiple of `step` that both the stake left and the balance cover.
+             *     Never below `min`.
+             */
+            max: number;
+            /**
+             * Min
+             * @description The smallest multiple of `step` that is a trade: at least `min_trade_cr`.
+             */
+            min: number;
+            /**
+             * Step
+             * @description `stake_step_cr` of `GET /config`.
+             */
+            step: number;
+        };
+        /**
          * CloseMarketRequest
          * @description `POST /admin/markets/{id}/close`: stop trading for good, before the deadline or after.
          */
@@ -741,8 +1010,21 @@ export interface components {
             note?: string | null;
         };
         /**
+         * CodeBatchCodesResponse
+         * @description `GET /admin/code-batches/{id}/codes`: a batch and the codes of it that can still
+         *     be redeemed, in the order they were created. A code that was redeemed or revoked
+         *     is not among them, and a batch that has expired has none. Every answer is written
+         *     to the audit log with who asked.
+         */
+        CodeBatchCodesResponse: {
+            batch: components["schemas"]["CodeBatchItem"];
+            /** Codes */
+            codes: components["schemas"]["CreatedCode"][];
+        };
+        /**
          * CodeBatchCreatedResponse
-         * @description The new batch and, this once, its plain codes. The server keeps only hashes.
+         * @description The batch that was created, and its codes. Those nobody has redeemed can be
+         *     read again: `GET /admin/code-batches/{id}/codes`.
          */
         CodeBatchCreatedResponse: {
             batch: components["schemas"]["CodeBatchItem"];
@@ -756,6 +1038,12 @@ export interface components {
         CodeBatchItem: {
             /** Active Count */
             active_count: number;
+            /**
+             * Can Revoke
+             * @description Whether revoking the batch would revoke at least one code: it has a code that is
+             *     neither redeemed nor revoked.
+             */
+            can_revoke: boolean;
             /** Count */
             count: number;
             /**
@@ -833,7 +1121,10 @@ export interface components {
              */
             value_cr?: string | null;
         };
-        /** CreatedCode */
+        /**
+         * CreatedCode
+         * @description A code a user can still redeem, as its card shows it.
+         */
         CreatedCode: {
             /**
              * Code
@@ -890,8 +1181,14 @@ export interface components {
          *     object, empty unless the code is one of these:
          *
          *     * `VALIDATION_ERROR`. A request that does not match its schema: `errors`, a list
-         *       of `{loc, msg, type}`, one per field. A rule a service checks: `field`, the name
-         *       of the offending field.
+         *       of `{loc, msg, type}`, one per field. `loc` ends with the name of the field,
+         *       `msg` is a sentence for the person who filled it in, to be shown under the
+         *       field as it is ("Use at most 200 characters."), and `type` names the rule
+         *       that was broken. A rule a service checks: `field`, the name of the offending
+         *       field, and `message` is the sentence for it. A profile created without
+         *       `policy_accepted: true` is such a rule, and its `field` is `policy_accepted`;
+         *       so is a filter of the leaderboard whose `min_…` is above its `max_…`, with
+         *       the `min_…` as its `field`.
          *     * `FORBIDDEN`, when the portal's id is not an address MarkETH is open to:
          *       `allowed_domains`, a list of the domains it is open to.
          *     * `PROFILE_REQUIRED`: `name` and `email`, who the portal says is calling. `name`
@@ -902,13 +1199,22 @@ export interface components {
          *     * `QUOTE_STALE`: `quote`, a fresh `QuoteResponse` for the same trade.
          *     * `LIMIT_EXCEEDED`: `limit`, which names the limit: `MAX_STAKE_PER_USER_MARKET`,
          *       `MAX_PROPOSALS_PER_USER_PER_DAY`, `MAX_OPEN_MARKETS`, `MAX_MARKET_BUDGET`,
-         *       `MAX_AGGREGATE_LOSS_BUDGET`, `MAX_CODE_ISSUANCE_PER_MONTH` or
-         *       `ONE_CODE_PER_USER`. With `MAX_STAKE_PER_USER_MARKET` also `stake_limit_cr` and
-         *       `stake_left_cr`; with `MAX_CODE_ISSUANCE_PER_MONTH` also `issued_cr`,
-         *       `requested_cr` and `cap_cr`.
-         *     * `INSUFFICIENT_BALANCE`: `balance_cr` and `required_cr`.
+         *       `MAX_AGGREGATE_LOSS_BUDGET`, `MAX_CODE_ISSUANCE_PER_MONTH`,
+         *       `ONE_CODE_PER_USER` or `MAX_ADMIN_ADJUSTMENT_CR`. With
+         *       `MAX_STAKE_PER_USER_MARKET` also `stake_limit_cr` and `stake_left_cr`; with
+         *       `MAX_CODE_ISSUANCE_PER_MONTH` also `issued_cr`, `requested_cr` and `cap_cr`;
+         *       with `MAX_ADMIN_ADJUSTMENT_CR` also `requested_cr`, what the adjustment would
+         *       add, and `cap_cr`, the most one adjustment may add.
+         *     * `INSUFFICIENT_BALANCE`: `balance_cr` and `required_cr`. Where an admin debits
+         *       somebody's balance, they are what that account holds and what the debit takes.
          *     * `SERVICE_UNAVAILABLE`, from `GET /health` only: `postgres`, `redis` and
          *       `scylla`, each `up` or `down`.
+         *
+         *     A quote is answered like its trade. `GET /markets/{id}/quote` gives a buy the
+         *     caller could not make the error the trade would get, with the same details:
+         *     `LIMIT_EXCEEDED` with `MAX_STAKE_PER_USER_MARKET`, `stake_limit_cr` and
+         *     `stake_left_cr` above the stake left, `INSUFFICIENT_BALANCE` with `balance_cr`
+         *     and `required_cr` above the balance.
          *
          *     Amounts in `details` are decimal strings like every `*_cr` field.
          */
@@ -968,6 +1274,14 @@ export interface components {
             /** Points */
             points: components["schemas"]["HistoryPoint"][];
             source: components["schemas"]["HistorySource"];
+            /**
+             * Until
+             * Format: date-time
+             * @description The right edge of the chart: the server's now while the market can still trade,
+             *     otherwise the moment trading ended. A chart is drawn up to here, and with no
+             *     clock of the device.
+             */
+            until: string;
         };
         /**
          * HistorySource
@@ -1010,7 +1324,7 @@ export interface components {
          * @description Why a journal entry exists. One value per way credits can move.
          * @enum {string}
          */
-        JournalKind: "SIGNUP_GRANT" | "MONTHLY_GRANT" | "CODE_REDEMPTION" | "TRADE_BUY" | "TRADE_SELL" | "MARKET_RESOLUTION" | "MARKET_VOID" | "VOUCHER_ISSUE" | "VOUCHER_REDEEM" | "VOUCHER_REFUND";
+        JournalKind: "SIGNUP_GRANT" | "MONTHLY_GRANT" | "CODE_REDEMPTION" | "TRADE_BUY" | "TRADE_SELL" | "MARKET_RESOLUTION" | "MARKET_VOID" | "VOUCHER_ISSUE" | "VOUCHER_REDEEM" | "VOUCHER_REFUND" | "ADMIN_ADJUSTMENT";
         /**
          * LeaderboardEntry
          * @description One user on the leaderboard: a username and a degree, never an address or a real
@@ -1024,8 +1338,15 @@ export interface components {
              */
             avg_payout_ratio: number | null;
             /**
+             * Balance Cr
+             * @description The part in the wallet: the balance of the user's account.
+             * @example 0.25
+             */
+            balance_cr: string;
+            /**
              * Credits Cr
-             * @description The user's balance right now.
+             * @description What the user has right now: `balance_cr` plus `positions_value_cr`. It is what
+             *     the `credits` sort orders by and what `min_credits_cr` and `max_credits_cr` bound.
              * @example 0.25
              */
             credits_cr: string;
@@ -1040,6 +1361,15 @@ export interface components {
              * @description True for the caller's own row.
              */
             is_viewer: boolean;
+            /**
+             * Positions Value Cr
+             * @description The part in open positions: the shares the user holds in markets that are not
+             *     yet RESOLVED or VOID, each holding at the current price of its outcome and rounded
+             *     down. It is the `total_value_cr` of that user's `GET /me/positions`. 0 for someone
+             *     who holds nothing.
+             * @example 0.25
+             */
+            positions_value_cr: string;
             /**
              * Rank
              * @description The user's place in the list as it was asked for, 1 being first. It counts within
@@ -1133,9 +1463,10 @@ export interface components {
         MarketDetailResponse: {
             /**
              * B Cr
-             * @example 0.25
+             * @description The market's liquidity parameter b. Sent to admins only, null for everyone
+             *     else. 0 until the market is approved.
              */
-            b_cr: string;
+            b_cr: string | null;
             /**
              * Close At
              * Format: date-time
@@ -1155,10 +1486,10 @@ export interface components {
             id: string;
             /**
              * Max Loss Cr
-             * @description The market's loss budget (`markets.budget_micro`). Both are 0 until approval.
-             * @example 0.25
+             * @description The market's loss budget (`markets.budget_micro`). Sent to admins only, null
+             *     for everyone else. 0 until the market is approved.
              */
-            max_loss_cr: string;
+            max_loss_cr: string | null;
             /** No Definition */
             no_definition: string;
             /** Opened At */
@@ -1181,7 +1512,6 @@ export interface components {
             question: string;
             /** Rejection Reason */
             rejection_reason: string | null;
-            requested_tier: components["schemas"]["MarketTier"];
             resolution: components["schemas"]["MarketResolution"] | null;
             /** Resolution Criteria */
             resolution_criteria: string;
@@ -1192,9 +1522,15 @@ export interface components {
              * Format: date-time
              */
             resolve_by: string;
-            /** @description The effective status (A.4): an OPEN market past `close_at` is reported CLOSED. */
+            /**
+             * @description The effective status (A.4): an OPEN market past `close_at` is reported CLOSED,
+             *     and a PROPOSED one past `close_at` is reported EXPIRED.
+             */
             status: components["schemas"]["MarketStatus"];
-            /** @description Null until VIS approves the market. */
+            /**
+             * @description The liquidity tier VIS opened the market with. Sent to admins only, null for
+             *     everyone else. To an admin it is null until the market is approved.
+             */
             tier: components["schemas"]["MarketTier"] | null;
             /**
              * Trading Open
@@ -1208,6 +1544,14 @@ export interface components {
             version: number;
             /** @description What the market is to whoever asked: every reader of a market is a user. */
             viewer: components["schemas"]["MarketViewer"];
+            /**
+             * Void Cost Cr
+             * @description What VIS would have to add if the market were voided now: the net stakes a void
+             *     refunds, minus the balance of the market's account, as `RiskMarketRow.void_cost_cr`
+             *     says it. Sent to admins only, null for everyone else, and null for a market with
+             *     nothing to void: one that was never opened and one that is settled.
+             */
+            void_cost_cr: string | null;
             /**
              * Void Rule
              * @description What happens to stakes if the market is voided, shown before anyone trades.
@@ -1245,10 +1589,12 @@ export interface components {
         };
         /**
          * MarketStatus
-         * @description The seven market states of SPEC §6.
+         * @description What a market is reported as: one of the seven states of SPEC §6, which its
+         *     row keeps, or EXPIRED, which is worked out from the clock and never kept: a
+         *     proposal whose `close_at` passed before an admin decided on it.
          * @enum {string}
          */
-        MarketStatus: "PROPOSED" | "REJECTED" | "OPEN" | "HALTED" | "CLOSED" | "RESOLVED" | "VOID";
+        MarketStatus: "PROPOSED" | "REJECTED" | "OPEN" | "HALTED" | "CLOSED" | "RESOLVED" | "VOID" | "EXPIRED";
         /**
          * MarketSummary
          * @description A market as a card: what the list, the portfolio and the detail header show.
@@ -1280,7 +1626,10 @@ export interface components {
              * Format: date-time
              */
             resolve_by: string;
-            /** @description The effective status (A.4): an OPEN market past `close_at` is reported CLOSED. */
+            /**
+             * @description The effective status (A.4): an OPEN market past `close_at` is reported CLOSED,
+             *     and a PROPOSED one past `close_at` is reported EXPIRED.
+             */
             status: components["schemas"]["MarketStatus"];
             /**
              * Trading Open
@@ -1314,6 +1663,13 @@ export interface components {
              * @example 0.25
              */
             balance_cr: string;
+            /**
+             * @description Where the slider of a buy runs. Null when the viewer cannot buy anything right
+             *     now: they may not trade, or the stake left or the balance is below the smallest
+             *     buy. An amount typed in between two positions is judged by
+             *     `GET /markets/{id}/quote`.
+             */
+            buy_slider: components["schemas"]["BuySlider"] | null;
             /**
              * Can Settle
              * @description Whether the viewer is someone who may resolve or void this market: an admin who
@@ -1385,7 +1741,8 @@ export interface components {
         };
         /**
          * MeResponse
-         * @description `GET /me`: profile, balance and the next monthly grant.
+         * @description `GET /me`: profile, balance, the next monthly grant and what the user has not
+         *     been told yet.
          */
         MeResponse: {
             /**
@@ -1431,14 +1788,30 @@ export interface components {
              */
             name: string;
             /**
-             * Next Monthly Grant On
-             * Format: date
-             * @description First day of the next calendar month in the app's timezone (SPEC §2).
+             * Next Monthly Grant At
+             * Format: date-time
+             * @description The instant the next monthly grant falls due (SPEC §2). The grants follow the
+             *     sign-up: each month on the day of the month and at the time of day of
+             *     `created_at` in the app's timezone, on the last day of a month that has no
+             *     such day.
              */
-            next_monthly_grant_on: string;
+            next_monthly_grant_at: string;
             /**
-             * @description What the user may do right now. It follows the server's role lists, not the
-             *     profile.
+             * Notices
+             * @description The user's notices that are not marked seen, oldest first. Empty when there is
+             *     nothing to tell.
+             */
+            notices: components["schemas"]["NoticeItem"][];
+            /**
+             * Policy Accepted At
+             * Format: date-time
+             * @description When the user accepted the usage policy: the instant the profile was
+             *     created.
+             */
+            policy_accepted_at: string;
+            /**
+             * @description What the user may do right now: the role an admin gave them, USER for
+             *     everybody else, and ADMIN for an address the server names as an admin.
              */
             role: components["schemas"]["UserRole"];
             /** Username */
@@ -1472,6 +1845,46 @@ export interface components {
              */
             users_failed: number;
         };
+        /**
+         * NoticeItem
+         * @description Something the user is told once (SPEC §6): the app shows it and marks it seen
+         *     with `POST /me/notices/{id}/seen`.
+         */
+        NoticeItem: {
+            /**
+             * Created At
+             * Format: date-time
+             * @description When it happened.
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * @description What happened. `PROPOSAL_APPROVED`: an admin approved the market the user
+             *     proposed, and it is open.
+             */
+            kind: components["schemas"]["NoticeKind"];
+            /**
+             * Market Id
+             * Format: uuid
+             * @description The market the notice is about.
+             */
+            market_id: string;
+            /**
+             * Question
+             * @description That market's question, as it reads now.
+             */
+            question: string;
+        };
+        /**
+         * NoticeKind
+         * @description What a notice tells its user (`notices.kind`).
+         * @enum {string}
+         */
+        NoticeKind: "PROPOSAL_APPROVED";
         /**
          * Obligations
          * @description Outstanding obligations: the most VIS could owe right now (SPEC §5, A.6).
@@ -1622,14 +2035,30 @@ export interface components {
              */
             name: string;
             /**
-             * Next Monthly Grant On
-             * Format: date
-             * @description First day of the next calendar month in the app's timezone (SPEC §2).
+             * Next Monthly Grant At
+             * Format: date-time
+             * @description The instant the next monthly grant falls due (SPEC §2). The grants follow the
+             *     sign-up: each month on the day of the month and at the time of day of
+             *     `created_at` in the app's timezone, on the last day of a month that has no
+             *     such day.
              */
-            next_monthly_grant_on: string;
+            next_monthly_grant_at: string;
             /**
-             * @description What the user may do right now. It follows the server's role lists, not the
-             *     profile.
+             * Notices
+             * @description The user's notices that are not marked seen, oldest first. Empty when there is
+             *     nothing to tell.
+             */
+            notices: components["schemas"]["NoticeItem"][];
+            /**
+             * Policy Accepted At
+             * Format: date-time
+             * @description When the user accepted the usage policy: the instant the profile was
+             *     created.
+             */
+            policy_accepted_at: string;
+            /**
+             * @description What the user may do right now: the role an admin gave them, USER for
+             *     everybody else, and ADMIN for an address the server names as an admin.
              */
             role: components["schemas"]["UserRole"];
             /**
@@ -1662,11 +2091,12 @@ export interface components {
             id: string;
             /** No Definition */
             no_definition: string;
+            /** @description YES or NO once RESOLVED, VOID once VOID, otherwise null. */
+            outcome: components["schemas"]["ResolutionOutcome"] | null;
             /** Question */
             question: string;
             /** Rejection Reason */
             rejection_reason: string | null;
-            requested_tier: components["schemas"]["MarketTier"];
             /** Resolution Criteria */
             resolution_criteria: string;
             /** Resolution Source */
@@ -1676,7 +2106,10 @@ export interface components {
              * Format: date-time
              */
             resolve_by: string;
-            /** @description The effective status, as in `MarketSummary`. */
+            /**
+             * @description The effective status, as in `MarketSummary`. EXPIRED for a proposal whose
+             *     `close_at` passed before an admin decided on it: it is not under review any more.
+             */
             status: components["schemas"]["MarketStatus"];
             /** Yes Definition */
             yes_definition: string;
@@ -1696,6 +2129,10 @@ export interface components {
          *     The time rules that depend on the clock are the service's: `close_at` in the future
          *     and within `MAX_MARKET_LIFETIME`, `resolve_by` within `MAX_RESOLUTION_DELAY_DAYS`
          *     of `close_at`.
+         *
+         *     A proposal says nothing about liquidity: the admin who approves the market picks
+         *     its tier. A field that names one is refused like any field the request does not
+         *     have.
          */
         ProposeMarketRequest: {
             /**
@@ -1705,9 +2142,15 @@ export interface components {
             close_at: string;
             /** No Definition */
             no_definition: string;
+            /**
+             * Policy Accepted
+             * @description The proposer accepts the usage policy for this proposal. Every proposal says
+             *     so again: `true`, or the request is rejected on this field.
+             * @constant
+             */
+            policy_accepted: true;
             /** Question */
             question: string;
-            requested_tier: components["schemas"]["MarketTier"];
             /** Resolution Criteria */
             resolution_criteria: string;
             /** Resolution Source */
@@ -1723,10 +2166,21 @@ export interface components {
         /** PublicConfigResponse */
         PublicConfigResponse: {
             /**
+             * Code Batch Max Count
+             * @description The most codes one batch may have: the upper bound of `count` in
+             *     `POST /admin/code-batches`.
+             */
+            code_batch_max_count: number;
+            /**
              * Code Default Value Cr
              * @example 0.25
              */
             code_default_value_cr: string;
+            /**
+             * Code Label Max Length
+             * @description Characters the label of a batch may have at most.
+             */
+            code_label_max_length: number;
             /** Code Length */
             code_length: number;
             /**
@@ -1817,6 +2271,13 @@ export interface components {
             signup_grant_cr: string;
             /** Stake Presets Cr */
             stake_presets_cr: string[];
+            /**
+             * Stake Step Cr
+             * @description The step of the slider of a buy on the trade sheet: a whole number of credits.
+             *     Where the slider runs for one viewer of one market is `MarketViewer.buy_slider`.
+             * @example 0.25
+             */
+            stake_step_cr: string;
             /** Tiers */
             tiers: components["schemas"]["TierConfig"][];
             /**
@@ -1872,6 +2333,14 @@ export interface components {
         /**
          * QuoteResponse
          * @description What a trade would do right now. Also sent as `details.quote` of `QUOTE_STALE`.
+         *
+         *     `GET /markets/{id}/quote` answers with it for a trade the caller could make. For
+         *     one they could not, it answers the error the trade would get instead, with the
+         *     same code, message and details: 403 `FORBIDDEN` in a market the caller proposed,
+         *     409 `MARKET_NOT_OPEN`, 409 `INSUFFICIENT_SHARES` for a sell of more than the
+         *     caller holds, 422 `TRADE_TOO_SMALL`, 409 `LIMIT_EXCEEDED` for a buy above the
+         *     stake left and 409 `INSUFFICIENT_BALANCE` for one above the balance. So the
+         *     answer to a typed amount is the server's, and the client compares nothing.
          */
         QuoteResponse: {
             /**
@@ -1956,6 +2425,14 @@ export interface components {
              * @description Dashes, spaces and case do not matter; O is read as 0, I and L as 1.
              */
             code: string;
+        };
+        /**
+         * ReinstateUserRequest
+         * @description `POST /admin/users/{id}/reinstate`. The reason goes to the audit log.
+         */
+        ReinstateUserRequest: {
+            /** Reason */
+            reason: string;
         };
         /**
          * RejectMarketRequest
@@ -2089,6 +2566,14 @@ export interface components {
          */
         RiskResponse: {
             /**
+             * Adjustments This Month Cr
+             * @description What the admins' balance adjustments of this calendar month added to users'
+             *     balances, minus what they took away. Below zero when they took more than they
+             *     gave. It is not part of `code_issuance_this_month_cr` and counts against no cap.
+             * @example 0.25
+             */
+            adjustments_this_month_cr: string;
+            /**
              * Alerts
              * @description Alerts nobody acknowledged yet, newest first.
              */
@@ -2136,12 +2621,14 @@ export interface components {
         };
         /**
          * SaveProfileRequest
-         * @description `PUT /me/profile`: the username and the degree a person states.
+         * @description `PUT /me/profile`: the username and the degree a person states, and with the
+         *     first save their acceptance of the usage policy.
          *
-         *     This model checks the shape. The service checks what depends on settings and on
-         *     the catalogue: the username's length against `username_min_length` and
-         *     `username_max_length`, that the username is not one the server reserves, and the
-         *     degree as a pair that `degrees` of `GET /config` lists. Each failure is
+         *     This model checks the shape. The service checks what depends on settings, on the
+         *     catalogue and on whether a profile exists: the username's length against
+         *     `username_min_length` and `username_max_length`, that the username is not one
+         *     the server reserves, the degree as a pair that `degrees` of `GET /config` lists,
+         *     and `policy_accepted` where the save creates the profile. Each failure is
          *     `VALIDATION_ERROR` with the field in `details.field`.
          */
         SaveProfileRequest: {
@@ -2151,6 +2638,14 @@ export interface components {
              * @description A label of `degree_level`, exactly as `GET /config` lists it.
              */
             degree_programme: string;
+            /**
+             * Policy Accepted
+             * @description Whether the person accepts the usage policy. The save that creates a profile
+             *     takes `true` and nothing else. A save that changes a profile does not look at
+             *     it and may leave it out.
+             * @default false
+             */
+            policy_accepted: boolean;
             /**
              * Username
              * @description Lower-case letters, digits and underscore: a capital letter is not accepted. A
@@ -2184,6 +2679,17 @@ export interface components {
              * @example 0.25
              */
             shares: string;
+        };
+        /**
+         * SetUserRoleRequest
+         * @description `POST /admin/users/{id}/role`.
+         */
+        SetUserRoleRequest: {
+            /**
+             * @description The role the account has from now on. Setting the one it already has changes
+             *     nothing.
+             */
+            role: components["schemas"]["UserRole"];
         };
         /**
          * SortOrder
@@ -2234,8 +2740,17 @@ export interface components {
             type: "status";
         };
         /**
+         * SuspendUserRequest
+         * @description `POST /admin/users/{id}/suspend`. The reason goes to the audit log.
+         */
+        SuspendUserRequest: {
+            /** Reason */
+            reason: string;
+        };
+        /**
          * TierConfig
-         * @description A fixed liquidity tier of SPEC §4. CUSTOM is not listed: it has no fixed b.
+         * @description A fixed liquidity tier of SPEC §4: what an admin picks from when approving a
+         *     market. CUSTOM is not listed: it has no fixed b.
          */
         TierConfig: {
             /**
@@ -2411,11 +2926,17 @@ export interface components {
         TradeSide: "BUY" | "SELL";
         /**
          * UserRole
-         * @description What a caller may do. Derived from `ADMIN_EMAILS` and `BARISTA_EMAILS` on every
-         *     request and stored nowhere (Appendix A.3).
+         * @description What a caller may do. `users.role` keeps it: USER when a profile is created,
+         *     and whatever an admin sets after that. An address of `ADMIN_EMAILS` is ADMIN
+         *     whatever its row says (Appendix A.3).
          * @enum {string}
          */
         UserRole: "USER" | "ADMIN" | "BARISTA";
+        /**
+         * UserStatus
+         * @enum {string}
+         */
+        UserStatus: "ACTIVE" | "SUSPENDED";
         /**
          * VoidMarketRequest
          * @description `POST /admin/markets/{id}/void`: refund every net stake. The reason is published
@@ -2443,6 +2964,11 @@ export interface components {
              * @description Until when the voucher can be redeemed. A fresh code does not move it.
              */
             expires_at: string;
+            /**
+             * Product Name
+             * @description What the voucher is for, as the product was named when the voucher was issued.
+             */
+            product_name: string;
             /**
              * Voucher Id
              * Format: uuid
@@ -2492,6 +3018,13 @@ export interface components {
             /** Redeemed At */
             redeemed_at: string | null;
             /**
+             * Refunded
+             * @description Whether the refund of an EXPIRED voucher has been booked: its value is back on
+             *     the balance. False while that refund is still to come, and for a voucher in any
+             *     other status.
+             */
+            refunded: boolean;
+            /**
              * @description The effective status: an ACTIVE voucher past `expires_at` is reported EXPIRED,
              *     whether or not its refund has been booked yet.
              */
@@ -2532,6 +3065,13 @@ export interface components {
             product_name: string;
             /** Redeemed At */
             redeemed_at: string | null;
+            /**
+             * Refunded
+             * @description Whether the refund of an EXPIRED voucher has been booked: its value is back on
+             *     the balance. False while that refund is still to come, and for a voucher in any
+             *     other status.
+             */
+            refunded: boolean;
             /**
              * @description The effective status: an ACTIVE voucher past `expires_at` is reported EXPIRED,
              *     whether or not its refund has been booked yet.
@@ -2590,7 +3130,12 @@ export interface components {
         };
         /**
          * VoucherRedeemResponse
-         * @description `POST /barista/vouchers/redeem`: the voucher is now used up.
+         * @description `POST /barista/vouchers/redeem`: the voucher is used up.
+         *
+         *     The scan that redeems a voucher answers with `repeat` false. The same barista
+         *     scanning that voucher again within `VOUCHER_RESCAN_SECONDS` gets the same answer
+         *     with `repeat` true: the answer to the first scan may not have arrived. Nothing
+         *     is booked for a repeat.
          */
         VoucherRedeemResponse: {
             /** Product Id */
@@ -2603,8 +3148,15 @@ export interface components {
             /**
              * Redeemed At
              * Format: date-time
+             * @description When the voucher was redeemed: the instant of the first scan, also in a repeat.
              */
             redeemed_at: string;
+            /**
+             * Repeat
+             * @description False for the scan that redeemed the voucher. True when this barista redeemed
+             *     it a moment ago and scanned it again: hand the product over once.
+             */
+            repeat: boolean;
             /**
              * Value Cr
              * @example 0.25
@@ -2628,10 +3180,16 @@ export interface components {
     headers: never;
     pathItems: never;
 }
+export type AdjustBalanceRequest = components['schemas']['AdjustBalanceRequest'];
+export type AdminUserItem = components['schemas']['AdminUserItem'];
+export type AdminUserListResponse = components['schemas']['AdminUserListResponse'];
 export type AlertItem = components['schemas']['AlertItem'];
 export type AlertSeverity = components['schemas']['AlertSeverity'];
 export type ApproveMarketRequest = components['schemas']['ApproveMarketRequest'];
+export type BalanceAdjustmentResponse = components['schemas']['BalanceAdjustmentResponse'];
+export type BuySlider = components['schemas']['BuySlider'];
 export type CloseMarketRequest = components['schemas']['CloseMarketRequest'];
+export type CodeBatchCodesResponse = components['schemas']['CodeBatchCodesResponse'];
 export type CodeBatchCreatedResponse = components['schemas']['CodeBatchCreatedResponse'];
 export type CodeBatchItem = components['schemas']['CodeBatchItem'];
 export type CodeBatchListResponse = components['schemas']['CodeBatchListResponse'];
@@ -2665,6 +3223,8 @@ export type MarketTier = components['schemas']['MarketTier'];
 export type MarketViewer = components['schemas']['MarketViewer'];
 export type MeResponse = components['schemas']['MeResponse'];
 export type MonthlyGrantRunResponse = components['schemas']['MonthlyGrantRunResponse'];
+export type NoticeItem = components['schemas']['NoticeItem'];
+export type NoticeKind = components['schemas']['NoticeKind'];
 export type Obligations = components['schemas']['Obligations'];
 export type Outcome = components['schemas']['Outcome'];
 export type PortfolioEntry = components['schemas']['PortfolioEntry'];
@@ -2679,6 +3239,7 @@ export type QuoteResponse = components['schemas']['QuoteResponse'];
 export type RedeemCodeRequest = components['schemas']['RedeemCodeRequest'];
 export type RedeemCodeResponse = components['schemas']['RedeemCodeResponse'];
 export type RedeemVoucherRequest = components['schemas']['RedeemVoucherRequest'];
+export type ReinstateUserRequest = components['schemas']['ReinstateUserRequest'];
 export type RejectMarketRequest = components['schemas']['RejectMarketRequest'];
 export type ResolutionOutcome = components['schemas']['ResolutionOutcome'];
 export type ResolveMarketRequest = components['schemas']['ResolveMarketRequest'];
@@ -2690,9 +3251,11 @@ export type RiskResponse = components['schemas']['RiskResponse'];
 export type SaveProfileRequest = components['schemas']['SaveProfileRequest'];
 export type SellPortion = components['schemas']['SellPortion'];
 export type SellPreset = components['schemas']['SellPreset'];
+export type SetUserRoleRequest = components['schemas']['SetUserRoleRequest'];
 export type SortOrder = components['schemas']['SortOrder'];
 export type StakePreset = components['schemas']['StakePreset'];
 export type StatusEvent = components['schemas']['StatusEvent'];
+export type SuspendUserRequest = components['schemas']['SuspendUserRequest'];
 export type TierConfig = components['schemas']['TierConfig'];
 export type TradeBlockReason = components['schemas']['TradeBlockReason'];
 export type TradeItem = components['schemas']['TradeItem'];
@@ -2701,6 +3264,7 @@ export type TradeRequest = components['schemas']['TradeRequest'];
 export type TradeResponse = components['schemas']['TradeResponse'];
 export type TradeSide = components['schemas']['TradeSide'];
 export type UserRole = components['schemas']['UserRole'];
+export type UserStatus = components['schemas']['UserStatus'];
 export type VoidMarketRequest = components['schemas']['VoidMarketRequest'];
 export type VoucherCodeResponse = components['schemas']['VoucherCodeResponse'];
 export type VoucherIssuedResponse = components['schemas']['VoucherIssuedResponse'];
@@ -2792,6 +3356,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CodeBatchCreatedResponse"];
+                };
+            };
+            /** @description Any error: `code` says which, `message` is for the user. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_batch_codes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batch_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodeBatchCodesResponse"];
                 };
             };
             /** @description Any error: `code` says which, `message` is for the user. */
@@ -3143,6 +3738,193 @@ export interface operations {
             };
         };
     };
+    list_users: {
+        parameters: {
+            query?: {
+                limit?: number;
+                /** @description `next_cursor` of the previous page; omit it for the first page. */
+                cursor?: string | null;
+                /**
+                 * @description Lists the users whose username, name or address contains this text, whatever the
+                 *     case of its letters. Leave it out to list everybody: an empty one is rejected.
+                 */
+                q?: string | null;
+                /**
+                 * @description The role a user has in effect, as `AdminUserItem.role` reports it: `ADMIN` lists
+                 *     the bootstrap admins too, and no other role lists one of them.
+                 */
+                role?: components["schemas"]["UserRole"] | null;
+                status?: components["schemas"]["UserStatus"] | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUserListResponse"];
+                };
+            };
+            /** @description Any error: `code` says which, `message` is for the user. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    adjust_user_balance: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description A UUID the client makes up per adjustment and repeats on every retry of it. The same key returns the same adjustment; it is never booked twice. */
+                "Idempotency-Key": string;
+            };
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdjustBalanceRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BalanceAdjustmentResponse"];
+                };
+            };
+            /** @description Any error: `code` says which, `message` is for the user. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    reinstate_user: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReinstateUserRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUserItem"];
+                };
+            };
+            /** @description Any error: `code` says which, `message` is for the user. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    set_user_role: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetUserRoleRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUserItem"];
+                };
+            };
+            /** @description Any error: `code` says which, `message` is for the user. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    suspend_user: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SuspendUserRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminUserItem"];
+                };
+            };
+            /** @description Any error: `code` says which, `message` is for the user. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     redeem_voucher: {
         parameters: {
             query?: never;
@@ -3329,7 +4111,7 @@ export interface operations {
     list_markets: {
         parameters: {
             query?: {
-                /** @description Effective statuses to list. Repeat the parameter for several: `?status=OPEN&status=HALTED`. Left out: every status but PROPOSED and REJECTED, which are for admins only. */
+                /** @description Effective statuses to list. Repeat the parameter for several: `?status=OPEN&status=HALTED`. Left out: every status but PROPOSED, EXPIRED and REJECTED, which are for admins only. PROPOSED lists the proposals an admin can still decide on; one whose `close_at` has passed is listed under EXPIRED. */
                 status?: components["schemas"]["MarketStatus"][] | null;
             };
             header?: never;
@@ -3611,6 +4393,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LedgerListResponse"];
+                };
+            };
+            /** @description Any error: `code` says which, `message` is for the user. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    mark_notice_seen: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                notice_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoticeItem"];
                 };
             };
             /** @description Any error: `code` says which, `message` is for the user. */

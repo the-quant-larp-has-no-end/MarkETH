@@ -1,8 +1,8 @@
 """`CodeService`: how VIS hands out credits (SPEC §2, §12 "Voucher codes", Appendix A.6).
 
-An admin creates a batch and gets its plain codes once; a user redeems a code for the
-value of its batch, booked from `vis:issuance`. The five rules of SPEC §12 are proven
-here, each by the test that carries its name:
+An admin creates a batch and gets its plain codes; a user redeems a code for the value
+of its batch, booked from `vis:issuance`. The five rules of SPEC §12 are proven here,
+each by the test that carries its name:
 
     one code redeemed by several users in parallel succeeds once
     expired, revoked and used codes fail with the same error
@@ -10,8 +10,10 @@ here, each by the test that carries its name:
     the attempt after the per-user limit is rate limited
     a batch above the monthly issuance cap is refused
 
-and with them what A.6 adds: redemption fails closed without Redis, the creator of a
-batch cannot cash in its codes, revocation, and that only hashes are stored.
+and with them what A.6 adds: redemption fails closed without Redis, no admin and no
+creator of a batch can cash in a code, revocation, and where a code is kept: in its
+own row for as long as it can be redeemed, so that an admin can open the codes of a
+batch again, and nowhere once it is redeemed or revoked.
 
 The tests act as admins and users against Postgres, Redis and the ledger. Most go
 through the real routes. `as_user` lets one person act at a time, so whatever several
@@ -38,15 +40,15 @@ from pydantic import TypeAdapter
 from sqlalchemy import Select, select, text
 
 from app.container import Container
-from app.core.clock import first_of_next_month, local_date, start_of_month
-from app.core.enums import AccountKind, CodeStatus, JournalKind, UserRole
+from app.core.clock import add_months, local_date, start_of_month
+from app.core.enums import AccountKind, CodeStatus, JournalKind, UserRole, UserStatus
 from app.core.errors import (
     CodeInvalidError,
+    ForbiddenError,
     LimitExceededError,
     NotFoundError,
     RateLimitedError,
     ServiceUnavailableError,
-    ValidationFailedError,
 )
 from app.core.security import format_code, generate_code, hash_code, normalize_code
 from app.core.units import format_cr, to_cr
@@ -60,8 +62,17 @@ from app.schemas.admin.code_batches import (
 )
 from app.schemas.codes import RedeemCodeResponse
 from app.schemas.common import Limit
-from app.services.codes import ISSUANCE_LOCK, ONE_PER_USER_MESSAGE, OWN_BATCH_MESSAGE
+from app.services.codes import (
+    ADMIN_REDEEM_MESSAGE,
+    EXPIRY_NOT_AHEAD_MESSAGE,
+    EXPIRY_OFF_THE_CALENDAR_MESSAGE,
+    ISSUANCE_LOCK,
+    ONE_PER_USER_MESSAGE,
+    OWN_BATCH_MESSAGE,
+    code_value_message,
+)
 from app.services.ledger import LedgerRef, code_redemption_key
+from app.services.markets import UNSTORABLE_TEXT_MESSAGE
 from tests.support.books import assert_books_balance, count_rows, system_balance
 from tests.support.clock import FrozenClock
 from tests.support.factories import ActAs, Factory, identity_of
@@ -139,10 +150,13 @@ class Batch:
 class Acting:
     """The requests of the people in a test: every call says who is asking."""
 
-    def __init__(self, client: httpx.AsyncClient, as_user: ActAs, clock: FrozenClock) -> None:
+    def __init__(
+        self, client: httpx.AsyncClient, as_user: ActAs, clock: FrozenClock, container: Container
+    ) -> None:
         self._client = client
         self._as_user = as_user
         self._clock = clock
+        self._uow_factory = container.uow_factory
 
     async def ask_for_batch(
         self,
@@ -198,6 +212,11 @@ class Acting:
         self._as_user(admin)
         return await self._client.get(BATCHES_PATH)
 
+    async def codes(self, admin: User | None, batch_id: UUID) -> httpx.Response:
+        """The codes of a batch that can still be redeemed; None asks as nobody."""
+        self._as_user(admin)
+        return await self._client.get(f"{BATCHES_PATH}/{batch_id}/codes")
+
     async def revoke(
         self, admin: User, batch_id: UUID, codes: list[str] | None = None
     ) -> httpx.Response:
@@ -210,10 +229,26 @@ class Acting:
         self._as_user(user)
         return await self._client.post(REDEEM_PATH, json={"code": code})
 
+    async def give_role(self, admin: User, user: User, role: UserRole) -> User:
+        """`admin` sets the role of `user` in the admin panel. Returns the row as it is
+        afterwards: the one a test acts as from then on."""
+        self._as_user(admin)
+        response = await self._client.post(
+            f"/api/admin/users/{user.id}/role", json={"role": role.value}
+        )
+        assert response.status_code == 200, response.text
+        async with self._uow_factory() as uow:
+            row = await uow.users.get(user.id)
+        assert row is not None
+        assert row.role is role
+        return row
+
 
 @pytest.fixture
-def acting(client: httpx.AsyncClient, as_user: ActAs, clock: FrozenClock) -> Acting:
-    return Acting(client, as_user, clock)
+def acting(
+    client: httpx.AsyncClient, as_user: ActAs, clock: FrozenClock, container: Container
+) -> Acting:
+    return Acting(client, as_user, clock, container)
 
 
 def plain(code: str) -> str:
@@ -261,11 +296,13 @@ async def audit_rows(container: Container) -> list[AuditLogEntry]:
         return list(await uow.session.scalars(select(AuditLogEntry).order_by(AuditLogEntry.id)))
 
 
-async def everything_stored(container: Container) -> str:
-    """Every row of every table, as text."""
+async def everything_stored(container: Container, *, but: type[Base] | None = None) -> str:
+    """Every row of every table, as text. `but` leaves the rows of one table out."""
     stored: list[str] = []
     async with container.uow_factory() as uow:
         for table in Base.metadata.sorted_tables:
+            if but is not None and table.name == but.__tablename__:
+                continue
             statement = text(f"SELECT row_to_json(t)::text FROM {table.name} AS t")
             stored.extend(await uow.session.scalars(statement))
     return "\n".join(stored)
@@ -319,13 +356,15 @@ def limit_exceeded(issued_micro: int, requested_micro: int) -> dict[str, object]
 # --- Creating a batch -------------------------------------------------------------
 
 
-async def test_a_batch_answers_its_plain_codes_once_and_only_their_hashes_are_stored(
+async def test_a_batch_answers_its_plain_codes_and_keeps_each_with_its_row_and_nowhere_else(
     acting: Acting,
     factory: Factory,
     container: Container,
     clock: FrozenClock,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """A code is in the answer that creates it and in the row it redeems, beside its
+    hash. No other table, no list of batches and no log line holds one."""
     caplog.set_level(logging.DEBUG)
     admin = await factory.admin()
     expires_at = clock.now() + LIFETIME
@@ -351,6 +390,7 @@ async def test_a_batch_answers_its_plain_codes_once_and_only_their_hashes_are_st
         "active_count": 5,
         "redeemed_count": 0,
         "revoked_count": 0,
+        "can_revoke": True,
     }
     codes = [created["code"] for created in answer["codes"]]
     assert len(set(codes)) == 5
@@ -360,16 +400,19 @@ async def test_a_batch_answers_its_plain_codes_once_and_only_their_hashes_are_st
         assert created["code"] == format_code(plain(created["code"])), "printed in groups of four"
 
     async with container.uow_factory() as uow:
-        stored_rows = (await uow.session.scalars(select(Code))).all()
-    assert {row.code_hash for row in stored_rows} == {hash_code(plain(code)) for code in codes}
+        stored_rows = (await uow.session.scalars(select(Code).order_by(Code.id))).all()
+    # Kept without its dashes, under the hash of exactly that, in the order of the answer.
+    assert [(row.code_hash, row.code) for row in stored_rows] == [
+        (hash_code(plain(code)), plain(code)) for code in codes
+    ]
     for row in stored_rows:
         assert (row.batch_id, row.status) == (batch_id, CodeStatus.ACTIVE)
         assert (row.redeemed_by, row.redeemed_at, row.entry_id) == (None, None, None)
-    stored = await everything_stored(container)
+    stored_elsewhere = await everything_stored(container, but=Code)
     listed = (await acting.batches(admin)).text
     logged = "\n".join(record.getMessage() for record in caplog.records)
     for code in codes:
-        for anywhere in (stored, listed, logged):
+        for anywhere in (stored_elsewhere, listed, logged):
             assert code not in anywhere
             assert plain(code) not in anywhere
 
@@ -432,7 +475,8 @@ async def test_a_code_may_be_worth_the_minimum_and_the_maximum(
 async def test_a_value_outside_the_bounds_is_422_on_value_cr_and_stores_nothing(
     acting: Acting, factory: Factory, container: Container, value_micro: int
 ) -> None:
-    """One millionth of a credit outside CODE_MIN_VALUE_CR to CODE_MAX_VALUE_CR."""
+    """One millionth of a credit outside CODE_MIN_VALUE_CR to CODE_MAX_VALUE_CR. The
+    answer names the field and says, in tokens, what a code may be worth."""
     admin = await factory.admin()
 
     response = await acting.ask_for_batch(admin, value_micro=value_micro)
@@ -440,9 +484,10 @@ async def test_a_value_outside_the_bounds_is_422_on_value_cr_and_stores_nothing(
     assert response.status_code == 422
     assert response.json() == {
         "code": "VALIDATION_ERROR",
-        "message": ValidationFailedError.default_message,
+        "message": code_value_message(MIN, MAX),
         "details": {"field": "value_cr"},
     }
+    assert code_value_message(MIN, MAX) == "Enter a value from 5 to 500 tokens."
     for table in (CodeBatch, Code, AuditLogEntry):
         assert await count_rows(container.uow_factory, table) == 0
 
@@ -460,9 +505,10 @@ async def test_a_batch_that_would_already_have_expired_is_422_on_expires_at(
     assert response.status_code == 422
     assert response.json() == {
         "code": "VALIDATION_ERROR",
-        "message": ValidationFailedError.default_message,
+        "message": EXPIRY_NOT_AHEAD_MESSAGE,
         "details": {"field": "expires_at"},
     }
+    assert EXPIRY_NOT_AHEAD_MESSAGE == "Choose a time in the future."
     for table in (CodeBatch, Code, AuditLogEntry):
         assert await count_rows(container.uow_factory, table) == 0
 
@@ -478,7 +524,7 @@ async def test_a_label_that_postgres_cannot_store_is_422_on_label(
     assert response.status_code == 422
     assert response.json() == {
         "code": "VALIDATION_ERROR",
-        "message": ValidationFailedError.default_message,
+        "message": UNSTORABLE_TEXT_MESSAGE,
         "details": {"field": "label"},
     }
     for table in (CodeBatch, Code, AuditLogEntry):
@@ -505,9 +551,10 @@ async def test_an_expiry_that_has_no_date_in_utc_is_422_on_expires_at(
     assert response.status_code == 422
     assert response.json() == {
         "code": "VALIDATION_ERROR",
-        "message": ValidationFailedError.default_message,
+        "message": EXPIRY_OFF_THE_CALENDAR_MESSAGE,
         "details": {"field": "expires_at"},
     }
+    assert EXPIRY_OFF_THE_CALENDAR_MESSAGE == "Choose another date."
     for table in (CodeBatch, Code, AuditLogEntry):
         assert await count_rows(container.uow_factory, table) == 0
 
@@ -636,9 +683,8 @@ async def test_the_cap_starts_again_with_the_calendar_month_of_the_app_timezone(
 ) -> None:
     """Midnight on the first in Zurich, which is an hour or two before midnight UTC."""
     zurich = container.settings.app.timezone
-    next_month = datetime.combine(
-        first_of_next_month(local_date(clock.now(), zurich)), time.min, tzinfo=zurich
-    )
+    first_of_next_month = add_months(local_date(clock.now(), zurich).replace(day=1), 1)
+    next_month = datetime.combine(first_of_next_month, time.min, tzinfo=zurich)
     assert next_month.astimezone(UTC).month == clock.now().month, "still this month in UTC"
     later = next_month + LIFETIME
     admin = await factory.admin()
@@ -906,23 +952,26 @@ async def test_a_used_code_fails_for_the_user_who_used_it_too(
     await assert_books_balance(container.uow_factory)
 
 
-async def test_a_code_that_is_redeemed_or_refused_is_written_to_no_log_and_no_table(
+async def test_a_code_that_is_redeemed_or_refused_is_left_in_no_log_and_no_table(
     acting: Acting,
     factory: Factory,
     container: Container,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Neither a good code nor what somebody typed in its place is kept anywhere."""
+    """Redeeming a code takes it out of its row, which held it until then. Neither it
+    nor what somebody typed in its place is kept anywhere afterwards."""
     caplog.set_level(logging.DEBUG)
     admin = await factory.admin()
     alice = await factory.user()
     batch = await acting.batch(admin)
     guess = format_code(generate_code(CODE_LENGTH))
+    assert (await row_of(container, batch.codes[0])).code == plain(batch.codes[0])
 
     refused = await acting.redeem(alice, guess)
     redeemed = await acting.redeem(alice, batch.codes[0])
 
     assert (refused.status_code, redeemed.status_code) == (400, 200)
+    assert (await row_of(container, batch.codes[0])).code is None
     logged = "\n".join(record.getMessage() for record in caplog.records)
     stored = await everything_stored(container)
     for code in (guess, batch.codes[0]):
@@ -1093,12 +1142,8 @@ async def test_a_batch_waits_for_the_one_being_created_and_counts_it_against_the
             )
         )
         await holder.codes.add_all(
-            Code(
-                batch_id=full.id,
-                code_hash=hash_code(generate_code(CODE_LENGTH)),
-                status=CodeStatus.ACTIVE,
-            )
-            for _ in range(FILLS_THE_CAP)
+            Code(batch_id=full.id, code_hash=hash_code(code), code=code, status=CodeStatus.ACTIVE)
+            for code in (generate_code(CODE_LENGTH) for _ in range(FILLS_THE_CAP))
         )
     with pytest.raises(LimitExceededError) as refused:
         await waiting
@@ -1195,21 +1240,139 @@ async def test_with_redis_down_redemption_answers_503_and_books_nothing(
     await assert_books_balance(container.uow_factory)
 
 
-# --- The creator of a batch -------------------------------------------------------
+# --- Who holds the codes does not redeem them -------------------------------------
 
 
-async def test_the_creator_of_a_batch_cannot_redeem_its_codes_whatever_state_they_are_in(
+@pytest.mark.parametrize("appointed", [False, True], ids=["by-the-settings", "by-the-panel"])
+async def test_an_admin_who_opened_the_codes_of_another_admins_batch_cannot_redeem_them(
+    acting: Acting, factory: Factory, container: Container, appointed: bool
+) -> None:
+    """Every admin can open the codes of every batch, so the rule is about every admin
+    and not about the creator alone: a second admin reads the codes of a batch they did
+    not create and is refused each one, in a sentence of their own. Nothing is booked
+    and no row of any table changes."""
+    creator = await factory.admin()
+    second = await factory.user(role=UserRole.ADMIN) if appointed else await factory.admin(1)
+    batch = await acting.batch(creator, count=3)
+    opened = await acting.codes(second, batch.id)
+    assert [read["code"] for read in opened.json()["codes"]] == batch.codes
+    before = await everything_stored(container)
+
+    answers = [await acting.redeem(second, code) for code in batch.codes]
+
+    for answer in answers:
+        assert answer.status_code == 403
+        assert answer.json() == {
+            "code": "FORBIDDEN",
+            "message": ADMIN_REDEEM_MESSAGE,
+            "details": {},
+        }
+    assert ADMIN_REDEEM_MESSAGE == "Admins hand out codes and cannot redeem them."
+    assert await everything_stored(container) == before
+    assert await statuses(container, batch.codes) == [CodeStatus.ACTIVE] * 3
+    assert await factory.balance_micro(second) == 0
+    assert await redemptions(container) == 0
+    assert await system_balance(container.uow_factory, ISSUANCE) == 0
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_an_admin_is_refused_whatever_state_the_code_is_in_and_for_their_own_batch_too(
     acting: Acting, factory: Factory, container: Container, clock: FrozenClock
 ) -> None:
-    """A.6: whoever made a batch holds all of its plain codes. They are told so in a
-    sentence of their own, for a good code as for a used, a revoked and an expired one;
-    a code that does not exist is no code of theirs and gets the generic answer."""
+    """A good code, a used, a revoked and an expired one get the admin the same
+    sentence, and so does a code of a batch the admin created: to an admin the answer
+    is about being an admin. What is no code at all gets the generic answer."""
     creator = await factory.admin()
-    another_admin = await factory.admin(1)
+    second = await factory.admin(1)
+    student = await factory.user()
     batch = await acting.batch(creator, count=3)
     good, used, revoked = batch.codes
-    assert (await acting.redeem(another_admin, used)).status_code == 200
-    assert (await acting.revoke(another_admin, batch.id, [revoked])).status_code == 200
+    assert (await acting.redeem(student, used)).status_code == 200
+    assert (await acting.revoke(creator, batch.id, [revoked])).status_code == 200
+
+    by_second = [await acting.redeem(second, code) for code in (good, used, revoked)]
+    unknown = await acting.redeem(second, format_code(generate_code(CODE_LENGTH)))
+    by_creator = await acting.redeem(creator, good)
+    clock.advance(LIFETIME)
+    once_expired = await acting.redeem(second, good)
+
+    for answer in (*by_second, by_creator, once_expired):
+        assert answer.status_code == 403
+        assert answer.json()["message"] == ADMIN_REDEEM_MESSAGE
+    assert unknown.status_code == 400
+    assert unknown.json() == CODE_INVALID
+    assert await statuses(container, batch.codes) == [
+        CodeStatus.ACTIVE,
+        CodeStatus.REDEEMED,
+        CodeStatus.REVOKED,
+    ]
+    assert [await factory.balance_micro(admin) for admin in (creator, second)] == [0, 0]
+    assert await factory.balance_micro(student) == VALUE
+    assert await redemptions(container) == 1
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_the_service_refuses_an_admin_whoever_calls_it_and_whatever_the_status(
+    acting: Acting, factory: Factory, container: Container
+) -> None:
+    """The rule is the service's, on the role alone: also for a caller that reached it
+    past the route, and for an admin whose account is suspended."""
+    creator = await factory.admin()
+    appointed = await factory.user(role=UserRole.ADMIN)
+    suspended = await factory.user(role=UserRole.ADMIN, status=UserStatus.SUSPENDED)
+    batch = await acting.batch(creator, count=2)
+
+    for admin, code in zip((appointed, suspended), batch.codes, strict=True):
+        with pytest.raises(ForbiddenError) as refused:
+            await container.codes.redeem(factory.identity(admin), code)
+        assert refused.value.message == ADMIN_REDEEM_MESSAGE
+
+    assert await statuses(container, batch.codes) == [CodeStatus.ACTIVE] * 2
+    assert await redemptions(container) == 0
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_user_and_a_barista_redeem_a_code(
+    acting: Acting, factory: Factory, container: Container
+) -> None:
+    """Everybody who is no admin redeems: a barista scans vouchers and holds no code."""
+    admin = await factory.admin()
+    student = await factory.user()
+    barista = await factory.barista()
+    batch = await acting.batch(admin, count=2)
+
+    answers = [
+        await acting.redeem(person, code)
+        for person, code in zip((student, barista), batch.codes, strict=True)
+    ]
+
+    assert [answer.status_code for answer in answers] == [200, 200]
+    assert [(await row_of(container, code)).redeemed_by for code in batch.codes] == [
+        student.id,
+        barista.id,
+    ]
+    assert [await factory.balance_micro(person) for person in (student, barista)] == [VALUE] * 2
+    assert await redemptions(container) == 2
+    await assert_books_balance(container.uow_factory)
+
+
+@pytest.mark.parametrize("role", [UserRole.USER, UserRole.BARISTA])
+async def test_the_creator_of_a_batch_cannot_redeem_its_codes_whatever_state_they_are_in(
+    acting: Acting, factory: Factory, container: Container, clock: FrozenClock, role: UserRole
+) -> None:
+    """A.6: whoever made a batch got all of its plain codes in the answer that created
+    it. The rule about admins covers the creator while they are one; this one holds
+    for a creator whose role is another by the time they redeem. They are told so in
+    a sentence of their own, for a good code as for a used, a revoked and an expired
+    one; a code that does not exist is no code of theirs and gets the generic answer."""
+    appointer = await factory.admin()
+    creator = await factory.user(role=UserRole.ADMIN)
+    student = await factory.user()
+    batch = await acting.batch(creator, count=3)
+    good, used, revoked = batch.codes
+    assert (await acting.redeem(student, used)).status_code == 200
+    assert (await acting.revoke(appointer, batch.id, [revoked])).status_code == 200
+    creator = await acting.give_role(appointer, creator, role)
 
     own_codes = [await acting.redeem(creator, code) for code in (good, used, revoked)]
     unknown = await acting.redeem(creator, format_code(generate_code(CODE_LENGTH)))
@@ -1227,7 +1390,7 @@ async def test_the_creator_of_a_batch_cannot_redeem_its_codes_whatever_state_the
         CodeStatus.REVOKED,
     ]
     assert await factory.balance_micro(creator) == 0
-    assert await factory.balance_micro(another_admin) == VALUE
+    assert await factory.balance_micro(student) == VALUE
     assert await redemptions(container) == 1
     await assert_books_balance(container.uow_factory)
 
@@ -1310,6 +1473,7 @@ async def test_revoking_a_batch_revokes_every_unredeemed_code_and_stamps_it_once
             "redeemed_count": 1,
             "revoked_count": 3,
             "revoked_at": on_the_wire(revoked_at),
+            "can_revoke": False,
         },
     }
     assert again.status_code == 200
@@ -1324,6 +1488,54 @@ async def test_revoking_a_batch_revokes_every_unredeemed_code_and_stamps_it_once
     assert (await acting.redeem(bob, batch.codes[1])).json() == CODE_INVALID
     assert await factory.balance_micro(alice) == VALUE, "a redeemed code stays redeemed"
     assert await redemptions(container) == 1
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_batch_says_whether_a_revoke_would_revoke_anything(
+    acting: Acting, factory: Factory, container: Container, clock: FrozenClock
+) -> None:
+    """`can_revoke` is true exactly while the batch has a code that is neither redeemed
+    nor revoked, whether or not it has expired. It is what a revoke of the batch would
+    answer: where it is false, the revoke revokes nothing."""
+    admin = await factory.admin()
+    alice = await factory.user()
+    soon = clock.now() + timedelta(days=1)
+    mixed = await acting.batch(admin, count=3, label="mixed")
+    used_up = await acting.batch(admin, count=1, label="used up")
+    expiring = await acting.batch(admin, count=1, label="expiring", expires_at=soon)
+
+    async def listed() -> dict[str, bool]:
+        items = (await acting.batches(admin)).json()["items"]
+        return {item["label"]: item["can_revoke"] for item in items}
+
+    assert mixed.answer["batch"]["can_revoke"] is True
+    assert await listed() == {"mixed": True, "used up": True, "expiring": True}
+
+    assert (await acting.redeem(alice, mixed.codes[0])).status_code == 200
+    assert (await acting.redeem(alice, used_up.codes[0])).status_code == 200
+    one_revoked = await acting.revoke(admin, mixed.id, [mixed.codes[1]])
+    clock.set(soon)
+
+    assert one_revoked.json()["batch"]["can_revoke"] is True, "one code is still good"
+    assert await listed() == {"mixed": True, "used up": False, "expiring": True}
+    opened = (await acting.codes(admin, expiring.id)).json()
+    assert (opened["codes"], opened["batch"]["expired"]) == ([], True)
+    assert opened["batch"]["can_revoke"] is True, "its row is ACTIVE and a revoke clears it"
+
+    revoked = {
+        label: (await acting.revoke(admin, batch.id)).json()
+        for label, batch in (("mixed", mixed), ("used up", used_up), ("expiring", expiring))
+    }
+
+    assert {label: answer["revoked_count"] for label, answer in revoked.items()} == {
+        "mixed": 1,
+        "used up": 0,
+        "expiring": 1,
+    }
+    assert [answer["batch"]["can_revoke"] for answer in revoked.values()] == [False] * 3
+    assert await listed() == {"mixed": False, "used up": False, "expiring": False}
+    for batch in (mixed, used_up, expiring):
+        assert (await acting.revoke(admin, batch.id)).json()["revoked_count"] == 0
     await assert_books_balance(container.uow_factory)
 
 
@@ -1433,6 +1645,266 @@ async def test_codes_redeemed_while_their_batch_is_revoked_end_redeemed_or_revok
     assert sum(balances) == len(redeemed) * VALUE
     assert await redemptions(container) == len(redeemed)
     await assert_books_balance(container.uow_factory)
+
+
+# --- Opening the codes of a batch again -------------------------------------------
+
+
+async def test_the_codes_of_a_batch_read_back_are_the_ones_it_was_created_with(
+    acting: Acting, factory: Factory, container: Container
+) -> None:
+    """The same codes with the same links, in the same order, and each still redeems:
+    what the admin prints later is what would have been printed at once."""
+    creator = await factory.admin()
+    alice = await factory.user()
+    batch = await acting.batch(creator, count=5, label="Quiz night", one_per_user=True)
+
+    response = await acting.codes(creator, batch.id)
+
+    assert response.status_code == 200, response.text
+    assert response.headers["cache-control"] == "no-store", "no browser or proxy keeps a copy"
+    answer = response.json()
+    assert set(answer) == {"batch", "codes"}
+    assert answer["batch"] == batch.answer["batch"]
+    assert answer["codes"] == batch.answer["codes"]
+    assert [read["code"] for read in answer["codes"]] == batch.codes
+    for read in answer["codes"]:
+        assert read == {
+            "code": format_code(plain(read["code"])),
+            "redeem_url": f"{PUBLIC_BASE_URL}/wallet?code={read['code']}",
+        }
+    assert await statuses(container, batch.codes) == [CodeStatus.ACTIVE] * 5
+    redeemed = await acting.redeem(alice, answer["codes"][-1]["code"])
+    assert redeemed.status_code == 200, redeemed.text
+    assert await factory.balance_micro(alice) == VALUE
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_redeemed_or_revoked_code_is_gone_from_the_list_and_its_plain_text_from_the_table(
+    acting: Acting, factory: Factory, container: Container
+) -> None:
+    """The statement that redeems or revokes a code clears it, so there is nothing left
+    to open: not in the answer, not in the row, not in any table."""
+    admin = await factory.admin()
+    alice = await factory.user()
+    batch = await acting.batch(admin, count=4)
+    redeemed, revoked, third, fourth = batch.codes
+    assert [(await row_of(container, code)).code for code in batch.codes] == [
+        plain(code) for code in batch.codes
+    ]
+
+    assert (await acting.redeem(alice, redeemed)).status_code == 200
+    assert (await acting.revoke(admin, batch.id, [revoked])).json()["revoked_count"] == 1
+    response = await acting.codes(admin, batch.id)
+
+    assert response.status_code == 200, response.text
+    answer = response.json()
+    assert [read["code"] for read in answer["codes"]] == [third, fourth]
+    assert answer["codes"] == batch.answer["codes"][2:]
+    assert answer["batch"] == batch.answer["batch"] | {
+        "active_count": 2,
+        "redeemed_count": 1,
+        "revoked_count": 1,
+    }
+    rows = [await row_of(container, code) for code in batch.codes]
+    assert [(row.status, row.code) for row in rows] == [
+        (CodeStatus.REDEEMED, None),
+        (CodeStatus.REVOKED, None),
+        (CodeStatus.ACTIVE, plain(third)),
+        (CodeStatus.ACTIVE, plain(fourth)),
+    ]
+    stored = await everything_stored(container)
+    for gone in (redeemed, revoked):
+        assert gone not in response.text
+        assert gone not in stored
+        assert plain(gone) not in stored
+    assert plain(third) in stored
+
+    # Revoking the batch takes the rest: nothing of it can be opened by anybody again.
+    assert (await acting.revoke(admin, batch.id)).json()["revoked_count"] == 2
+    emptied = await acting.codes(admin, batch.id)
+
+    assert emptied.status_code == 200
+    assert emptied.json()["codes"] == []
+    assert emptied.json()["batch"]["active_count"] == 0
+    stored = await everything_stored(container)
+    for code in batch.codes:
+        assert code not in stored
+        assert plain(code) not in stored
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_batch_that_has_expired_lists_no_code(
+    acting: Acting, factory: Factory, container: Container, clock: FrozenClock
+) -> None:
+    """Until the instant it expires every code is listed; from then on none can be
+    redeemed, so none is handed out. The rows stay ACTIVE: nothing revoked them."""
+    admin = await factory.admin()
+    expires_at = clock.now() + timedelta(days=7)
+    batch = await acting.batch(admin, count=2, expires_at=expires_at)
+
+    clock.set(expires_at - INSTANT)
+    last_moment = await acting.codes(admin, batch.id)
+    clock.set(expires_at)
+    at_expiry = await acting.codes(admin, batch.id)
+
+    assert [read["code"] for read in last_moment.json()["codes"]] == batch.codes
+    assert last_moment.json()["batch"]["expired"] is False
+    assert at_expiry.status_code == 200
+    assert at_expiry.json() == {
+        "batch": batch.answer["batch"] | {"expired": True},
+        "codes": [],
+    }
+    assert at_expiry.json()["batch"]["active_count"] == 2
+    assert await statuses(container, batch.codes) == [CodeStatus.ACTIVE] * 2
+    assert all(code not in at_expiry.text for code in batch.codes)
+
+
+async def test_only_an_admin_opens_the_codes_of_a_batch(
+    acting: Acting, factory: Factory, container: Container
+) -> None:
+    """A user, a barista and nobody are refused before anything is read, and no audit
+    row says otherwise. Any admin opens them, not the creator alone."""
+    creator = await factory.admin()
+    another_admin = await factory.admin(1)
+    appointed = await factory.user(role=UserRole.ADMIN)
+    student = await factory.user()
+    barista = await factory.barista()
+    batch = await acting.batch(creator, count=2)
+
+    for outsider in (student, barista):
+        refused = await acting.codes(outsider, batch.id)
+        assert refused.status_code == 403
+        assert refused.json() == {
+            "code": "FORBIDDEN",
+            "message": ForbiddenError.default_message,
+            "details": {},
+        }
+        # The service says so too, to whoever calls it past the route.
+        with pytest.raises(ForbiddenError):
+            await container.codes.batch_codes(factory.identity(outsider), batch.id)
+    unnamed = await acting.codes(None, batch.id)
+    assert (unnamed.status_code, unnamed.json()["code"]) == (401, "UNAUTHENTICATED")
+    assert [audited.action for audited in await audit_rows(container)] == ["code_batch.create"]
+
+    for admin in (another_admin, appointed, creator):
+        opened = await acting.codes(admin, batch.id)
+        assert opened.status_code == 200, opened.text
+        assert [read["code"] for read in opened.json()["codes"]] == batch.codes
+    for refused_text in (refused.text, unnamed.text):
+        assert all(code not in refused_text for code in batch.codes)
+
+
+async def test_every_read_of_the_codes_is_audited_with_who_asked_which_batch_and_no_code(
+    acting: Acting, factory: Factory, container: Container, clock: FrozenClock
+) -> None:
+    """One row per read, in the transaction of the read: the actor, the batch, how many
+    codes went out, and when. Also for a read that lists nothing."""
+    creator = await factory.admin()
+    reader = await factory.admin(1)
+    alice = await factory.user()
+    batch = await acting.batch(creator, count=3)
+    other = await acting.batch(creator, label="another batch")
+
+    first_read = clock.advance(timedelta(minutes=5))
+    assert (await acting.codes(reader, batch.id)).status_code == 200
+    assert (await acting.redeem(alice, batch.codes[0])).status_code == 200
+    second_read = clock.advance(timedelta(minutes=5))
+    assert (await acting.codes(reader, batch.id)).status_code == 200
+    assert (await acting.codes(creator, other.id)).status_code == 200
+    assert (await acting.revoke(creator, other.id)).status_code == 200
+    third_read = clock.advance(timedelta(minutes=5))
+    assert (await acting.codes(creator, other.id)).json()["codes"] == []
+
+    reads = [row for row in await audit_rows(container) if row.action == "code_batch.read_codes"]
+    assert [(row.actor_id, row.target, row.before, row.after, row.created_at) for row in reads] == [
+        (reader.id, f"code_batch:{batch.id}", None, {"code_count": 3}, first_read),
+        (reader.id, f"code_batch:{batch.id}", None, {"code_count": 2}, second_read),
+        (creator.id, f"code_batch:{other.id}", None, {"code_count": 1}, second_read),
+        (creator.id, f"code_batch:{other.id}", None, {"code_count": 0}, third_read),
+    ]
+    assert [row.action for row in await audit_rows(container)] == [
+        "code_batch.create",
+        "code_batch.create",
+        "code_batch.read_codes",
+        "code_batch.read_codes",
+        "code_batch.read_codes",
+        "code_batch.revoke",
+        "code_batch.read_codes",
+    ]
+    audited = await everything_stored(container, but=Code)
+    for code in (*batch.codes, *other.codes):
+        assert code not in audited
+        assert plain(code) not in audited
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_reading_the_codes_writes_nothing_but_its_audit_row(
+    acting: Acting, factory: Factory, container: Container
+) -> None:
+    """A read hands codes out and changes none: every row of every other table is as it
+    was, and each code still redeems once."""
+    admin = await factory.admin()
+    alice = await factory.user()
+    batch = await acting.batch(admin, count=2)
+    before = await everything_stored(container, but=AuditLogEntry)
+
+    for _ in range(3):
+        assert (await acting.codes(admin, batch.id)).status_code == 200
+
+    assert await everything_stored(container, but=AuditLogEntry) == before
+    assert await count_rows(container.uow_factory, AuditLogEntry) == 1 + 3
+    assert await statuses(container, batch.codes) == [CodeStatus.ACTIVE] * 2
+    assert [(await acting.redeem(alice, code)).status_code for code in batch.codes] == [200, 200]
+    assert (await acting.redeem(alice, batch.codes[0])).json() == CODE_INVALID
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_reading_the_codes_of_a_batch_that_does_not_exist_is_404_and_audits_nothing(
+    acting: Acting, factory: Factory, container: Container
+) -> None:
+    admin = await factory.admin()
+    await acting.batch(admin)
+
+    response = await acting.codes(admin, uuid7())
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "code": "NOT_FOUND",
+        "message": NotFoundError.default_message,
+        "details": {},
+    }
+    assert [audited.action for audited in await audit_rows(container)] == ["code_batch.create"]
+
+
+async def test_a_read_that_cannot_be_audited_hands_out_no_code(
+    factory: Factory, container: Container, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The audit row and the read are one transaction. Where the row cannot be written
+    the read fails with it, and nobody has seen a code the log does not know of."""
+    admin = factory.identity(await factory.admin())
+    created = await container.codes.create_batch(
+        admin,
+        CreateCodeBatchRequest(
+            label="Unaudited",
+            count=2,
+            expires_at=container.clock.now() + LIFETIME,
+            one_per_user=False,
+        ),
+    )
+
+    async def no_audit(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("the audit log cannot be written")
+
+    monkeypatch.setattr(container.audit, "record", no_audit)
+
+    with pytest.raises(RuntimeError, match="audit log"):
+        await container.codes.batch_codes(admin, created.batch.id)
+
+    monkeypatch.undo()
+    assert [audited.action for audited in await audit_rows(container)] == ["code_batch.create"]
+    opened = await container.codes.batch_codes(admin, created.batch.id)
+    assert opened.codes == created.codes
 
 
 # --- The list ---------------------------------------------------------------------

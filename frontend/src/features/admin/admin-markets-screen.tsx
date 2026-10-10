@@ -5,7 +5,6 @@ import { type ReactNode, useId, useState } from "react";
 
 import { QueryState } from "@/components/feedback";
 import { Field } from "@/components/form";
-import { StatusBadge, statusName } from "@/components/market";
 import { Amount } from "@/components/money";
 import { Screen } from "@/components/shell";
 import { DateTime } from "@/components/time";
@@ -16,6 +15,7 @@ import type { MarketListResponse, MarketStatus, MarketSummary } from "@/lib/api/
 
 import { AdminTabs } from "./admin-tabs";
 import { Chance, type Column, DataTable, DataTableSkeleton, EmptyLine } from "./data-table";
+import { MarketStatusBadge, marketStatusName } from "./market-status";
 import { ALL_STATUSES } from "./words";
 
 const ALL = "ALL";
@@ -26,7 +26,7 @@ const COLUMNS: readonly Column<MarketSummary>[] = [
   { header: "Question", wide: true, cell: (market) => market.question },
   {
     header: "Status",
-    cell: (market) => <StatusBadge status={market.status} outcome={market.outcome} />,
+    cell: (market) => <MarketStatusBadge status={market.status} outcome={market.outcome} />,
   },
   { header: "Chance", numeric: true, cell: (market) => <Chance value={market.p_yes} /> },
   {
@@ -91,10 +91,12 @@ function Section({
 
 /**
  * Admin: the proposal queue and the markets (`/admin`, DESIGN.md §13). First the
- * proposals that wait for a decision, from `GET /markets` with `status` PROPOSED; then
- * all markets, with a status select. Each choice of the select sends its one `status`,
- * and "All" sends all seven, because a request without `status` leaves PROPOSED and
- * REJECTED out. A row opens the admin view of its market.
+ * proposals that wait for a decision, from `GET /markets` with `status` PROPOSED: the
+ * API lists there what an admin can still decide on, and a proposal whose close time has
+ * passed is reported EXPIRED and is not among them. Then all markets, with a status
+ * select. Each choice of the select sends its one `status`, and "All" sends every status
+ * by name, because a request without `status` leaves PROPOSED, EXPIRED and REJECTED out.
+ * A row opens the admin view of its market.
  *
  * The rows stand in the API's order. Nothing is live: the lists are read when the screen
  * opens and when the window gets the focus back.
@@ -124,7 +126,7 @@ export function AdminMarketsScreen() {
                 <NativeSelectOption value={ALL}>All</NativeSelectOption>
                 {ALL_STATUSES.map((entry) => (
                   <NativeSelectOption key={entry} value={entry}>
-                    {statusName(entry)}
+                    {marketStatusName(entry)}
                   </NativeSelectOption>
                 ))}
               </NativeSelect>

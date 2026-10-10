@@ -85,7 +85,7 @@ describe("ProbabilityChart", () => {
       expect(corners(line())[0]).toEqual({ x: 0, y: half });
     });
 
-    test("runs to the right edge of the plot: the last price holds until now", () => {
+    test("runs to the right edge of the plot: the last price holds up to the present", () => {
       renderWithProviders(<ProbabilityChart points={history().points} market={marketDetail()} />);
 
       const path = corners(line());
@@ -127,7 +127,7 @@ describe("ProbabilityChart", () => {
       expect(after.slice(0, before.length - 2)).toEqual(before.slice(0, before.length - 2));
     });
 
-    test("a market whose trading is over is drawn until it stopped, not until now", () => {
+    test("a market whose trading is over is drawn until it stopped, not up to the present", () => {
       renderWithProviders(
         <ProbabilityChart
           points={history().points}
@@ -289,7 +289,7 @@ describe("ProbabilityChart", () => {
     });
 
     test.each(["CLOSED", "RESOLVED", "VOID"] as const)(
-      "a %s market no longer moves: the summary says what it closed at",
+      "a %s market stands still: the summary says what it closed at",
       (status) => {
         renderWithProviders(
           <ProbabilityChart

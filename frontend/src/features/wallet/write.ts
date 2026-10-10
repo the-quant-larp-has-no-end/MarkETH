@@ -148,7 +148,7 @@ export function useWrite<TData, TVariables>(
     send: (variables, callbacks = {}) => {
       if (waiting || client.isMutating({ mutationKey: key }) > 0) return false;
       setUnanswered(null);
-      // An answer nobody was there for any more is not kept beyond the next request.
+      // An answer that arrived with nobody there is not kept beyond the next request.
       dropSettled();
       mutation.mutate(variables, {
         onSuccess: (data) => callbacks.onSuccess?.(data),

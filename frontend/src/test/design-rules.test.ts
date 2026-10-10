@@ -224,8 +224,8 @@ describe("words (DESIGN.md §3, Voice)", () => {
 
   test("code and comments describe what is, not what was", () => {
     check(sources, {
-      why: "No 'legacy', 'v2' or 'deprecated' wording: the code is written in the present tense.",
-      pattern: /\b(legacy|v2|deprecated)\b/i,
+      why: "No 'legacy', 'v2', 'deprecated', 'formerly', 'previously' or 'no longer': say what is.",
+      pattern: /\b(legacy|v2|deprecated|formerly|previously|no longer)\b/i,
       comments: true,
       except: ["test/design-rules.test.ts"],
     });

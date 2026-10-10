@@ -40,7 +40,7 @@ function Head<Row>({ columns }: { columns: readonly Column<Row>[] }) {
     <TableHeader>
       <TableRow className="hover:bg-transparent">
         {columns.map((column) => (
-          <TableHead key={column.header} scope="col" className={cn(column.numeric && "text-right")}>
+          <TableHead key={column.header} scope="col" numeric={column.numeric}>
             {column.hideHeader === true ? (
               <span className="sr-only">{column.header}</span>
             ) : (
@@ -53,8 +53,15 @@ function Head<Row>({ columns }: { columns: readonly Column<Row>[] }) {
   );
 }
 
-const cellClasses = <Row,>(column: Column<Row>) =>
-  cn(column.numeric && "text-right type-number", column.wide && "min-w-64 whitespace-normal");
+/**
+ * What a cell of a column holds (DESIGN.md §12, Tables): figures, the one text that may
+ * wrap and gets room for it, or something that keeps its line.
+ */
+const holds = <Row,>(column: Column<Row>) => ({
+  numeric: column.numeric === true,
+  nowrap: column.numeric !== true && column.wide !== true,
+  className: cn(column.wide && "min-w-64"),
+});
 
 /**
  * A table of the admin area (DESIGN.md §13): rows 44 px tall in `body-sm`, designed for
@@ -100,13 +107,17 @@ export function DataTable<Row>({
             >
               {columns.map((column, index) =>
                 index === 0 && href !== undefined ? (
-                  <TableCell key={column.header} className={cn(cellClasses(column), "py-0")}>
+                  <TableCell
+                    key={column.header}
+                    {...holds(column)}
+                    className={cn(holds(column).className, "py-0")}
+                  >
                     <Link href={href} className="flex min-h-11 items-center py-2">
                       {column.cell(row)}
                     </Link>
                   </TableCell>
                 ) : (
-                  <TableCell key={column.header} className={cellClasses(column)}>
+                  <TableCell key={column.header} {...holds(column)}>
                     {column.cell(row)}
                   </TableCell>
                 ),

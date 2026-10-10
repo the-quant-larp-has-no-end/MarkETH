@@ -1,4 +1,5 @@
-"""Whom the portal's id stands for, and with which role (SPEC §3, Appendix A.3).
+"""Whom the portal's id stands for, and who is an admin from the start (SPEC §3,
+Appendix A.3).
 
 The portal names the caller by an address in a request header. Nobody typed that value
 and nobody proved it with a link: it is an identifier another system asserts. So it is
@@ -15,6 +16,11 @@ An accepted id is the account's address, in lower case. One id is one account: w
 domains are allowed, `x@student.ethz.ch` and `x@ethz.ch` are two people with two wallets.
 `users.email`, which is unique, holds the id.
 
+A role is kept with the account (`users.role`) and set by an admin. Somebody has to be
+the first admin: the addresses of `ADMIN_EMAILS` are, the bootstrap admins. Each is an
+admin whatever its row says and before it has one, and stays one for as long as `.env`
+names it.
+
 `EmailPolicy` is pure: settings in, values out, no I/O.
 """
 
@@ -29,17 +35,21 @@ from app.core.identity import portal_address
 class EmailPolicy:
     """Built once, from the identity settings.
 
-    Building it raises `ValueError` for a role list that holds an entry `identify`
-    would refuse: such an entry gives its role to nobody, and a process must not start
-    on it. `IdentitySettings` refuses the entry when it loads `.env`; here the same
-    rule holds for settings that were put together in code.
+    Building it raises `ValueError` if `ADMIN_EMAILS` holds an entry `identify` would
+    refuse: such an entry makes nobody an admin, and a process must not start on it.
+    `IdentitySettings` refuses the entry when it loads `.env`; here the same rule holds
+    for settings that were put together in code.
     """
 
     def __init__(self, settings: Settings) -> None:
         identity = settings.identity
         self._allowed_domains = tuple(identity.allowed_email_domains)
-        self._admins = self._role_list("ADMIN_EMAILS", identity.admin_emails)
-        self._baristas = self._role_list("BARISTA_EMAILS", identity.barista_emails)
+        self._bootstrap_admins = self._ids("ADMIN_EMAILS", identity.admin_emails)
+
+    @property
+    def bootstrap_admins(self) -> frozenset[str]:
+        """The addresses of `ADMIN_EMAILS`, each as `identify` returns it."""
+        return self._bootstrap_admins
 
     def identify(self, raw: str) -> str:
         """The account's address for the id the portal sent: that id in lower case.
@@ -56,27 +66,27 @@ class EmailPolicy:
             )
         return email
 
-    def role_for(self, email: str) -> UserRole:
-        """The role of an address `identify` returned: ADMIN if it is in `ADMIN_EMAILS`,
-        else BARISTA if it is in `BARISTA_EMAILS`, else USER.
+    def is_bootstrap_admin(self, email: str) -> bool:
+        """Whether an address `identify` returned is one of `ADMIN_EMAILS`."""
+        return email in self._bootstrap_admins
 
-        Asked on every request and stored nowhere, so the lists of `.env` are the roles.
+    def effective_role(self, email: str, stored: UserRole) -> UserRole:
+        """The role somebody has in effect: ADMIN for a bootstrap admin, else `stored`.
+
+        `email` is an address `identify` returned. `stored` is the role of that
+        person's `users` row, and USER for somebody who has no row yet.
         """
-        if email in self._admins:
-            return UserRole.ADMIN
-        if email in self._baristas:
-            return UserRole.BARISTA
-        return UserRole.USER
+        return UserRole.ADMIN if self.is_bootstrap_admin(email) else stored
 
-    def _role_list(self, variable: str, entries: Iterable[str]) -> frozenset[str]:
-        """The addresses of a role list, each entry read the way an id is."""
+    def _ids(self, variable: str, entries: Iterable[str]) -> frozenset[str]:
+        """The addresses of a list of `.env`, each entry read the way an id is."""
         addresses: set[str] = set()
         for entry in entries:
             email = portal_address(entry, self._allowed_domains)
             if email is None:
                 raise ValueError(
                     f"{variable}: {entry!r} is not an address at "
-                    f"{' or '.join(self._allowed_domains)}, so nobody would get the role"
+                    f"{' or '.join(self._allowed_domains)}, so it would make nobody an admin"
                 )
             addresses.add(email)
         return frozenset(addresses)

@@ -64,7 +64,8 @@ from app.services.ledger import LedgerRef, trade_key
 from app.services.live_quotes import LiveEvent
 from app.services.market_view import EVEN_ODDS_MICRO, MarketView
 from app.services.outbox_events import quote_updated_payload
-from app.services.trading import ORDER_WINDOW_SECONDS, OWN_MARKET_MESSAGE
+from app.services.quotes import OWN_MARKET_MESSAGE
+from app.services.trading import ORDER_WINDOW_SECONDS
 from tests.support.books import assert_books_balance, count_rows
 from tests.support.clock import FrozenClock
 from tests.support.economy import MIN_TRADE_SHARES, PRECISION, STAKE_LIMIT, TIER_B

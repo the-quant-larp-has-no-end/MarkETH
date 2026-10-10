@@ -41,9 +41,9 @@ function termsOf(market: MarketDetailResponse): MarketTerms {
 
 /**
  * Approve (PROPOSED): opens the market in one step (DESIGN.md §13). It asks for a tier:
- * one of the three of `/config`, each with its liquidity and its loss budget, or Custom
- * with a budget of the admin's choice. The tier the proposer asked for is chosen to begin
- * with. The wording and the two times can be changed on the way.
+ * one of the three of `/config`, each with its liquidity b and its loss budget, or Custom
+ * with a budget of the admin's choice. The admin picks it: none is chosen when the dialog
+ * opens. The wording and the two times can be changed on the way.
  *
  * It sends `tier`, `budget_cr` for CUSTOM exactly as it was typed, and each field that
  * was changed; a field left alone is left out and keeps what the proposal says. Whether a
@@ -58,9 +58,7 @@ export function ApproveDialog({ market, ...frame }: MarketDialogProps) {
   const [proposed] = useState(() => termsOf(market));
   const [terms, setTerms] = useState(proposed);
   const [editing, setEditing] = useState(false);
-  const [tier, setTier] = useState<MarketTier | "">(() =>
-    tiers.some((entry) => entry.tier === market.requested_tier) ? market.requested_tier : "",
-  );
+  const [tier, setTier] = useState<MarketTier | "">("");
   const [budget, setBudget] = useState("");
   const action = useMarketAction(approveMarketMutation, market.id, frame.onClose);
   const toggle = useRef<HTMLButtonElement>(null);
@@ -117,7 +115,7 @@ export function ApproveDialog({ market, ...frame }: MarketDialogProps) {
     >
       <div data-slot="field" className="flex flex-col gap-2">
         <span id={labelId} className="type-caption text-muted-foreground">
-          Liquidity
+          Tier
         </span>
         <RadioGroup
           name="tier"

@@ -91,6 +91,11 @@ class RiskResponse(ResponseModel):
 
     code_issuance_this_month_cr: CreditAmount
     max_code_issuance_per_month_cr: CreditAmount
+    adjustments_this_month_cr: SignedCreditAmount
+    """What the admins' balance adjustments of this calendar month added to users'
+    balances, minus what they took away. Below zero when they took more than they
+    gave. It is not part of `code_issuance_this_month_cr` and counts against no cap."""
+
     markets: list[RiskMarketRow]
     """Soonest `close_at` first."""
 

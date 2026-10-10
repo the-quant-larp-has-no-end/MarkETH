@@ -1,16 +1,16 @@
 "use client";
 
-import { useMutation } from "@tanstack/react-query";
-import { type FormEvent, useEffect, useId, useRef, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { SubmitError } from "@/components/feedback";
 import { revealFirstInvalid } from "@/components/form";
 import { Button } from "@/components/ui/button";
+import { PolicyCheckbox } from "@/features/policy";
 import { placeError } from "@/lib/api/errors";
 import { proposeMarketMutation } from "@/lib/api/mutations";
-import type { MarketTier } from "@/lib/api/schema";
 import { useConfig } from "@/lib/api/session";
+import { useSubmit } from "@/lib/api/submit";
 import { formatCount } from "@/lib/format";
 import { useRetryAfter } from "@/lib/hooks";
 
@@ -21,40 +21,40 @@ import {
   statedTerms,
   TERM_FIELDS,
 } from "./market-terms-fields";
-import { TierCards } from "./tier-cards";
-import { startingTier } from "./tiers";
 
-const FIELDS = [...TERM_FIELDS, "requested_tier"] as const;
+const FIELDS = [...TERM_FIELDS, "policy_accepted"] as const;
 
-/** The content rules of SPEC §6, in the short form of DESIGN.md §13. */
-const CONTENT_RULES = [
-  "No private matters of named people",
-  "No grades",
-  "No outcomes one trader can decide",
-  "No party politics or religion",
-] as const;
+/** What the toast says once a proposal is in. The proposal itself stands in the list below. */
+const PROPOSAL_SENT = "Proposal sent. VIS reviews it before it opens.";
 
 /**
  * The propose form (DESIGN.md §13): one field per row, in the order "Question", "YES
  * means", "NO means", "How it is decided", "Source", "Trading closes", "Decided by",
- * "Liquidity", then the content rules and "Submit for review", which sends
- * `POST /markets`.
+ * then the two notes, the checkbox "I accept the usage policy" and "Submit for review",
+ * which sends `POST /markets` with the seven fields and `policy_accepted: true`.
  *
- * The API decides what is valid. A `VALIDATION_ERROR` appears on the field it names,
- * `LIMIT_EXCEEDED` above the button, both with the API's message, and the input stays.
+ * The form asks nothing about how the market is priced: VIS sets that when it approves.
+ * It states no content rules either: what a market may and may not be about is said in
+ * the usage policy, which the checkbox links to.
+ *
+ * The API decides what is valid. A `VALIDATION_ERROR` appears on the field it names (one
+ * that names `policy_accepted` under the checkbox), `LIMIT_EXCEEDED` above the button,
+ * both with the API's message, and the input stays.
  * Without an answer the banner stands above the button and the button waits until the
  * list of proposals has been read again: a proposal that arrived is in it.
  *
- * `onSent` is called once a proposal was accepted; whoever renders the form empties it
- * by giving it another `key`.
+ * A proposal that was accepted is told with a toast; its row is at the top of the list
+ * below. `onSent` is called then; whoever renders the form empties it by giving it another
+ * `key`, which also leaves the box unticked: the policy is accepted with every proposal.
  */
 export function ProposeForm({ onSent }: { onSent?: () => void }) {
   const config = useConfig();
-  const propose = useMutation(proposeMarketMutation);
+  // A second submit is stopped where it is made, not by what the last render knew.
+  const propose = useSubmit(proposeMarketMutation);
   const [terms, setTerms] = useState<MarketTerms>(EMPTY_TERMS);
-  const [tier, setTier] = useState<MarketTier | "">(() => startingTier(config));
+  // The policy is accepted with every proposal: the box is empty whenever the form is.
+  const [accepted, setAccepted] = useState(false);
   const wait = useRetryAfter(propose.error);
-  const rulesId = useId();
   const form = useRef<HTMLFormElement>(null);
 
   // The button is at the end of a long form; a refused field may be far above it.
@@ -64,21 +64,22 @@ export function ProposeForm({ onSent }: { onSent?: () => void }) {
 
   const placed = propose.error ? placeError(propose.error, FIELDS) : null;
   const stated = statedTerms(terms);
-  const filled = stated !== null && tier !== "";
+  const filled = stated !== null && accepted;
 
-  /** An answer is about what was sent: once the input changes, it no longer applies. */
+  /** An answer is about what was sent: it holds until the input changes. */
   const edited = () => {
     if (propose.isError) propose.reset();
   };
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (stated === null || tier === "" || propose.isPending) return;
+    if (stated === null || !accepted || wait > 0) return;
     propose.mutate(
-      { ...stated, requested_tier: tier },
+      // The box is ticked: the proposal says what the form shows.
+      { ...stated, policy_accepted: true },
       {
         onSuccess: () => {
-          toast("Proposal sent");
+          toast(PROPOSAL_SENT);
           onSent?.();
         },
       },
@@ -101,24 +102,11 @@ export function ProposeForm({ onSent }: { onSent?: () => void }) {
         }}
         errors={placed?.fields}
       />
-      <TierCards
-        value={tier}
-        onChange={(next) => {
-          setTier(next);
-          edited();
-        }}
-        error={placed?.fields.requested_tier}
-      />
 
-      <div className="flex flex-col gap-2 type-body-sm text-muted-foreground">
-        <p id={rulesId} className="type-caption">
-          Content rules
-        </p>
-        <ul aria-labelledby={rulesId} className="flex list-disc flex-col gap-1 pl-5">
-          {CONTENT_RULES.map((rule) => (
-            <li key={rule}>{rule}</li>
-          ))}
-        </ul>
+      <div
+        data-slot="propose-notes"
+        className="flex flex-col gap-2 type-body-sm text-muted-foreground"
+      >
         <p>You cannot trade a market you propose.</p>
         <p>
           {config.max_proposals_per_day === 1
@@ -126,6 +114,15 @@ export function ProposeForm({ onSent }: { onSent?: () => void }) {
             : `You can propose ${formatCount(config.max_proposals_per_day)} markets a day.`}
         </p>
       </div>
+
+      <PolicyCheckbox
+        checked={accepted}
+        onChange={(next) => {
+          setAccepted(next);
+          edited();
+        }}
+        error={placed?.fields.policy_accepted}
+      />
 
       <SubmitError error={propose.error} message={placed?.form} />
       {propose.error?.outcomeUnknown === true && (

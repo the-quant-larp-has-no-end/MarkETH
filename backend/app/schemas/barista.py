@@ -21,7 +21,13 @@ class RedeemVoucherRequest(RequestModel):
 
 
 class VoucherRedeemResponse(ResponseModel):
-    """`POST /barista/vouchers/redeem`: the voucher is now used up."""
+    """`POST /barista/vouchers/redeem`: the voucher is used up.
+
+    The scan that redeems a voucher answers with `repeat` false. The same barista
+    scanning that voucher again within `VOUCHER_RESCAN_SECONDS` gets the same answer
+    with `repeat` true: the answer to the first scan may not have arrived. Nothing
+    is booked for a repeat.
+    """
 
     voucher_id: UUID
     product_id: str
@@ -30,3 +36,8 @@ class VoucherRedeemResponse(ResponseModel):
 
     value_cr: CreditAmount
     redeemed_at: datetime
+    """When the voucher was redeemed: the instant of the first scan, also in a repeat."""
+
+    repeat: bool
+    """False for the scan that redeemed the voucher. True when this barista redeemed
+    it a moment ago and scanned it again: hand the product over once."""

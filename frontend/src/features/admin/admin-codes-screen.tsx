@@ -90,7 +90,7 @@ export function AdminCodesScreen() {
 
   /**
    * Gives the focus back to what opened a dialog (DESIGN.md §15). When that is gone or
-   * can no longer be used, the focus goes to what the dialog left behind: the codes of
+   * cannot be used, the focus goes to what the dialog left behind: the codes of
    * the batch it created, or else the heading of the table.
    */
   const focusAfter = (event: Event, from: HTMLElement | null) => {

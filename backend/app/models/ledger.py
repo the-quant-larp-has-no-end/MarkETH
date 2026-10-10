@@ -30,7 +30,7 @@ from app.db.base import Base, enum_column
 
 REF_TYPE_MAX_LENGTH: Final[int] = 32
 JOURNAL_IDEMPOTENCY_KEY_MAX_LENGTH: Final[int] = 128
-"""The longest key of A.8, `voucher:{uuid}:redeem`, has 50 characters."""
+"""The longest key of A.8, `adjustment:{uuid}:{uuid}`, has 84 characters."""
 
 CURRENT_TRANSACTION_ID: Final[str] = "(pg_current_xact_id())::text::bigint"
 """SQL for the id of the running top-level transaction, as a BIGINT."""

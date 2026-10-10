@@ -11,8 +11,10 @@ somebody else holds, a connection that goes away, a bug.
   ACTIVE user only and refunds for everybody.
 * `run_if_due` starts a run at most once per user, process and
   UPKEEP_INTERVAL_SECONDS.
-* A run that fails: a lock that was not granted in time is skipped and the next request
-  tries again; a lost connection is raised; anything else is logged and swallowed.
+* A run that fails: one that did not get through while Postgres is up (a lock not
+  granted in time, a deadlock, a pool with no free connection) is skipped and the next
+  request tries again; a lost connection is raised; anything else is logged and
+  swallowed.
 
 Which months are owed and which vouchers have expired is not asked here: that is
 `GrantService.grant_owed_months` and `VoucherService.expire_due`, and theirs to prove.
@@ -40,10 +42,16 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from app.container import Container
 from app.core.clock import local_date, month_period
 from app.core.config import Settings
-from app.core.enums import SIGNUP_GRANT_PERIOD, AccountKind, JournalKind, UserStatus
+from app.core.enums import (
+    SIGNUP_GRANT_PERIOD,
+    AccountKind,
+    JournalKind,
+    UserRole,
+    UserStatus,
+)
 from app.core.errors import InsufficientBalanceError
 from app.core.units import MICRO
-from app.db.database import Database, is_lock_timeout, is_unavailable
+from app.db.database import Database, is_transient, is_unavailable
 from app.models import Account, JournalEntry, Posting, User
 from app.repositories.unit_of_work import UnitOfWork
 from app.services import UowFactory
@@ -309,17 +317,21 @@ class Bug(Exception):
     """Stands in for whatever nobody foresaw."""
 
 
-LOCK_TIMEOUTS = [
+TRANSIENT = [
     pytest.param(reported("55P03"), id="lock-not-granted-in-time"),
     pytest.param(reported("55P03", OperationalError), id="lock-not-granted-in-time-operational"),
+    pytest.param(reported("40P01"), id="deadlock-victim"),
+    pytest.param(reported("40001", OperationalError), id="serialization-failure"),
+    pytest.param(PoolTimeoutError("QueuePool limit reached"), id="pool-exhausted"),
 ]
-"""A lock another transaction held for longer than POSTGRES_LOCK_TIMEOUT_MS."""
+"""Postgres is up and the run did not get through: a lock another transaction held for
+longer than POSTGRES_LOCK_TIMEOUT_MS, a transaction Postgres ended for another, a pool
+that had no connection free for POSTGRES_POOL_TIMEOUT_SECONDS."""
 
 LOST_CONNECTIONS = [
     pytest.param(ConnectionRefusedError("connect call failed"), id="refused"),
     pytest.param(ConnectionResetError("reset by peer"), id="reset"),
     pytest.param(TimeoutError("connect timed out"), id="connect-timeout"),
-    pytest.param(PoolTimeoutError("QueuePool limit reached"), id="pool-exhausted"),
     pytest.param(lost_connection(), id="connection-lost"),
     pytest.param(lost_connection("55P03"), id="connection-lost-while-waiting-for-a-lock"),
     pytest.param(reported("57P01"), id="admin-shutdown"),
@@ -331,7 +343,6 @@ OTHER_FAILURES = [
     pytest.param(Bug("nobody foresaw this"), id="bug"),
     pytest.param(InsufficientBalanceError(), id="app-error"),
     pytest.param(reported("23505", IntegrityError), id="unique-violation"),
-    pytest.param(reported("40P01"), id="deadlock"),
     pytest.param(reported("57014"), id="statement-cancelled"),
     pytest.param(reported(None), id="no-sqlstate"),
 ]
@@ -351,7 +362,7 @@ async def is_locked(owner_engine: AsyncEngine, account_id: UUID) -> bool:
             )
         except DBAPIError as refused:
             # NOWAIT is refused at once, with the SQLSTATE of a lock timeout.
-            if not is_lock_timeout(refused):
+            if not is_transient(refused):
                 raise
             return True
     return False
@@ -402,7 +413,9 @@ def unsaved_user() -> User:
         username="nobody",
         degree_level=DEFAULT_DEGREE_LEVEL,
         degree_programme=DEFAULT_DEGREE_PROGRAMME,
+        role=UserRole.USER,
         status=UserStatus.ACTIVE,
+        policy_accepted_at=TEST_NOW,
         created_at=TEST_NOW,
     )
 
@@ -818,8 +831,8 @@ async def test_a_request_starts_a_run_exactly_when_none_was_started_within_the_i
 
 
 @pytest.mark.parametrize("step", STEPS)
-@pytest.mark.parametrize("error", LOCK_TIMEOUTS)
-async def test_a_lock_timeout_is_logged_and_swallowed_and_the_next_request_tries_again(
+@pytest.mark.parametrize("error", TRANSIENT)
+async def test_a_run_that_did_not_get_through_is_logged_and_swallowed_and_the_next_request_retries(
     upkeep: UserUpkeepService,
     units: CountedUnits,
     collaborators: Collaborators,
@@ -863,7 +876,7 @@ async def test_a_lost_connection_is_raised_as_it_is(
     step: str,
 ) -> None:
     """It becomes the API's 503, which logs it there. One that was lost while it waited
-    for a lock is a lost connection, not a lock timeout."""
+    for a lock is a lost connection, not a lock that was not granted in time."""
     user = await factory.user()
     collaborators.give(step, failing_with(error))
 
@@ -1075,7 +1088,7 @@ async def test_a_connection_postgres_drops_during_a_run_is_raised(
         await upkeep.run_if_due(user)
 
     assert is_unavailable(lost.value)
-    assert not is_lock_timeout(lost.value)
+    assert not is_transient(lost.value)
     assert upkeep_records(caplog) == []
 
     # The pool replaces the dead connection: the next run is served again.

@@ -1,9 +1,10 @@
 "use client";
 
-import { XIcon } from "lucide-react";
 import { type ReactNode, useEffect, useRef } from "react";
 
 import {
+  CloseCross,
+  closeCrossClasses,
   Dialog,
   DialogContent,
   DialogDescription,
@@ -29,13 +30,25 @@ export type ResponsiveSheetProps = {
   title: string;
   /** Keep the title for screen readers only, when the content says what the sheet is. */
   hideTitle?: boolean;
+  /**
+   * With `hideTitle`: what stands in the header row in place of the title, beside the
+   * close cross. One line that says what the sheet is about, as the question does on the
+   * trade sheet.
+   */
+  header?: ReactNode;
   /** One line under the title. */
   description?: ReactNode;
   /**
-   * False while the sheet must stay: no drag, no tap on the scrim, no Escape and no close
-   * button will close it.
+   * False while the sheet must stay, because a request it sent is out and it has to show
+   * what became of it: no drag, no tap on the scrim and no Escape closes it, and the close
+   * cross stays in its place, disabled.
    */
   dismissible?: boolean;
+  /**
+   * A dialog at every width: the welcome dialog, "Proposal sent" and the dialogs of the
+   * admin area. Without it the sheet is a bottom sheet below 768 px.
+   */
+  dialog?: boolean;
   /** `SheetBody`, then optionally `SheetFooter`. */
   children: ReactNode;
   className?: string;
@@ -43,18 +56,23 @@ export type ResponsiveSheetProps = {
 
 /**
  * The bottom sheet that becomes a dialog (DESIGN.md §12). Below 768 px it slides up from
- * the bottom and closes by drag, by tapping the scrim or with the close button; from
- * 768 px it is a centred dialog, 420 px wide. Either way it is `--card` on `--scrim`, at
- * most 90% of the viewport tall, traps focus and returns it to the opener.
+ * the bottom and closes by drag, by tapping the scrim, with Escape or with the close
+ * cross; from 768 px, and with `dialog` at every width, it is a centred dialog, 420 px
+ * wide. Either way it is `--card` on `--scrim`, at most 90% of the viewport tall, traps
+ * focus and returns it to the opener.
  *
  *     <ResponsiveSheet open={open} onOpenChange={setOpen} title="Redeem code">
  *       <SheetBody>…fields…</SheetBody>
  *       <SheetFooter><Button width="full">Redeem</Button></SheetFooter>
  *     </ResponsiveSheet>
  *
- * The content scrolls inside `SheetBody` while `SheetFooter` stays pinned above the safe
- * area. Crossing 768 px while it is open (turning a phone) mounts the content afresh, so
- * state that must survive lives above the sheet.
+ * Top to bottom it is a header row, the body and the footer. The header row holds the
+ * title and, at its right, the close cross, which every sheet and every dialog has; the
+ * title ends 48 px before the right edge. The row does not scroll, also when the title is
+ * hidden, so nothing lies under the cross and nothing scrolls under it. The content
+ * scrolls inside `SheetBody` while `SheetFooter` stays pinned above the safe area, under
+ * its 1 px line. Crossing 768 px while it is open (turning a phone) mounts the content
+ * afresh, so state that must survive lives above the sheet.
  *
  * Focus (DESIGN.md §15). The sheet is opened by state, not by a trigger of its own, so it
  * notes what had the focus when it opened and gives the focus back to that when it has
@@ -67,8 +85,10 @@ export function ResponsiveSheet({
   onOpenChange,
   title,
   hideTitle = false,
+  header,
   description,
   dismissible = true,
+  dialog = false,
   children,
   className,
 }: ResponsiveSheetProps) {
@@ -96,27 +116,34 @@ export function ResponsiveSheet({
     from.focus();
   };
 
-  const titleClasses = hideTitle ? "sr-only" : undefined;
-  const headerClasses = hideTitle && description === undefined ? "sr-only" : undefined;
   // Without a description, say so: otherwise the dialog points at a text that is not there.
   const undescribed = description === undefined ? { "aria-describedby": undefined } : {};
 
-  if (wide) {
+  if (wide || dialog) {
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent
-          showCloseButton={dismissible}
+          locked={!dismissible}
           {...undescribed}
-          onInteractOutside={dismissible ? undefined : (event) => event.preventDefault()}
-          onEscapeKeyDown={dismissible ? undefined : (event) => event.preventDefault()}
           onOpenAutoFocus={rememberOpener}
           onCloseAutoFocus={returnFocus}
-          className={cn("gap-0 p-0", className)}
+          className={cn("gap-0 p-0", sheetHeaderClasses, className)}
         >
-          <DialogHeader className={cn("px-4 pt-4", headerClasses)}>
-            <DialogTitle className={titleClasses}>{title}</DialogTitle>
-            {description !== undefined && <DialogDescription>{description}</DialogDescription>}
-          </DialogHeader>
+          {hideTitle ? (
+            <>
+              <DialogTitle className="sr-only">{title}</DialogTitle>
+              {description !== undefined && (
+                <DialogDescription className="sr-only">{description}</DialogDescription>
+              )}
+              {/* As tall as the cross beside it: 4 px above its 44 px. */}
+              <HeaderRow className="min-h-12">{header}</HeaderRow>
+            </>
+          ) : (
+            <DialogHeader className="shrink-0 px-4 pt-4 pb-2">
+              <DialogTitle>{title}</DialogTitle>
+              {description !== undefined && <DialogDescription>{description}</DialogDescription>}
+            </DialogHeader>
+          )}
           {children}
         </DialogContent>
       </Dialog>
@@ -133,25 +160,58 @@ export function ResponsiveSheet({
           (event.currentTarget as HTMLElement | null)?.focus({ preventScroll: true });
         }}
         onCloseAutoFocus={returnFocus}
-        className={className}
+        className={cn(sheetHeaderClasses, className)}
       >
-        <DrawerHeader className={headerClasses}>
-          <DrawerTitle className={titleClasses}>{title}</DrawerTitle>
-          {description !== undefined && <DrawerDescription>{description}</DrawerDescription>}
-        </DrawerHeader>
-        {dismissible && (
-          <DrawerClose
-            aria-label="Close"
-            className="absolute top-1 right-1 inline-flex size-11 items-center justify-center rounded-md text-muted-foreground transition-colors duration-(--duration-fast) hover:bg-raised hover:text-foreground active:bg-raised"
-          >
-            <XIcon aria-hidden className="size-5" />
-          </DrawerClose>
+        {hideTitle ? (
+          <>
+            <DrawerTitle className="sr-only">{title}</DrawerTitle>
+            {description !== undefined && (
+              <DrawerDescription className="sr-only">{description}</DrawerDescription>
+            )}
+            {/* The handle above it is 12 px of the 48 px the cross takes. */}
+            <HeaderRow className="min-h-9">{header}</HeaderRow>
+          </>
+        ) : (
+          <DrawerHeader className="shrink-0 pb-2">
+            <DrawerTitle>{title}</DrawerTitle>
+            {description !== undefined && <DrawerDescription>{description}</DrawerDescription>}
+          </DrawerHeader>
         )}
         {children}
+        {/* After the content, as in the dialog: the cross is the last stop of the Tab key. */}
+        <DrawerClose aria-label="Close" disabled={!dismissible} className={closeCrossClasses}>
+          <CloseCross />
+        </DrawerClose>
       </DrawerContent>
     </Drawer>
   );
 }
+
+/**
+ * The header row of a sheet whose title is hidden. It keeps the height of the close cross
+ * also when it holds nothing, and what it holds ends 48 px before the right edge.
+ */
+function HeaderRow({ className, children }: { className: string; children: ReactNode }) {
+  return (
+    <div
+      data-slot="sheet-header"
+      className={cn("flex shrink-0 items-center pr-12 pl-4", className)}
+    >
+      {children !== undefined && children !== null && (
+        <div className="min-w-0 flex-1">{children}</div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * For the surface around a `SheetBody` that stands under a header row: the header keeps
+ * 8 px of its own below it (`pb-2`), and the body starts that much higher. The distance
+ * between header and content stays 16 px, and what scrolls is cut below the header
+ * instead of at its foot. `ResponsiveSheet` sets it itself; a surface that builds its own
+ * frame from the dialog primitives (a confirmation dialog) takes it too.
+ */
+export const sheetHeaderClasses = "[--sheet-body-top:0.5rem]";
 
 /**
  * The part of a sheet that scrolls: 16 px padding, 16 px between its blocks. Each block
@@ -161,7 +221,10 @@ export function SheetBody({ children, className }: { children: ReactNode; classN
   return (
     <div
       data-slot="sheet-body"
-      className={cn("flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 *:shrink-0", className)}
+      className={cn(
+        "flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pt-[var(--sheet-body-top,1rem)] pb-4 *:shrink-0",
+        className,
+      )}
     >
       {children}
     </div>
@@ -170,14 +233,15 @@ export function SheetBody({ children, className }: { children: ReactNode; classN
 
 /**
  * The part of a sheet that stays: the action button, pinned at the bottom above the safe
- * area, with an inline error or a notice above it.
+ * area, with an inline error or a notice above it. The 1 px `--border` line on top of it
+ * shows where the part that scrolls ends (DESIGN.md §12).
  */
 export function SheetFooter({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <div
       data-slot="sheet-footer"
       className={cn(
-        "flex shrink-0 flex-col gap-3 px-4 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))]",
+        "flex shrink-0 flex-col gap-3 border-t px-4 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))]",
         className,
       )}
     >

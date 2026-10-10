@@ -2,9 +2,9 @@
 `infra/deploy/env.production`.
 
 The VM's `.env` is rendered on the VM from three layers: `.example.env`, the committed
-production values, and the VM's own file with the two Postgres passwords and the role
-lists. These tests render it from the committed files and a made-up own file; nothing
-here touches Docker or a network.
+production values, and the VM's own file with the two Postgres passwords and the
+bootstrap admins. These tests render it from the committed files and a made-up own file;
+nothing here touches Docker or a network.
 """
 
 import ast
@@ -22,10 +22,8 @@ from scripts import production_env
 from scripts.production_env import (
     ADMIN_VARIABLE,
     ALLOWED_DOMAINS_VARIABLE,
-    BARISTA_VARIABLE,
     OWN_VARIABLES,
     PASSWORD_VARIABLES,
-    ROLE_VARIABLES,
     SINGLE_ADMIN_WARNING,
     EnvError,
     assignments,
@@ -46,10 +44,8 @@ PUBLIC_ORIGIN: Final[str] = "https://09.hackathon.ethz.ch"
 CSP_VARIABLE: Final[str] = "NGINX_CONTENT_SECURITY_POLICY"
 VOLUME: Final[str] = "marketh_postgres-data"
 
-DEVELOPMENT_IDS: Final[list[str]] = [
-    entry for key in ROLE_VARIABLES for entry in csv_entries(assignments(EXAMPLE)[key])
-]
-"""The admin and the barista of a laptop. Their ids are in a committed file."""
+DEVELOPMENT_ADMINS: Final[list[str]] = csv_entries(assignments(EXAMPLE)[ADMIN_VARIABLE])
+"""The admins of a laptop. Their ids are in a committed file."""
 
 LONGEST_LOCAL_PART: Final[str] = "a" * 64
 KELVIN_SIGN: Final[str] = "\u212a"
@@ -92,9 +88,9 @@ def a_database() -> bool:
     return True
 
 
-def own_file(admins: str = "ada@ethz.ch,grace@ethz.ch", baristas: str = "") -> str:
+def own_file(admins: str = "ada@ethz.ch,grace@ethz.ch") -> str:
     """A made-up own file, as the first run on a machine without a database writes it."""
-    return own_values(None, admins, baristas, database_exists=no_database)
+    return own_values(None, admins, database_exists=no_database)
 
 
 def with_value(own: str, key: str, value: str) -> str:
@@ -158,11 +154,11 @@ def test_the_rendered_environment_keeps_the_comments_of_the_example() -> None:
 def test_the_rendered_environment_loads_as_production_settings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    for name in ("APP_ENV", "PUBLIC_BASE_URL", "ALLOWED_ORIGINS", *ROLE_VARIABLES):
+    for name in ("APP_ENV", "PUBLIC_BASE_URL", "ALLOWED_ORIGINS", ADMIN_VARIABLE):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv(ALLOWED_DOMAINS_VARIABLE, raising=False)
     env_file = tmp_path / ".env"
-    own = own_file(admins="ada@ethz.ch,grace@ethz.ch", baristas="")
+    own = own_file(admins="ada@ethz.ch,grace@ethz.ch")
     env_file.write_text(render(EXAMPLE, PRODUCTION, own), encoding="utf-8")
 
     settings = Settings.load(env_file)
@@ -172,16 +168,14 @@ def test_the_rendered_environment_loads_as_production_settings(
     assert settings.app.allowed_origins == [PUBLIC_ORIGIN]
     assert settings.identity.allowed_email_domains == ["ethz.ch"]
     assert settings.identity.admin_emails == ["ada@ethz.ch", "grace@ethz.ch"]
-    assert settings.identity.barista_emails == []
 
 
 def test_the_own_file_wins_over_the_example() -> None:
-    own = own_file(admins="ada@ethz.ch,grace@ethz.ch", baristas="linus@ethz.ch")
+    own = own_file(admins="ada@ethz.ch,grace@ethz.ch")
 
     rendered = assignments(render(EXAMPLE, PRODUCTION, own))
 
     assert rendered[ADMIN_VARIABLE] == "ada@ethz.ch,grace@ethz.ch"
-    assert rendered[BARISTA_VARIABLE] == "linus@ethz.ch"
     for key in PASSWORD_VARIABLES:
         assert rendered[key] == assignments(own)[key]
         assert rendered[key] != assignments(EXAMPLE)[key]
@@ -200,7 +194,7 @@ def test_a_value_no_layer_sets_is_the_example_value() -> None:
 # --- infra/deploy/env.production ------------------------------------------------------
 
 
-def test_the_production_file_holds_no_password_and_no_role_list() -> None:
+def test_the_production_file_holds_no_password_and_no_admin() -> None:
     assert set(assignments(PRODUCTION)) & set(OWN_VARIABLES) == set()
 
 
@@ -264,37 +258,42 @@ def test_an_own_key_the_example_does_not_have_is_refused() -> None:
         render(EXAMPLE, PRODUCTION, own_file() + "RENAMED_SINCE=1\n")
 
 
-def test_an_own_key_that_is_not_one_of_the_four_is_refused() -> None:
+def test_the_own_file_holds_the_two_passwords_and_the_bootstrap_admins_and_no_more() -> None:
+    """Every other role is appointed in the admin panel and kept in the database."""
+    assert OWN_VARIABLES == ("POSTGRES_PASSWORD", "POSTGRES_APP_PASSWORD", "ADMIN_EMAILS")
+    assert list(assignments(own_file())) == list(OWN_VARIABLES)
+
+
+def test_an_own_key_that_is_not_one_of_the_three_is_refused() -> None:
     with pytest.raises(EnvError, match="APP_ENV"):
         render(EXAMPLE, PRODUCTION, own_file() + "APP_ENV=development\n")
 
 
 @pytest.mark.parametrize("key", OWN_VARIABLES)
-def test_a_password_or_role_list_in_the_production_file_is_refused(key: str) -> None:
+def test_a_password_or_an_admin_in_the_production_file_is_refused(key: str) -> None:
     with pytest.raises(EnvError, match=key):
         render(EXAMPLE, PRODUCTION + f"{key}=x@ethz.ch\n", own_file())
 
 
-@pytest.mark.parametrize("key", [*PASSWORD_VARIABLES, ADMIN_VARIABLE])
+@pytest.mark.parametrize("key", OWN_VARIABLES)
 def test_an_empty_own_value_is_refused(key: str) -> None:
-    with pytest.raises(EnvError, match=key):
+    with pytest.raises(EnvError, match=f"{key} is empty"):
         render(EXAMPLE, PRODUCTION, with_value(own_file(), key, ""))
 
 
 @pytest.mark.parametrize("key", OWN_VARIABLES)
-def test_an_own_file_without_one_of_its_four_keys_is_refused(key: str) -> None:
+def test_an_own_file_without_one_of_its_three_keys_is_refused(key: str) -> None:
     """A key the own file lacks would keep the value `.example.env` has for it."""
     with pytest.raises(EnvError, match=f"has no {key}"):
         render(EXAMPLE, PRODUCTION, without(own_file(), key))
 
 
-@pytest.mark.parametrize("key", ROLE_VARIABLES)
-def test_a_role_list_the_own_file_lacks_is_never_filled_from_the_example(key: str) -> None:
-    """The case the rule above exists for: `.example.env` names an admin and a barista."""
-    assert csv_entries(assignments(EXAMPLE)[key])
+def test_admins_the_own_file_lacks_are_never_taken_from_the_example() -> None:
+    """The case the rule above exists for: `.example.env` names an admin."""
+    assert DEVELOPMENT_ADMINS
 
-    with pytest.raises(EnvError, match=key):
-        render(EXAMPLE, PRODUCTION, without(own_file(baristas="linus@ethz.ch"), key))
+    with pytest.raises(EnvError, match=ADMIN_VARIABLE):
+        render(EXAMPLE, PRODUCTION, without(own_file(), ADMIN_VARIABLE))
 
 
 @pytest.mark.parametrize("key", PASSWORD_VARIABLES)
@@ -305,59 +304,49 @@ def test_a_development_password_left_in_place_is_refused(key: str) -> None:
         render(EXAMPLE, PRODUCTION, own)
 
 
-@pytest.mark.parametrize("key", ROLE_VARIABLES)
 @pytest.mark.parametrize("entry", NOT_AN_ID)
-def test_a_role_entry_that_is_no_id_is_refused(key: str, entry: str) -> None:
+def test_an_admin_that_is_no_id_is_refused(entry: str) -> None:
     """`[a-z0-9][a-z0-9._-]{0,63}@<an allowed domain>`, the rule the API reads an id by.
     The API does not start with an entry that fails it."""
-    own = with_value(own_file(), key, f"ada@ethz.ch,{entry}")
+    own = with_value(own_file(), ADMIN_VARIABLE, f"ada@ethz.ch,{entry}")
 
-    with pytest.raises(EnvError, match=f"{key}: .* is not an id"):
+    with pytest.raises(EnvError, match=f"{ADMIN_VARIABLE}: .* is not an id"):
         render(EXAMPLE, PRODUCTION, own)
 
 
-@pytest.mark.parametrize("key", ROLE_VARIABLES)
 @pytest.mark.parametrize("entry", AN_ID)
-def test_a_role_entry_that_is_an_id_is_rendered_as_it_stands(key: str, entry: str) -> None:
-    own = with_value(own_file(), key, f"grace@ethz.ch,{entry}")
+def test_an_admin_that_is_an_id_is_rendered_as_it_stands(entry: str) -> None:
+    own = with_value(own_file(), ADMIN_VARIABLE, f"grace@ethz.ch,{entry}")
 
     rendered = assignments(render(EXAMPLE, PRODUCTION, own))
 
-    assert rendered[key] == f"grace@ethz.ch,{entry}"
+    assert rendered[ADMIN_VARIABLE] == f"grace@ethz.ch,{entry}"
 
 
 @pytest.mark.parametrize("entry", [*NOT_AN_ID, *AN_ID, "Ada@ETHZ.ch", " ada@ethz.ch", ""])
-def test_a_role_entry_is_read_the_way_the_api_reads_an_id(entry: str) -> None:
+def test_an_admin_is_read_the_way_the_api_reads_an_id(entry: str) -> None:
     """The script cannot import the API's rule (it runs on the VM's bare python3), so
     it has a copy. Here the two read every sample alike, over one and over two domains."""
     for allowed in (["ethz.ch"], ["ethz.ch", "student.ethz.ch"]):
         assert portal_id(entry, allowed) == portal_address(entry, allowed)
 
 
-@pytest.mark.parametrize("key", ROLE_VARIABLES)
-@pytest.mark.parametrize("development_id", DEVELOPMENT_IDS)
-def test_a_role_entry_of_the_example_env_is_refused(key: str, development_id: str) -> None:
-    """The admin and the barista of a laptop are no staff of the deployed stack. Their
-    ids are public, and behind the portal each is whoever holds that ETH username."""
-    for spelling in (development_id, development_id.upper()):
-        own = with_value(own_file(), key, f"ada@ethz.ch,{spelling}")
+@pytest.mark.parametrize("development_admin", DEVELOPMENT_ADMINS)
+def test_an_admin_of_the_example_env_is_refused(development_admin: str) -> None:
+    """The admin of a laptop is no admin of the deployed stack. The id is public, and
+    behind the portal it is whoever holds that ETH username."""
+    for spelling in (development_admin, development_admin.upper()):
+        own = with_value(own_file(), ADMIN_VARIABLE, f"ada@ethz.ch,{spelling}")
 
-        with pytest.raises(EnvError, match=f"{key}: .* is a development id"):
+        with pytest.raises(EnvError, match=f"{ADMIN_VARIABLE}: .* a development id"):
             render(EXAMPLE, PRODUCTION, own)
 
 
-def test_no_rendered_role_entry_is_one_of_the_example_env() -> None:
-    rendered = assignments(render(EXAMPLE, PRODUCTION, own_file(baristas="linus@ethz.ch")))
+def test_no_rendered_admin_is_one_of_the_example_env() -> None:
+    rendered = assignments(render(EXAMPLE, PRODUCTION, own_file()))
 
-    for key in ROLE_VARIABLES:
-        assert csv_entries(rendered[key])
-        assert not set(csv_entries(rendered[key])) & set(DEVELOPMENT_IDS), key
-
-
-def test_no_barista_is_accepted() -> None:
-    rendered = assignments(render(EXAMPLE, PRODUCTION, own_file(baristas="")))
-
-    assert rendered[BARISTA_VARIABLE] == ""
+    assert csv_entries(rendered[ADMIN_VARIABLE])
+    assert not set(csv_entries(rendered[ADMIN_VARIABLE])) & set(DEVELOPMENT_ADMINS)
 
 
 # --- The own file -------------------------------------------------------------------
@@ -374,21 +363,23 @@ def test_the_first_run_generates_two_different_passwords() -> None:
 
 
 def test_the_first_run_needs_an_admin() -> None:
-    with pytest.raises(EnvError, match=ADMIN_VARIABLE):
-        own_values(None, None, None, database_exists=no_database)
+    """Without a bootstrap admin nobody could appoint anybody."""
+    for admins in (None, "", " , "):
+        with pytest.raises(EnvError, match=f"{ADMIN_VARIABLE} is empty"):
+            own_values(None, admins, database_exists=no_database)
 
 
 def test_no_password_is_generated_while_a_database_exists() -> None:
     """Postgres took its passwords when the volume was created; generated ones would not open it."""
     with pytest.raises(EnvError, match="POSTGRES_PASSWORD"):
-        own_values(None, "ada@ethz.ch", None, database_exists=a_database)
+        own_values(None, "ada@ethz.ch", database_exists=a_database)
 
 
 def test_an_own_file_that_lost_a_password_is_not_repaired_while_a_database_exists() -> None:
     damaged = with_value(own_file(), "POSTGRES_APP_PASSWORD", "")
 
     with pytest.raises(EnvError, match="POSTGRES_APP_PASSWORD"):
-        own_values(damaged, None, None, database_exists=a_database)
+        own_values(damaged, None, database_exists=a_database)
 
 
 def test_a_complete_own_file_never_asks_whether_a_database_exists() -> None:
@@ -397,25 +388,27 @@ def test_a_complete_own_file_never_asks_whether_a_database_exists() -> None:
 
     first = own_file()
 
-    assert own_values(first, None, None, database_exists=must_not_be_asked) == first
+    assert own_values(first, None, database_exists=must_not_be_asked) == first
 
 
-def test_new_role_lists_keep_the_passwords() -> None:
-    first = own_file(admins="ada@ethz.ch", baristas="linus@ethz.ch")
+def test_new_admins_keep_the_passwords() -> None:
+    first = own_file(admins="ada@ethz.ch")
 
-    second = own_values(first, "ada@ethz.ch,grace@ethz.ch", "", database_exists=a_database)
+    second = own_values(first, "ada@ethz.ch,grace@ethz.ch", database_exists=a_database)
 
-    assert assignments(second) == assignments(first) | {
-        ADMIN_VARIABLE: "ada@ethz.ch,grace@ethz.ch",
-        BARISTA_VARIABLE: "",
-    }
+    assert assignments(second) == assignments(first) | {ADMIN_VARIABLE: "ada@ethz.ch,grace@ethz.ch"}
 
 
-def test_role_lists_are_stored_in_lower_case_without_blanks_or_repeats() -> None:
-    own = assignments(own_file(admins=" Ada@ETHZ.ch , grace@ethz.ch,ada@ethz.ch,", baristas=" "))
+def test_admins_left_out_stay_the_ones_the_own_file_has() -> None:
+    first = own_file(admins="ada@ethz.ch,grace@ethz.ch")
+
+    assert own_values(first, None, database_exists=a_database) == first
+
+
+def test_admins_are_stored_in_lower_case_without_blanks_or_repeats() -> None:
+    own = assignments(own_file(admins=" Ada@ETHZ.ch , grace@ethz.ch,ada@ethz.ch,"))
 
     assert own[ADMIN_VARIABLE] == "ada@ethz.ch,grace@ethz.ch"
-    assert own[BARISTA_VARIABLE] == ""
 
 
 def test_a_letter_from_outside_ascii_is_not_made_into_an_ascii_one() -> None:
@@ -433,25 +426,31 @@ def test_a_letter_from_outside_ascii_is_not_made_into_an_ascii_one() -> None:
 
 def test_an_own_file_with_a_foreign_key_is_refused() -> None:
     with pytest.raises(EnvError, match="APP_ENV"):
-        own_values(own_file() + "APP_ENV=development\n", None, None, database_exists=no_database)
+        own_values(own_file() + "APP_ENV=development\n", None, database_exists=no_database)
 
 
-def test_an_own_file_that_lost_its_baristas_is_completed_with_none() -> None:
+def test_an_own_file_that_lost_its_admins_is_not_completed_from_anywhere() -> None:
     """Rendering through the command never meets a missing key: the own file is written
-    with all four first, and a role list it did not hold is empty, not the example's."""
-    kept = without(own_file(baristas="linus@ethz.ch"), BARISTA_VARIABLE)
+    with all three first, and the admins it does not hold are asked for, never taken
+    from the example."""
+    kept = without(own_file(), ADMIN_VARIABLE)
 
-    completed = own_values(kept, None, None, database_exists=a_database)
+    with pytest.raises(EnvError, match=f"{ADMIN_VARIABLE} is empty"):
+        own_values(kept, None, database_exists=a_database)
 
+    completed = own_values(kept, "grace@ethz.ch", database_exists=a_database)
+    assert assignments(completed) == assignments(kept) | {ADMIN_VARIABLE: "grace@ethz.ch"}
     assert list(assignments(completed)) == list(OWN_VARIABLES)
-    assert assignments(completed)[BARISTA_VARIABLE] == ""
 
 
 # --- Warnings -----------------------------------------------------------------------
 
 
 def test_a_single_admin_is_warned_about() -> None:
-    """An admin who traded a market may not settle it (SPEC A.4)."""
+    """An admin who traded a market may not settle it (SPEC A.4), so a second one has to
+    exist by then: named here, or appointed in the admin panel."""
+    assert "admin panel" in SINGLE_ADMIN_WARNING
+    assert "--admins" in SINGLE_ADMIN_WARNING
     rendered = render(EXAMPLE, PRODUCTION, own_file(admins="ada@ethz.ch"))
 
     assert warnings(rendered) == [SINGLE_ADMIN_WARNING]
@@ -529,7 +528,7 @@ def test_the_command_renders_beside_an_existing_database_from_a_kept_own_file(
 
 @pytest.mark.usefixtures("no_volume")
 @pytest.mark.parametrize(
-    "admins", ["someone@uzh.ch", DEVELOPMENT_IDS[0], "ada@ethz.ch,Ada+x@ethz.ch"]
+    "admins", ["someone@uzh.ch", DEVELOPMENT_ADMINS[0], "ada@ethz.ch,Ada+x@ethz.ch"]
 )
 def test_a_refused_environment_writes_nothing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], admins: str
@@ -541,15 +540,13 @@ def test_a_refused_environment_writes_nothing(
 
 
 @pytest.mark.usefixtures("no_volume")
-def test_the_command_refuses_a_development_barista(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    [barista] = csv_entries(assignments(EXAMPLE)[BARISTA_VARIABLE])
+def test_the_command_takes_admins_and_no_other_role(tmp_path: Path) -> None:
+    """A barista is appointed in the admin panel: the command has no word for one."""
+    with pytest.raises(SystemExit) as refusal:
+        run(tmp_path, "--admins", "ada@ethz.ch,grace@ethz.ch", "--baristas", "linus@ethz.ch")
 
-    assert run(tmp_path, "--admins", "ada@ethz.ch,grace@ethz.ch", "--baristas", barista) == 2
-
+    assert refusal.value.code == 2
     assert list(tmp_path.iterdir()) == []
-    assert BARISTA_VARIABLE in capsys.readouterr().err
 
 
 def test_docker_is_asked_for_exactly_the_named_volume(monkeypatch: pytest.MonkeyPatch) -> None:

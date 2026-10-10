@@ -1,37 +1,42 @@
 #!/bin/sh
 # Walk a running MarkETH stack from profile set-up to a redeemed voucher, through the
-# proxy, as three callers named by forged identity headers.
+# proxy, as four callers named by forged identity headers.
 #
 #   sh infra/deploy/smoke.sh        on the machine the stack runs on, from its tree
 #
-# IT WRITES DATA. It registers two made-up people and the first address of ADMIN_EMAILS,
-# and leaves a resolved market, trades and a redeemed voucher behind. Run it on an empty
-# database and delete that database afterwards: on the VM `make deploy-smoke
-# CONFIRM=smoke`, then `make deploy-wipe CONFIRM=wipe`. It refuses to start when its
-# trader has a profile already.
+# It is for a stack started from compose.yaml alone. With compose.override.yaml merged
+# in, the proxy names the caller itself, whatever a request says, and the walk stops at
+# its first step.
 #
-# Each step calls the operations named beside it and needs the services behind them. An
-# operation whose service is a stub answers 501; the step then fails and says which
-# call it was. Steps run in this order and the walk stops at the first that fails.
+# IT WRITES DATA. It registers three made-up people and the first address of
+# ADMIN_EMAILS, makes one of the three a barista, and leaves a resolved market, a trade,
+# a redeemed voucher and a redeemed code behind. Run it on an empty database and delete
+# that database afterwards: on the VM `make deploy-smoke CONFIRM=smoke`, then
+# `make deploy-wipe CONFIRM=wipe`. It refuses to start when its trader has a profile
+# already.
+#
+# Each step calls the operations named beside it. Steps run in this order and the walk
+# stops at the first that fails, saying which call it was.
 #
 #   1. Profile set-up     GET /api/config, GET /api/me, PUT /api/me/profile
-#                         EmailPolicy, IdentityService, ProfileService, GrantService,
-#                         AccountService
 #   2. A market           POST /api/markets, POST /api/admin/markets/{id}/approve
-#                         MarketService, MarketLifecycleService
 #   3. A trade            GET /api/markets/{id}/quote, POST /api/markets/{id}/trades
-#                         QuoteService, TradingService
 #   4. The event stream   GET /api/markets/{id}/stream
-#                         LiveQuoteService
 #   5. A resolution       POST /api/admin/markets/{id}/close and .../resolve
-#                         MarketLifecycleService
-#   6. A voucher          GET /api/vouchers/products, POST /api/vouchers,
+#   6. A barista          GET /api/admin/users, POST /api/admin/users/{id}/role,
+#                         POST /api/barista/vouchers/redeem before the role is given
+#   7. A voucher          GET /api/vouchers/products, POST /api/vouchers,
 #                         POST /api/vouchers/{id}/code,
 #                         POST /api/barista/vouchers/redeem, GET /api/me/vouchers
-#                         VoucherService
-#   7. The leaderboard    GET /api/leaderboard
-#                         LeaderboardService
-#   8. The books          every account of the ledger sums to zero (SPEC §1)
+#   8. A code             POST /api/admin/code-batches, POST /api/codes/redeem
+#   9. The leaderboard    GET /api/leaderboard
+#  10. The books          every account of the ledger sums to zero (SPEC §1)
+#
+# Who is who. The admin is the first address of ADMIN_EMAILS, a bootstrap admin: an admin
+# by the stack's configuration, from the first request on. Nobody else has a role until
+# an admin gives them one, so the barista starts as a plain user like the trader and the
+# maker, and is appointed in step 6. The maker is an admin for the length of step 8 and
+# a plain user again when it ends.
 #
 # Expected amounts are taken from the API's own answers (the grant from /api/config, a
 # balance from the trade that changed it), never from numbers written here.
@@ -68,8 +73,8 @@ setting() {
 
 # call <who> <method> <path> [<json body>]
 #
-# <who> is trader, maker, admin or nobody. STATUS holds the HTTP status, $WORK/body the
-# body. IDEMPOTENCY_KEY, when set, is sent along.
+# <who> is trader, maker, barista, admin or nobody. STATUS holds the HTTP status,
+# $WORK/body the body. IDEMPOTENCY_KEY, when set, is sent along.
 call() {
     who=$1
     method=$2
@@ -83,6 +88,10 @@ call() {
         maker)
             id=$MAKER_ID
             name='Max%20Smoke'
+            ;;
+        barista)
+            id=$BARISTA_ID
+            name='Bea%20Smoke'
             ;;
         admin)
             id=$ADMIN_ID
@@ -115,9 +124,6 @@ body_excerpt() {
 
 # expect <status> [<error code>]: the last call answered with exactly that.
 expect() {
-    if [ "$STATUS" = "501" ] && [ "$1" != "501" ]; then
-        fail "$CALL: 501, the service behind this operation is a stub. $(body_excerpt)"
-    fi
     if [ "$STATUS" != "$1" ]; then
         fail "$CALL: expected HTTP $1, got $STATUS $(body_excerpt)"
     fi
@@ -162,12 +168,38 @@ from decimal import Decimal
 print(Decimal(sys.argv[1]) + Decimal(sys.argv[2]))' "$1" "$2"
 }
 
+# profile_of <username> [<policy accepted: true or false>]: the body of a profile save.
+# The save that creates a profile has to accept the usage policy.
 profile_of() {
     jq -cn --arg username "$1" --arg level "$LEVEL" --arg programme "$PROGRAMME" \
-        '{username: $username, degree_level: $level, degree_programme: $programme}'
+        --argjson accepted "${2-true}" \
+        '{username: $username, degree_level: $level, degree_programme: $programme,
+          policy_accepted: $accepted}'
 }
 
-# The body a barista's scan sends: the code travels in no address.
+# proposal_of <policy accepted: true or false>: the body of a proposal. Every proposal
+# accepts the usage policy again. It asks for no liquidity: the admin picks the tier
+# when approving.
+proposal_of() {
+    jq -cn --arg close_at "$(days_from_now 2)" --arg resolve_by "$(days_from_now 3)" \
+        --argjson accepted "$1" '{
+            question: "Smoke test: does this deployment work?",
+            yes_definition: "The smoke test passes.",
+            no_definition: "The smoke test fails.",
+            resolution_criteria: "The exit status of infra/deploy/smoke.sh.",
+            resolution_source: "infra/deploy/smoke.sh",
+            close_at: $close_at,
+            resolve_by: $resolve_by,
+            policy_accepted: $accepted
+        }'
+}
+
+role_of() {
+    jq -cn --arg role "$1" '{role: $role}'
+}
+
+# The body that carries a code, a barista's scan and the redemption of a code alike:
+# the code travels in no address.
 scan_of() {
     jq -cn --arg code "$1" '{code: $code}'
 }
@@ -183,7 +215,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 BIND=$(setting NGINX_HTTP_BIND)
 PORT=$(setting NGINX_HTTP_PORT)
-# The two made-up people are ids at the first allowed domain.
+# The three made-up people are ids at the first allowed domain.
 DOMAIN=$(setting ALLOWED_EMAIL_DOMAINS | cut -d, -f1)
 ORIGIN=$(setting PUBLIC_BASE_URL)
 ADMIN_ID=$(setting ADMIN_EMAILS | cut -d, -f1)
@@ -193,12 +225,13 @@ ADMIN_ID=$(setting ADMIN_EMAILS | cut -d, -f1)
 [ -n "$ADMIN_ID" ] || fail ".env names no admin in ADMIN_EMAILS"
 TRADER_ID="smoke.trader@$DOMAIN"
 MAKER_ID="smoke.maker@$DOMAIN"
+BARISTA_ID="smoke.barista@$DOMAIN"
 if [ "$BIND" = "0.0.0.0" ]; then
     BASE="http://127.0.0.1:$PORT"
 else
     BASE="http://$BIND:$PORT"
 fi
-echo "Walking $BASE as $TRADER_ID, $MAKER_ID and the first admin"
+echo "Walking $BASE as $TRADER_ID, $MAKER_ID, $BARISTA_ID and the first admin"
 
 # --- 1. Profile set-up ---------------------------------------------------------------
 STEP="1 (profile set-up)"
@@ -218,10 +251,18 @@ expect 403 PROFILE_REQUIRED
 holds "the percent-encoded name did not arrive decoded" '.details.name == "Zoë Smoke"'
 passed "a caller without a profile is asked to set one up"
 
+call trader PUT /api/me/profile "$(profile_of smoke_trader false)"
+expect 422 VALIDATION_ERROR
+holds "the refusal does not name the field policy_accepted" '.details.field == "policy_accepted"'
+call trader GET /api/me
+expect 403 PROFILE_REQUIRED
+passed "nobody gets a profile without accepting the usage policy"
+
 call trader PUT /api/me/profile "$(profile_of smoke_trader)"
 expect 200
 holds "the profile was not created with its welcome grant" \
     '.username == "smoke_trader" and .signup_granted == true'
+TRADER_USER=$(field '.id')
 same_amount "$(field '.balance_cr')" "$SIGNUP_GRANT" \
     || fail "$CALL: the balance is $(field '.balance_cr'), the welcome grant is $SIGNUP_GRANT"
 passed "the trader set up a profile and holds the welcome grant of $SIGNUP_GRANT"
@@ -234,30 +275,27 @@ passed "a username with a capital letter is refused, and so is one somebody hold
 
 call maker PUT /api/me/profile "$(profile_of smoke_maker)"
 expect 200
+MAKER_USER=$(field '.id')
+call barista PUT /api/me/profile "$(profile_of smoke_barista)"
+expect 200
+holds "a person who is in no list did not start as a plain user" '.role == "USER"'
 call admin PUT /api/me/profile "$(profile_of smoke_admin)"
 expect 200
+ADMIN_USER=$(field '.id')
 call admin GET /api/me
 expect 200
 holds "the first address of ADMIN_EMAILS is not an admin" '.role == "ADMIN"'
-passed "the maker and the admin set up profiles; the admin has the role ADMIN"
+passed "the maker, the barista-to-be and the admin set up profiles; only the admin has a role"
 
 # --- 2. A market, proposed and approved ----------------------------------------------
 STEP="2 (a market)"
 
-PROPOSAL=$(jq -cn --arg close_at "$(days_from_now 2)" --arg resolve_by "$(days_from_now 3)" '{
-    question: "Smoke test: does this deployment work?",
-    yes_definition: "The smoke test passes.",
-    no_definition: "The smoke test fails.",
-    resolution_criteria: "The exit status of infra/deploy/smoke.sh.",
-    resolution_source: "infra/deploy/smoke.sh",
-    close_at: $close_at,
-    resolve_by: $resolve_by,
-    requested_tier: "DEFAULT"
-}')
-call maker POST /api/markets "$PROPOSAL"
+call maker POST /api/markets "$(proposal_of false)"
+expect 422 VALIDATION_ERROR
+call maker POST /api/markets "$(proposal_of true)"
 expect 201
 MARKET=$(field '.id')
-passed "the maker proposed market $MARKET"
+passed "the maker proposed market $MARKET; a proposal that does not accept the usage policy is refused"
 
 call trader POST "/api/admin/markets/$MARKET/approve" '{"tier":"DEFAULT"}'
 expect 403 FORBIDDEN
@@ -337,8 +375,47 @@ same_amount "$(field '.balance_cr')" "$BALANCE_AFTER_PAYOUT" \
     || fail "$CALL: the balance is $(field '.balance_cr'); $BALANCE_AFTER_TRADE plus one credit for each of $SHARES winning shares is $BALANCE_AFTER_PAYOUT"
 passed "each winning share paid one credit: the trader holds $BALANCE_AFTER_PAYOUT"
 
-# --- 6. A voucher, issued and redeemed ------------------------------------------------
-STEP="6 (a voucher)"
+# --- 6. A barista, appointed by the admin ---------------------------------------------
+STEP="6 (a barista)"
+
+call admin GET '/api/admin/users?q=smoke_barista'
+expect 200
+holds "the search does not find exactly the barista-to-be, a plain user" \
+    '(.items | length) == 1 and .items[0].username == "smoke_barista"
+     and .items[0].role == "USER" and .items[0].bootstrap_admin == false'
+BARISTA_USER=$(field '.items[0].id')
+call admin GET '/api/admin/users?role=ADMIN'
+expect 200
+holds "the admin is not listed as a bootstrap admin" --arg admin "$ADMIN_USER" \
+    '[.items[] | select(.id == $admin and .role == "ADMIN" and .bootstrap_admin)] | length == 1'
+passed "the admin panel lists the barista-to-be as a plain user and the admin as a bootstrap admin"
+
+# A plain user gives no role and scans no voucher. The code is made up: the refusal
+# comes before anybody looks at it.
+call trader POST "/api/admin/users/$BARISTA_USER/role" "$(role_of BARISTA)"
+expect 403 FORBIDDEN
+call barista POST "/api/admin/users/$TRADER_USER/role" "$(role_of BARISTA)"
+expect 403 FORBIDDEN
+call barista POST /api/barista/vouchers/redeem "$(scan_of 00000000)"
+expect 403 FORBIDDEN
+call admin POST "/api/admin/users/$ADMIN_USER/role" "$(role_of USER)"
+expect 403 FORBIDDEN
+call admin GET /api/me
+expect 200
+holds "the admin's own role changed" '.role == "ADMIN"'
+passed "a plain user gives no role, and the admin cannot change their own"
+
+call admin POST "/api/admin/users/$BARISTA_USER/role" "$(role_of BARISTA)"
+expect 200
+holds "the account did not get the role BARISTA" --arg user "$BARISTA_USER" \
+    '.id == $user and .role == "BARISTA" and .bootstrap_admin == false'
+call barista GET /api/me
+expect 200
+holds "the barista's next request does not carry the role" '.role == "BARISTA"'
+passed "the admin made $BARISTA_ID a barista"
+
+# --- 7. A voucher, issued and redeemed ------------------------------------------------
+STEP="7 (a voucher)"
 
 call trader GET /api/vouchers/products
 expect 200
@@ -358,21 +435,72 @@ holds "the code belongs to another voucher" --arg voucher "$VOUCHER" '.voucher_i
 
 call trader POST /api/barista/vouchers/redeem "$(scan_of "$CODE")"
 expect 403 FORBIDDEN
-call admin POST /api/barista/vouchers/redeem "$(scan_of "$FIRST_CODE")"
+call barista POST /api/barista/vouchers/redeem "$(scan_of "$FIRST_CODE")"
 [ "$STATUS" != "200" ] || fail "$CALL: the code that was replaced still redeems the voucher"
-call admin POST /api/barista/vouchers/redeem "$(scan_of "$CODE")"
+call barista POST /api/barista/vouchers/redeem "$(scan_of "$CODE")"
 expect 200
-holds "another voucher was redeemed" --arg voucher "$VOUCHER" '.voucher_id == $voucher'
+holds "another voucher was redeemed, or the scan that redeems calls itself a repeat" \
+    --arg voucher "$VOUCHER" '.voucher_id == $voucher and .repeat == false'
+REDEEMED_AT=$(field '.redeemed_at')
+
+# The answer to a scan can get lost on the way to the barista's phone. The same barista
+# scanning again right away is shown the redemption that happened, marked as a repeat.
+# To anybody else who may scan, the voucher is used up.
+call barista POST /api/barista/vouchers/redeem "$(scan_of "$CODE")"
+expect 200
+holds "the barista's second scan is not the same redemption, marked as a repeat" \
+    --arg voucher "$VOUCHER" --arg at "$REDEEMED_AT" \
+    '.voucher_id == $voucher and .repeat == true and .redeemed_at == $at'
 call admin POST /api/barista/vouchers/redeem "$(scan_of "$CODE")"
-[ "$STATUS" != "200" ] || fail "$CALL: the voucher was redeemed twice"
+expect 400 CODE_INVALID
 call trader GET /api/me/vouchers
 expect 200
 holds "the trader's voucher is not shown as redeemed" --arg voucher "$VOUCHER" \
     '.items[] | select(.id == $voucher) | .status == "REDEEMED"'
-passed "a fresh code replaced the first one; the admin redeemed the voucher with it, once"
+passed "a fresh code replaced the first one; the barista redeemed the voucher with it, once"
+passed "the barista's second scan repeats that answer; somebody else's scan finds the voucher used up"
 
-# --- 7. The leaderboard ----------------------------------------------------------------
-STEP="7 (the leaderboard)"
+# --- 8. A code, handed out by an admin and redeemed by a user ---------------------------
+STEP="8 (a code)"
+
+call admin POST /api/admin/code-batches "$(jq -cn --arg expires_at "$(days_from_now 2)" \
+    '{label: "Smoke test", count: 1, expires_at: $expires_at, one_per_user: true}')"
+expect 201
+GIFT=$(field '.codes[0].code')
+GIFT_VALUE=$(field '.batch.value_cr')
+passed "the admin made a batch of one code worth $GIFT_VALUE"
+
+# No admin redeems a code: not the one who made the batch, and not another one either.
+# The maker is that other admin for three calls.
+call admin POST "/api/admin/users/$MAKER_USER/role" "$(role_of ADMIN)"
+expect 200
+call maker POST /api/codes/redeem "$(scan_of "$GIFT")"
+expect 403 FORBIDDEN
+call admin POST /api/codes/redeem "$(scan_of "$GIFT")"
+expect 403 FORBIDDEN
+call admin POST "/api/admin/users/$MAKER_USER/role" "$(role_of USER)"
+expect 200
+call maker GET /api/me
+expect 200
+holds "the maker is not a plain user again" '.role == "USER"'
+passed "neither the admin who made the batch nor another admin could redeem the code"
+
+call trader GET /api/me
+expect 200
+BALANCE_BEFORE_CODE=$(field '.balance_cr')
+call trader POST /api/codes/redeem "$(scan_of "$GIFT")"
+expect 200
+same_amount "$(field '.value_cr')" "$GIFT_VALUE" \
+    || fail "$CALL: the code was worth $(field '.value_cr'), the batch says $GIFT_VALUE"
+BALANCE_AFTER_CODE=$(sum_of "$BALANCE_BEFORE_CODE" "$GIFT_VALUE")
+same_amount "$(field '.balance_cr')" "$BALANCE_AFTER_CODE" \
+    || fail "$CALL: the balance is $(field '.balance_cr'); $BALANCE_BEFORE_CODE plus the code is $BALANCE_AFTER_CODE"
+call barista POST /api/codes/redeem "$(scan_of "$GIFT")"
+expect 400 CODE_INVALID
+passed "the trader redeemed it and holds $BALANCE_AFTER_CODE; the code works once"
+
+# --- 9. The leaderboard ----------------------------------------------------------------
+STEP="9 (the leaderboard)"
 
 call trader GET /api/leaderboard
 expect 200
@@ -383,8 +511,8 @@ holds "the trader's row does not show one trade and one market, won" \
 holds "the trader is not on the list" '[.items[].username] | index("smoke_trader") != null'
 passed "the leaderboard lists the trader with one trade and one market, won"
 
-# --- 8. The books ----------------------------------------------------------------------
-STEP="8 (the books)"
+# --- 10. The books ---------------------------------------------------------------------
+STEP="10 (the books)"
 
 CALL="SELECT sum(balance_micro) FROM accounts"
 TOTAL=$(docker compose -f compose.yaml exec -T postgres sh -c \

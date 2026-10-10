@@ -43,6 +43,29 @@ geo $realip_remote_addr $peer_is_trusted {
 real_ip_header X-Original-Forwarded-For;
 real_ip_recursive off;
 
+# --- A peer on the network of the web app ---------------------------------------------
+# This proxy is on both networks of the stack (compose.yaml): `core`, with the API, and
+# `edge`, with the web app. It listens on both, and under /api/ it hands a request on
+# with the two headers it came with, which is where the API takes its caller from. A
+# request the web app's container sends here never passed the portal, so whoever gets
+# to run code in that container could name anybody.
+#
+# Nothing under /api/ is therefore answered to a peer on `edge`: the two /api/ locations
+# below refuse it. The web app serves pages and asks the API nothing; a browser does.
+# One address of that network is not refused, its gateway, the address the host has on
+# it. Depending on how Docker passes on what arrives on the published port, this
+# container sees it coming from the gateway of one of its two networks, and which of
+# the two is Docker's choice.
+#
+# The peer is the other end of the connection, $realip_remote_addr, whatever a request
+# says about the visitor: the web app's address is a private one, and the lines above
+# believe such a peer when it names another address.
+geo $realip_remote_addr $from_the_web_network {
+    default                0;
+    ${NGINX_EDGE_SUBNET}   1;
+    ${NGINX_EDGE_GATEWAY}  0;
+}
+
 # The visitor's scheme. nginx itself speaks plain HTTP. The portal names the real scheme
 # in X-Forwarded-Scheme (its X-Forwarded-Proto describes a hop inside the portal); an
 # HTTPS tunnel in front of a local stack (SPEC A.10) names it in X-Forwarded-Proto.
@@ -129,18 +152,31 @@ limit_conn_zone $caller zone=streams_per_caller:10m;
 limit_conn_status 429;
 
 # --- Access log --------------------------------------------------------------------
-# One JSON object per request, without the query string, the Referer and the cookies: a
-# code to redeem arrives as /wallet?code=..., the requests that page makes repeat it in
-# their Referer, and a cookie of the portal is a visitor's sign-in.
+# One JSON object per request, without the query string, the Referer and the cookies. A
+# code to redeem arrives as /wallet?code=...; a Referer can repeat such an address (the
+# Referrer-Policy of the server block below tells a browser to send the origin alone);
+# and the cookies that come along are a visitor's sessions with other services of ETH:
+# a browser sends what it holds for .ethz.ch to every host below it.
+#
+# That rule is about the access log, the one log whose lines are shaped here. nginx
+# also writes an error log, and a line of it that is about a request (an upstream that
+# does not answer, a request that was limited) ends with the request line as it
+# arrived, query string included. A code card scanned at the moment the web app
+# restarts leaves its code in such a line. That is accepted: the lines of the error log
+# have no format to set, and the log stays on this machine, in the bounded log of the
+# container.
 map $request_uri $request_path {
     "~^(?<path_without_query>[^?]*)" $path_without_query;
 }
 
 # The one thing the log says about cookies: whether one of the portal's came along.
-# oauth2-proxy, which keeps the portal's sessions, names its cookies _oauth2_proxy...
-# (docs/SERVER_INFRASTRUCTURE.md §3.1). A request that carries a cookie of such a name is
-# logged with `true`, every other with `false`, and nothing of a cookie is written. The
-# lines of the first signed-in visitors answer open check 8 of that document.
+# The portal's session cookie is _oauth2_proxy, and the other cookies of oauth2-proxy,
+# which keeps its sessions, have names that start the same way
+# (docs/SERVER_INFRASTRUCTURE.md §3.1). The portal keeps that cookie to itself: a request
+# reaches this VM without it, as the organizers state (check 8 of §13 there). This field
+# is the standing confirmation. A request that carries a cookie of such a name is logged
+# with `true`, every other with `false`, and nothing of a cookie is written. A `true`
+# means that a cookie of the portal's sign-in arrived here, and goes to the organizers.
 map $http_cookie $portal_cookie {
     default                    false;
     "~(^|;) *_oauth2_proxy"    true;
@@ -174,7 +210,10 @@ server {
     # keep these; without it nginx gives such a location only its own.
     add_header_inherit merge;
     add_header X-Content-Type-Options nosniff always;
-    add_header Referrer-Policy strict-origin-when-cross-origin always;
+    # The origin alone, to this app as to any other, and nothing on the way to plain
+    # HTTP. An address of this app can hold a code to redeem (/wallet?code=...); with
+    # this policy no request a page makes repeats that address in its Referer.
+    add_header Referrer-Policy strict-origin always;
     add_header Content-Security-Policy "${NGINX_CONTENT_SECURITY_POLICY}" always;
     add_header Strict-Transport-Security $hsts always;
     add_header X-Request-Id $request_ref always;
@@ -243,10 +282,14 @@ server {
         }
     }
 
-    # The API. A request another site makes is refused first ($foreign_request above):
-    # nginx decides that before it counts a request, so the refusal costs the caller
-    # nothing of the limit that follows.
+    # The API. Two kinds of request are refused first: one from a peer on the network of
+    # the web app ($from_the_web_network above) and one another site makes
+    # ($foreign_request above). nginx decides both before it counts a request, so a
+    # refusal costs the caller nothing of the limit that follows.
     location /api/ {
+        if ($from_the_web_network) {
+            return 403;
+        }
         if ($foreign_request) {
             return 403;
         }
@@ -259,12 +302,15 @@ server {
     }
 
     # Event streams: unbuffered and long-lived. A regex location wins over the /api/
-    # prefix above and takes nothing from it, so the refusal and the request limit stand
-    # here again: opening a stream counts like any other call. On top of that a caller
-    # holds a limited number of streams open at once. nginx acts on the API's
+    # prefix above and takes nothing from it, so the two refusals and the request limit
+    # stand here again: opening a stream counts like any other call. On top of that a
+    # caller holds a limited number of streams open at once. nginx acts on the API's
     # "X-Accel-Buffering: no" and would then keep it to itself; the portal's own proxy
     # has to see it too.
     location ~ ^/api/(.+/)?stream$ {
+        if ($from_the_web_network) {
+            return 403;
+        }
         if ($foreign_request) {
             return 403;
         }

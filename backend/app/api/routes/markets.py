@@ -20,8 +20,10 @@ StatusFilter = Annotated[
         alias="status",
         description=(
             "Effective statuses to list. Repeat the parameter for several: "
-            "`?status=OPEN&status=HALTED`. Left out: every status but PROPOSED and "
-            "REJECTED, which are for admins only."
+            "`?status=OPEN&status=HALTED`. Left out: every status but PROPOSED, "
+            "EXPIRED and REJECTED, which are for admins only. PROPOSED lists the "
+            "proposals an admin can still decide on; one whose `close_at` has passed "
+            "is listed under EXPIRED."
         ),
     ),
 ]

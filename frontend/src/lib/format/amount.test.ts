@@ -11,6 +11,8 @@ import {
   shareWord,
   splitSign,
   tokenWord,
+  typedDecimal,
+  typedWhole,
 } from "./amount";
 
 describe("an amount reaches the screen as the string the API sent", () => {
@@ -85,5 +87,41 @@ describe("the word after a figure follows the string", () => {
     expect(formatShares("1")).toBe("1 share");
     expect(formatShares("183.29", { outcome: "YES" })).toBe("183.29 YES shares");
     expect(formatShares("45.123456", { outcome: "NO", full: true })).toBe("45.123456 NO shares");
+  });
+});
+
+describe("a figure that is typed stays the characters that were typed", () => {
+  test("a field for an amount keeps digits and one decimal point", () => {
+    expect(typedDecimal("25")).toBe("25");
+    expect(typedDecimal("37.5")).toBe("37.5");
+    expect(typedDecimal("12.5.7")).toBe("12.57");
+    expect(typedDecimal("1 000")).toBe("1000");
+    expect(typedDecimal("-35")).toBe("35");
+    expect(typedDecimal("abc")).toBe("");
+    expect(typedDecimal("")).toBe("");
+  });
+
+  test("a comma is a decimal point on many keypads, and becomes one", () => {
+    expect(typedDecimal("37,5")).toBe("37.5");
+    expect(typedDecimal("1,234,5")).toBe("1.2345");
+    expect(typedDecimal("1.234,5")).toBe("1.2345");
+  });
+
+  test("nothing is completed, rounded or read as a number", () => {
+    expect(typedDecimal(".5")).toBe(".5");
+    expect(typedDecimal("5.")).toBe("5.");
+    expect(typedDecimal("007")).toBe("007");
+    expect(typedDecimal("0.10")).toBe("0.10");
+    // More digits than a float keeps: any detour through a number would change them.
+    expect(typedDecimal("9007199254740993.000000000000000001")).toBe(
+      "9007199254740993.000000000000000001",
+    );
+  });
+
+  test("a field for a whole number keeps the digits alone", () => {
+    expect(typedWhole("200")).toBe("200");
+    expect(typedWhole("2 0.5,k0")).toBe("2050");
+    expect(typedWhole("-3")).toBe("3");
+    expect(typedWhole("")).toBe("");
   });
 });

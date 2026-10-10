@@ -3,7 +3,8 @@
 
 Three things are proven here: what a proposal has to state and how many a day may be
 made, which markets a list holds and when it comes from the cache, and what one market
-tells the person looking at it.
+tells the person looking at it, which for its liquidity is nothing unless that person
+is an admin.
 
 Every expected status, price, stake and payout is what `MarketView` and
 `app.pricing.lmsr` make of the rows; every limit is read from the test settings. Trades
@@ -94,6 +95,9 @@ PRECISION: Final[int] = BASE.pricing.decimal_precision
 PRESETS: Final[tuple[int, ...]] = tuple(BASE.pricing.stake_presets_micro)
 """TRADE_STAKE_PRESETS_CR in µCR: the buy buttons, in the order they are offered."""
 
+STAKE_STEP: Final[int] = BASE.pricing.stake_step_micro
+"""TRADE_STAKE_STEP_CR in µCR: what lies between two positions of the buy slider."""
+
 STAKE_LIMIT: Final[int] = BASE.pricing.max_stake_per_user_market_micro
 MIN_SHARES: Final[int] = BASE.pricing.min_trade_shares_micro
 DAILY_LIMIT: Final[int] = BASE.lifecycle.max_proposals_per_user_per_day
@@ -149,7 +153,7 @@ def proposal(now: datetime, **overrides: Any) -> ProposeMarketRequest:
         "resolution_source": "ethz.ch/menu",
         "close_at": now + timedelta(days=7),
         "resolve_by": now + timedelta(days=9),
-        "requested_tier": MarketTier.DEFAULT,
+        "policy_accepted": True,
     }
     return ProposeMarketRequest(**(values | overrides))
 
@@ -271,7 +275,7 @@ async def test_a_proposal_becomes_a_proposed_market_that_states_what_was_asked(
     container: Container, factory: Factory, clock: FrozenClock
 ) -> None:
     alice = await factory.user()
-    request = proposal(clock.now(), requested_tier=MarketTier.MEDIUM)
+    request = proposal(clock.now())
 
     answer = await container.markets.propose(factory.identity(alice), request)
 
@@ -291,10 +295,10 @@ async def test_a_proposal_becomes_a_proposed_market_that_states_what_was_asked(
         request.resolution_source,
     )
     assert (row.close_at, row.resolve_by) == (request.close_at, request.resolve_by)
-    assert (row.requested_tier, row.tier) == (MarketTier.MEDIUM, None)
     assert (row.created_by, row.created_at) == (alice.id, clock.now())
-    # Liquidity comes with approval, and nobody has traded.
-    assert (row.budget_micro, row.b_micro) == (0, 0)
+    # A proposal names no liquidity: the tier, the budget and b come with the approval,
+    # and nobody has traded.
+    assert (row.tier, row.budget_micro, row.b_micro) == (None, 0, 0)
     assert (row.q_yes_micro, row.q_no_micro, row.version, row.volume_micro) == (0, 0, 0, 0)
     assert (row.approved_by, row.opened_at, row.closed_at, row.rejection_reason) == (
         None,
@@ -312,12 +316,13 @@ async def test_the_answer_to_a_proposal_is_its_detail_as_the_proposer_sees_it(
     answer = await container.markets.propose(alice, proposal(clock.now()))
 
     assert answer == await container.markets.detail(alice, answer.id)
-    assert (answer.status, answer.trading_open, answer.tier) == (
+    assert (answer.status, answer.trading_open, answer.volume_cr) == (
         MarketStatus.PROPOSED,
         False,
-        None,
+        NOTHING,
     )
-    assert (answer.b_cr, answer.max_loss_cr, answer.volume_cr) == (NOTHING, NOTHING, NOTHING)
+    # How much liquidity the market gets is not the proposer's to know, then or later.
+    assert (answer.tier, answer.b_cr, answer.max_loss_cr) == (None, None, None)
     # A market that was never opened has no price of its own.
     assert (answer.p_yes, answer.p_no) == (0.5, 0.5)
     assert answer.viewer.balance_cr == to_cr(WALLET)
@@ -659,11 +664,19 @@ async def test_the_route_answers_a_rule_of_the_service_with_422_and_the_field(
 @pytest.mark.parametrize(
     ("field", "written"),
     [
-        ("requested_tier", lambda now: "CUSTOM"),
-        ("resolve_by", lambda now: (now + timedelta(days=1)).isoformat()),
+        ("requested_tier", lambda now: "DEFAULT"),
+        ("tier", lambda now: "TIGHT"),
         ("budget_cr", lambda now: "50"),
+        ("resolve_by", lambda now: (now + timedelta(days=1)).isoformat()),
+        ("leverage", lambda now: "10"),
     ],
-    ids=["the-tier-of-vis", "decided-before-the-close", "a-field-nobody-asked-for"],
+    ids=[
+        "a-tier-it-would-like",
+        "the-tier-of-vis",
+        "a-budget",
+        "decided-before-the-close",
+        "a-field-nobody-asked-for",
+    ],
 )
 async def test_the_route_refuses_what_the_request_model_refuses_and_writes_nothing(
     client: httpx.AsyncClient,
@@ -683,6 +696,69 @@ async def test_the_route_refuses_what_the_request_model_refuses_and_writes_nothi
     assert response.json()["code"] == "VALIDATION_ERROR"
     assert response.json()["details"]["errors"]
     assert await count_rows(container.uow_factory, Market) == 0
+
+
+@pytest.mark.parametrize(
+    "liquidity", ["requested_tier", "tier", "b_cr", "budget_cr", "max_loss_cr"]
+)
+async def test_a_proposal_cannot_say_how_much_liquidity_its_market_should_get(
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    liquidity: str,
+) -> None:
+    """The request has no such field: naming one is refused on it, whoever proposes."""
+    body = proposal(clock.now()).model_dump(mode="json") | {liquidity: "DEFAULT"}
+
+    for proposer in (await factory.user(), await factory.admin()):
+        as_user(proposer)
+        response = await client.post(MARKETS, json=body)
+
+        assert response.status_code == 422, response.text
+        assert [
+            (error["loc"], error["type"]) for error in response.json()["details"]["errors"]
+        ] == [(["body", liquidity], "extra_forbidden")]
+    assert await count_rows(container.uow_factory, Market) == 0
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [{"policy_accepted": False}, {"policy_accepted": "true"}, {"policy_accepted": 1}, None],
+    ids=["declined", "a-word", "a-number", "left-out"],
+)
+async def test_a_proposal_without_the_usage_policy_accepted_is_422_on_that_field(
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    policy: dict[str, object] | None,
+) -> None:
+    """Every proposal accepts the policy again, with the JSON `true` and nothing that
+    merely counts as true. Anything else writes no market and counts against no limit."""
+    as_user(await factory.user())
+    body = proposal(clock.now()).model_dump(mode="json")
+    if policy is None:
+        del body["policy_accepted"]
+    else:
+        body |= policy
+
+    response = await client.post(MARKETS, json=body)
+
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "VALIDATION_ERROR"
+    assert [error["loc"] for error in response.json()["details"]["errors"]] == [
+        ["body", "policy_accepted"]
+    ]
+    assert await count_rows(container.uow_factory, Market) == 0
+
+    accepted = await client.post(MARKETS, json=body | {"policy_accepted": True})
+
+    assert accepted.status_code == 201, accepted.text
+    assert "policy_accepted" not in accepted.json(), "nothing of it is kept with the market"
+    assert await count_rows(container.uow_factory, Market) == 1
 
 
 async def test_the_route_answers_the_daily_limit_with_409_and_the_limit(
@@ -1209,7 +1285,7 @@ async def test_who_proposed_a_market_is_told_to_admins_only(
 # --- One market: its rules ---------------------------------------------------------------
 
 
-async def test_a_market_shows_its_wording_its_liquidity_and_the_void_rule_before_anyone_trades(
+async def test_a_market_shows_its_wording_and_the_void_rule_before_anyone_trades(
     container: Container, factory: Factory, viewer: AuthenticatedUser
 ) -> None:
     market = await factory.market(tier=MarketTier.TIGHT)
@@ -1225,12 +1301,59 @@ async def test_a_market_shows_its_wording_its_liquidity_and_the_void_rule_before
         detail.resolution_criteria,
         detail.resolution_source,
     ) == (market.yes_def, market.no_def, market.resolution_criteria, market.resolution_source)
-    assert (detail.requested_tier, detail.tier) == (MarketTier.TIGHT, MarketTier.TIGHT)
-    assert detail.b_cr == to_cr(container.settings.pricing.tier_b_micro(MarketTier.TIGHT))
-    assert detail.max_loss_cr == to_cr(market.budget_micro)
     assert detail.void_rule == VOID_RULE
     assert (detail.created_at, detail.opened_at, detail.closed_at) == (now, now, None)
     assert (detail.rejection_reason, detail.resolution) == (None, None)
+
+
+async def test_how_much_liquidity_a_market_has_is_told_to_admins_only(
+    container: Container, factory: Factory, viewer: AuthenticatedUser, admin: AuthenticatedUser
+) -> None:
+    """The tier, b and the loss budget: to an admin by the address and to one by the
+    row, and to nobody else, whatever they are to the market."""
+    proposer = await factory.user()
+    barista = factory.identity(await factory.barista())
+    appointed = factory.identity(await factory.user(role=UserRole.ADMIN))
+    trader = await factory.user(balance_micro=WALLET)
+    market = await factory.market(tier=MarketTier.TIGHT, created_by=proposer)
+    await factory.position(trader, market, Outcome.YES, shares_micro=40 * MICRO)
+    b_micro = container.settings.pricing.tier_b_micro(MarketTier.TIGHT)
+
+    for one_of_vis in (admin, appointed):
+        told = await container.markets.detail(one_of_vis, market.id)
+        assert (told.tier, told.b_cr, told.max_loss_cr) == (
+            MarketTier.TIGHT,
+            to_cr(b_micro),
+            to_cr(market.budget_micro),
+        )
+        assert market.budget_micro == lmsr.max_loss_micro(b_micro, precision=PRECISION)
+    for someone in (viewer, barista, factory.identity(proposer), factory.identity(trader)):
+        kept = await container.markets.detail(someone, market.id)
+        assert (kept.tier, kept.b_cr, kept.max_loss_cr) == (None, None, None)
+    await assert_books_balance(container.uow_factory)
+
+
+@pytest.mark.parametrize("status", sorted(HIDDEN_STATUSES))
+async def test_a_market_that_was_never_opened_has_no_liquidity_to_tell_an_admin_of(
+    container: Container,
+    factory: Factory,
+    admin: AuthenticatedUser,
+    status: MarketStatus,
+) -> None:
+    """To an admin: no tier yet, and a b and a budget of nothing. To its proposer the
+    three are as blank as for any market."""
+    proposer = await factory.user()
+    market = await factory.market(status=status, created_by=proposer)
+
+    for_the_admin = await container.markets.detail(admin, market.id)
+    own = await container.markets.detail(factory.identity(proposer), market.id)
+
+    assert (for_the_admin.tier, for_the_admin.b_cr, for_the_admin.max_loss_cr) == (
+        None,
+        NOTHING,
+        NOTHING,
+    )
+    assert (own.tier, own.b_cr, own.max_loss_cr) == (None, None, None)
 
 
 @pytest.mark.parametrize(
@@ -1433,6 +1556,74 @@ async def test_selling_gives_stake_back_and_buttons_with_it(
     await assert_books_balance(container.uow_factory)
 
 
+# --- One market: the slider of a buy -----------------------------------------------------
+
+
+def slider_of(detail: MarketDetailResponse) -> tuple[int, int, int] | None:
+    """`(min, max, step)` of the viewer's slider, in whole credits; None for none."""
+    slider = detail.viewer.buy_slider
+    return None if slider is None else (slider.min, slider.max, slider.step)
+
+
+async def test_the_buy_slider_runs_from_the_smallest_buy_to_the_stake_limit_for_a_fresh_trader(
+    container: Container, factory: Factory
+) -> None:
+    """In whole credits, a step of TRADE_STAKE_STEP_CR apart, and it is `MarketView`'s."""
+    alice = factory.identity(await factory.user(balance_micro=WALLET))
+    market = await factory.market()
+
+    detail = await container.markets.detail(alice, market.id)
+
+    assert (STAKE_STEP, STAKE_LIMIT % STAKE_STEP) == (MICRO, 0), "the settings step by one credit"
+    assert BASE.pricing.min_trade_micro == MICRO
+    assert slider_of(detail) == (1, STAKE_LIMIT // MICRO, 1)
+    assert detail.viewer.buy_slider == container.market_view.buy_slider(STAKE_LIMIT, WALLET, True)
+
+
+async def test_the_buy_slider_ends_where_the_balance_does(
+    container: Container, factory: Factory
+) -> None:
+    """Seventeen and a half credits buy for seventeen; less than the smallest buy, and
+    there is no slider."""
+    with_some = factory.identity(await factory.user(balance_micro=17 * MICRO + MICRO // 2))
+    with_one = factory.identity(await factory.user(balance_micro=MICRO))
+    nearly_one = factory.identity(await factory.user(balance_micro=MICRO - 1))
+    broke = factory.identity(await factory.user())
+    market = await factory.market()
+
+    assert slider_of(await container.markets.detail(with_some, market.id)) == (1, 17, 1)
+    assert slider_of(await container.markets.detail(with_one, market.id)) == (1, 1, 1)
+    assert slider_of(await container.markets.detail(nearly_one, market.id)) is None
+    assert slider_of(await container.markets.detail(broke, market.id)) is None
+
+
+async def test_the_buy_slider_ends_where_the_stake_limit_does_and_selling_moves_it_back(
+    container: Container, factory: Factory
+) -> None:
+    """With 30.25 credits of the limit left the slider ends at 30, at the limit there is
+    none, and what a sale brings back can be staked again, down to a whole credit."""
+    alice = await factory.user(balance_micro=WALLET)
+    market = await factory.market()
+    left = 30 * MICRO + MICRO // 4
+    await factory.position(
+        alice, market, Outcome.YES, shares_micro=120 * MICRO, cost_micro=STAKE_LIMIT - left
+    )
+    with_some_left = await container.markets.detail(factory.identity(alice), market.id)
+    await factory.position(alice, market, Outcome.NO, shares_micro=30 * MICRO, cost_micro=left)
+    at_the_limit = await container.markets.detail(factory.identity(alice), market.id)
+
+    received_micro = await sell(container, alice, market, Outcome.YES, 120 * MICRO)
+    after = await container.markets.detail(factory.identity(alice), market.id)
+
+    assert with_some_left.viewer.stake_left_cr == to_cr(left)
+    assert slider_of(with_some_left) == (1, 30, 1)
+    assert (at_the_limit.viewer.stake_left_cr, slider_of(at_the_limit)) == (NOTHING, None)
+    assert after.viewer.stake_left_cr == to_cr(received_micro)
+    assert received_micro % MICRO, "what the sale brought back is no whole number of credits"
+    assert slider_of(after) == (1, received_micro // MICRO, 1)
+    await assert_books_balance(container.uow_factory)
+
+
 # --- One market: the sell buttons --------------------------------------------------------
 
 
@@ -1540,9 +1731,12 @@ async def test_whether_the_viewer_may_trade_and_the_first_reason_why_not(
     block = (await container.markets.detail(factory.identity(alice), market.id)).viewer
 
     assert (block.can_trade, block.cannot_trade_reason) == (reason is None, reason)
-    if reason is not None:
+    if reason is None:
+        assert block.buy_slider is not None
+    else:
         assert not any(preset.allowed for preset in block.stake_presets)
         assert not any(preset.allowed for preset in block.sell_presets)
+        assert block.buy_slider is None
 
 
 async def test_a_halted_market_offers_no_button_to_somebody_with_shares_tokens_and_stake_left(
@@ -1559,9 +1753,11 @@ async def test_a_halted_market_offers_no_button_to_somebody_with_shares_tokens_a
     paused = await container.markets.detail(factory.identity(alice), market.id)
 
     assert any(preset.allowed for preset in trading.viewer.stake_presets)
+    assert trading.viewer.buy_slider is not None
     assert [preset.allowed for preset in trading.viewer.sell_presets[:2]] == [True, True]
     assert paused.viewer.cannot_trade_reason is TradeBlockReason.MARKET_NOT_OPEN
     assert not any(preset.allowed for preset in paused.viewer.stake_presets)
+    assert paused.viewer.buy_slider is None
     assert not any(preset.allowed for preset in paused.viewer.sell_presets)
     # What is offered changed; what the viewer holds did not.
     assert [preset.shares for preset in paused.viewer.sell_presets] == [
@@ -1736,9 +1932,35 @@ async def test_the_route_answers_a_market_with_the_viewers_side_and_amounts_as_s
         "allowed": True,
     }
     assert (body["viewer"]["payout_cr"], body["viewer"]["refund_cr"]) == (None, None)
+    # Whole credits as JSON integers: the stake that is left ends the slider.
+    assert body["viewer"]["buy_slider"] == {
+        "min": 1,
+        "max": (STAKE_LIMIT - paid_micro) // MICRO,
+        "step": 1,
+    }
+    assert all(type(value) is int for value in body["viewer"]["buy_slider"].values())
     assert body["proposer_email"] is None
+    # Nothing about its liquidity reaches somebody who is no admin.
+    assert (body["tier"], body["b_cr"], body["max_loss_cr"]) == (None, None, None)
+    assert "requested_tier" not in body
     assert body["void_rule"] == VOID_RULE
     await assert_books_balance(container.uow_factory)
+
+
+async def test_the_route_tells_an_admin_the_liquidity_of_a_market_as_strings(
+    client: httpx.AsyncClient, as_user: ActAs, container: Container, factory: Factory
+) -> None:
+    market = await factory.market(tier=MarketTier.MEDIUM)
+    as_user(await factory.admin())
+
+    body = (await client.get(f"{MARKETS}/{market.id}")).json()
+
+    assert (body["tier"], body["b_cr"], body["max_loss_cr"]) == (
+        "MEDIUM",
+        format_cr(container.settings.pricing.tier_b_micro(MarketTier.MEDIUM)),
+        format_cr(market.budget_micro),
+    )
+    assert "requested_tier" not in body
 
 
 async def test_the_route_answers_404_for_an_unknown_market_and_for_somebody_elses_proposal(
@@ -1817,12 +2039,19 @@ async def test_whatever_a_viewer_traded_their_side_is_what_market_view_makes_of_
     assert block.stake_presets == view.stake_presets(
         view.stake_left_micro(stake_micro), balance_micro, True
     )
+    assert block.buy_slider == view.buy_slider(
+        view.stake_left_micro(stake_micro), balance_micro, True
+    )
     assert block.sell_presets == view.sell_presets(rows, True)
     assert (block.can_trade, block.can_settle) == (True, False)
     for stake in block.stake_presets:
         if stake.allowed:
             assert stake.amount_cr <= block.balance_cr
             assert stake.amount_cr <= block.stake_left_cr
+    if block.buy_slider is not None:
+        assert 0 < block.buy_slider.min <= block.buy_slider.max
+        assert block.buy_slider.max <= block.balance_cr
+        assert block.buy_slider.max <= block.stake_left_cr
     shares = {held.outcome: held.shares for held in block.holdings}
     for offer in block.sell_presets:
         assert offer.shares <= shares[offer.outcome]

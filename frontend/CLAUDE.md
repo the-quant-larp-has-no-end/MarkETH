@@ -79,7 +79,7 @@ Imports only point downwards. ESLint fails the build otherwise.
 
 Two lengths of the shell are CSS variables, for what has to keep clear of the bars: `--top-bar-space` and `--tab-bar-space` (which is `0px` from 768 px). `bottom-(--tab-bar-space)` is "right above the tab bar".
 
-`ResponsiveSheet` does the focus of DESIGN §15 itself: it notes what had the focus when it opened and gives the focus back to that when it has closed, and below 768 px it takes the focus to the sheet (not to a field, which would slide a keyboard up). A screen opens it by state and does nothing else about focus. `SheetBody` scrolls and its blocks keep their height; `SheetFooter` stays pinned.
+`ResponsiveSheet` does the focus of DESIGN §15 itself: it notes what had the focus when it opened and gives the focus back to that when it has closed, and below 768 px it takes the focus to the sheet (not to a field, which would slide a keyboard up). A screen opens it by state and does nothing else about focus. `SheetBody` scrolls and its blocks keep their height; `SheetFooter` stays pinned. A surface of its own that puts a title over a `SheetBody` (the admin dialogs) takes `sheetHeaderClasses` and gives its header `pb-2`, as the sheet does: what scrolls is then cut below the title, not at its foot. After a refused submit, a form whose button stands below its fields calls `revealFirstInvalid`.
 
 `Button` decides its own width: as wide as its column below 768 px, as wide as its label from there, also inside a column that stretches its children. `width="full"` (the buttons of a sheet, a pair that shares a row) and `width="fit"` (a button beside text, in a banner or a table) say otherwise. An icon button takes no width.
 

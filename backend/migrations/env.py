@@ -43,7 +43,10 @@ def _run_migrations(connection: Connection) -> None:
 
 
 async def _run_online() -> None:
-    engine = create_async_engine(_settings().postgres.owner_url, poolclass=NullPool)
+    # A statement that fails is reported without the values it was sent with.
+    engine = create_async_engine(
+        _settings().postgres.owner_url, poolclass=NullPool, hide_parameters=True
+    )
     try:
         async with engine.connect() as connection:
             await connection.run_sync(_run_migrations)

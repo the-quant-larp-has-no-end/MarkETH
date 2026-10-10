@@ -22,11 +22,17 @@ IdempotencyKey = Annotated[
 ]
 
 
-@router.get("/{market_id}/quote", summary="Price a trade without executing it")
+@router.get(
+    "/{market_id}/quote",
+    summary="Price a trade for the caller, or answer the error the trade would get",
+)
 async def get_quote(
-    market_id: UUID, query: Annotated[QuoteQuery, Query()], quotes: QuoteServiceDep
+    market_id: UUID,
+    query: Annotated[QuoteQuery, Query()],
+    viewer: CurrentUser,
+    quotes: QuoteServiceDep,
 ) -> QuoteResponse:
-    return await quotes.quote(market_id, query)
+    return await quotes.quote(viewer, market_id, query)
 
 
 @router.post(

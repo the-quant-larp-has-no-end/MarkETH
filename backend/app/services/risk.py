@@ -65,6 +65,13 @@ class RiskService:
           obligations, not inside them (A.6).
         * `code_issuance_this_month_cr = codes.issued_value_since(start_of_month(now,
           APP_TIMEZONE))` against `MAX_CODE_ISSUANCE_PER_MONTH`.
+        * `adjustments_this_month_cr = journal.net_adjustments_since(<the same start
+          of the month>)`: what the `ADMIN_ADJUSTMENT` entries booked since then added
+          to users' balances, minus what they took away, so it is below zero in a
+          month in which the admins took more than they gave. An entry counts for
+          the month its `created_at` lies in, on the calendar of `APP_TIMEZONE`. It
+          is reported beside the codes and counts against no cap: one adjustment is
+          bounded by `MAX_ADMIN_ADJUSTMENT_CR` (`AdminUserService.adjust_balance`).
         * `markets`: one row per market of `markets.list_by_statuses(
           UNSETTLED_STATUSES)` (soonest `close_at` first) with its effective status,
           display `p_yes`, the balance of its account (all of them in one query,
@@ -93,6 +100,7 @@ class RiskService:
             market_exposure_micro = await uow.markets.sum_exposure_by_statuses(UNSETTLED_STATUSES)
             unredeemed_code_value_micro = await uow.codes.unredeemed_value(now)
             code_issuance_micro = await uow.codes.issued_value_since(month_start)
+            adjustments_micro = await uow.journal.net_adjustments_since(month_start)
             markets = await uow.markets.list_by_statuses(UNSETTLED_STATUSES)
             market_ids = [market.id for market in markets]
             accounts = await uow.accounts.list_market_accounts(market_ids)
@@ -128,6 +136,7 @@ class RiskService:
             unredeemed_code_value_cr=to_cr(unredeemed_code_value_micro),
             code_issuance_this_month_cr=to_cr(code_issuance_micro),
             max_code_issuance_per_month_cr=to_cr(self._settings.codes.max_issuance_per_month_micro),
+            adjustments_this_month_cr=to_cr(adjustments_micro),
             markets=rows,
             alerts=[_alert_item(alert) for alert in alerts],
         )

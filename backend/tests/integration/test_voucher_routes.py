@@ -58,6 +58,7 @@ def voucher(**overrides: object) -> dict[str, object]:
         "product_id": "mate",
         "product_name": "Mate",
         "status": VoucherStatus.ACTIVE,
+        "refunded": False,
         "value_cr": to_cr(35 * MICRO),
         "created_at": TEST_NOW,
         "expires_at": EXPIRES_AT,
@@ -70,6 +71,7 @@ VOUCHER_JSON: Final[dict[str, object]] = {
     "product_id": "mate",
     "product_name": "Mate",
     "status": "ACTIVE",
+    "refunded": False,
     "value_cr": "35",
     "created_at": "2026-10-09T12:00:00Z",
     "expires_at": EXPIRES_AT_JSON,
@@ -84,6 +86,9 @@ class RecordedVouchers:
     def __init__(self) -> None:
         self.calls: list[tuple[object, ...]] = []
         self.refusal: AppError | None = None
+        self.repeat = False
+        """What `redeem` answers as `repeat`: whether the scan is one of a voucher this
+        barista redeemed a moment ago."""
 
     async def products(self, user: AuthenticatedUser) -> VoucherProductListResponse:
         self.calls.append(("products", user))
@@ -113,7 +118,9 @@ class RecordedVouchers:
         self.calls.append(("replace_code", user, voucher_id))
         if self.refusal is not None:
             raise self.refusal
-        return VoucherCodeResponse(voucher_id=voucher_id, code="W3RT-0HJ8", expires_at=EXPIRES_AT)
+        return VoucherCodeResponse(
+            voucher_id=voucher_id, product_name="Mate", code="W3RT-0HJ8", expires_at=EXPIRES_AT
+        )
 
     async def list_for_user(self, user: AuthenticatedUser) -> VoucherListResponse:
         self.calls.append(("list_for_user", user))
@@ -129,6 +136,7 @@ class RecordedVouchers:
             product_name="Mate",
             value_cr=to_cr(35 * MICRO),
             redeemed_at=TEST_NOW,
+            repeat=self.repeat,
         )
 
 
@@ -268,6 +276,7 @@ async def test_a_fresh_code_is_asked_for_by_the_vouchers_id_alone(
     assert response.status_code == 200
     assert response.json() == {
         "voucher_id": str(VOUCHER_ID),
+        "product_name": "Mate",
         "code": "W3RT-0HJ8",
         "expires_at": EXPIRES_AT_JSON,
     }
@@ -372,8 +381,31 @@ async def test_the_barista_is_told_which_product_a_scanned_voucher_is_for(
         "product_name": "Mate",
         "value_cr": "35",
         "redeemed_at": "2026-10-09T12:00:00Z",
+        "repeat": False,
     }
     assert vouchers.calls == [("redeem", barista, "w3rt-0hj8")]
+
+
+async def test_a_repeated_scan_leaves_as_the_same_answer_marked_as_a_repeat(
+    client: httpx.AsyncClient, as_user: ActAs, vouchers: RecordedVouchers
+) -> None:
+    """200 like the first scan: the screen tells the two apart by `repeat` alone."""
+    barista = someone(UserRole.BARISTA)
+    as_user(barista)
+    vouchers.repeat = True
+
+    response = await client.post("/api/barista/vouchers/redeem", json={"code": "W3RT-0HJ8"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "voucher_id": str(VOUCHER_ID),
+        "product_id": "mate",
+        "product_name": "Mate",
+        "value_cr": "35",
+        "redeemed_at": "2026-10-09T12:00:00Z",
+        "repeat": True,
+    }
+    assert vouchers.calls == [("redeem", barista, "W3RT-0HJ8")]
 
 
 @pytest.mark.parametrize(

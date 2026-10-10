@@ -16,7 +16,7 @@ export type { TradeIntent } from "./intent";
 export type TradeTicketProps = {
   /**
    * The market as `GET /markets/{market_id}` answers it. The ticket takes its presets,
-   * the balance and what may be sold from `market.viewer`.
+   * the range of its slider, the balance and what may be sold from `market.viewer`.
    */
   market: MarketDetailResponse;
   /** What the ticket is set to. The owner keeps it, so that the address can follow it. */
@@ -37,14 +37,18 @@ export type TradeTicketProps = {
  *
  * It brings its own two parts, the `SheetBody` that scrolls and the `SheetFooter` that
  * keeps Confirm pinned, each with the 16 px padding of a sheet. Put it straight into a
- * `ResponsiveSheet` or onto the panel's surface, not inside another body or padding.
+ * `ResponsiveSheet` or onto the panel's surface, not inside another body or padding. The
+ * header above it is the surface's: the question, and in a sheet the close cross. A sheet
+ * cannot be closed while its trade is on its way, which the surface learns from
+ * `useTradeOut`.
  *
- * What the ticket owns: the quote, the request with its Idempotency-Key and its retry
- * (DESIGN.md §14), the receipt, and reading the market and the caller's balance again
- * when it opens, so that the balance and the presets are current. None of it is component state (`ticket-store.ts`):
- * a trade without a verdict, and whatever else the ticket shows, is still there when the
- * sheet is closed and opened again or turns into a dialog. While such a trade waits, the
- * ticket shows it, whatever `intent` says.
+ * What the ticket owns: the amount of a buy, the quote, the request with its
+ * Idempotency-Key and its retry (DESIGN.md §14), the receipt, and reading the market and
+ * the caller's balance again when it opens, so that the balance, the presets and the
+ * slider are current. None of it is component state (`ticket-store.ts`): a trade without a
+ * verdict, and whatever else the ticket shows, is still there when the ticket is mounted
+ * afresh, as it is when a sheet turns into a dialog. While such a trade waits, the ticket
+ * shows it, whatever `intent` says.
  */
 export function TradeTicket({ market, intent, onIntentChange }: TradeTicketProps) {
   const { ticket, store } = useTicket(market.id);

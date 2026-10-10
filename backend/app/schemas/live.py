@@ -43,6 +43,10 @@ class HistoryResponse(ResponseModel):
 
     points: list[HistoryPoint]
     source: HistorySource
+    until: datetime
+    """The right edge of the chart: the server's now while the market can still trade,
+    otherwise the moment trading ended. A chart is drawn up to here, and with no
+    clock of the device."""
 
 
 class QuoteEvent(ResponseModel):

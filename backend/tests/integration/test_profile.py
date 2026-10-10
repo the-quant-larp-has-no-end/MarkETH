@@ -2,8 +2,9 @@
 (SPEC §3, §12 "Grants", Appendix A.3).
 
 The first save writes the `users` row, the ledger account and the signup grant together
-or not at all; every later save edits the row and books nothing. Two advisory locks
-order what no row lock can: two saves of one person, and two people who want one name.
+or not at all, and only for somebody who accepts the usage policy with it; every later
+save edits the row and books nothing. Two advisory locks order what no row lock can:
+two saves of one person, and two people who want one name.
 The races are run against a real Postgres, where the second transaction really waits
 for the first.
 
@@ -44,11 +45,15 @@ from app.core.units import format_cr, to_cr
 from app.models import Account, Grant, JournalEntry, Posting, User
 from app.schemas.profile import ProfileSavedResponse, SaveProfileRequest
 from app.services.ledger import LedgerRef, signup_grant_key
-from app.services.profile import RESERVED_USERNAME_MESSAGE, UNKNOWN_PROGRAMME_MESSAGE
+from app.services.profile import (
+    POLICY_NOT_ACCEPTED_MESSAGE,
+    RESERVED_USERNAME_MESSAGE,
+    UNKNOWN_PROGRAMME_MESSAGE,
+)
 from tests.support.books import assert_books_balance, count_rows
 from tests.support.clock import FrozenClock
 from tests.support.factories import ActAs, Factory, PortalHeaders
-from tests.support.settings import TEST_ADMIN_EMAILS, TEST_BARISTA_EMAILS, load_base_settings
+from tests.support.settings import TEST_ADMIN_EMAILS, load_base_settings
 
 pytestmark = pytest.mark.integration
 
@@ -85,15 +90,36 @@ ONE_PROFILE: Final[dict[str, int]] = {"users": 1, "accounts": 1, "grants": 1, "e
 did: their row, their account, their signup grant and the entry that booked it."""
 
 
-def profile(username: str = "neo", degree: Degree = BACHELOR) -> SaveProfileRequest:
+def profile(
+    username: str = "neo", degree: Degree = BACHELOR, *, policy_accepted: bool = True
+) -> SaveProfileRequest:
+    """What the set-up screen sends: a username, a degree and the usage policy,
+    accepted unless a test says otherwise."""
+    level, programme = degree
+    return SaveProfileRequest(
+        username=username,
+        degree_level=level,
+        degree_programme=programme,
+        policy_accepted=policy_accepted,
+    )
+
+
+def edit(username: str = "neo", degree: Degree = BACHELOR) -> SaveProfileRequest:
+    """What the profile screen sends: a username and a degree, and no word about the
+    usage policy."""
     level, programme = degree
     return SaveProfileRequest(username=username, degree_level=level, degree_programme=programme)
 
 
-def body(username: str = "neo", degree: Degree = BACHELOR) -> dict[str, str]:
+def body(username: str = "neo", degree: Degree = BACHELOR) -> dict[str, object]:
     """The JSON a browser sends for `profile(username, degree)`."""
     level, programme = degree
-    return {"username": username, "degree_level": level.value, "degree_programme": programme}
+    return {
+        "username": username,
+        "degree_level": level.value,
+        "degree_programme": programme,
+        "policy_accepted": True,
+    }
 
 
 async def written(container: Container) -> dict[str, int]:
@@ -172,7 +198,9 @@ async def test_the_first_save_creates_the_user_the_account_and_books_the_signup_
         postings = (await uow.session.scalars(select(Posting).order_by(Posting.amount_micro))).all()
     assert (user.id, user.name, user.status) == (saved.id, "Thomas Anderson", UserStatus.ACTIVE)
     assert what_a_person_stated(user) == ("neo", *MASTER)
-    assert user.created_at == clock.now()
+    assert user.role is UserRole.USER
+    assert user.created_at == user.policy_accepted_at == clock.now()
+    assert saved.policy_accepted_at == clock.now()
     assert (account.kind, account.balance_micro) == (AccountKind.USER, signup_micro)
     assert (grant.user_id, grant.period, grant.entry_id) == (user.id, SIGNUP_GRANT_PERIOD, entry.id)
     assert grant.created_at == clock.now()
@@ -223,6 +251,91 @@ async def test_a_first_save_that_fails_leaves_nothing_behind(
     await assert_books_balance(container.uow_factory)
 
 
+# --- The usage policy ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "request_without_it",
+    [profile(policy_accepted=False), edit()],
+    ids=["declined", "left-out"],
+)
+async def test_a_profile_is_not_created_without_the_usage_policy_accepted(
+    container: Container, request_without_it: SaveProfileRequest
+) -> None:
+    """422 on the field, and nothing is written: no user, no account, no grant."""
+    with pytest.raises(ValidationFailedError) as refused:
+        await container.profile.save(NEO, request_without_it)
+
+    assert (refused.value.status_code, refused.value.code) == (422, ErrorCode.VALIDATION_ERROR)
+    assert refused.value.details == {"field": "policy_accepted"}
+    assert refused.value.message == POLICY_NOT_ACCEPTED_MESSAGE
+    assert await written(container) == NOTHING
+
+    saved = await container.profile.save(NEO, profile())
+
+    assert saved.signup_granted is True
+    assert await written(container) == ONE_PROFILE
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_the_instant_the_policy_was_accepted_is_the_instant_the_profile_was_created(
+    container: Container, clock: FrozenClock
+) -> None:
+    """Kept with the row and reported by every answer about the user. A later save,
+    which says nothing about the policy, leaves it as it is."""
+    created = await container.profile.save(NEO, profile())
+    accepted_at = clock.now()
+    clock.advance(timedelta(days=3))
+
+    edited = await container.profile.save(NEO, edit("the_one", MASTER))
+    declined = await container.profile.save(NEO, profile("neo", policy_accepted=False))
+
+    assert created.policy_accepted_at == edited.policy_accepted_at == accepted_at
+    assert declined.policy_accepted_at == accepted_at, "an edit does not look at the field"
+    user = await stored(container, NEO.email)
+    assert (user.policy_accepted_at, user.created_at) == (accepted_at, accepted_at)
+    assert await written(container) == ONE_PROFILE
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_the_policy_is_asked_for_before_the_username_is_looked_up(
+    container: Container, factory: Factory
+) -> None:
+    """A newcomer who asks for a taken name without accepting the policy hears of the
+    policy: a mistake in the request comes before a clash with somebody else."""
+    await factory.user(username="the_one")
+    before = await written(container)
+
+    with pytest.raises(ValidationFailedError) as refused:
+        await container.profile.save(NEO, profile("the_one", policy_accepted=False))
+
+    assert refused.value.details == {"field": "policy_accepted"}
+    with pytest.raises(UsernameTakenError):
+        await container.profile.save(NEO, profile("the_one"))
+    assert await written(container) == before
+
+
+async def test_one_of_two_first_saves_without_the_policy_does_not_stop_the_other(
+    container: Container,
+) -> None:
+    """A double tap of which only one carries the acceptance: whichever order they run
+    in, the profile is created once and the other save either is refused or edits it."""
+    outcomes = await asyncio.gather(
+        container.profile.save(NEO, profile("neo")),
+        container.profile.save(NEO, profile("neo", policy_accepted=False)),
+        return_exceptions=True,
+    )
+
+    saved = [outcome for outcome in outcomes if isinstance(outcome, ProfileSavedResponse)]
+    refused = [outcome for outcome in outcomes if isinstance(outcome, ValidationFailedError)]
+    assert len(saved) + len(refused) == 2, outcomes
+    assert isinstance(outcomes[0], ProfileSavedResponse), "the one that accepted goes through"
+    assert [one.signup_granted for one in saved].count(True) == 1
+    assert all(error.details == {"field": "policy_accepted"} for error in refused)
+    assert await written(container) == ONE_PROFILE
+    await assert_books_balance(container.uow_factory)
+
+
 # --- Every later save ------------------------------------------------------------------
 
 
@@ -234,7 +347,7 @@ async def test_a_second_save_edits_the_profile_and_grants_nothing(
     clock.advance(timedelta(hours=3))
     renamed_by_the_portal = PortalIdentity(email=NEO.email, name="Neo", role=UserRole.USER)
 
-    edited = await container.profile.save(renamed_by_the_portal, profile("the_one", MASTER))
+    edited = await container.profile.save(renamed_by_the_portal, edit("the_one", MASTER))
 
     assert edited.signup_granted is False
     assert (edited.id, edited.email, edited.created_at) == (created.id, NEO.email, signed_up_at)
@@ -254,7 +367,7 @@ async def test_a_profile_can_be_changed_as_often_as_its_owner_likes(
     await container.profile.save(NEO, profile("neo", BACHELOR))
 
     for username, degree in (("neo_2", MASTER), ("neo_3", DOCTORATE), ("neo", BACHELOR)):
-        saved = await container.profile.save(NEO, profile(username, degree))
+        saved = await container.profile.save(NEO, edit(username, degree))
         assert (saved.username, saved.degree_level, saved.degree_programme) == (username, *degree)
         assert saved.signup_granted is False
 
@@ -468,7 +581,7 @@ async def test_a_reserved_name_is_422_on_the_username(container: Container, user
     "who",
     [
         PortalIdentity(email=TEST_ADMIN_EMAILS[0], name="Ada Admin", role=UserRole.ADMIN),
-        PortalIdentity(email=TEST_BARISTA_EMAILS[0], name="Bea Barista", role=UserRole.BARISTA),
+        PortalIdentity(email="bea@ethz.ch", name="Bea Barista", role=UserRole.BARISTA),
     ],
     ids=["an-admin", "a-barista"],
 )
@@ -592,24 +705,41 @@ async def test_what_a_save_is_refused_for_is_decided_before_any_transaction(
         refused_on(refused, field)
 
 
-# --- The role in the answer --------------------------------------------------------------
+# --- The role in the answer and in the row -----------------------------------------------
 
 
 @pytest.mark.parametrize("role", list(UserRole))
-async def test_the_answer_carries_the_role_of_the_identity_and_no_column_keeps_it(
+async def test_the_answer_carries_the_role_of_the_identity_and_the_row_starts_as_user(
     container: Container, factory: Factory, role: UserRole
 ) -> None:
-    """The service takes the role from whoever the portal named. `GET /me` then
-    reports what the address stands for at that moment: the save stored nothing."""
+    """The service answers with the role the request was let in with and writes USER
+    into every new row, whoever creates it: a bootstrap admin is one by its address.
+    `GET /me` then reports what the row and the address amount to."""
     named = PortalIdentity(email=NEO.email, name=NEO.name, role=role)
 
     created = await container.profile.save(named, profile())
-    edited = await container.profile.save(named, profile("the_one"))
+    edited = await container.profile.save(named, edit("the_one"))
 
     assert created.role is edited.role is role
     user = await stored(container, NEO.email)
+    assert user.role is UserRole.USER
     assert (await container.account.me(factory.identity(user))).role is UserRole.USER
     await assert_books_balance(container.uow_factory)
+
+
+@pytest.mark.parametrize("given", [UserRole.BARISTA, UserRole.ADMIN])
+async def test_saving_a_profile_leaves_the_role_an_admin_gave(
+    container: Container, factory: Factory, given: UserRole
+) -> None:
+    """Nobody changes their own role by saving their profile."""
+    await factory.user(email=NEO.email, username="neo", role=given)
+    as_they_are = PortalIdentity(email=NEO.email, name=NEO.name, role=given)
+
+    saved = await container.profile.save(as_they_are, edit("the_one", MASTER))
+
+    assert saved.role is given
+    user = await stored(container, NEO.email)
+    assert (user.role, user.username) == (given, "the_one")
 
 
 # --- Through the route, as the portal names the caller ---------------------------------
@@ -624,10 +754,11 @@ ME_FIELDS: Final[set[str]] = {
     "degree_programme",
     "role",
     "created_at",
+    "policy_accepted_at",
     "balance_cr",
     "can_get_voucher",
     "monthly_grant_cr",
-    "next_monthly_grant_on",
+    "next_monthly_grant_at",
 }
 
 
@@ -670,13 +801,18 @@ async def test_a_newcomer_sets_up_a_profile_through_the_portal_headers(
     )
     assert (answer["degree_level"], answer["degree_programme"]) == (MASTER[0].value, MASTER[1])
     assert (answer["role"], answer["balance_cr"]) == ("USER", signup_cr)
+    assert answer["policy_accepted_at"] == answer["created_at"]
     assert await written(container) == ONE_PROFILE
 
     me = await client.get("/api/me", headers=headers)
     assert me.status_code == 200, me.text
     assert me.json() == {field: answer[field] for field in ME_FIELDS}
 
-    edited = await client.put("/api/me/profile", json=body("zoe_m", BACHELOR), headers=headers)
+    # The profile screen sends no word about the policy.
+    changed = {
+        key: value for key, value in body("zoe_m", BACHELOR).items() if key != "policy_accepted"
+    }
+    edited = await client.put("/api/me/profile", json=changed, headers=headers)
     assert edited.status_code == 200, edited.text
     assert (edited.json()["signup_granted"], edited.json()["username"]) == (False, "zoe_m")
     assert (edited.json()["id"], edited.json()["balance_cr"]) == (answer["id"], signup_cr)
@@ -689,18 +825,18 @@ async def test_a_newcomer_sets_up_a_profile_through_the_portal_headers(
     [
         (TEST_ADMIN_EMAILS[0], "ADMIN"),
         (TEST_ADMIN_EMAILS[1], "ADMIN"),
-        (TEST_BARISTA_EMAILS[0], "BARISTA"),
         ("someone@ethz.ch", "USER"),
     ],
 )
-async def test_an_address_of_a_role_list_gets_its_role_in_the_answer(
+async def test_a_bootstrap_admin_is_an_admin_from_its_first_save_and_everybody_else_a_user(
     client: httpx.AsyncClient,
     container: Container,
     portal_headers: PortalHeaders,
     email: str,
     role: str,
 ) -> None:
-    """Nothing in the request says admin. The address does, to the application."""
+    """Nothing in the request says admin. The address does, to the application, and
+    the row it writes says USER for both."""
     named = PortalIdentity(email=email, name="", role=UserRole.USER)
 
     created = await client.put("/api/me/profile", json=body("ada"), headers=portal_headers(named))
@@ -709,7 +845,46 @@ async def test_an_address_of_a_role_list_gets_its_role_in_the_answer(
     assert (created.json()["role"], created.json()["signup_granted"]) == (role, True)
     me = await client.get("/api/me", headers=portal_headers(named))
     assert (me.status_code, me.json()["role"]) == (200, role)
+    assert (await stored(container, email)).role is UserRole.USER
     await assert_books_balance(container.uow_factory)
+
+
+@pytest.mark.parametrize(
+    "sent",
+    [
+        {key: value for key, value in body().items() if key != "policy_accepted"},
+        body() | {"policy_accepted": False},
+    ],
+    ids=["left-out", "false"],
+)
+async def test_the_route_answers_a_first_save_without_the_policy_with_422_on_the_field(
+    client: httpx.AsyncClient,
+    container: Container,
+    portal_headers: PortalHeaders,
+    sent: dict[str, object],
+) -> None:
+    response = await client.put("/api/me/profile", json=sent, headers=portal_headers(NEO))
+
+    assert error_of(response, 422, "VALIDATION_ERROR") == {"field": "policy_accepted"}
+    assert response.json()["message"] == POLICY_NOT_ACCEPTED_MESSAGE
+    assert await written(container) == NOTHING
+    still = await client.get("/api/me", headers=portal_headers(NEO))
+    assert error_of(still, 403, "PROFILE_REQUIRED")["email"] == NEO.email
+
+
+@pytest.mark.parametrize("not_a_boolean", [1, 0, "true", "yes", None], ids=repr)
+async def test_the_policy_field_takes_a_boolean_and_nothing_that_merely_counts_as_one(
+    client: httpx.AsyncClient, container: Container, as_user: ActAs, not_a_boolean: object
+) -> None:
+    as_user(NEO)
+
+    response = await client.put("/api/me/profile", json=body() | {"policy_accepted": not_a_boolean})
+
+    details = error_of(response, 422, "VALIDATION_ERROR")
+    assert [(error["loc"], error["type"]) for error in details["errors"]] == [
+        (["body", "policy_accepted"], "bool_type")
+    ]
+    assert await written(container) == NOTHING
 
 
 async def test_the_route_answers_a_taken_name_with_409_and_the_field(
@@ -747,7 +922,7 @@ async def test_the_route_answers_what_the_service_refuses_with_422_on_the_field(
     client: httpx.AsyncClient,
     container: Container,
     as_user: ActAs,
-    sent: dict[str, str],
+    sent: dict[str, object],
     field: str,
     message: str,
 ) -> None:

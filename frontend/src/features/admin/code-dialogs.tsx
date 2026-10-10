@@ -50,7 +50,7 @@ export function NewBatchDialog({
   pending: boolean;
   error: ApiError | null;
   onSubmit: (batch: CreateCodeBatchRequest) => void;
-  /** The input changed: an answer about what was sent no longer applies. */
+  /** The input changed, and an answer holds only for what was sent. */
   onEdited: () => void;
 }) {
   const config = useConfig();
@@ -234,7 +234,7 @@ export function LeaveCodesDialog({
         <AlertDialogFooter>
           <AlertDialogCancel>{away ? "Stay" : "Cancel"}</AlertDialogCancel>
           <Button variant="destructive" onClick={onLeave}>
-            {away ? "Leave" : "Close"}
+            {away ? "Leave" : "Close codes"}
           </Button>
         </AlertDialogFooter>
       </AlertDialogContent>

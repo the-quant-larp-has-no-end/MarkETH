@@ -15,6 +15,11 @@ issued the voucher and nowhere else; its owner can have it replaced (`replace_co
 which is also how a code that never reached the phone is recovered. A voucher's code
 crosses the API in a request or response body, never in a path or a query.
 
+A barista's scan redeems a voucher once. The barista who redeemed it is shown that
+redemption again when they scan it once more within `VOUCHER_RESCAN_SECONDS`, because
+the answer to the first scan may not have reached their screen; nothing is booked for
+it, and to anybody else the voucher is used up.
+
 Lock order in every method: the voucher owner's account first, then the voucher row.
 Every user has an account, because the profile transaction creates the two together.
 
@@ -23,6 +28,7 @@ waited for a lock decides with the time at which it got it.
 """
 
 from datetime import datetime
+from typing import Final
 from uuid import UUID
 
 from app.core.clock import Clock
@@ -60,6 +66,10 @@ from app.services.ledger import (
     voucher_redeem_key,
     voucher_refund_key,
 )
+
+UNKNOWN_PRODUCT_MESSAGE: Final[str] = "Choose one of the products on offer."
+"""Message of the `ValidationFailedError` that `issue` answers for a `product_id` that
+`VOUCHER_PRODUCTS` does not list."""
 
 
 class VoucherService:
@@ -107,8 +117,8 @@ class VoucherService:
         """Turn the price of a product into a voucher for it (`POST /vouchers`).
 
         Before any transaction: `product = settings.vouchers.product(
-        request.product_id)`. None raises `ValidationFailedError` (422) with
-        `details={"field": "product_id"}`.
+        request.product_id)`. None raises `ValidationFailedError` (422,
+        `UNKNOWN_PRODUCT_MESSAGE`) with `details={"field": "product_id"}`.
 
         One transaction:
         1. Lock the user's account (`accounts.get_user_account(user.id,
@@ -140,7 +150,7 @@ class VoucherService:
         """
         product = self._vouchers.product(request.product_id)
         if product is None:
-            raise ValidationFailedError(details={"field": "product_id"})
+            raise ValidationFailedError(UNKNOWN_PRODUCT_MESSAGE, details={"field": "product_id"})
 
         code = generate_code(self._vouchers.code_length)
         async with self._uow_factory() as uow:
@@ -186,6 +196,7 @@ class VoucherService:
             product_id=voucher.product_id,
             product_name=voucher.product_name,
             status=voucher.status,
+            refunded=_is_refunded(voucher),
             value_cr=to_cr(voucher.value_micro),
             created_at=voucher.created_at,
             expires_at=voucher.expires_at,
@@ -244,7 +255,10 @@ class VoucherService:
             voucher.code_hash = hash_code(code)
 
         return VoucherCodeResponse(
-            voucher_id=voucher.id, code=format_code(code), expires_at=voucher.expires_at
+            voucher_id=voucher.id,
+            product_name=voucher.product_name,
+            code=format_code(code),
+            expires_at=voucher.expires_at,
         )
 
     async def list_for_user(self, user: AuthenticatedUser) -> VoucherListResponse:
@@ -266,6 +280,7 @@ class VoucherService:
                     product_id=voucher.product_id,
                     product_name=voucher.product_name,
                     status=_effective_status(voucher, now),
+                    refunded=_is_refunded(voucher),
                     value_cr=to_cr(voucher.value_micro),
                     created_at=voucher.created_at,
                     expires_at=voucher.expires_at,
@@ -289,21 +304,37 @@ class VoucherService:
            means its owner replaced the code in between: `CodeInvalidError`. So does a
            voucher that is not that owner's: the code would have had to pass from one
            voucher to another in between, and the account that is locked would not be
-           the one a refund belongs to.
-        3. Status REDEEMED or EXPIRED: `CodeInvalidError`.
-        4. ACTIVE but `expires_at <= now`: refund it exactly as `expire_due` does and
+           the one a refund belongs to. Then read the clock.
+        3. Status REDEEMED: a repeat when `_is_repeat` says so, otherwise
+           `CodeInvalidError`. A repeat is the scan of a voucher that this very
+           barista redeemed (`redeemed_by == barista.id`) at most
+           `VOUCHER_RESCAN_SECONDS` ago (`now - redeemed_at <= settings.vouchers.
+           rescan_window`, the last second of the window included). It is answered
+           like the scan that redeemed the voucher, with the same `redeemed_at`, and
+           `repeat=True`. Nothing is written: no row changes and no entry is posted.
+        4. Status EXPIRED: `CodeInvalidError`.
+        5. ACTIVE but `expires_at <= now`: refund it exactly as `expire_due` does and
            let the transaction commit; then, after the block, raise `CodeInvalidError`.
-        5. Otherwise set `status=REDEEMED`, `redeemed_by=barista.id` and
+        6. Otherwise set `status=REDEEMED`, `redeemed_by=barista.id` and
            `redeemed_at=now` together, and post `VOUCHER_REDEEM`:
            `vis:redemption_pending` -t, `vis:redeemed` +t, with t the row's
-           `value_micro` and `voucher_redeem_key(voucher.id)`.
+           `value_micro` and `voucher_redeem_key(voucher.id)`. The answer carries
+           `repeat=False`.
 
         Returns the voucher's id, its `product_id` and `product_name` from the row
-        (what the barista hands over), `value_cr` and `redeemed_at`.
+        (what the barista hands over), `value_cr`, `redeemed_at` and `repeat`.
+
+        Why a repeat is answered at all. The answer to the scan that redeems a voucher
+        can get lost on its way to the barista's screen, and the barista then scans
+        the same voucher again. The screen has to tell "you redeemed this a moment
+        ago" from a voucher that somebody else used up, and only the server knows
+        which it is. The repeat gives away nothing: it goes to the one barista who
+        redeemed the voucher, who was told all of it by the first answer.
 
         Every failure is the one generic `CodeInvalidError` (400), so a voucher cannot
-        be probed (A.6). A second scan of a redeemed voucher fails at step 3, and a
-        scan of a code that was replaced fails at step 2.
+        be probed (A.6). The scan of a redeemed voucher by anybody else, or by the
+        same barista after the window, fails at step 3, and a scan of a code that was
+        replaced fails at step 2.
         """
         normalized = normalize_code(code)
         if normalized is None or len(normalized) != self._vouchers.code_length:
@@ -319,10 +350,13 @@ class VoucherService:
             voucher = await uow.vouchers.get_by_hash(code_hash, for_update=True)
             if voucher is None or voucher.user_id != account.owner_id:
                 raise CodeInvalidError
+
+            now = self._clock.now()
+            if self._is_repeat(voucher, barista, now):
+                return _redemption(voucher, repeat=True)
             if voucher.status is not VoucherStatus.ACTIVE:
                 raise CodeInvalidError
 
-            now = self._clock.now()
             pending = await uow.accounts.get_system_account(AccountKind.VIS_REDEMPTION_PENDING)
             if voucher.expires_at <= now:
                 await self._refund(uow, voucher, account.id, pending.id, now)
@@ -343,19 +377,25 @@ class VoucherService:
                     ],
                     at=now,
                 )
-                answer = VoucherRedeemResponse(
-                    voucher_id=voucher.id,
-                    product_id=voucher.product_id,
-                    product_name=voucher.product_name,
-                    value_cr=to_cr(voucher.value_micro),
-                    redeemed_at=now,
-                )
+                answer = _redemption(voucher, repeat=False)
 
         if answer is None:
             # The voucher had expired. Its refund is committed; the scan still fails,
             # with the answer every other failure gets.
             raise CodeInvalidError
         return answer
+
+    def _is_repeat(self, voucher: Voucher, barista: AuthenticatedUser, now: datetime) -> bool:
+        """Whether a scan by `barista` at `now` is one of a voucher they redeemed a
+        moment ago: the row is REDEEMED, `barista` is who redeemed it, and that was
+        at most `VOUCHER_RESCAN_SECONDS` before `now`. The caller holds the lock on
+        the row."""
+        if voucher.status is not VoucherStatus.REDEEMED or voucher.redeemed_at is None:
+            return False
+        return (
+            voucher.redeemed_by == barista.id
+            and now - voucher.redeemed_at <= self._vouchers.rescan_window
+        )
 
     async def expire_due(self, uow: UnitOfWork, account: Account) -> int:
         """Refund the expired vouchers of an account's owner and return how many that
@@ -417,6 +457,28 @@ def _effective_status(voucher: Voucher, now: datetime) -> VoucherStatus:
     if voucher.status is VoucherStatus.ACTIVE and voucher.expires_at <= now:
         return VoucherStatus.EXPIRED
     return voucher.status
+
+
+def _redemption(voucher: Voucher, *, repeat: bool) -> VoucherRedeemResponse:
+    """What a barista is told about a voucher that is REDEEMED: what to hand over, and
+    when it was redeemed, which is the row's own `redeemed_at` in a repeat too."""
+    if voucher.redeemed_at is None:
+        raise ValueError(f"voucher {voucher.id} is {voucher.status} and was never redeemed")
+    return VoucherRedeemResponse(
+        voucher_id=voucher.id,
+        product_id=voucher.product_id,
+        product_name=voucher.product_name,
+        value_cr=to_cr(voucher.value_micro),
+        redeemed_at=voucher.redeemed_at,
+        repeat=repeat,
+    )
+
+
+def _is_refunded(voucher: Voucher) -> bool:
+    """Whether the refund of an expired voucher has been booked. The row says EXPIRED
+    from the statement that books it (`_refund`) and never before: until then an
+    expired voucher is an ACTIVE row past its `expires_at`."""
+    return voucher.status is VoucherStatus.EXPIRED
 
 
 async def _account_of(uow: UnitOfWork, user_id: UUID, *, for_update: bool = False) -> Account:

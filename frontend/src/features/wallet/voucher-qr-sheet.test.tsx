@@ -1,6 +1,7 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
 
+import type { VoucherCodeResponse } from "@/lib/api/schema";
 import { voucherCode, voucherItem } from "@/test/fixtures";
 import { apiError, deferred, errorPage, json, noAnswer } from "@/test/http";
 
@@ -16,6 +17,14 @@ const TWO_ACTIVE = json(200, {
   ],
 });
 
+/** A fresh code for the Mate voucher, as the API answers: with the product the voucher is for. */
+const mateCode = (code = "B4T8WN3C", overrides: Partial<VoucherCodeResponse> = {}) =>
+  voucherCode({ voucher_id: MATE, product_name: "Mate", code, ...overrides });
+
+/** The same for the Coffee voucher. */
+const coffeeCode = (code = "Z6PD4F7K") =>
+  voucherCode({ voucher_id: COFFEE, product_name: "Coffee", code });
+
 /** The row of one voucher of the list. */
 async function row(product: string) {
   const title = await screen.findByText(product);
@@ -26,10 +35,7 @@ describe("'Show QR'", () => {
   test("asks for a fresh code for that voucher and shows it as the voucher", async () => {
     const { api, user } = renderWallet({
       [WALLET.vouchers]: TWO_ACTIVE,
-      [WALLET.code]: json(
-        200,
-        voucherCode({ voucher_id: MATE, code: "B4T8WN3C", expires_at: "2026-11-20T10:00:00Z" }),
-      ),
+      [WALLET.code]: json(200, mateCode("B4T8WN3C", { expires_at: "2026-11-20T10:00:00Z" })),
     });
 
     await user.click((await row("Mate")).getByRole("button", { name: "Show QR" }));
@@ -55,6 +61,43 @@ describe("'Show QR'", () => {
     expect(api.calls(WALLET.vouchers)).toHaveLength(1);
   });
 
+  test("the view is titled with the answer's product_name, in the style of a section title", async () => {
+    const answer = deferred();
+    const { user } = renderWallet({
+      [WALLET.vouchers]: TWO_ACTIVE,
+      [WALLET.code]: answer.handler,
+    });
+
+    await user.click((await row("Mate")).getByRole("button", { name: "Show QR" }));
+
+    // Until the answer is there, the row that was tapped names the sheet.
+    const sheet = await screen.findByRole("dialog", { name: "Mate" });
+    answer.resolve(json(200, mateCode("B4T8WN3C", { product_name: "Club-Mate" })));
+
+    await within(sheet).findByText("B4T8-WN3C");
+    expect(sheet).toHaveAccessibleName("Club-Mate");
+    expect(within(sheet).getByRole("heading", { name: "Club-Mate" })).toHaveClass("type-h2");
+    expect(within(sheet).queryByRole("heading", { name: "Mate" })).not.toBeInTheDocument();
+  });
+
+  test("an answer for another voucher is never shown under this one's name", async () => {
+    const { client, user } = renderWallet({
+      [WALLET.vouchers]: TWO_ACTIVE,
+      [WALLET.code]: json(200, coffeeCode("Z6PD4F7K")),
+    });
+
+    await user.click((await row("Mate")).getByRole("button", { name: "Show QR" }));
+
+    const sheet = await screen.findByRole("dialog", { name: "Mate" });
+    // The request has been answered: nothing of this write is on its way.
+    await waitFor(() =>
+      expect(client.isMutating({ mutationKey: ["wallet", "voucher-code"] })).toBe(0),
+    );
+    expect(sheet).not.toHaveTextContent("Z6PD");
+    expect(within(sheet).queryByRole("img", { name: "Voucher QR code" })).not.toBeInTheDocument();
+    expect(sheet).toHaveAccessibleName("Mate");
+  });
+
   test("the sheet opens with the tap, and is a skeleton of the voucher while the code is on its way", async () => {
     const answer = deferred();
     const { api, user } = renderWallet({
@@ -69,7 +112,7 @@ describe("'Show QR'", () => {
     expect(within(sheet).queryByRole("img", { name: "Voucher QR code" })).not.toBeInTheDocument();
     expect(api.calls(WALLET.code)).toHaveLength(1);
 
-    answer.resolve(json(200, voucherCode({ voucher_id: MATE, code: "B4T8WN3C" })));
+    answer.resolve(json(200, mateCode("B4T8WN3C")));
 
     expect(await within(sheet).findByText("B4T8-WN3C")).toBeInTheDocument();
     expect(sheet.querySelector("[data-slot=voucher-skeleton]")).not.toBeInTheDocument();
@@ -101,7 +144,7 @@ describe("'Show QR'", () => {
     expect(screen.getByRole("button", { name: "Get a voucher" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Redeem code" })).toBeEnabled();
 
-    answer.resolve(json(200, voucherCode({ voucher_id: MATE, code: "B4T8WN3C" })));
+    answer.resolve(json(200, mateCode("B4T8WN3C")));
 
     await waitFor(() => expect(coffee).toBeEnabled());
     expect(mate).toBeEnabled();
@@ -109,7 +152,7 @@ describe("'Show QR'", () => {
     expect(document.body).not.toHaveTextContent("B4T8");
 
     // The next tap asks for a code of its own, and the one nobody saw is kept nowhere.
-    api.on(WALLET.code, json(200, voucherCode({ voucher_id: COFFEE, code: "Z6PD4F7K" })));
+    api.on(WALLET.code, json(200, coffeeCode("Z6PD4F7K")));
     await user.click(coffee);
     const next = await screen.findByRole("dialog", { name: "Coffee" });
     expect(await within(next).findByText("Z6PD-4F7K")).toBeInTheDocument();
@@ -124,7 +167,7 @@ describe("'Show QR'", () => {
   test("closing the view returns the focus to the button that opened it", async () => {
     const { user } = renderWallet({
       [WALLET.vouchers]: TWO_ACTIVE,
-      [WALLET.code]: json(200, voucherCode({ voucher_id: COFFEE })),
+      [WALLET.code]: json(200, coffeeCode()),
     });
     const coffee = (await row("Coffee")).getByRole("button", { name: "Show QR" });
 
@@ -152,7 +195,7 @@ describe("'Show QR'", () => {
 
     await waitFor(() => expect(mate).toBeDisabled());
     expect(api.calls(WALLET.code)).toHaveLength(1);
-    answer.resolve(json(200, voucherCode({ voucher_id: MATE, code: "B4T8WN3C" })));
+    answer.resolve(json(200, mateCode("B4T8WN3C")));
     // One sheet, for the voucher that was tapped first.
     const sheet = await screen.findByRole("dialog", { name: "Mate" });
     expect(await within(sheet).findByText("B4T8-WN3C")).toBeInTheDocument();
@@ -166,10 +209,7 @@ describe("'Show QR'", () => {
       [WALLET.vouchers]: TWO_ACTIVE,
       [WALLET.code]: () => {
         asked += 1;
-        return json(
-          200,
-          voucherCode({ voucher_id: MATE, code: asked === 1 ? "B4T8WN3C" : "Z6PD4F7K" }),
-        );
+        return json(200, mateCode(asked === 1 ? "B4T8WN3C" : "Z6PD4F7K"));
       },
     });
 
@@ -196,7 +236,7 @@ describe("'Show QR'", () => {
   test("the cross closes the view like 'Done' does, and forgets the code too", async () => {
     const { user } = renderWallet({
       [WALLET.vouchers]: TWO_ACTIVE,
-      [WALLET.code]: json(200, voucherCode({ voucher_id: COFFEE, code: "B4T8WN3C" })),
+      [WALLET.code]: json(200, coffeeCode("B4T8WN3C")),
     });
     await user.click((await row("Coffee")).getByRole("button", { name: "Show QR" }));
     const view = await screen.findByRole("dialog", { name: "Coffee" });
@@ -281,7 +321,7 @@ describe("'Show QR' without an answer", () => {
     // Nothing of the list has changed, so it is not read again.
     expect(api.calls(WALLET.vouchers)).toHaveLength(1);
 
-    api.on(WALLET.code, json(200, voucherCode({ voucher_id: MATE, code: "B4T8WN3C" })));
+    api.on(WALLET.code, json(200, mateCode("B4T8WN3C")));
     await user.click(within(banner).getByRole("button", { name: "Try again" }));
 
     expect(await within(sheet).findByText("B4T8-WN3C")).toBeInTheDocument();
@@ -303,7 +343,7 @@ describe("'Show QR' without an answer", () => {
       expect(sheet.querySelector("[data-slot=voucher-skeleton]")).toBeInTheDocument(),
     );
     expect(within(sheet).queryByRole("alert")).not.toBeInTheDocument();
-    answer.resolve(json(200, voucherCode({ voucher_id: MATE, code: "B4T8WN3C" })));
+    answer.resolve(json(200, mateCode("B4T8WN3C")));
     expect(await within(sheet).findByText("B4T8-WN3C")).toBeInTheDocument();
   });
 

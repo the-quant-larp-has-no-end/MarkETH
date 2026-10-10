@@ -6,8 +6,11 @@ a client only ever parses one kind of error.
 
 One translation is a rule of the spec rather than a courtesy: with Postgres down,
 "everything returns 503" (SPEC §9). No service catches a lost connection (it has to
-leave the unit of work anyway); `_database_error` recognises it here, once. A lock that
-was not granted within `POSTGRES_LOCK_TIMEOUT_MS` takes the same road and is 503 too.
+leave the unit of work anyway); `_database_error` recognises it here, once. What
+Postgres or the pool could not let through for a moment takes the same road and is 503
+too: a lock that was not granted within `POSTGRES_LOCK_TIMEOUT_MS`, a transaction ended
+as the victim of a deadlock or for a concurrent update, and a pool with no free
+connection for `POSTGRES_POOL_TIMEOUT_SECONDS`.
 """
 
 import logging
@@ -19,6 +22,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.api.validation import sentence_of
 from app.core.errors import AppError, ErrorCode, ServiceUnavailableError
 from app.db import database
 from app.schemas.common import ErrorResponse
@@ -75,12 +79,14 @@ async def _app_error(request: Request, exc: Exception) -> JSONResponse:
 async def _validation_error(request: Request, exc: Exception) -> JSONResponse:
     """422 with one entry per failed field: where (`loc`), what (`msg`), which rule (`type`).
 
-    The rejected input is not echoed back, and neither is anything pydantic attaches
-    that might not be JSON.
+    `msg` is a sentence for the person who filled the field in, never the framework's
+    wording (`app/api/validation.py`); `loc` and `type` are the framework's. The
+    rejected input is not echoed back, and neither is anything pydantic attaches that
+    might not be JSON.
     """
     assert isinstance(exc, RequestValidationError)
     errors = [
-        {"loc": list(error["loc"]), "msg": error["msg"], "type": error["type"]}
+        {"loc": list(error["loc"]), "msg": sentence_of(error), "type": error["type"]}
         for error in exc.errors()
     ]
     return error_response(422, ErrorCode.VALIDATION_ERROR, VALIDATION_MESSAGE, {"errors": errors})
@@ -94,8 +100,9 @@ async def _http_error(request: Request, exc: Exception) -> JSONResponse:
 
 
 async def _database_error(request: Request, exc: Exception) -> JSONResponse:
-    """503 when Postgres is unreachable or did not grant a lock in time (SPEC §9); every
-    other such error is a bug.
+    """503 when Postgres is unreachable, or when it or the connection pool could not let
+    the request through for a moment (`database.is_unavailable`, SPEC §9); every other
+    such error is a bug.
 
     A bug is raised again, so it takes the same road as any unexpected error: logged
     with its traceback and answered with 500 by `_unexpected_error`.

@@ -1,18 +1,13 @@
 "use client";
 
-import { MutationObserver, type QueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import {
-  ApiError,
-  GENERIC_MESSAGE,
-  isApiError,
-  keepsTradeRequest,
-  staleQuote,
-} from "@/lib/api/errors";
+import { type ApiError, staleQuote } from "@/lib/api/errors";
 import { keys, type QuoteRequest } from "@/lib/api/keys";
-import { newTradeSubmission, tradeMutation, type TradeSubmission } from "@/lib/api/mutations";
+import { tradeMutation } from "@/lib/api/mutations";
 import type {
+  BuySlider,
   QuoteResponse,
   SellPortion,
   SellPreset,
@@ -20,6 +15,12 @@ import type {
   TradeRequest,
   TradeResponse,
 } from "@/lib/api/schema";
+import {
+  type Attempt as KeptAttempt,
+  type SubmissionRules,
+  type SubmissionState,
+  submissionStore,
+} from "@/lib/api/submissions";
 
 import { receiptHeadline, type TradeIntent } from "./intent";
 
@@ -33,7 +34,9 @@ import { receiptHeadline, type TradeIntent } from "./intent";
  * booked). Any 5xx, a 429, the portal's 401 and a request without a response say nothing
  * about the trade: the attempt stays, and "Try again" sends the stored body with the
  * stored key, unchanged. A body built a second time, from a later quote, would be another
- * request and could trade twice.
+ * request and could trade twice. That rule is `lib/api/submissions.ts`, which the
+ * adjustment of a user's tokens follows too; this file adds what a ticket holds besides:
+ * what is entered, a refusal, a receipt.
  *
  * It is not component state because the ticket goes away while a trade may still be open:
  * closing the sheet unmounts it, and so does turning a phone, when the sheet becomes a
@@ -42,10 +45,14 @@ import { receiptHeadline, type TradeIntent } from "./intent";
  * then show what the server recorded.
  */
 
-/** The chips that are chosen: a stake when buying, a part of the holding when selling. */
+/** What is entered: an amount when buying, a part of the holding when selling. */
 export type Choice = {
-  /** `amount_cr` of the chosen stake preset, as it arrived. */
-  readonly stake: string | null;
+  /**
+   * The text of the amount field: what was typed, the `amount_cr` of a preset or the
+   * digits of a step of the slider. Empty until something is entered. It stays the string
+   * it is, and is sent as it stands.
+   */
+  readonly stake: string;
   /** `portion` of the chosen sell preset. Its `shares` are read from the market. */
   readonly portion: SellPortion | null;
 };
@@ -53,61 +60,75 @@ export type Choice = {
 /** What Confirm sends, with what the ticket showed when it was tapped. */
 export type Order = {
   readonly intent: TradeIntent;
-  /** What the quote was asked for: the preset's `amount_cr` or `shares`, as it arrived. */
+  /**
+   * What the quote was asked for: the text of the amount field as `amount_cr`, or the
+   * preset's `shares` as they arrived.
+   */
   readonly request: QuoteRequest;
   /** The quote on screen. It is the guard of the trade. */
   readonly quote: QuoteResponse;
-  /** The chips as they stood, so that a trade that waits is shown as it was sent. */
+  /** The controls as they stood, so that a trade that waits is shown as it was sent. */
   readonly stakePresets: readonly StakePreset[];
+  readonly buySlider: BuySlider | null;
   readonly sellPresets: readonly SellPreset[];
 };
 
-/** A trade that went out and has no verdict yet. */
-export type Attempt = Order & {
-  /** The body and its key, exactly as they went out. Never built again, never re-keyed. */
-  readonly submission: TradeSubmission;
-  /** The choice it was made from (`choiceKey`). */
+/** What a ticket shows of a trade while it waits: the order, and the choice it was made from. */
+type Sent = Order & {
+  /** The choice the trade was made from (`choiceKey`). */
   readonly choiceKey: string;
-  /** True while a request is on its way. */
-  readonly sending: boolean;
-  /** Why the latest request brought no verdict. Null while the first one is on its way. */
-  readonly error: ApiError | null;
 };
+
+/**
+ * A trade that went out and has no verdict yet: what was sent, the body and its key as
+ * `submission`, `sending` while a request is on its way, and `error` once one brought no
+ * verdict.
+ */
+export type Attempt = KeptAttempt<Sent>;
 
 /** The verdict that a trade was refused. It is about what was sent. */
 export type Refusal = {
-  /** The choice the refused trade was made from: once that changes, this no longer applies. */
+  /** The choice the refused trade was made from: the refusal holds while that choice stands. */
   readonly choiceKey: string;
   readonly error: ApiError;
 };
 
-export type TicketState = {
+/** What a ticket holds beside the trade that waits. */
+type Rest = {
   readonly choice: Choice;
-  /** Set from Confirm until a 2xx or a 4xx other than 429. While set, nothing else is offered. */
-  readonly attempt: Attempt | null;
   readonly refusal: Refusal | null;
   /** The executed trade, until "Done", or until the sheet that shows it is gone. */
   readonly receipt: TradeResponse | null;
 };
 
-const UNTOUCHED: TicketState = {
-  choice: { stake: null, portion: null },
-  attempt: null,
+/**
+ * The ticket of one market: `choice`, `refusal`, `receipt`, and `attempt`, which is set
+ * from Confirm until a 2xx or a 4xx other than 429. While it is set, nothing else is
+ * offered.
+ */
+export type TicketState = SubmissionState<Sent, Rest>;
+
+const UNTOUCHED: Rest = {
+  choice: { stake: "", portion: null },
   refusal: null,
   receipt: null,
 };
 
-/** Names a choice: the side, the outcome and the chip. A refusal belongs to one of these. */
+/**
+ * Names a choice: the side, the outcome and what is entered for that side. A refusal
+ * belongs to one of these.
+ */
 export function choiceKey(intent: TradeIntent, choice: Choice): string {
-  const chip = intent.side === "BUY" ? choice.stake : choice.portion;
-  return [intent.side, intent.outcome, chip ?? ""].join(":");
+  const entered = intent.side === "BUY" ? choice.stake : (choice.portion ?? "");
+  return [intent.side, intent.outcome, entered].join(":");
 }
 
 /**
- * The body of a trade (DESIGN.md §13): the chip as it arrived, and the quote on screen as
- * its guard. Buying is guarded by the quote's `shares`, selling by its `amount_cr`, so a
- * price that moved against the user is always answered `QUOTE_STALE`. Every amount is the
- * string the API sent.
+ * The body of a trade (DESIGN.md §13): what was quoted, and the quote on screen as its
+ * guard. Buying sends the text of the amount field and is guarded by the quote's `shares`;
+ * selling sends the preset's `shares` and is guarded by the quote's `amount_cr`. A price
+ * that moved against the user is therefore always answered `QUOTE_STALE`. Every amount is
+ * a string that was typed or that the API sent, and none is changed on its way.
  */
 function tradeRequest(request: QuoteRequest, quote: QuoteResponse): TradeRequest {
   if (request.side === "BUY") {
@@ -128,21 +149,33 @@ function tradeRequest(request: QuoteRequest, quote: QuoteResponse): TradeRequest
   };
 }
 
-/**
- * What went wrong, as an `ApiError`. `call()` throws nothing else, so anything else is a
- * fault in handling an answer. Nobody can then say what became of the trade, which is the
- * case of a request without a response: the attempt is kept.
- */
-function asApiError(failure: unknown): ApiError {
-  if (isApiError(failure)) return failure;
-  return new ApiError({
-    kind: "network",
-    status: 0,
-    code: null,
-    message: GENERIC_MESSAGE,
-    cause: failure,
-  });
-}
+/** What the two verdicts on a trade do to its ticket. */
+const TRADES: SubmissionRules<TradeRequest, TradeResponse, Sent, Rest> = {
+  mutation: tradeMutation,
+  untouched: UNTOUCHED,
+
+  /** A 2xx: the trade exists. */
+  answered({ answer, onScreen }) {
+    if (onScreen) return { ...UNTOUCHED, receipt: answer };
+    // The sheet was closed while the trade was on its way: nobody sees a receipt, so the
+    // finished action is confirmed with a toast, and the next opening finds an empty form.
+    toast(receiptHeadline(answer));
+    return UNTOUCHED;
+  },
+
+  /**
+   * A 4xx other than 429: refused, nothing booked. After QUOTE_STALE the quote of the
+   * answer is the quote for this input.
+   */
+  refused({ target: marketId, rest, attempt, error, client }) {
+    const moved = staleQuote(error);
+    const quoteKey = keys.markets.quote(marketId, attempt.request);
+    if (moved !== null && client.getQueryState(quoteKey) !== undefined) {
+      client.setQueryData<QuoteResponse>(quoteKey, moved);
+    }
+    return { ...rest, refusal: { choiceKey: attempt.choiceKey, error } };
+  },
+};
 
 export type TicketStore = {
   /** The ticket of one market. The same object until something changes. */
@@ -150,8 +183,9 @@ export type TicketStore = {
   /** Follows one market's ticket while it is on screen. Returns how to stop. */
   watch(marketId: string, onChange: () => void): () => void;
   /**
-   * The user changed the form: a chip, the side or the outcome. A refusal was about what
-   * was sent, so it goes. Does nothing while a trade waits or a receipt is shown.
+   * The user changed the form: the amount, a chip, the side or the outcome. A refusal was
+   * about what was sent, so it goes. Does nothing while a trade waits or a receipt is
+   * shown.
    */
   choose(marketId: string, choice?: Partial<Choice>): void;
   /** Confirm: one body, one key, one request. A second tap while a trade waits does nothing. */
@@ -163,134 +197,39 @@ export type TicketStore = {
 };
 
 function createTicketStore(client: QueryClient): TicketStore {
-  const tickets = new Map<string, TicketState>();
-  const watchers = new Map<string, Set<() => void>>();
-
-  // The one caller of `tradeMutation`, with the cache handling it brings. Like every write
-  // of the app a trade goes out at once or fails at once (`createQueryClient`): nothing
-  // of it is held back to be sent later, without a tap.
-  const sender = new MutationObserver(client, tradeMutation);
-
-  const read = (marketId: string): TicketState => tickets.get(marketId) ?? UNTOUCHED;
-
-  const write = (marketId: string, next: TicketState): void => {
-    if (next === UNTOUCHED) tickets.delete(marketId);
-    else tickets.set(marketId, next);
-    for (const onChange of [...(watchers.get(marketId) ?? [])]) onChange();
-  };
-
-  const onScreen = (marketId: string): boolean => (watchers.get(marketId)?.size ?? 0) > 0;
-
-  /** A 2xx: the trade exists. The body and its key have done their work. */
-  const executed = (marketId: string, submission: TradeSubmission, trade: TradeResponse): void => {
-    if (read(marketId).attempt?.submission !== submission) return;
-    if (onScreen(marketId)) {
-      write(marketId, { ...UNTOUCHED, receipt: trade });
-      return;
-    }
-    // The sheet was closed while the trade was on its way: nobody sees a receipt, so the
-    // finished action is confirmed with a toast, and the next opening finds an empty form.
-    write(marketId, UNTOUCHED);
-    toast(receiptHeadline(trade));
-  };
-
-  const failed = (marketId: string, submission: TradeSubmission, error: ApiError): void => {
-    const ticket = read(marketId);
-    const { attempt } = ticket;
-    if (attempt?.submission !== submission) return;
-
-    if (keepsTradeRequest(error)) {
-      // No verdict. The same body and the same key wait for "Try again".
-      write(marketId, { ...ticket, attempt: { ...attempt, sending: false, error } });
-      return;
-    }
-
-    // A verdict: refused, nothing booked. The next Confirm builds another body with
-    // another key. After QUOTE_STALE the quote of the answer is the quote for this input.
-    const moved = staleQuote(error);
-    const quoteKey = keys.markets.quote(marketId, attempt.request);
-    if (moved !== null && client.getQueryState(quoteKey) !== undefined) {
-      client.setQueryData<QuoteResponse>(quoteKey, moved);
-    }
-    write(marketId, {
-      ...ticket,
-      attempt: null,
-      refusal: { choiceKey: attempt.choiceKey, error },
-    });
-  };
-
-  const send = (marketId: string, submission: TradeSubmission): void => {
-    sender.mutate(submission).then(
-      (trade) => executed(marketId, submission, trade),
-      (failure: unknown) => failed(marketId, submission, asApiError(failure)),
-    );
-  };
-
-  /** The ticket left the screen for good: only a trade without a verdict outlives that. */
-  const leave = (marketId: string): void => {
-    if (read(marketId).attempt === null) tickets.delete(marketId);
-  };
+  // The one caller of `tradeMutation`: the store that keeps a body and its key.
+  const trades = submissionStore(client, TRADES);
 
   return {
-    read,
-
-    watch(marketId, onChange) {
-      let listening = watchers.get(marketId);
-      if (listening === undefined) {
-        listening = new Set();
-        watchers.set(marketId, listening);
-      }
-      const set = listening;
-      set.add(onChange);
-
-      return () => {
-        set.delete(onChange);
-        if (set.size > 0) return;
-        // Closed, or mounted afresh in the same commit (the sheet turning into a dialog)?
-        // Look once that commit is over: a ticket that is back keeps what it showed.
-        setTimeout(() => {
-          if (set.size === 0) leave(marketId);
-        }, 0);
-      };
-    },
+    read: trades.read,
+    watch: trades.watch,
 
     choose(marketId, choice = {}) {
-      const ticket = read(marketId);
-      if (ticket.attempt !== null || ticket.receipt !== null) return;
-      write(marketId, { ...ticket, choice: { ...ticket.choice, ...choice }, refusal: null });
+      if (trades.read(marketId).receipt !== null) return;
+      trades.change(marketId, (ticket) => ({
+        ...ticket,
+        choice: { ...ticket.choice, ...choice },
+        refusal: null,
+      }));
     },
 
     confirm(marketId, order) {
-      const ticket = read(marketId);
-      if (ticket.attempt !== null || ticket.receipt !== null) return;
-
-      const submission = newTradeSubmission(marketId, tradeRequest(order.request, order.quote));
-      write(marketId, {
-        ...ticket,
-        refusal: null,
-        attempt: {
-          ...order,
-          submission,
-          choiceKey: choiceKey(order.intent, ticket.choice),
-          sending: true,
-          error: null,
-        },
-      });
-      send(marketId, submission);
+      const ticket = trades.read(marketId);
+      if (ticket.receipt !== null) return;
+      trades.submit(
+        marketId,
+        tradeRequest(order.request, order.quote),
+        { ...order, choiceKey: choiceKey(order.intent, ticket.choice) },
+        { rest: (held) => ({ ...held, refusal: null }) },
+      );
     },
 
     retry(marketId) {
-      const ticket = read(marketId);
-      const { attempt } = ticket;
-      if (attempt === null || attempt.sending) return;
-
-      write(marketId, { ...ticket, attempt: { ...attempt, sending: true } });
-      send(marketId, attempt.submission);
+      trades.retry(marketId);
     },
 
     done(marketId) {
-      if (read(marketId).attempt !== null) return;
-      write(marketId, UNTOUCHED);
+      trades.change(marketId, () => UNTOUCHED);
     },
   };
 }

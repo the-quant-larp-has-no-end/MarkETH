@@ -8,9 +8,11 @@ It fixes three things for the whole schema, so no model can get them wrong:
   `datetime` is always TIMESTAMP WITH TIME ZONE that refuses a value without a timezone
   (`AwareDateTime`).
 * Enum-like columns are VARCHAR with a named CHECK constraint, built by `enum_column`.
+  Where an enum has a member no row may hold, the column is built from the members a
+  row keeps (`StoredMembers`), and the other one cannot reach a statement.
 
-`sha256_hex_check` backs up SPEC §2: a code is stored as its hash, and the database
-refuses anything that is not shaped like one.
+`sha256_hex_check` backs up SPEC §2: a code is looked up by its hash, and the database
+refuses anything in that column that is not shaped like one.
 """
 
 from datetime import datetime
@@ -20,7 +22,7 @@ from typing import Any, Final
 from sqlalchemy import BigInteger, CheckConstraint, DateTime, Dialect, Enum, MetaData
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy.types import TypeDecorator
+from sqlalchemy.types import TypeDecorator, TypeEngine
 
 NAMING_CONVENTION: Final[dict[str, str]] = {
     "pk": "pk_%(table_name)s",
@@ -64,8 +66,53 @@ class Base(DeclarativeBase):
     }
 
 
-def enum_column(enum_class: type[StrEnum], name: str) -> Enum:
-    """Column type of an enum: its values as VARCHAR plus the CHECK `ck_<table>_<name>`."""
+class StoredMembers[MemberT: StrEnum](TypeDecorator[MemberT]):
+    """Column type of an enum of which a row keeps only some members.
+
+    The column is a VARCHAR whose CHECK lists `members` and nothing else, and a row
+    read from it carries a member of `enum_class`. Any other member is refused when it
+    is bound to a statement, as a value to write and as a value to compare with alike:
+    `sqlalchemy.exc.StatementError`, before the database is asked. The enum can then
+    name a value the application only ever works out, and no statement can mistake it
+    for one a row may hold.
+    """
+
+    impl = Enum
+    cache_ok = True
+
+    def __init__(self, enum_class: type[MemberT], members: tuple[MemberT, ...], name: str) -> None:
+        self.enum_class = enum_class
+        self.members = members
+        super().__init__(
+            *(member.value for member in members),
+            name=name,
+            native_enum=False,
+            create_constraint=True,
+            length=ENUM_LENGTH,
+            validate_strings=True,
+        )
+
+    def process_bind_param(self, value: MemberT | None, dialect: Dialect) -> str | None:
+        if value is None:
+            return None
+        if value not in self.members:
+            raise ValueError(f"{value!r} is not a value a row of this column keeps")
+        return self.enum_class(value).value
+
+    def process_result_value(self, value: str | None, dialect: Dialect) -> MemberT | None:
+        return None if value is None else self.enum_class(value)
+
+
+def enum_column[MemberT: StrEnum](
+    enum_class: type[MemberT], name: str, *, members: tuple[MemberT, ...] | None = None
+) -> TypeEngine[Any]:
+    """Column type of an enum: its values as VARCHAR plus the CHECK `ck_<table>_<name>`.
+
+    `members` names the ones a row keeps where that is not all of them, in the order
+    the CHECK lists them (`StoredMembers`).
+    """
+    if members is not None:
+        return StoredMembers(enum_class, members, name)
     return Enum(
         enum_class,
         name=name,

@@ -12,7 +12,7 @@ waits for the trading, voucher or code service.
 
 import asyncio
 from collections.abc import Sequence
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Final
 from uuid import uuid7
 from zoneinfo import ZoneInfo
@@ -57,6 +57,7 @@ from app.models import (
 )
 from app.pricing import lmsr
 from app.schemas.admin.risk import AlertItem, RiskMarketRow, RiskResponse
+from app.schemas.admin.users import AdjustBalanceRequest
 from app.services.ledger import (
     LedgerRef,
     PostingLine,
@@ -263,7 +264,8 @@ async def code_batch(
 ) -> CodeBatch:
     """A batch of codes as its creation and what followed left it: `active` codes
     nobody used, `revoked` ones, and one that each of `redeemed_by` redeemed, booked as
-    `CODE_REDEMPTION` from `vis:issuance` (A.8). `expires_in` counts from now."""
+    `CODE_REDEMPTION` from `vis:issuance` (A.8). `expires_in` counts from now. An
+    active code keeps its plain text, as the database asks; here that is a UUID."""
     now = container.clock.now()
     async with container.uow_factory() as uow:
         batch = await uow.code_batches.add(
@@ -278,9 +280,14 @@ async def code_batch(
             )
         )
         await uow.codes.add_all(
-            Code(batch_id=batch.id, code_hash=sha256_hex(str(uuid7())), status=status)
+            Code(
+                batch_id=batch.id,
+                code_hash=sha256_hex(plain),
+                code=plain if status is CodeStatus.ACTIVE else None,
+                status=status,
+            )
             for status, count in ((CodeStatus.ACTIVE, active), (CodeStatus.REVOKED, revoked))
-            for _ in range(count)
+            for plain in (uuid7().hex for _ in range(count))
         )
         issuance = await uow.accounts.get_system_account(AccountKind.VIS_ISSUANCE)
         for redeemer in redeemed_by:
@@ -309,6 +316,19 @@ async def code_batch(
             )
             code.entry_id = entry.id
     return batch
+
+
+async def adjust(
+    container: Container, factory: Factory, admin: User, user: User, amount_micro: int
+) -> None:
+    """An admin's balance adjustment, booked by the service that books them, at the
+    clock's now and under a key of its own."""
+    await container.admin_users.adjust_balance(
+        factory.identity(admin),
+        user.id,
+        uuid7(),
+        AdjustBalanceRequest(amount_cr=to_cr(amount_micro), reason="Booked in a test."),
+    )
 
 
 async def raise_alert(
@@ -362,6 +382,7 @@ async def test_an_empty_book_owes_nothing_and_shows_the_caps_of_the_settings(
     assert owed.alert_threshold_cr == to_cr(settings.risk.obligations_alert_threshold_micro)
     assert owed.above_threshold is False
     assert (page.unredeemed_code_value_cr, page.code_issuance_this_month_cr) == (nothing, nothing)
+    assert page.adjustments_this_month_cr == nothing
     assert (page.markets, page.alerts) == ([], [])
 
 
@@ -597,6 +618,78 @@ async def test_code_issuance_is_counted_from_the_first_of_the_month_in_the_busin
 
     assert page.code_issuance_this_month_cr == to_cr(13 * MICRO)
     assert page.unredeemed_code_value_cr == to_cr(20 * MICRO), "whenever they were issued"
+
+
+async def test_the_months_adjustments_are_shown_net_and_signed(
+    container: Container, factory: Factory
+) -> None:
+    """What the admins added to balances this month minus what they took away. No other
+    way credits reach a user counts: not the grant a balance of the factory is booked
+    as, not a redeemed code. A month in which more was taken than given shows below
+    zero."""
+    first, second = await factory.admin(), await factory.admin(1)
+    alice = await factory.user(balance_micro=WALLET_MICRO)
+    bob = await factory.user(balance_micro=WALLET_MICRO)
+    await code_batch(container, first, value_micro=35 * MICRO, redeemed_by=[alice])
+    assert (await container.risk.snapshot()).adjustments_this_month_cr == to_cr(0)
+
+    await adjust(container, factory, first, alice, 30 * MICRO)
+    await adjust(container, factory, second, alice, 12_500_000)
+    await adjust(container, factory, first, bob, -40 * MICRO)
+    given = await container.risk.snapshot()
+    await adjust(container, factory, second, bob, -100 * MICRO)
+    taken = await container.risk.snapshot()
+
+    assert given.adjustments_this_month_cr == to_cr(2_500_000)
+    assert taken.adjustments_this_month_cr == to_cr(-97_500_000)
+    assert given.code_issuance_this_month_cr == taken.code_issuance_this_month_cr
+    assert given.code_issuance_this_month_cr == to_cr(35 * MICRO), "codes are counted apart"
+    # The balances the page owes on moved by exactly that much.
+    assert taken.obligations.user_balances_cr == to_cr(2 * WALLET_MICRO + 35 * MICRO - 97_500_000)
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_adjustments_are_counted_from_the_first_of_the_month_in_the_business_timezone(
+    container: Container, factory: Factory, settings: Settings, clock: FrozenClock
+) -> None:
+    """A calendar month of `APP_TIMEZONE`, by the instant an adjustment was booked. Half
+    an hour into October in Zurich is still September in UTC and counts for October;
+    half an hour before it does not. The month ends the instant the next one begins."""
+    assert settings.app.timezone == ZURICH
+    october = datetime(TEST_NOW.year, TEST_NOW.month, 1, tzinfo=ZURICH)
+    november = datetime(TEST_NOW.year, TEST_NOW.month + 1, 1, tzinfo=ZURICH)
+    instant = timedelta(microseconds=1)
+    assert october.utcoffset() == timedelta(hours=2)
+    assert (october + timedelta(minutes=30)).astimezone(UTC).month == TEST_NOW.month - 1
+    clock.set(october - timedelta(hours=1))
+    admin = await factory.admin()
+    alice = await factory.user(balance_micro=WALLET_MICRO)
+
+    clock.set(october - timedelta(minutes=30))
+    await adjust(container, factory, admin, alice, 7 * MICRO)
+    clock.set(october - instant)
+    in_september = await container.risk.snapshot()
+    clock.set(october)
+    await adjust(container, factory, admin, alice, 3 * MICRO)
+    at_the_first_instant = await container.risk.snapshot()
+    clock.set(october + timedelta(minutes=30))
+    await adjust(container, factory, admin, alice, 10 * MICRO)
+    clock.set(TEST_NOW)
+    in_october = await container.risk.snapshot()
+    clock.set(november - instant)
+    at_the_last_instant = await container.risk.snapshot()
+    clock.set(november)
+    in_november = await container.risk.snapshot()
+    await adjust(container, factory, admin, alice, -MICRO)
+    after_a_debit_in_november = await container.risk.snapshot()
+
+    assert in_september.adjustments_this_month_cr == to_cr(7 * MICRO)
+    assert at_the_first_instant.adjustments_this_month_cr == to_cr(3 * MICRO)
+    assert in_october.adjustments_this_month_cr == to_cr(13 * MICRO)
+    assert at_the_last_instant.adjustments_this_month_cr == to_cr(13 * MICRO)
+    assert in_november.adjustments_this_month_cr == to_cr(0)
+    assert after_a_debit_in_november.adjustments_this_month_cr == to_cr(-MICRO)
+    await assert_books_balance(container.uow_factory)
 
 
 # --- The rows --------------------------------------------------------------------------
@@ -864,6 +957,7 @@ async def test_the_route_answers_an_admin_with_amounts_as_decimal_strings(
         body["markets"][0]["exposure_cr"],
         body["markets"][0]["void_cost_cr"],
         body["unredeemed_code_value_cr"],
+        body["adjustments_this_month_cr"],
     )
     assert all(isinstance(amount, str) for amount in amounts)
     assert body["markets"][0]["q_yes"] == "80"

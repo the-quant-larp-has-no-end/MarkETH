@@ -90,20 +90,6 @@ export function formatDateTime(iso: string, timeZone: string): string {
   return `${formatDate(iso, timeZone)}, ${formatTime(iso, timeZone)}`;
 }
 
-/**
- * A calendar day the API sends as a date (`next_monthly_grant_on`): the day as sent,
- * without conversion. `2026-11-01` is `1 Nov 2026` everywhere.
- */
-export function formatDay(day: string): string {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
-  if (match === null) return day;
-  const [year, month, date] = [match[1]!, match[2]!, match[3]!].map((part) =>
-    Number.parseInt(part, 10),
-  ) as [number, number, number];
-  if (month < 1 || month > MONTHS.length) return day;
-  return `${date} ${monthName(month)} ${year}`;
-}
-
 /** Whole calendar days from `from` to `to`, counted on the calendar of `timeZone`. */
 function calendarDaysBetween(from: Date, to: Date, timeZone: string): number {
   const a = wallTime(from, timeZone);

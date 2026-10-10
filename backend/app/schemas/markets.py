@@ -2,8 +2,12 @@
 
 The frontend computes nothing (golden rule 6), so a market carries every number its
 screens show: display probabilities, the effective status, and for the viewer their
-holdings, their stake, which buy buttons would be accepted and how many shares each
-sell button stands for.
+holdings, their stake, which buy buttons would be accepted, between which amounts the
+slider of a buy runs and how many shares each sell button stands for.
+
+How much liquidity a market has is VIS's business. A proposal names none, an admin
+picks the tier when approving, and a market tells its tier, its b and its loss budget
+to admins alone.
 """
 
 from datetime import datetime
@@ -11,15 +15,18 @@ from enum import StrEnum
 from typing import Annotated, Final, Self
 from uuid import UUID
 
-from pydantic import AwareDatetime, Field, field_validator, model_validator
+from pydantic import AwareDatetime, Field, model_validator
 
 from app.core.enums import MarketStatus, MarketTier, Outcome, ResolutionOutcome
 from app.schemas.common import (
+    Accepted,
     CreditAmount,
     Probability,
     RequestModel,
     ResponseModel,
     ShareAmount,
+    SignedCreditAmount,
+    on_field,
 )
 
 QUESTION_MIN_LENGTH: Final[int] = 10
@@ -34,6 +41,10 @@ ShortText = Annotated[str, Field(min_length=1, max_length=SHORT_TEXT_MAX_LENGTH)
 LongText = Annotated[str, Field(min_length=1, max_length=LONG_TEXT_MAX_LENGTH)]
 """Resolution criteria, resolution evidence."""
 
+DECIDED_BEFORE_CLOSE_MESSAGE: Final[str] = "A market cannot be decided before trading closes."
+"""What a proposal says on `resolve_by` when it lies before `close_at`. The service
+says the same for dates an approval edits (`check_market_dates`)."""
+
 
 class ProposeMarketRequest(RequestModel):
     """`POST /markets`: what a proposal must state (SPEC §6).
@@ -41,6 +52,10 @@ class ProposeMarketRequest(RequestModel):
     The time rules that depend on the clock are the service's: `close_at` in the future
     and within `MAX_MARKET_LIFETIME`, `resolve_by` within `MAX_RESOLUTION_DELAY_DAYS`
     of `close_at`.
+
+    A proposal says nothing about liquidity: the admin who approves the market picks
+    its tier. A field that names one is refused like any field the request does not
+    have.
     """
 
     question: QuestionText
@@ -50,19 +65,14 @@ class ProposeMarketRequest(RequestModel):
     resolution_source: ShortText
     close_at: AwareDatetime
     resolve_by: AwareDatetime
-    requested_tier: MarketTier
-
-    @field_validator("requested_tier")
-    @classmethod
-    def _fixed_tier(cls, value: MarketTier) -> MarketTier:
-        if value is MarketTier.CUSTOM:
-            raise ValueError("a proposal asks for TIGHT, DEFAULT or MEDIUM; CUSTOM is set by VIS")
-        return value
+    policy_accepted: Accepted
+    """The proposer accepts the usage policy for this proposal. Every proposal says
+    so again: `true`, or the request is rejected on this field."""
 
     @model_validator(mode="after")
     def _resolves_after_close(self) -> Self:
         if self.resolve_by < self.close_at:
-            raise ValueError("resolve_by must not be before close_at")
+            raise on_field("resolve_by", "value_error", DECIDED_BEFORE_CLOSE_MESSAGE)
         return self
 
 
@@ -72,7 +82,8 @@ class MarketSummary(ResponseModel):
     id: UUID
     question: str
     status: MarketStatus
-    """The effective status (A.4): an OPEN market past `close_at` is reported CLOSED."""
+    """The effective status (A.4): an OPEN market past `close_at` is reported CLOSED,
+    and a PROPOSED one past `close_at` is reported EXPIRED."""
 
     trading_open: bool
     """True exactly when `status` is OPEN."""
@@ -123,6 +134,23 @@ class StakePreset(ResponseModel):
     """Whether a buy for this budget would pass right now: the viewer may trade, has
     the balance and stays within the stake limit, and the amount is no smaller than
     the minimum trade."""
+
+
+class BuySlider(ResponseModel):
+    """The slider and the number field of a buy on the trade sheet (A.11): the whole
+    credits between which the viewer can buy right now, and the step between two
+    positions. JSON integers, as a range input takes them. Every multiple of `step`
+    from `min` to `max` is a budget a buy passes with: send it as `amount_cr`."""
+
+    min: int
+    """The smallest multiple of `step` that is a trade: at least `min_trade_cr`."""
+
+    max: int
+    """The largest multiple of `step` that both the stake left and the balance cover.
+    Never below `min`."""
+
+    step: int
+    """`stake_step_cr` of `GET /config`."""
 
 
 class SellPortion(StrEnum):
@@ -187,6 +215,12 @@ class MarketViewer(ResponseModel):
     stake_presets: list[StakePreset]
     """One entry per buy button, in the order of `stake_presets_cr` of `GET /config`."""
 
+    buy_slider: BuySlider | None
+    """Where the slider of a buy runs. Null when the viewer cannot buy anything right
+    now: they may not trade, or the stake left or the balance is below the smallest
+    buy. An amount typed in between two positions is judged by
+    `GET /markets/{id}/quote`."""
+
     sell_presets: list[SellPreset]
     """Always four entries: YES half, YES all, NO half, NO all."""
 
@@ -208,13 +242,23 @@ class MarketDetailResponse(MarketSummary):
     no_definition: str
     resolution_criteria: str
     resolution_source: str
-    requested_tier: MarketTier
     tier: MarketTier | None
-    """Null until VIS approves the market."""
+    """The liquidity tier VIS opened the market with. Sent to admins only, null for
+    everyone else. To an admin it is null until the market is approved."""
 
-    b_cr: CreditAmount
-    max_loss_cr: CreditAmount
-    """The market's loss budget (`markets.budget_micro`). Both are 0 until approval."""
+    b_cr: CreditAmount | None
+    """The market's liquidity parameter b. Sent to admins only, null for everyone
+    else. 0 until the market is approved."""
+
+    max_loss_cr: CreditAmount | None
+    """The market's loss budget (`markets.budget_micro`). Sent to admins only, null
+    for everyone else. 0 until the market is approved."""
+
+    void_cost_cr: SignedCreditAmount | None
+    """What VIS would have to add if the market were voided now: the net stakes a void
+    refunds, minus the balance of the market's account, as `RiskMarketRow.void_cost_cr`
+    says it. Sent to admins only, null for everyone else, and null for a market with
+    nothing to void: one that was never opened and one that is settled."""
 
     void_rule: str
     """What happens to stakes if the market is voided, shown before anyone trades."""

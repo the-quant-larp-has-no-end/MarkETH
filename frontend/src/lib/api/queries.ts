@@ -1,7 +1,13 @@
 import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
 
 import { call } from "./client";
-import { keys, type LeaderboardParams, type LeaderboardQuery, type QuoteRequest } from "./keys";
+import {
+  type AdminUsersParams,
+  keys,
+  type LeaderboardParams,
+  type LeaderboardQuery,
+  type QuoteRequest,
+} from "./keys";
 import type { MarketStatus } from "./schema";
 
 /**
@@ -160,3 +166,44 @@ export const riskQuery = queryOptions({
   queryKey: keys.admin.risk,
   queryFn: ({ signal }) => call((api) => api.GET("/api/admin/risk", { signal })),
 });
+
+/**
+ * `GET /admin/code-batches/{batch_id}/codes`: the codes of a batch that can be redeemed,
+ * with the batch. The API records every read in its audit log, so nothing asks again
+ * behind the admin's back: not the focus, not a reconnect, not a batch list that was
+ * marked out of date. The codes live in memory while their dialog shows them and are
+ * dropped when it closes; "View codes" is the read that brings them back (DESIGN.md §13).
+ */
+export const batchCodesQuery = (batchId: string) =>
+  queryOptions({
+    queryKey: keys.admin.batchCodes(batchId),
+    queryFn: ({ signal }) =>
+      call((api) =>
+        api.GET("/api/admin/code-batches/{batch_id}/codes", {
+          params: { path: { batch_id: batchId } },
+          signal,
+        }),
+      ),
+    staleTime: Infinity,
+    gcTime: 0,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+
+/**
+ * `GET /admin/users`, page by page: everyone with a profile, newest first. `params` are
+ * sent as they are: the server searches, filters and pages.
+ */
+export const adminUsersQuery = (params: AdminUsersParams = {}) =>
+  infiniteQueryOptions({
+    queryKey: keys.admin.users.list(params),
+    queryFn: ({ pageParam, signal }) =>
+      call((api) =>
+        api.GET("/api/admin/users", {
+          params: { query: { ...params, cursor: pageParam } },
+          signal,
+        }),
+      ),
+    initialPageParam: null as string | null,
+    getNextPageParam: (page) => page.next_cursor ?? undefined,
+  });

@@ -38,7 +38,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from app.core.enums import MarketTier
 from app.core.identity import USERNAME_PATTERN, USERNAME_STORED_MAX_LENGTH, portal_address
-from app.core.units import PrecisionError, to_micro
+from app.core.units import MICRO, PrecisionError, to_micro
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[3]
 DEFAULT_ENV_FILE: Final[Path] = REPO_ROOT / ".env"
@@ -49,6 +49,8 @@ INFRA_ONLY_VARIABLES: Final[frozenset[str]] = frozenset(
         "NGINX_HTTP_PORT",
         "API_HOST_PORT",
         "WEB_HOST_PORT",
+        "EDGE_SUBNET",
+        "EDGE_GATEWAY",
         "NGINX_MEMORY_LIMIT",
         "WEB_MEMORY_LIMIT",
         "API_MEMORY_LIMIT",
@@ -80,6 +82,10 @@ _HEADER_NAME = re.compile(r"[A-Za-z0-9]+(-[A-Za-z0-9]+)*")
 _USERNAME = re.compile(USERNAME_PATTERN)
 
 _NOT_IN_A_SLUG = re.compile(r"[^a-z0-9]+")
+
+CODE_MAX_LENGTH: Final[int] = 32
+"""The most characters `CODE_LENGTH` may give a code, which is also the width of
+`codes.code`."""
 
 PRODUCT_ID_MAX_LENGTH: Final[int] = 64
 """Longest id of a product, which is also the width of `vouchers.product_id`."""
@@ -241,6 +247,7 @@ class PostgresSettings(_Section):
     app_password: str = Field(validation_alias="POSTGRES_APP_PASSWORD")
     pool_size: PositiveInt = Field(validation_alias="POSTGRES_POOL_SIZE")
     max_overflow: int = Field(validation_alias="POSTGRES_MAX_OVERFLOW", ge=0)
+    pool_timeout_seconds: PositiveInt = Field(validation_alias="POSTGRES_POOL_TIMEOUT_SECONDS")
     lock_timeout_ms: PositiveInt = Field(validation_alias="POSTGRES_LOCK_TIMEOUT_MS")
 
     def _url(self, user: str, password: str) -> str:
@@ -279,6 +286,15 @@ class ScyllaSettings(_Section):
     request_timeout_ms: PositiveInt = Field(validation_alias="SCYLLA_REQUEST_TIMEOUT_MS")
     outbox_batch_size: PositiveInt = Field(validation_alias="OUTBOX_BATCH_SIZE")
     outbox_poll_interval_ms: PositiveInt = Field(validation_alias="OUTBOX_POLL_INTERVAL_MS")
+    # A chart keeps its first and its latest point, so it has at least those two.
+    history_max_points: int = Field(validation_alias="HISTORY_MAX_POINTS", ge=2)
+    history_read_limit: PositiveInt = Field(validation_alias="HISTORY_READ_LIMIT")
+
+    @model_validator(mode="after")
+    def _reads_at_least_what_it_answers(self) -> Self:
+        if self.history_read_limit < self.history_max_points:
+            raise ValueError("HISTORY_READ_LIMIT must not be below HISTORY_MAX_POINTS")
+        return self
 
     @property
     def request_timeout_seconds(self) -> float:
@@ -293,10 +309,9 @@ class IdentitySettings(_Section):
     header_user_id: HeaderName = Field(validation_alias="IDENTITY_HEADER_USER_ID")
     header_user_name: HeaderName = Field(validation_alias="IDENTITY_HEADER_USER_NAME")
     allowed_email_domains: CsvList = Field(validation_alias="ALLOWED_EMAIL_DOMAINS", min_length=1)
-    # The ids of the people with a role, each as `portal_address` reads it: an address
-    # at an allowed domain, in lower case. An entry that rule refuses fails loading.
+    # The ids of the bootstrap admins, each as `portal_address` reads it: an address at
+    # an allowed domain, in lower case. An entry that rule refuses fails loading.
     admin_emails: CsvList = Field(validation_alias="ADMIN_EMAILS")
-    barista_emails: CsvList = Field(validation_alias="BARISTA_EMAILS")
     username_min_length: PositiveInt = Field(validation_alias="USERNAME_MIN_LENGTH")
     username_max_length: int = Field(
         validation_alias="USERNAME_MAX_LENGTH", ge=1, le=USERNAME_STORED_MAX_LENGTH
@@ -309,12 +324,12 @@ class IdentitySettings(_Section):
     def _lowercase(cls, value: list[str]) -> list[str]:
         return [item.lower() for item in value]
 
-    @field_validator("admin_emails", "barista_emails")
+    @field_validator("admin_emails")
     @classmethod
     def _ids(cls, value: list[str], info: ValidationInfo) -> list[str]:
-        """Read each entry of a role list the way an id of the portal is read.
+        """Read each bootstrap admin the way an id of the portal is read.
 
-        An entry that is no address at an allowed domain would give its role to nobody,
+        An entry that is no address at an allowed domain would make nobody an admin,
         so it is refused here; the error names the variable it stands in.
         """
         allowed_domains = info.data.get("allowed_email_domains")
@@ -327,7 +342,7 @@ class IdentitySettings(_Section):
             if address is None:
                 raise ValueError(
                     f"{entry!r} is not an address at {' or '.join(allowed_domains)}, "
-                    "so nobody would get the role"
+                    "so it would make nobody an admin"
                 )
             ids.append(address)
         return ids
@@ -358,7 +373,7 @@ class GrantSettings(_Section):
 
 
 class CodeSettings(_Section):
-    length: int = Field(validation_alias="CODE_LENGTH", ge=8, le=32)
+    length: int = Field(validation_alias="CODE_LENGTH", ge=8, le=CODE_MAX_LENGTH)
     min_value_micro: CreditMicro = Field(validation_alias="CODE_MIN_VALUE_CR")
     max_value_micro: CreditMicro = Field(validation_alias="CODE_MAX_VALUE_CR")
     default_value_micro: CreditMicro = Field(validation_alias="CODE_DEFAULT_VALUE_CR")
@@ -387,10 +402,16 @@ class VoucherSettings(_Section):
     products: VoucherProductList = Field(validation_alias="VOUCHER_PRODUCTS")
     code_length: int = Field(validation_alias="VOUCHER_CODE_LENGTH", ge=6, le=32)
     expiry_days: PositiveInt = Field(validation_alias="VOUCHER_EXPIRY_DAYS")
+    rescan_seconds: PositiveInt = Field(validation_alias="VOUCHER_RESCAN_SECONDS")
 
     @property
     def ttl(self) -> timedelta:
         return timedelta(days=self.expiry_days)
+
+    @property
+    def rescan_window(self) -> timedelta:
+        """How long after redeeming a voucher its barista is shown the redemption again."""
+        return timedelta(seconds=self.rescan_seconds)
 
     @property
     def lowest_price_micro(self) -> int:
@@ -419,7 +440,16 @@ class PricingSettings(_Section):
     min_trade_micro: CreditMicro = Field(validation_alias="MIN_TRADE_CR")
     min_trade_shares_micro: CreditMicro = Field(validation_alias="MIN_TRADE_SHARES")
     stake_presets_micro: CreditMicroList = Field(validation_alias="TRADE_STAKE_PRESETS_CR")
+    stake_step_micro: CreditMicro = Field(validation_alias="TRADE_STAKE_STEP_CR")
     price_display_decimals: int = Field(validation_alias="PRICE_DISPLAY_DECIMALS", ge=0, le=4)
+
+    @field_validator("stake_step_micro")
+    @classmethod
+    def _whole_credits(cls, value: int) -> int:
+        # The slider of the trade sheet counts in whole credits (`MarketViewer.buy_slider`).
+        if value <= 0 or value % MICRO:
+            raise ValueError("TRADE_STAKE_STEP_CR must be a whole number of CR above zero")
+        return value
 
     def tier_b_micro(self, tier: MarketTier) -> int:
         """Liquidity parameter b of a fixed tier. CUSTOM has none; it starts from a budget."""
@@ -442,6 +472,7 @@ class RiskSettings(_Section):
     obligations_alert_threshold_micro: CreditMicro = Field(
         validation_alias="OBLIGATIONS_ALERT_THRESHOLD_CR"
     )
+    max_admin_adjustment_micro: CreditMicro = Field(validation_alias="MAX_ADMIN_ADJUSTMENT_CR")
 
     @property
     def max_market_lifetime(self) -> timedelta:

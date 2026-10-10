@@ -1,10 +1,9 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
-import type { LeaderboardEntry, LeaderboardResponse } from "@/lib/api/schema";
+import type { LeaderboardResponse } from "@/lib/api/schema";
 import { REDUCED_MOTION_QUERY } from "@/lib/design";
 import { EN_DASH, TIMES } from "@/lib/format";
-import { leaderboard, leaderboardEntry } from "@/test/fixtures";
 import {
   apiError,
   deferred,
@@ -20,6 +19,7 @@ import { intersect } from "@/test/observers";
 import { renderWithProviders } from "@/test/render";
 
 import { LeaderboardScreen } from "./leaderboard-screen";
+import { player, ranking, you } from "./test-players";
 
 const BOARD: Route = "GET /api/leaderboard";
 
@@ -29,31 +29,31 @@ const UNAVAILABLE = apiError(
   "This is temporarily unavailable. Try again shortly.",
 );
 
-const player = (rank: number, username: string, overrides: Partial<LeaderboardEntry> = {}) =>
-  leaderboardEntry({ rank, username, ...overrides });
-
-const you = (rank: number, overrides: Partial<LeaderboardEntry> = {}) =>
-  player(rank, "anna_m", { is_viewer: true, credits_cr: "240", trades: 4, ...overrides });
-
-const board = (overrides: Partial<LeaderboardResponse>) => json(200, leaderboard(overrides));
+const board = (overrides: Partial<LeaderboardResponse>) => json(200, ranking(overrides));
 
 /** What a request asked for, by parameter. */
 const sent = (request: MockRequest | undefined) => Object.fromEntries(request?.query ?? []);
 
 const podium = () => document.querySelector("[data-slot=podium]") as HTMLElement | null;
 const places = () => [...document.querySelectorAll<HTMLElement>("[data-slot=podium-place]")];
-const pinnedBar = () => document.querySelector("[data-slot=pinned]") as HTMLElement | null;
+const pinnedBar = () => document.querySelector("[data-slot=your-row]") as HTMLElement | null;
 const viewerRow = () => document.querySelector(".viewer-row") as HTMLElement | null;
-/** A chip of the sort row. From 768 px a column heading carries the same name. */
-const chip = (name: string) =>
-  within(screen.getByRole("group", { name: "Sort by" })).getByRole("button", { name });
+const main = () => document.querySelector("[data-slot=screen]") as HTMLElement;
+/** One of the sort chips. From 768 px a column heading carries the same name. */
+const sortChips = () => screen.getByRole("group", { name: "Sort by" });
+const chip = (name: string) => within(sortChips()).getByRole("button", { name });
 /** A trophy: the only image with a name. The token icon is decoration. */
 const trophy = (inside: Element) => within(inside as HTMLElement).queryByRole("img");
 /** The usernames of the rows below the podium, top to bottom. */
 const listed = () =>
-  [...document.querySelectorAll("[data-slot=ranking] [data-slot=row] .type-body")].map(
-    (title) => title.firstChild?.textContent,
+  [...document.querySelectorAll("[data-slot=ranking] [data-slot=row] span[title].type-body")].map(
+    (name) => name.textContent,
   );
+/** The row of a player below the podium. */
+const rowOf = (username: string) =>
+  within(document.querySelector("[data-slot=ranking]") as HTMLElement)
+    .getByText(username)
+    .closest("[data-slot=row]") as HTMLElement;
 
 /** An IntersectionObserver the test speaks for: it says what is on screen, and what is not. */
 class Watcher {
@@ -132,17 +132,40 @@ describe("how the list opens", () => {
     expect(heading).toHaveTextContent("Leaderboard");
     expect(heading).toHaveClass("type-h1");
     expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
-    const caption = screen.getByText("Tokens held right now.");
+    // Tokens are the wallet and the open positions together: the line says so, and the
+    // figure is the API's `credits_cr`.
+    const caption = screen.getByText("Tokens in the wallet plus the value of open positions.");
     expect(caption).toHaveClass("type-caption", "text-muted-foreground");
     expect(caption).toHaveAttribute("aria-live", "polite");
     await screen.findByText("polyterrasse");
   });
 
-  test("the sort row: four chips with one pressed, the order by its name, and Filter", async () => {
+  test("the title row holds the title, the order button named after the active order, and Filter", async () => {
     mockApi({ [BOARD]: board({}) });
     renderWithProviders(<LeaderboardScreen />);
 
-    const chips = within(screen.getByRole("group", { name: "Sort by" })).getAllByRole("button");
+    const row = document.querySelector("[data-slot=title-row]") as HTMLElement;
+    expect(within(row).getByRole("heading", { level: 1 })).toHaveTextContent("Leaderboard");
+    const order = within(row).getByRole("button", { name: "Highest first" });
+    expect(order).toHaveAttribute("data-variant", "secondary");
+    expect(order).toHaveClass("size-11");
+    const filter = within(row).getByRole("button", { name: "Filter" });
+    expect(filter).toHaveAttribute("data-variant", "secondary");
+    expect(filter).toHaveClass("h-11");
+    // The title is never cut: the two buttons give way to it and wrap under it.
+    expect(row).toHaveClass("flex-wrap");
+    expect(within(row).getByRole("heading")).toHaveClass("whitespace-nowrap");
+    // No filter is set: no count, no chips, and no white button on the screen.
+    expect(screen.queryByRole("list", { name: "Filters that are set" })).not.toBeInTheDocument();
+    expect(document.querySelectorAll("[data-variant=primary]")).toHaveLength(0);
+    await screen.findByText("polyterrasse");
+  });
+
+  test("the sort chips stand in a row of their own: four of them, one pressed, as a grid that never scrolls", async () => {
+    mockApi({ [BOARD]: board({}) });
+    renderWithProviders(<LeaderboardScreen />);
+
+    const chips = within(sortChips()).getAllByRole("button");
     expect(chips.map((button) => button.textContent)).toEqual([
       "Tokens",
       "Win rate",
@@ -155,13 +178,35 @@ describe("how the list opens", () => {
       "false",
       "false",
     ]);
-    expect(screen.getByRole("button", { name: "Highest first" })).toBeInTheDocument();
-    const filter = screen.getByRole("button", { name: "Filter" });
-    expect(filter).toHaveAttribute("data-variant", "secondary");
-    // No filter is set: no count, no chips, and no white button on the screen.
-    expect(screen.queryByRole("list", { name: "Filters that are set" })).not.toBeInTheDocument();
-    expect(document.querySelectorAll("[data-variant=primary]")).toHaveLength(0);
+    expect(sortChips()).toHaveAttribute("data-layout", "grid");
+    // Two by two on a screen under 344 px wide.
+    expect(sortChips()).toHaveClass("max-[344px]:grid-cols-2");
+    expect(sortChips()).not.toHaveClass("overflow-x-auto");
+    // Nothing shares their row: the two buttons are in the title row.
+    const row = document.querySelector("[data-slot=sort-chips]") as HTMLElement;
+    expect(within(row).getAllByRole("button")).toHaveLength(4);
+    expect(row.contains(screen.getByRole("button", { name: "Filter" }))).toBe(false);
+    expect(row.contains(screen.getByRole("button", { name: "Highest first" }))).toBe(false);
     await screen.findByText("polyterrasse");
+  });
+
+  test("the parts of the head follow one another: title row, measure line, sort chips, set filters, podium, ranking", async () => {
+    navigation.go("/leaderboard?min_trades=1");
+    mockApi({ [BOARD]: board({}) });
+    renderWithProviders(<LeaderboardScreen />);
+    await screen.findByText("polyterrasse");
+
+    const parts = [
+      document.querySelector("[data-slot=title-row]")!,
+      document.querySelector("[data-slot=measure-line]")!,
+      document.querySelector("[data-slot=sort-chips]")!,
+      screen.getByRole("list", { name: "Filters that are set" }),
+      podium()!,
+      rowOf("mensa_fan"),
+    ];
+    parts.slice(1).forEach((part, index) => {
+      expect(parts[index]!.compareDocumentPosition(part)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    });
   });
 });
 
@@ -254,21 +299,49 @@ describe("the podium", () => {
     expect(columns).toHaveLength(3);
     const [first, second, third] = columns as [HTMLElement, HTMLElement, HTMLElement];
 
-    expect(within(first).getByRole("img", { name: "First place" })).toHaveClass("size-24");
+    // 96 px for first place and 72 px for the others, and never wider than the column.
+    const gold = within(first).getByRole("img", { name: "First place" });
+    expect(gold.parentElement).toHaveClass("w-24", "max-w-full", "aspect-square");
     expect(first).toHaveTextContent("1st");
-    expect(within(first).getByText("polyterrasse")).toHaveClass("type-h3", "truncate");
-    expect(first.querySelector("[data-slot=amount]")).toHaveClass("type-number-lg");
+    // One line, cut with an ellipsis when it is too long, and whole in its title.
+    const name = within(first).getByText("polyterrasse");
+    expect(name).toHaveClass("type-label", "md:type-h3", "truncate", "w-full");
+    expect(name).toHaveAttribute("title", "polyterrasse");
+    // On a phone every figure of the podium is in `number`.
+    expect(first.querySelector("[data-slot=amount]")).toHaveClass("type-number");
+    expect(first.querySelector("[data-slot=amount]")).not.toHaveClass("type-number-lg");
     expect(first).toHaveTextContent("1,204.5 tokens");
 
-    expect(within(second).getByRole("img", { name: "Second place" })).toHaveClass("size-18");
+    const silver = within(second).getByRole("img", { name: "Second place" });
+    expect(silver.parentElement).toHaveClass("w-18", "max-w-full");
     expect(second).toHaveTextContent("2nd");
     expect(second).toHaveTextContent("cab_coffee");
     expect(second.querySelector("[data-slot=amount]")).toHaveClass("type-number");
     expect(second).toHaveTextContent("980 tokens");
 
-    expect(within(third).getByRole("img", { name: "Third place" })).toHaveClass("size-18");
+    const bronze = within(third).getByRole("img", { name: "Third place" });
+    expect(bronze.parentElement).toHaveClass("w-18", "max-w-full");
     expect(third).toHaveTextContent("3rd");
     expect(third).toHaveTextContent("240 tokens");
+  });
+
+  test("a figure never leaves its column: it wraps inside it and is never cut", async () => {
+    mockApi({
+      [BOARD]: board({
+        items: [player(1, "whale", { credits_cr: "1234567.89" }), you(2)],
+        viewer: you(2),
+      }),
+    });
+    renderWithProviders(<LeaderboardScreen />);
+    await screen.findByText("whale");
+
+    const figure = places()[0]!.querySelector("[data-slot=amount]")!;
+    expect(figure).toHaveTextContent("1,234,567.89");
+    expect(figure).toHaveClass("max-w-full", "flex-wrap", "whitespace-normal");
+    expect(figure).not.toHaveClass("whitespace-nowrap", "truncate");
+    // The three columns are equal, whatever stands in them.
+    expect(screen.getByRole("list", { name: "Top three" })).toHaveClass("grid-cols-3", "gap-2");
+    for (const place of places()) expect(place).toHaveClass("min-w-0");
   });
 
   test("first place stands in the middle, second on its left, third on its right, on one card", async () => {
@@ -281,8 +354,9 @@ describe("the podium", () => {
     expect(first).toHaveClass("order-2");
     expect(third).toHaveClass("order-3");
     expect(podium()).toHaveClass("bg-card", "border", "rounded-lg");
+    expect(podium()).toHaveClass("pb-0");
     // The steps are flat --raised blocks of three heights with square corners.
-    const steps = places().map((place) => place.lastElementChild!);
+    const steps = places().map((place) => place.querySelector("[data-slot=podium-step]")!);
     expect(steps.map((step) => step.className)).toEqual([
       expect.stringContaining("h-12"),
       expect.stringContaining("h-8"),
@@ -300,7 +374,7 @@ describe("the podium", () => {
     await screen.findByText("mensa_fan");
 
     expect(listed()).toEqual(["mensa_fan"]);
-    const row = screen.getByText("mensa_fan").closest("[data-slot=row]")!;
+    const row = rowOf("mensa_fan");
     expect(row).toHaveTextContent("Rank 4");
     expect(row).toHaveTextContent("BSc Computer Science");
     expect(row).toHaveTextContent("120.25 tokens");
@@ -345,9 +419,9 @@ describe("the podium", () => {
     expect(third).toHaveAttribute("data-empty");
     expect(listed()).toEqual(["fresh_one", "anna_m"]);
     // The missing rate is an en dash, read out as "none yet".
-    const row = screen.getByText("fresh_one").closest("[data-slot=row]")!;
+    const row = rowOf("fresh_one");
     expect(row).toHaveTextContent(EN_DASH);
-    expect(within(row as HTMLElement).getByText("none yet")).toHaveClass("sr-only");
+    expect(within(row).getByText("none yet")).toHaveClass("sr-only");
     expect(trophy(row)).not.toBeInTheDocument();
   });
 
@@ -422,7 +496,8 @@ describe("the rows are the API's", () => {
     });
     renderWithProviders(<LeaderboardScreen />);
 
-    const row = (await screen.findByText("whale")).closest("[data-slot=row]")!;
+    await screen.findByText("whale");
+    const row = rowOf("whale");
     expect(row).toHaveTextContent("123,456,789,012,345,678,901,234.99");
     expect(row).not.toHaveTextContent("235");
     expect(row).not.toHaveTextContent("e+");
@@ -441,7 +516,7 @@ describe("the rows are the API's", () => {
     const figures = { credits_cr: "1204.5", win_rate: 0.625, trades: 1204, avg_payout_ratio: 1.35 };
     mockApi({ [BOARD]: board({ items: [player(4, "mensa_fan", figures)], viewer: null }) });
     const { user } = renderWithProviders(<LeaderboardScreen />);
-    const row = () => screen.getByText("mensa_fan").closest("[data-slot=row]")!;
+    const row = () => rowOf("mensa_fan");
 
     await screen.findByText("mensa_fan");
     expect(row()).toHaveTextContent("1,204.5 tokens");
@@ -550,28 +625,6 @@ describe("sort and order", () => {
     expect(screen.getByRole("button", { name: "Highest first" })).toBeInTheDocument();
   });
 
-  test("a list that opens on a measure whose chip is out of sight brings the chip in, without moving the page", async () => {
-    navigation.go("/leaderboard?sort=avg_payout_ratio");
-    // A phone: the strip of chips ends at 200 px, and "Payout" lies beyond it.
-    const box = (left: number, right: number) =>
-      ({ left, right, top: 0, bottom: 44, width: right - left, height: 44 }) as DOMRect;
-    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-      this: Element,
-    ) {
-      if (this.getAttribute("aria-pressed") === "true") return box(300, 380);
-      if (this.getAttribute("aria-label") === "Sort by") return box(16, 200);
-      return box(0, 0);
-    });
-    const intoView = vi.spyOn(Element.prototype, "scrollIntoView");
-    mockApi({ [BOARD]: board({}) });
-    renderWithProviders(<LeaderboardScreen />);
-
-    const strip = screen.getByRole("group", { name: "Sort by" });
-    await waitFor(() => expect(strip.scrollLeft).toBe(180));
-    expect(intoView).not.toHaveBeenCalled();
-    await screen.findByText("polyterrasse");
-  });
-
   test("tapping the chip that is pressed asks for nothing", async () => {
     const api = mockApi({ [BOARD]: board({}) });
     const { user } = renderWithProviders(<LeaderboardScreen />);
@@ -625,7 +678,7 @@ describe("the address is the view", () => {
     expect(chip("Tokens")).toHaveAttribute("aria-pressed", "true");
   });
 
-  test("the filters that are set stand under the sort row as chips, and Filter counts them", async () => {
+  test("the filters that are set stand under the sort chips as chips, and Filter counts them", async () => {
     navigation.go(
       "/leaderboard?degree_level=BACHELOR&degree_programme=BSc+Computer+Science" +
         "&min_win_rate=0.5&max_credits_cr=1204.5&min_avg_payout_ratio=1.5",
@@ -644,7 +697,15 @@ describe("the address is the view", () => {
       `Payout from 1.5${TIMES}`,
     ]);
     expect(chips[0]).toHaveAccessibleName("Remove filter: BSc Computer Science");
-    expect(screen.getByRole("button", { name: "Filter, 4 set" })).toBeInTheDocument();
+    // The number on the button is the number of chips under it.
+    const filter = screen.getByRole("button", { name: "Filter, 4 set" });
+    expect(filter.querySelector("[data-slot=badge]")).toHaveTextContent("4");
+    // They wrap onto as many lines as they need, and none is wider than the column.
+    const list = screen.getByRole("list", { name: "Filters that are set" });
+    expect(list).toHaveClass("flex-wrap");
+    for (const item of within(list).getAllByRole("listitem")) {
+      expect(item).toHaveClass("max-w-full", "min-w-0");
+    }
   });
 
   test("a level without a programme is shown by its name from /config", async () => {
@@ -723,10 +784,14 @@ describe("your row", () => {
     });
     renderWithProviders(<LeaderboardScreen />);
 
-    const row = (await screen.findByText("anna_m")).closest("[data-slot=row]")!;
+    await screen.findByText("anna_m");
+    const row = rowOf("anna_m");
     expect(row).toHaveClass("bg-raised");
-    expect(within(row as HTMLElement).getByText("You")).toBeInTheDocument();
-    expect(screen.getByText("d").closest("[data-slot=row]")).not.toHaveClass("bg-raised");
+    // "You" stands beside the username and is not cut with it.
+    const label = within(row).getByText("You");
+    expect(label).toHaveClass("shrink-0");
+    expect(label.previousElementSibling).toHaveTextContent("anna_m");
+    expect(rowOf("d")).not.toHaveClass("bg-raised");
   });
 
   test("it is marked by is_viewer, not by comparing names", async () => {
@@ -740,13 +805,13 @@ describe("your row", () => {
     });
     renderWithProviders(<LeaderboardScreen />);
 
-    const row = (await screen.findByText("anna_m")).closest("[data-slot=row]")!;
-    expect(row).not.toHaveClass("bg-raised");
+    await screen.findByText("anna_m");
+    expect(rowOf("anna_m")).not.toHaveClass("bg-raised");
     expect(screen.queryByText("You")).not.toBeInTheDocument();
     expect(pinnedBar()).not.toBeInTheDocument();
   });
 
-  test("outside the page, the viewer row of the answer is pinned above the tab bar", async () => {
+  test("outside the page, the viewer row of the answer is pinned in a bar across the window, on the tab bar", async () => {
     mockApi({
       [BOARD]: board({
         items: [player(1, "a"), player(2, "b"), player(3, "c"), player(4, "d")],
@@ -758,16 +823,47 @@ describe("your row", () => {
     await screen.findByText("a");
 
     const bar = pinnedBar()!;
-    expect(bar).toHaveClass("sticky", "bottom-(--tab-bar-space)");
+    // Across the whole window, on the tab bar; --card with a line on top and 8 px above
+    // and below the row.
+    expect(bar).toHaveClass("fixed", "inset-x-0", "bottom-(--tab-bar-space)");
+    expect(bar).toHaveClass("bg-card", "border-t", "py-2");
     const pinned = within(bar);
-    expect(pinned.getByRole("region", { name: "Your rank" })).toBeInTheDocument();
+    // The row itself stands in the content column.
+    expect(pinned.getByRole("region", { name: "Your rank" })).toHaveClass("mx-auto", "px-4");
     expect(bar).toHaveTextContent("Rank 1,204");
     expect(pinned.getByText("anna_m")).toBeInTheDocument();
     expect(pinned.getByText("You")).toBeInTheDocument();
     expect(bar).toHaveTextContent("12.5 tokens");
-    expect(bar.querySelector("[data-slot=row]")).toHaveClass("bg-raised");
+    const row = bar.querySelector("[data-slot=row]")!;
+    expect(row).toHaveClass("bg-raised", "rounded-md");
+    // The programme keeps to one line there.
+    expect(pinned.getByText("BSc Computer Science")).toHaveClass("truncate");
     // Rank 1,204 is no podium place: no trophy.
     expect(trophy(bar)).not.toBeInTheDocument();
+  });
+
+  test("while the bar shows, the screen keeps room at its foot for it; without the bar it does not", async () => {
+    vi.stubGlobal("IntersectionObserver", Watcher);
+    mockApi({
+      [BOARD]: board({
+        items: [player(1, "a"), player(2, "b"), player(3, "c"), player(4, "d"), you(5)],
+        viewer: you(5),
+      }),
+    });
+    renderWithProviders(<LeaderboardScreen />);
+    await screen.findByText("anna_m");
+    const room = "pb-[calc(var(--tab-bar-space)+5.5rem+1px)]";
+
+    expect(pinnedBar()).not.toBeInTheDocument();
+    expect(main()).not.toHaveClass(room);
+
+    report(viewerRow()!, 0);
+    // The bar is 73 px tall, and the last row ends 16 px above it.
+    expect(pinnedBar()).toBeInTheDocument();
+    expect(main()).toHaveClass(room);
+
+    report(viewerRow()!, 1);
+    expect(main()).not.toHaveClass(room);
   });
 
   test("the pinned row shows the figure of the measure the list is sorted by", async () => {
@@ -1065,6 +1161,37 @@ describe("from 768 px", () => {
     expect(within(yours!).getAllByText("none yet")).toHaveLength(2);
   });
 
+  test("the rows are 56 px tall; the player gives way with an ellipsis and the figures keep their width", async () => {
+    mockApi({ [BOARD]: answer() });
+    renderWithProviders(<LeaderboardScreen />);
+    await screen.findByText("mensa_fan");
+
+    const [head, row] = within(screen.getByRole("table")).getAllByRole("row");
+    expect(row).toHaveClass("h-14");
+    const [rank, who, ...figures] = within(row!).getAllByRole("cell");
+    // "Rank" is 56 px wide.
+    expect(within(head!).getByRole("columnheader", { name: "Rank" })).toHaveClass("w-14");
+    expect(rank).toHaveClass("text-right", "whitespace-nowrap");
+    // "Player" takes what the others leave; the username and the programme are one line each.
+    expect(who).toHaveClass("w-full", "max-w-0");
+    expect(within(who!).getByText("mensa_fan")).toHaveClass("truncate");
+    expect(within(who!).getByText("MSc Data Science")).toHaveClass("truncate");
+    for (const figure of figures) {
+      expect(figure).toHaveClass("text-right", "whitespace-nowrap", "w-px", "px-2");
+    }
+  });
+
+  test("the sort chips are as wide as their labels, and the first-place figure is in number-lg", async () => {
+    mockApi({ [BOARD]: answer() });
+    renderWithProviders(<LeaderboardScreen />);
+    await screen.findByText("mensa_fan");
+
+    expect(sortChips()).toHaveAttribute("data-layout", "strip");
+    const [first, second] = places();
+    expect(first!.querySelector("[data-slot=amount]")).toHaveClass("type-number-lg");
+    expect(second!.querySelector("[data-slot=amount]")).toHaveClass("type-number");
+  });
+
   test("the heading of the sorted measure carries aria-sort; the others say none", async () => {
     mockApi({ [BOARD]: answer() });
     renderWithProviders(<LeaderboardScreen />);
@@ -1115,7 +1242,7 @@ describe("from 768 px", () => {
     expect(within(screen.getByRole("table")).getAllByRole("row")).toHaveLength(6);
   });
 
-  test("a table row that is scrolled away is pinned as a row", async () => {
+  test("a table row that is scrolled away is pinned as a row, at the lower edge of the window", async () => {
     vi.stubGlobal("IntersectionObserver", Watcher);
     mockApi({ [BOARD]: answer() });
     renderWithProviders(<LeaderboardScreen />);
@@ -1126,6 +1253,11 @@ describe("from 768 px", () => {
 
     expect(pinnedBar()).toHaveTextContent("Rank 5");
     expect(within(pinnedBar()!).getByText("anna_m")).toBeInTheDocument();
+    // No tab bar lies under it there: the bar keeps clear of the safe area itself.
+    expect(pinnedBar()).toHaveClass("md:pb-[calc(0.5rem+env(safe-area-inset-bottom))]");
+    expect(within(pinnedBar()!).getByRole("region", { name: "Your rank" })).toHaveClass(
+      "md:max-w-[45rem]",
+    );
   });
 });
 

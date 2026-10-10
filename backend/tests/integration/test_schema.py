@@ -35,6 +35,7 @@ from app.core.enums import (
     Outcome,
     ResolutionOutcome,
     TradeSide,
+    UserRole,
     UserStatus,
     VoucherStatus,
 )
@@ -104,7 +105,9 @@ def _user(name: str, **overrides: Any) -> User:
         "username": name,
         "degree_level": DegreeLevel.BACHELOR,
         "degree_programme": "BSc Computer Science",
+        "role": UserRole.USER,
         "status": UserStatus.ACTIVE,
+        "policy_accepted_at": NOW,
         "created_at": NOW,
     }
     return User(**(values | overrides))
@@ -118,7 +121,6 @@ def _market(created_by: UUID, **overrides: Any) -> Market:
         "resolution_criteria": "The published menu of that day.",
         "resolution_source": "ethz.ch/menu",
         "status": MarketStatus.OPEN,
-        "requested_tier": MarketTier.DEFAULT,
         "tier": MarketTier.DEFAULT,
         "budget_micro": 6_931_472,
         "b_micro": 10 * CR,
@@ -171,10 +173,14 @@ def _voucher(world: World, code: str, **overrides: Any) -> Voucher:
     return Voucher(**(values | overrides))
 
 
-def _code(world: World, code: str, **overrides: Any) -> Code:
+def _code(world: World, plain: str, /, **overrides: Any) -> Code:
+    """An ACTIVE code of the world's batch, which keeps `plain` itself beside its hash.
+    The ids are made here, so codes sort by id in the order they were built."""
     values: dict[str, Any] = {
+        "id": uuid7(),
         "batch_id": world.batch.id,
-        "code_hash": sha256_hex(code),
+        "code_hash": sha256_hex(plain),
+        "code": plain,
         "status": CodeStatus.ACTIVE,
     }
     return Code(**(values | overrides))
@@ -664,14 +670,31 @@ REJECTED_ROWS: Final = [
         id="duplicate-code-hash",
     ),
     pytest.param(
-        lambda w: [_code(w, "CODE", status=CodeStatus.REDEEMED)],
+        lambda w: [_code(w, "CODE", status=CodeStatus.REDEEMED, code=None)],
         "ck_codes_redeemed_iff_redeemer",
         id="redeemed-code-without-redeemer",
     ),
     pytest.param(
         lambda w: [_code(w, "CODE", code_hash="XXXX-XXXX-XXXX")],
         "ck_codes_code_hash_sha256_hex",
-        id="plain-code",
+        id="plain-code-where-its-hash-belongs",
+    ),
+    pytest.param(
+        lambda w: [_code(w, "CODE", code=None)],
+        "ck_codes_code_iff_active",
+        id="active-code-that-does-not-keep-its-code",
+    ),
+    pytest.param(
+        lambda w: [
+            _code(w, "CODE", status=CodeStatus.REDEEMED, redeemed_by=w.user.id, redeemed_at=NOW)
+        ],
+        "ck_codes_code_iff_active",
+        id="redeemed-code-that-kept-its-code",
+    ),
+    pytest.param(
+        lambda w: [_code(w, "CODE", status=CodeStatus.REVOKED)],
+        "ck_codes_code_iff_active",
+        id="revoked-code-that-kept-its-code",
     ),
     pytest.param(
         lambda w: [_voucher(w, "SAME-CODE") for _ in range(2)],
@@ -842,6 +865,36 @@ async def test_database_rejects(
         await _insert(uow_factory, rows(world))
 
 
+@pytest.mark.parametrize("status", [CodeStatus.REDEEMED, CodeStatus.REVOKED])
+async def test_a_code_cannot_be_redeemed_or_revoked_by_a_statement_that_keeps_it(
+    uow_factory: UowFactory, world: World, status: CodeStatus
+) -> None:
+    """Only an ACTIVE row holds its code. An UPDATE that takes a code out of ACTIVE and
+    leaves the code in the row is refused, so the two can only change in one statement."""
+    await _insert(uow_factory, [_code(world, "KEPT")])
+
+    async def change(*, clearing_the_code: bool) -> None:
+        async with uow_factory() as uow:
+            code = await uow.codes.get_by_hash(sha256_hex("KEPT"), for_update=True)
+            assert code is not None
+            code.status = status
+            if status is CodeStatus.REDEEMED:
+                code.redeemed_by, code.redeemed_at = world.user.id, NOW
+            if clearing_the_code:
+                code.code = None
+
+    with pytest.raises(IntegrityError, match="ck_codes_code_iff_active"):
+        await change(clearing_the_code=False)
+    async with uow_factory() as uow:
+        assert await uow.codes.list_active_codes(world.batch.id) == ["KEPT"]
+
+    await change(clearing_the_code=True)
+    async with uow_factory() as uow:
+        stored = await uow.codes.get_by_hash(sha256_hex("KEPT"))
+        assert stored is not None
+        assert (stored.status, stored.code) == (status, None)
+
+
 @pytest.mark.parametrize("status", [MarketStatus.PROPOSED, MarketStatus.REJECTED])
 async def test_market_needs_no_liquidity_before_approval(
     uow_factory: UowFactory, world: World, status: MarketStatus
@@ -921,7 +974,7 @@ async def test_approval_sets_budget_and_b_as_it_opens_the_market(
 
 @pytest.mark.parametrize(
     ("column", "value"),
-    [("status", "BANNED"), ("degree_level", "KINDERGARTEN")],
+    [("status", "BANNED"), ("degree_level", "KINDERGARTEN"), ("role", "MODERATOR")],
 )
 async def test_enum_columns_reject_unknown_values(
     owner_engine: AsyncEngine, world: World, column: str, value: str
@@ -932,6 +985,43 @@ async def test_enum_columns_reject_unknown_values(
 
     with pytest.raises(IntegrityError, match=f"ck_users_{column}"):
         await write()
+
+
+@pytest.mark.parametrize("column", ["role", "policy_accepted_at"])
+async def test_no_user_is_stored_without_a_role_or_without_having_accepted_the_policy(
+    uow_factory: UowFactory, column: str
+) -> None:
+    """Every profile starts with a role, and there is no profile of somebody who did not
+    accept the usage policy: both columns are NOT NULL."""
+    with pytest.raises(IntegrityError, match=f'null value in column "{column}"'):
+        await _insert(uow_factory, [_user("bob", **{column: None})])
+
+    async with uow_factory() as uow:
+        assert await uow.users.get_by_username("bob") is None
+
+
+async def test_a_user_keeps_the_role_and_the_instant_of_the_policy_it_was_stored_with(
+    uow_factory: UowFactory,
+) -> None:
+    accepted_at = NOW - DAY
+    await _insert(
+        uow_factory,
+        [
+            _user("bea", role=UserRole.BARISTA, policy_accepted_at=accepted_at),
+            _user("ada", role=UserRole.ADMIN),
+        ],
+    )
+
+    async with uow_factory() as uow:
+        bea, ada = await uow.users.get_by_username("bea"), await uow.users.get_by_username("ada")
+    assert bea is not None
+    assert ada is not None
+    assert (bea.role, bea.policy_accepted_at, bea.created_at) == (
+        UserRole.BARISTA,
+        accepted_at,
+        NOW,
+    )
+    assert (ada.role, ada.policy_accepted_at) == (UserRole.ADMIN, NOW)
 
 
 # --- Unit of work and locking ---------------------------------------------------------
@@ -1540,21 +1630,27 @@ async def test_code_queries(uow_factory: UowFactory, world: World) -> None:
                 created_at=NOW - 40 * DAY,
             )
         )
-        await uow.codes.add(
-            Code(batch_id=expired.id, code_hash=sha256_hex("OLD"), status=CodeStatus.ACTIVE)
-        )
+        await uow.codes.add(_code(world, "OLD", batch_id=expired.id))
 
     async with uow_factory() as uow:
+        # The codes of a batch that are ACTIVE, in the order they were made. Whether
+        # the batch has expired is not this query's to say.
+        assert await uow.codes.list_active_codes(world.batch.id) == ["A", "B", "C"]
+        assert await uow.codes.list_active_codes(expired.id) == ["OLD"]
+        assert await uow.codes.list_active_codes(uuid7()) == []
+
         code = await uow.codes.get_by_hash(sha256_hex("A"), for_update=True)
         assert code is not None
         assert not await uow.codes.user_has_redeemed_in_batch(world.user.id, world.batch.id)
         code.status = CodeStatus.REDEEMED
         code.redeemed_by = world.user.id
         code.redeemed_at = NOW
+        code.code = None
         await uow.flush()
         assert await uow.codes.user_has_redeemed_in_batch(world.user.id, world.batch.id)
         assert not await uow.codes.user_has_redeemed_in_batch(world.admin.id, world.batch.id)
         assert await uow.codes.get_by_hash(sha256_hex("unknown")) is None
+        assert await uow.codes.list_active_codes(world.batch.id) == ["B", "C"]
 
         # 3 codes of 2 CR this month; the 5 CR code is older and expired.
         assert await uow.codes.issued_value_since(NOW - DAY) == 6 * CR
@@ -1562,11 +1658,22 @@ async def test_code_queries(uow_factory: UowFactory, world: World) -> None:
         assert await uow.codes.unredeemed_value(NOW) == 4 * CR
 
         assert await uow.codes.revoke(world.batch.id, [sha256_hex("A"), sha256_hex("B")]) == 1
+        assert await uow.codes.list_active_codes(world.batch.id) == ["C"]
         assert await uow.codes.issued_value_since(NOW - DAY) == 4 * CR
         assert await uow.codes.revoke(world.batch.id, None) == 1
         assert await uow.codes.revoke(world.batch.id, None) == 0
         assert await uow.codes.unredeemed_value(NOW) == 0
         assert code.status is CodeStatus.REDEEMED
+        # A revocation clears the code in the statement that revokes it: of this batch
+        # nothing is kept, and the code of the other batch is where it was.
+        assert await uow.codes.list_active_codes(world.batch.id) == []
+        kept = await uow.session.execute(select(Code.status, Code.code).order_by(Code.id))
+        assert [tuple(row) for row in kept] == [
+            (CodeStatus.REDEEMED, None),
+            (CodeStatus.REVOKED, None),
+            (CodeStatus.REVOKED, None),
+            (CodeStatus.ACTIVE, "OLD"),
+        ]
 
         batch = await uow.code_batches.get(world.batch.id, for_update=True)
         assert batch is not None

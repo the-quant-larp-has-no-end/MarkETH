@@ -18,10 +18,11 @@ import pytest
 
 from app.core.config import Settings
 from app.core.degrees import is_programme
-from app.core.enums import MarketStatus, UserRole
+from app.core.enums import MarketStatus
 from app.core.identity import USERNAME_PATTERN, portal_address
 from app.schemas.admin.code_batches import CreateCodeBatchRequest
 from app.schemas.admin.markets import (
+    ApproveMarketRequest,
     CloseMarketRequest,
     HaltMarketRequest,
     RejectMarketRequest,
@@ -101,6 +102,7 @@ def test_every_demo_account_registers_with_a_profile_the_service_accepts(
         username=person.username,
         degree_level=person.degree_level,
         degree_programme=person.degree_programme,
+        policy_accepted=True,
     )
 
     assert re.fullmatch(USERNAME_PATTERN, request.username)
@@ -117,18 +119,18 @@ def test_no_two_demo_accounts_share_an_address_or_a_username() -> None:
 
 
 @pytest.mark.parametrize("person", PEOPLE, ids=lambda person: person.username)
-def test_every_demo_address_is_one_the_portal_could_send_and_has_no_role(
+def test_every_demo_address_is_one_the_portal_could_send_and_no_bootstrap_admin(
     person: Person, base_settings: Settings
 ) -> None:
-    """Neither on the role lists of the tests nor on those of `.example.env`: a demo
-    account is nobody's real one."""
+    """Neither among the bootstrap admins of the tests nor among those of
+    `.example.env`: a demo account is nobody's real one."""
     address = address_of(person, base_settings)
 
     assert portal_address(address, base_settings.identity.allowed_email_domains) == address
     for settings in (base_settings, Settings.load(EXAMPLE_ENV_FILE)):
         roles = EmailPolicy(settings)
         assert roles.identify(address) == address
-        assert roles.role_for(address) is UserRole.USER
+        assert not roles.is_bootstrap_admin(address)
 
 
 def test_the_names_the_plan_calls_the_students_by_are_theirs() -> None:
@@ -164,8 +166,8 @@ def test_the_plan_has_a_market_for_every_state_a_screen_shows() -> None:
         MarketStatus.PROPOSED: 1,
         MarketStatus.REJECTED: 1,
     }
-    open_tiers = [market.tier for market in MARKETS if market.ends is MarketStatus.OPEN]
-    assert sorted(open_tiers) == sorted(FIXED_TIERS)
+    open_tiers = {market.tier for market in MARKETS if market.ends is MarketStatus.OPEN}
+    assert open_tiers == set(FIXED_TIERS)
 
 
 def test_no_two_demo_markets_share_a_question_or_a_slug() -> None:
@@ -188,13 +190,25 @@ def test_the_wording_of_every_demo_market_is_a_proposal_the_api_takes(
         resolution_source=market.resolution_source,
         close_at=close_at,
         resolve_by=close_at + seed.RESOLVE_WITHIN,
-        requested_tier=market.tier,
+        policy_accepted=True,
     )
 
-    assert proposal.requested_tier in FIXED_TIERS
+    assert proposal.question == market.question
     assert 0 < market.closes_in_days <= base_settings.risk.max_market_lifetime_days
     assert base_settings.lifecycle.max_resolution_delay >= seed.RESOLVE_WITHIN
     assert 0 <= market.proposer < len(STUDENTS)
+
+
+@every_market
+def test_a_demo_market_names_a_tier_exactly_if_the_desk_opens_it(market: DemoMarket) -> None:
+    """A proposal asks for no liquidity. The desk picks the tier when it approves, so
+    the plan names one for a market that opens and none for one that never does."""
+    opens = market.ends not in (MarketStatus.PROPOSED, MarketStatus.REJECTED)
+
+    assert (market.tier is not None) == opens
+    if market.tier is not None:
+        assert market.tier in FIXED_TIERS
+        assert ApproveMarketRequest(tier=market.tier).budget_cr is None
 
 
 @every_market

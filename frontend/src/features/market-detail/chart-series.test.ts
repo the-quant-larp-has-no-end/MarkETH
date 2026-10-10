@@ -111,13 +111,13 @@ describe("buildSeries", () => {
 describe("chartEnd", () => {
   const now = at("2026-10-11T10:00:00Z");
 
-  test.each(["OPEN", "HALTED"] as const)("a %s market is drawn until now", (status) => {
+  test.each(["OPEN", "HALTED"] as const)("a %s market is drawn up to the present", (status) => {
     expect(chartEnd(marketDetail({ status }), now)).toBe(now);
     expect(chartEnd(marketDetail({ status }), null)).toBeNull();
   });
 
   test.each(["CLOSED", "RESOLVED", "VOID"] as const)(
-    "a %s market is drawn until trading stopped, not until now",
+    "a %s market is drawn until trading stopped, not up to the present",
     (status) => {
       const market = marketDetail({ status, close_at: "2026-10-14T16:00:00Z", closed_at: null });
 

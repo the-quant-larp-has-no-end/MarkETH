@@ -432,7 +432,7 @@ describe("the codes of a new batch are shown once", () => {
 
     await user.click(within(codes).getByRole("button", { name: "Done" }));
     await user.click(
-      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Close" }),
+      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Close codes" }),
     );
 
     await waitFor(() => expect(screen.queryByText(SAVE_NOW)).not.toBeInTheDocument());
@@ -535,7 +535,7 @@ describe("the codes of a new batch are shown once", () => {
 
     await user.click(within(codes).getByRole("button", { name: "Done" }));
     const question = await screen.findByRole("alertdialog", { name: "Close the codes?" });
-    const close = within(question).getByRole("button", { name: "Close" });
+    const close = within(question).getByRole("button", { name: "Close codes" });
     expect(close).toHaveAttribute("data-variant", "destructive");
     await user.click(close);
 
@@ -586,7 +586,7 @@ describe("leaving the page while the codes are on it asks first", () => {
 
     await user.click(within(codes).getByRole("button", { name: "Done" }));
     await user.click(
-      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Close" }),
+      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Close codes" }),
     );
     await waitFor(() => expect(screen.queryByText(SAVE_NOW)).not.toBeInTheDocument());
     expect(unload()).toBe(false);

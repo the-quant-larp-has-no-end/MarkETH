@@ -3,9 +3,9 @@
 `{code, message, details}` for whatever goes wrong: an unknown route, a body that does
 not validate, a missing header, a foreign Origin, a request the portal names nobody
 for, a caller without a profile, a role that is not enough, a service error, a bug, a
-database that is down, a lock that is not granted in time. The guard tests walk the
-OpenAPI document, so a route added later is covered without anyone remembering to add
-it here.
+database that is down, a lock that is not granted in time, a pool with no connection
+free. The guard tests walk the OpenAPI document, so a route added later is covered
+without anyone remembering to add it here.
 """
 
 import logging
@@ -18,7 +18,8 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError, ProgrammingError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.container import Container
@@ -37,7 +38,7 @@ from app.db import database as database_errors
 from app.db.database import Database
 from app.main import create_app
 from app.schemas.markets import Holding
-from app.services.codes import OWN_BATCH_MESSAGE
+from app.services.codes import ADMIN_REDEEM_MESSAGE, OWN_BATCH_MESSAGE
 from app.services.market_lifecycle import SELF_DEALING_MESSAGE
 from app.services.profile import RESERVED_USERNAME_MESSAGE
 from tests.support.clock import FrozenClock
@@ -64,7 +65,9 @@ PATH_VALUES: Final[dict[str, str]] = {
     "{market_id}": str(uuid7()),
     "{batch_id}": str(uuid7()),
     "{voucher_id}": str(uuid7()),
+    "{user_id}": str(uuid7()),
     "{alert_id}": "1",
+    "{notice_id}": str(uuid7()),
 }
 """A value for every path parameter the API has. None of them is a code: a code travels
 in a body."""
@@ -75,10 +78,11 @@ SCANNED: Final[dict[str, str]] = {"code": "ABCD-EFGH"}
 TRADE_PATH: Final[str] = f"/api/markets/{uuid7()}/trades"
 TRADE_BODY: Final[dict[str, str]] = {"side": "BUY", "outcome": "YES", "amount_cr": "25"}
 
-PROFILE_BODY: Final[dict[str, str]] = {
+PROFILE_BODY: Final[dict[str, object]] = {
     "username": "newcomer",
     "degree_level": "BACHELOR",
     "degree_programme": "BSc Computer Science",
+    "policy_accepted": True,
 }
 
 NEWCOMER: Final[PortalIdentity] = PortalIdentity(
@@ -253,6 +257,9 @@ async def test_a_body_that_does_not_validate_is_422_with_the_field_errors(
     assert errors[("body", "kode")]["type"] == "extra_forbidden"
     for error in errors.values():
         assert set(error) == {"loc", "msg", "type"}, "the rejected input is not echoed back"
+    # Each `msg` is a sentence for whoever filled the field in, not the framework's.
+    assert errors[("body", "code")]["msg"] == "This is required."
+    assert errors[("body", "kode")]["msg"] == "This field is not part of the request."
 
 
 async def test_a_body_that_is_not_json_is_422_whoever_sent_it(
@@ -284,6 +291,28 @@ async def test_a_json_float_is_not_an_amount(client: httpx.AsyncClient, as_user:
     assert details["errors"][0]["type"] == "decimal_string"
 
 
+async def test_a_number_of_a_million_digits_is_422_like_any_amount_that_is_too_large(
+    client: httpx.AsyncClient, as_user: ActAs
+) -> None:
+    """Ordinary decimal arithmetic gives up on a number that long. It is the client's
+    mistake, answered on the field like any amount with too many digits, not a
+    failure of the server."""
+    as_user(someone(UserRole.USER))
+    a_million_digits = "9" * 1_000_000
+
+    for sent in (a_million_digits, f"-{a_million_digits}", f"{a_million_digits}.5"):
+        response = await client.post(
+            TRADE_PATH,
+            json={"side": "BUY", "outcome": "YES", "amount_cr": sent},
+            headers={"Idempotency-Key": str(uuid7())},
+        )
+
+        details = assert_error(response, 422, "VALIDATION_ERROR")
+        assert [error["loc"] for error in details["errors"]] == [["body", "amount_cr"]]
+        assert details["errors"][0]["type"] == "decimal_too_large"
+        assert a_million_digits not in response.text
+
+
 async def test_a_quote_query_is_validated_like_a_body(
     client: httpx.AsyncClient, as_user: ActAs
 ) -> None:
@@ -300,7 +329,13 @@ async def test_a_quote_query_is_validated_like_a_body(
         path, params={"side": "SELL", "outcome": "YES", "amount_cr": "0.25"}
     )
     details = assert_error(sell_by_amount, 422, "VALIDATION_ERROR")
-    assert "sized by shares" in details["errors"][0]["msg"]
+    assert details["errors"] == [
+        {
+            "loc": ["query", "amount_cr"],
+            "msg": "Enter the number of shares to sell.",
+            "type": "value_error",
+        }
+    ]
 
     unknown = await client.get(
         path, params={"side": "BUY", "outcome": "YES", "shares": "1", "leverage": "10"}
@@ -324,7 +359,7 @@ async def test_a_trade_without_an_idempotency_key_is_422(
     response = await client.post(TRADE_PATH, json=TRADE_BODY)
     details = assert_error(response, 422, "VALIDATION_ERROR")
     assert details["errors"] == [
-        {"loc": ["header", "Idempotency-Key"], "msg": "Field required", "type": "missing"}
+        {"loc": ["header", "Idempotency-Key"], "msg": "This is required.", "type": "missing"}
     ]
 
 
@@ -391,7 +426,7 @@ async def test_every_route_that_is_not_public_answers_401_when_the_portal_names_
     client: httpx.AsyncClient, app: FastAPI
 ) -> None:
     routes = protected(app)
-    assert len(routes) == 33, "every operation but /health and /config"
+    assert len(routes) == 40, "every operation but /health and /config"
     assert PROFILE_OPERATION in routes
     for method, path in routes:
         response = await client.request(method, concrete(path))
@@ -619,7 +654,7 @@ async def test_an_id_the_policy_refuses_is_403_with_the_allowed_domains(
 
     async def authenticate(user_id: str, user_name: str) -> Caller:
         email = container.email_policy.identify(user_id)
-        role = container.email_policy.role_for(email)
+        role = container.email_policy.effective_role(email, UserRole.USER)
         return Caller(identity=PortalIdentity(email=email, name=user_name, role=role), user=None)
 
     monkeypatch.setattr(container.identity, "authenticate", authenticate)
@@ -656,7 +691,7 @@ async def test_every_member_route_answers_403_profile_required_to_an_identity_wi
 ) -> None:
     as_user(NEWCOMER)
     routes = member_operations(app)
-    assert len(routes) == 32, "every protected operation but the one that saves a profile"
+    assert len(routes) == 39, "every protected operation but the one that saves a profile"
     for method, path in routes:
         response = await client.request(method, concrete(path))
         details = assert_error(response, 403, "PROFILE_REQUIRED")
@@ -667,7 +702,8 @@ async def test_every_member_route_answers_403_profile_required_to_an_identity_wi
 async def test_a_role_opens_nothing_before_the_profile_exists(
     client: httpx.AsyncClient, app: FastAPI, as_user: ActAs, role: UserRole
 ) -> None:
-    """An address of `ADMIN_EMAILS` sets up a profile like everybody else."""
+    """A bootstrap admin sets up a profile like everybody else: the guards ask for
+    the profile first, whatever role the identity carries."""
     as_user(PortalIdentity(email="chief@ethz.ch", name="", role=role))
     for method, path in member_operations(app):
         response = await client.request(method, concrete(path))
@@ -758,7 +794,7 @@ async def test_admin_routes_answer_403_to_anyone_but_an_admin(
 ) -> None:
     as_user(someone(role))
     routes = protected(app, "/api/admin/")
-    assert len(routes) == 13
+    assert len(routes) == 19
     for method, path in routes:
         response = await client.request(method, concrete(path))
         assert_error(response, 403, "FORBIDDEN")
@@ -876,6 +912,22 @@ async def test_the_creator_of_a_batch_is_told_why_its_codes_are_not_theirs_to_re
 
     assert assert_error(response, 403, "FORBIDDEN") == {}
     assert response.json()["message"] == "You created this batch, so you cannot redeem its codes."
+
+
+async def test_an_admin_is_told_that_admins_do_not_redeem_codes(
+    client: httpx.AsyncClient, app: FastAPI
+) -> None:
+    """What redeeming answers an admin, whoever created the batch (A.6): 403 with a
+    sentence of its own, and nothing in `details`."""
+
+    async def by_an_admin() -> None:
+        raise ForbiddenError(ADMIN_REDEEM_MESSAGE)
+
+    app.add_api_route("/api/_test/admin-redeems", by_an_admin)
+    response = await client.get("/api/_test/admin-redeems")
+
+    assert assert_error(response, 403, "FORBIDDEN") == {}
+    assert response.json()["message"] == "Admins hand out codes and cannot redeem them."
 
 
 async def test_a_reserved_username_is_422_and_names_the_field(
@@ -1015,6 +1067,38 @@ async def test_an_error_a_reachable_postgres_reports_stays_a_500(
     assert isinstance(record.exc_info[1], IntegrityError)
 
 
+async def test_a_failed_statement_is_logged_without_the_values_it_was_sent_with(
+    unhandled_client: httpx.AsyncClient, app: FastAPI, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The lookup of a caller is a statement with their address in it. Where such a
+    statement fails, the log gets its text and the error of Postgres, and not the
+    address: the engine hides the values of every statement."""
+    container: Container = app.state.container
+    address = "zoe.zuercher@ethz.ch"
+
+    async def look_somebody_up_in_a_table_that_is_not_there() -> None:
+        async with container.uow_factory() as uow:
+            await uow.session.execute(
+                text("SELECT id FROM no_such_table WHERE email = :address"), {"address": address}
+            )
+
+    app.add_api_route("/api/_test/lookup", look_somebody_up_in_a_table_that_is_not_there)
+    with caplog.at_level(logging.ERROR, logger="app.api.errors"):
+        response = await unhandled_client.get("/api/_test/lookup")
+
+    assert_error(response, 500, "INTERNAL_ERROR")
+    (record,) = [r for r in caplog.records if r.name == "app.api.errors"]
+    assert record.exc_info is not None
+    failed = record.exc_info[1]
+    assert isinstance(failed, ProgrammingError)
+    logged = logging.Formatter().format(record)
+    assert "no_such_table" in logged, "what failed is still told"
+    assert "hide_parameters" in logged
+    for text_of_it in (logged, str(failed), repr(failed), response.text):
+        assert address not in text_of_it
+        assert "zoe" not in text_of_it
+
+
 async def test_a_bug_that_is_an_os_error_stays_a_500(
     unhandled_client: httpx.AsyncClient, app: FastAPI
 ) -> None:
@@ -1102,12 +1186,106 @@ async def test_a_lock_that_is_not_granted_in_time_is_503_and_the_request_can_be_
     assert (served.status_code, served.json()) == (200, {"balance_micro": 0})
 
 
+# --- A pool with no connection free (SPEC §9) ----------------------------------------
+
+POOL_TIMEOUT_SECONDS: Final[int] = 1
+"""The shortest POSTGRES_POOL_TIMEOUT_SECONDS there is."""
+
+
+@pytest.fixture
+async def crowded_app(settings: Settings, clock: FrozenClock) -> AsyncIterator[FastAPI]:
+    """The application on a pool of one connection and no overflow, which gives up on a
+    checkout after `POOL_TIMEOUT_SECONDS`. Its database is the one every other fixture
+    uses."""
+    postgres = settings.postgres.model_copy(
+        update={"pool_size": 1, "max_overflow": 0, "pool_timeout_seconds": POOL_TIMEOUT_SECONDS}
+    )
+    container = Container.build(settings.model_copy(update={"postgres": postgres}), clock=clock)
+    yield create_app(container)
+    await container.stop()
+
+
+async def test_a_pool_with_no_connection_free_is_503_once_the_pool_timeout_has_passed(
+    crowded_app: FastAPI, settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Every connection of the process is in use. A request waits for one for
+    POSTGRES_POOL_TIMEOUT_SECONDS and is then answered 503, the answer after which a
+    client sends the same request again; it has reached Postgres with nothing."""
+    container: Container = crowded_app.state.container
+    path = add_route_that_reads_the_database(crowded_app)
+    transport = httpx.ASGITransport(app=crowded_app)
+    origin = settings.app.public_base_url
+
+    async with httpx.AsyncClient(transport=transport, base_url=origin) as crowded:
+        async with container.database.engine.connect() as the_one_connection:
+            await the_one_connection.execute(text("SELECT 1"))
+            started = time.monotonic()
+            with caplog.at_level(logging.WARNING, logger="app.api.errors"):
+                refused = await crowded.get(path)
+            waited_seconds = time.monotonic() - started
+        # The connection is back in the pool.
+        served = await crowded.get(path)
+
+    assert assert_error(refused, 503, "SERVICE_UNAVAILABLE") == {}
+    assert waited_seconds >= POOL_TIMEOUT_SECONDS * 0.9, "it has to wait for the pool first"
+    assert waited_seconds < POOL_TIMEOUT_SECONDS + 5, "and not for SQLAlchemy's own 30 s"
+    (record,) = [r for r in caplog.records if r.name == "app.api.errors"]
+    assert record.levelno == logging.WARNING
+    assert f"GET {path}" in record.getMessage()
+    assert (served.status_code, served.json()) == (200, {"total_micro": 0})
+
+
+async def test_health_reports_postgres_down_once_it_waited_for_the_pool_in_vain(
+    crowded_app: FastAPI, settings: Settings
+) -> None:
+    """The probe of Postgres takes a connection of the pool like any request. With none
+    free it waits POSTGRES_POOL_TIMEOUT_SECONDS at most, and the answer says that
+    Postgres did not answer: 503 with the three statuses."""
+    container: Container = crowded_app.state.container
+    transport = httpx.ASGITransport(app=crowded_app)
+
+    async with httpx.AsyncClient(
+        transport=transport, base_url=settings.app.public_base_url
+    ) as crowded:
+        async with container.database.engine.connect() as the_one_connection:
+            await the_one_connection.execute(text("SELECT 1"))
+            started = time.monotonic()
+            while_crowded = await crowded.get("/api/health")
+            waited_seconds = time.monotonic() - started
+        once_free = await crowded.get("/api/health")
+
+    details = assert_error(while_crowded, 503, "SERVICE_UNAVAILABLE")
+    assert details["postgres"] == "down"
+    assert POOL_TIMEOUT_SECONDS * 0.9 <= waited_seconds < POOL_TIMEOUT_SECONDS + 5
+    assert (once_free.status_code, once_free.json()["postgres"]) == (200, "up")
+
+
+async def test_a_checkout_that_timed_out_is_transient_as_the_pool_reports_it(
+    crowded_app: FastAPI,
+) -> None:
+    """What `UserUpkeepService` and the monthly run rest on: a pool that had no
+    connection free is told apart from a lost connection, like a lock timeout."""
+    container: Container = crowded_app.state.container
+
+    async with container.database.engine.connect() as the_one_connection:
+        await the_one_connection.execute(text("SELECT 1"))
+        with pytest.raises(PoolTimeoutError) as timed_out:
+            async with container.uow_factory() as uow:
+                await uow.accounts.total_balance()
+
+    assert database_errors.is_transient(timed_out.value)
+    assert database_errors.is_unavailable(timed_out.value)
+    # The pool is whole: once the connection is back, the next call is served.
+    async with container.uow_factory() as uow:
+        assert await uow.accounts.total_balance() == 0
+
+
 async def test_a_lock_timeout_and_a_lost_connection_are_told_apart_as_the_driver_reports_them(
     impatient_app: FastAPI, owner_engine: AsyncEngine
 ) -> None:
     """What `UserUpkeepService` rests on (A.3): it skips its turn on the first and
     lets the second leave as a 503. Both are errors `is_unavailable` recognises; only
-    `is_lock_timeout` says which one it is."""
+    `is_transient` says which one it is."""
     container: Container = impatient_app.state.container
 
     async def lock_the_issuance_account() -> None:
@@ -1128,9 +1306,9 @@ async def test_a_lock_timeout_and_a_lost_connection_are_told_apart_as_the_driver
     with pytest.raises(DBAPIError) as lost:
         await lose_the_connection()
 
-    assert database_errors.is_lock_timeout(timed_out.value)
+    assert database_errors.is_transient(timed_out.value)
     assert database_errors.is_unavailable(timed_out.value)
-    assert not database_errors.is_lock_timeout(lost.value)
+    assert not database_errors.is_transient(lost.value)
     assert database_errors.is_unavailable(lost.value)
     # After a lock timeout the connection is whole: the same pool serves the next call.
     await lock_the_issuance_account()

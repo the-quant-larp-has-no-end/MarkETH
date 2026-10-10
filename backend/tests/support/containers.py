@@ -22,7 +22,7 @@ REDIS_PORT: Final[int] = 6379
 SCYLLA_IMAGE: Final[str] = "scylladb/scylla:2026.1"
 SCYLLA_PORT: Final[int] = 9042
 # The single development node of SPEC §9.
-SCYLLA_COMMAND: Final[str] = "--smp 1 --memory 750M --overprovisioned 1 --developer-mode 1"
+SCYLLA_COMMAND: Final[str] = "--smp 1 --memory 2G --overprovisioned 1 --developer-mode 1"
 SCYLLA_STARTUP_TIMEOUT_SECONDS: Final[int] = 300
 
 LOOPBACK: Final[str] = "127.0.0.1"

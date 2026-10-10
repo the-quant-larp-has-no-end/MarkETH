@@ -11,7 +11,13 @@ import {
 import type { UserRole } from "@/lib/api/schema";
 
 export type Tab = {
+  /** The name of the tab: what the top bar shows from 768 px. */
   label: string;
+  /**
+   * What the tab bar of a phone shows, where it is another word than `label`: a fifth of
+   * a 320 px screen is 64 px wide, and no label there is ever cut.
+   */
+  short?: string;
   href: string;
   icon: LucideIcon;
   /** Whether a path belongs to this tab. */
@@ -36,6 +42,7 @@ const PORTFOLIO: Tab = {
 };
 const LEADERBOARD: Tab = {
   label: "Leaderboard",
+  short: "Ranking",
   href: "/leaderboard",
   icon: TrophyIcon,
   matches: under("/leaderboard"),
@@ -63,6 +70,9 @@ const ADMIN: Tab = {
  * The tabs a role sees (DESIGN.md §11). Everyone has Markets, Portfolio, Leaderboard and
  * Wallet; a barista also has Scan, an admin also has Admin and reaches the scanner from
  * there. There are never more than five.
+ *
+ * The Leaderboard tab reads "Ranking" in the tab bar of a phone and "Leaderboard" in the
+ * top bar from 768 px, which is also the title of its screen.
  */
 export function tabsFor(role: UserRole): readonly Tab[] {
   const everyone = [MARKETS, PORTFOLIO, LEADERBOARD, WALLET];

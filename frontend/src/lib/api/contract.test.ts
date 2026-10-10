@@ -13,9 +13,10 @@ const FRONTEND = process.cwd();
 const CONTRACT = join(FRONTEND, "../backend/openapi.json");
 const read = (path: string) => readFileSync(join(FRONTEND, path), "utf8");
 
-type Operation = { path: string; method: string; operationId: string };
+type Parameter = { name: string; in: string; required?: boolean };
+type Operation = { path: string; method: string; operationId: string; parameters: Parameter[] };
 type Contract = {
-  paths: Record<string, Record<string, { operationId?: string }>>;
+  paths: Record<string, Record<string, { operationId?: string; parameters?: Parameter[] }>>;
   components: { schemas: Record<string, unknown> };
 };
 
@@ -28,6 +29,7 @@ function load(): { contract: Contract; operations: Operation[] } {
       path,
       method,
       operationId: item[method]?.operationId ?? "",
+      parameters: item[method]?.parameters ?? [],
     })),
   );
   return { contract, operations };
@@ -92,6 +94,52 @@ describe.skipIf(!existsSync(CONTRACT))("lib/api covers the contract", () => {
       )
       .map((operation) => `${operation.method.toUpperCase()} ${operation.path}`);
     expect(missing).toEqual([]);
+  });
+
+  test("every mutation is named in the invalidation table at the top of mutations.ts", () => {
+    // The table is the comment before the first helper: what each write does to the cache.
+    const table = mutations.slice(0, mutations.indexOf("function refresh("));
+    const exported = [...mutations.matchAll(/^export const (\w+Mutation) = /gm)].map(
+      (match) => match[1]!,
+    );
+    // The seven admin actions on a market share one row.
+    const marketActions = exported.filter((name) =>
+      mutations.includes(`${name} = mutationOptions({\n  mutationFn: ({ marketId, body }`),
+    );
+
+    expect(exported.length).toBeGreaterThan(20);
+    expect(marketActions).toHaveLength(7);
+    expect(table).toContain("the seven market actions");
+    const missing = exported.filter(
+      (name) => !marketActions.includes(name) && !table.includes(`\`${name}\``),
+    );
+    expect(missing).toEqual([]);
+  });
+
+  test("every write that takes an Idempotency-Key goes out as a stored body with its stored key", () => {
+    const { operations } = load();
+    const keyed = operations.filter((operation) =>
+      operation.parameters.some(
+        (parameter) => parameter.in === "header" && parameter.name === "Idempotency-Key",
+      ),
+    );
+
+    // The trade and the adjustment of a user's tokens (DESIGN.md §14).
+    expect(keyed.map((operation) => operation.path).sort()).toEqual([
+      "/api/admin/users/{user_id}/adjustments",
+      "/api/markets/{market_id}/trades",
+    ]);
+    for (const operation of keyed) {
+      const from = mutations.indexOf(`api.POST("${operation.path}"`);
+      const call = mutations.slice(from, mutations.indexOf("}),", from));
+      // The key of the submission, and its body as it was serialised on the confirming tap.
+      expect(call, operation.path).toContain('header: { "Idempotency-Key": idempotencyKey }');
+      expect(call, operation.path).toContain("...stored(body)");
+    }
+    // Both are sent by the one store that keeps a body and its key; nothing else is.
+    expect(mutations.match(/\.\.\.stored\(body\)/g)).toHaveLength(keyed.length);
+    expect(mutations.match(/"Idempotency-Key"/g)).toHaveLength(keyed.length);
+    expect(mutations).not.toContain("newUuid");
   });
 
   test("the stream is followed by the live helper, at the contract's path", () => {

@@ -31,6 +31,7 @@ from sqlalchemy import select
 from app.container import Container
 from app.core.config import Settings
 from app.core.enums import (
+    STORED_MARKET_STATUSES,
     AccountKind,
     JournalKind,
     MarketStatus,
@@ -59,6 +60,7 @@ from app.models import (
     AuditLogEntry,
     JournalEntry,
     Market,
+    Notice,
     OutboxEvent,
     Position,
     Posting,
@@ -90,6 +92,7 @@ from app.services.market_lifecycle import (
     CLOSE_FIRST_MESSAGE,
     LOSS_BUDGET_LIMIT_MESSAGE,
     OPEN_MARKETS_LIMIT_MESSAGE,
+    PROPOSAL_EXPIRED_MESSAGE,
     SELF_DEALING_MESSAGE,
     MarketLifecycleService,
 )
@@ -144,6 +147,7 @@ WRITTEN: Final[tuple[type[Base], ...]] = (
     Posting,
     AuditLogEntry,
     OutboxEvent,
+    Notice,
 )
 """Every table a lifecycle action can write."""
 
@@ -414,6 +418,7 @@ def lifecycle_with(container: Container, **risk: int) -> MarketLifecycleService:
         container.ledger,
         container.audit,
         container.markets,
+        container.notices,
         container.market_cache,
         container.live_quotes,
     )
@@ -753,7 +758,7 @@ def test_the_actions_of_these_tests_are_the_arrows_of_the_state_machine() -> Non
     }
 
 
-@pytest.mark.parametrize("status", list(MarketStatus))
+@pytest.mark.parametrize("status", STORED_MARKET_STATUSES, ids=str)
 @every_action
 async def test_an_action_takes_a_market_in_a_status_of_its_own_and_is_409_for_every_other(
     container: Container,
@@ -783,6 +788,185 @@ async def test_an_action_takes_a_market_in_a_status_of_its_own_and_is_409_for_ev
     assert await everything(container) == before
 
 
+# --- An expired proposal -----------------------------------------------------------------
+
+from_the_deadline_on = pytest.mark.parametrize(
+    "late_by", [timedelta(0), TICK, DAY, 400 * DAY], ids=["at", "a-tick", "a-day", "a-year"]
+)
+
+
+@from_the_deadline_on
+@pytest.mark.parametrize("action", [APPROVE, REJECT], ids=str)
+async def test_an_expired_proposal_can_be_neither_approved_nor_rejected(
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    lifecycle: MarketLifecycleService,
+    admin: AuthenticatedUser,
+    action: Action,
+    late_by: timedelta,
+) -> None:
+    """From the instant of `close_at` on: 409 with a sentence of its own, and nothing
+    is written. The row still says PROPOSED and is reported EXPIRED."""
+    proposal = await factory.market(status=MarketStatus.PROPOSED, close_in=timedelta(hours=1))
+    clock.set(proposal.close_at + late_by)
+    before = await everything(container)
+
+    with pytest.raises(ConflictError) as refused:
+        await action.by(lifecycle, admin, proposal.id)
+
+    assert (refused.value.status_code, refused.value.message) == (409, PROPOSAL_EXPIRED_MESSAGE)
+    assert refused.value.details == {}
+    assert PROPOSAL_EXPIRED_MESSAGE == "This proposal expired: its closing time has passed."
+    assert await everything(container) == before
+    assert (await market_row(container, proposal.id)).status is MarketStatus.PROPOSED
+    assert (await container.markets.detail(admin, proposal.id)).status is MarketStatus.EXPIRED
+
+
+@pytest.mark.parametrize("action", [APPROVE, REJECT], ids=str)
+async def test_a_proposal_is_decided_on_until_the_last_moment_before_its_deadline(
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    lifecycle: MarketLifecycleService,
+    admin: AuthenticatedUser,
+    action: Action,
+) -> None:
+    proposal = await factory.market(status=MarketStatus.PROPOSED, close_in=timedelta(hours=1))
+    clock.set(proposal.close_at - TICK)
+
+    answer = await action.by(lifecycle, admin, proposal.id)
+
+    assert answer.status is action.target
+    assert (await market_row(container, proposal.id)).status is action.target
+
+
+async def test_no_date_an_approval_carries_reopens_an_expired_proposal(
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    lifecycle: MarketLifecycleService,
+    admin: AuthenticatedUser,
+) -> None:
+    """The expiry is a fact about the proposal, judged before the request is looked
+    at: a new deadline in the request does not undo it, and neither does a request
+    that would be refused for other reasons be told those first."""
+    proposal = await factory.market(status=MarketStatus.PROPOSED, close_in=timedelta(hours=1))
+    clock.set(proposal.close_at)
+    before = await everything(container)
+    moved = ApproveMarketRequest(
+        tier=MarketTier.TIGHT, close_at=clock.now() + DAY, resolve_by=clock.now() + 2 * DAY
+    )
+    oversized = ApproveMarketRequest(
+        tier=MarketTier.CUSTOM, budget_cr=to_cr(MAX_MARKET_BUDGET + 1), close_at=clock.now() - DAY
+    )
+
+    for request in (moved, oversized):
+        with pytest.raises(ConflictError) as refused:
+            await lifecycle.approve(admin, proposal.id, request)
+        assert refused.value.message == PROPOSAL_EXPIRED_MESSAGE
+
+    assert await everything(container) == before
+
+
+@every_action
+async def test_no_action_takes_an_expired_proposal(
+    container: Container,
+    factory: Factory,
+    lifecycle: MarketLifecycleService,
+    admin: AuthenticatedUser,
+    action: Action,
+) -> None:
+    """The other five do not start from a proposal at all; the two that do are told
+    that it expired."""
+    expired = await factory.market(status=MarketStatus.PROPOSED, close_in=-DAY)
+    before = await everything(container)
+
+    with pytest.raises(ConflictError) as refused:
+        await action.by(lifecycle, admin, expired.id)
+
+    told_why = refused.value.message == PROPOSAL_EXPIRED_MESSAGE
+    assert told_why == (action in (APPROVE, REJECT))
+    assert await everything(container) == before
+
+
+async def test_a_rejected_proposal_stays_rejected_past_its_deadline(
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    lifecycle: MarketLifecycleService,
+    admin: AuthenticatedUser,
+) -> None:
+    """Only a proposal nobody decided on expires. One that was turned down in time
+    keeps saying so, with its reason."""
+    proposal = await factory.market(status=MarketStatus.PROPOSED, close_in=timedelta(hours=1))
+    await REJECT.by(lifecycle, admin, proposal.id)
+
+    clock.set(proposal.close_at + DAY)
+
+    detail = await container.markets.detail(admin, proposal.id)
+    assert (detail.status, detail.rejection_reason) == (
+        MarketStatus.REJECTED,
+        "It names a private person.",
+    )
+    for action in (APPROVE, REJECT):
+        with pytest.raises(ConflictError) as refused:
+            await action.by(lifecycle, admin, proposal.id)
+        assert refused.value.message != PROPOSAL_EXPIRED_MESSAGE
+
+
+async def test_a_rejection_that_waited_for_the_market_row_is_judged_when_it_got_it(
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    lifecycle: MarketLifecycleService,
+    admin: AuthenticatedUser,
+) -> None:
+    """The clock is read after the lock, as for every other action (A.4): a rejection
+    that arrives in time and gets the row after the deadline finds the proposal
+    expired."""
+    proposal = await factory.market(status=MarketStatus.PROPOSED, close_in=timedelta(hours=1))
+
+    async with container.uow_factory() as holder:
+        await holder.markets.get_for_update(proposal.id)
+        rejecting = asyncio.create_task(REJECT.by(lifecycle, admin, proposal.id))
+        await asyncio.sleep(BLOCKED_FOR_SECONDS)
+        assert not rejecting.done()
+        clock.advance(timedelta(hours=2))
+
+    with pytest.raises(ConflictError) as refused:
+        await asyncio.wait_for(rejecting, RECEIVE_TIMEOUT_SECONDS)
+
+    assert refused.value.message == PROPOSAL_EXPIRED_MESSAGE
+    row = await market_row(container, proposal.id)
+    assert (row.status, row.rejection_reason) == (MarketStatus.PROPOSED, None)
+
+
+@pytest.mark.parametrize("action", [APPROVE, REJECT], ids=str)
+async def test_the_routes_answer_409_with_the_sentence_for_an_expired_proposal(
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    action: Action,
+) -> None:
+    as_user(await factory.admin())
+    proposal = await factory.market(status=MarketStatus.PROPOSED, close_in=timedelta(hours=1))
+    clock.set(proposal.close_at)
+
+    response = await client.post(action.path(proposal.id), json=action.body)
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "code": "CONFLICT",
+        "message": "This proposal expired: its closing time has passed.",
+        "details": {},
+    }
+    assert await count_rows(container.uow_factory, AuditLogEntry) == 0
+    assert await count_rows(container.uow_factory, Notice) == 0
+
+
 # --- Approval: tiers and budgets ---------------------------------------------------------
 
 
@@ -796,19 +980,15 @@ async def test_approving_a_fixed_tier_opens_the_market_with_the_b_of_the_tier_an
     tier: MarketTier,
 ) -> None:
     """A.5: the tier fixes b, and the budget is ceil(b · ln 2). The admin picks the
-    tier; what the proposer asked for stays on record."""
-    proposal = await factory.market(status=MarketStatus.PROPOSED, tier=MarketTier.MEDIUM)
+    tier: a proposal names none."""
+    proposal = await factory.market(status=MarketStatus.PROPOSED)
     opened_at = clock.advance(timedelta(hours=3))
 
     answer = await lifecycle.approve(admin, proposal.id, ApproveMarketRequest(tier=tier))
 
     row = await market_row(container, proposal.id)
     b_micro = container.settings.pricing.tier_b_micro(tier)
-    assert (row.status, row.tier, row.requested_tier) == (
-        MarketStatus.OPEN,
-        tier,
-        MarketTier.MEDIUM,
-    )
+    assert (row.status, row.tier) == (MarketStatus.OPEN, tier)
     assert (row.b_micro, row.budget_micro) == (
         b_micro,
         lmsr.max_loss_micro(b_micro, precision=PRECISION),
@@ -1142,26 +1322,27 @@ async def test_an_edit_that_changes_nothing_is_not_audited_as_a_change(
     assert (await market_row(container, proposal.id)).close_at == proposal.close_at
 
 
-async def test_a_proposal_whose_deadline_passed_while_it_waited_is_422_until_the_date_is_moved(
+async def test_the_dates_of_a_proposal_are_held_against_the_instant_of_its_approval(
     container: Container,
     factory: Factory,
     clock: FrozenClock,
     lifecycle: MarketLifecycleService,
     admin: AuthenticatedUser,
 ) -> None:
-    """The dates are judged when the market opens, not when it was proposed."""
-    proposal = await factory.market(status=MarketStatus.PROPOSED, close_in=timedelta(hours=1))
-    clock.set(proposal.close_at)
+    """Not against the day it was proposed. A proposal that closes a day further ahead
+    than a market may stay open is 422 on the date today, and opens tomorrow as it is."""
+    proposal = await factory.market(status=MarketStatus.PROPOSED, close_in=LIFETIME + DAY)
+    as_proposed = ApproveMarketRequest(tier=MarketTier.TIGHT)
     before = await everything(container)
 
     with pytest.raises(ValidationFailedError) as refused:
-        await lifecycle.approve(admin, proposal.id, ApproveMarketRequest(tier=MarketTier.TIGHT))
+        await lifecycle.approve(admin, proposal.id, as_proposed)
 
     assert refused.value.status_code == 422
     assert refused.value.details == {"field": "close_at"}
     assert await everything(container) == before
-    moved = ApproveMarketRequest(tier=MarketTier.TIGHT, close_at=clock.now() + DAY)
-    assert (await lifecycle.approve(admin, proposal.id, moved)).status is MarketStatus.OPEN
+    clock.advance(DAY)
+    assert (await lifecycle.approve(admin, proposal.id, as_proposed)).status is MarketStatus.OPEN
 
 
 @pytest.mark.parametrize(
@@ -1435,7 +1616,8 @@ async def test_an_approval_waits_for_the_one_before_it_and_is_judged_and_dated_a
 ) -> None:
     """Approvals check the caps one at a time (A.5), so one may have to wait. It opens
     its market at the moment it gets its turn: that is `opened_at`, the start of the
-    chart and the instant its dates are held against."""
+    chart and the instant its deadline is held against. A proposal whose `close_at`
+    passed while its approval waited has expired by then."""
     in_time = await factory.market(status=MarketStatus.PROPOSED)
     too_late = await factory.market(status=MarketStatus.PROPOSED, close_in=timedelta(hours=1))
 
@@ -1449,10 +1631,10 @@ async def test_an_approval_waits_for_the_one_before_it_and_is_judged_and_dated_a
         turn_at = clock.advance(timedelta(hours=2))
 
     opened = await asyncio.wait_for(opening, RECEIVE_TIMEOUT_SECONDS)
-    with pytest.raises(ValidationFailedError) as refused:
+    with pytest.raises(ConflictError) as refused:
         await asyncio.wait_for(expiring, RECEIVE_TIMEOUT_SECONDS)
 
-    assert refused.value.details == {"field": "close_at"}
+    assert refused.value.message == PROPOSAL_EXPIRED_MESSAGE
     assert opened.opened_at == turn_at
     async with container.uow_factory() as uow:
         (queued,) = (await uow.session.scalars(select(OutboxEvent))).all()

@@ -13,8 +13,10 @@ import { cn } from "@/lib/utils";
 
 /**
  * One proposal: the question, its status badge and, when it was rejected, the reason
- * VIS gave. A proposal that became a market (its `status` is neither PROPOSED nor
- * REJECTED) is a link to that market.
+ * VIS gave, and nothing else about the market. The badge of a proposal that was resolved
+ * names its outcome ("Resolved YES", "Resolved NO"), which is `outcome` of the row. A
+ * proposal that became a market (its `status` is neither PROPOSED nor REJECTED) is a link
+ * to that market.
  */
 function ProposalRow({ proposal }: { proposal: ProposalItem }) {
   const isMarket = proposal.status !== "PROPOSED" && proposal.status !== "REJECTED";
@@ -32,7 +34,7 @@ function ProposalRow({ proposal }: { proposal: ProposalItem }) {
           </>
         )}
       </span>{" "}
-      <StatusBadge status={proposal.status} className="shrink-0" />
+      <StatusBadge status={proposal.status} outcome={proposal.outcome} className="shrink-0" />
     </>
   );
 

@@ -6,6 +6,7 @@ Every tunable lives in the environment file and has exactly one typed field in
 
 import re
 from datetime import timedelta
+from ipaddress import ip_address, ip_network
 from pathlib import Path
 from typing import Final
 
@@ -13,6 +14,7 @@ import pytest
 from sqlalchemy import String
 
 from app.core.config import (
+    CODE_MAX_LENGTH,
     DEFAULT_ENV_FILE,
     INFRA_ONLY_VARIABLES,
     PRODUCT_ID_MAX_LENGTH,
@@ -24,9 +26,9 @@ from app.core.config import (
 from app.core.enums import MarketTier, Outcome
 from app.core.identity import USERNAME_PATTERN
 from app.core.units import MICRO
-from app.models import Voucher
+from app.models import Code, Voucher
 from app.pricing import lmsr
-from tests.support.settings import TEST_ADMIN_EMAILS, TEST_BARISTA_EMAILS
+from tests.support.settings import TEST_ADMIN_EMAILS
 
 EXAMPLE_ENV_FILE: Final[Path] = REPO_ROOT / ".example.env"
 
@@ -71,6 +73,7 @@ def test_example_env_loads_and_converts_credits_to_micro_units(base_settings: Se
     assert pricing.max_stake_per_user_market_micro == 100 * MICRO
     assert (pricing.min_trade_micro, pricing.min_trade_shares_micro) == (MICRO, MICRO)
     assert pricing.stake_presets_micro == [25 * MICRO, 50 * MICRO, 100 * MICRO]
+    assert pricing.stake_step_micro == MICRO
     assert [
         pricing.tier_b_micro(tier)
         for tier in (MarketTier.TIGHT, MarketTier.DEFAULT, MarketTier.MEDIUM)
@@ -152,22 +155,20 @@ def test_example_env_lists_and_derived_values(base_settings: Settings) -> None:
     assert base_settings.scylla.hosts == ["localhost"]
 
 
-def test_the_tests_run_with_two_admins_and_one_barista_where_the_example_names_one_admin(
+def test_the_tests_run_with_two_bootstrap_admins_where_the_example_names_one(
     base_settings: Settings,
 ) -> None:
-    """An admin who traded a market may not settle it (A.4), so a test of that rule
-    needs a second admin. The role lists are the only thing `base_settings` does not
-    take from `.example.env`."""
+    """An admin who traded a market may not settle it (A.4), and no admin acts on their
+    own account, so a test of either rule needs a second admin. The list of bootstrap
+    admins is the only thing `base_settings` does not take from `.example.env`."""
     example = Settings.load(EXAMPLE_ENV_FILE)
     identity = base_settings.identity
 
     assert identity.admin_emails == list(TEST_ADMIN_EMAILS)
-    assert identity.barista_emails == list(TEST_BARISTA_EMAILS)
-    assert (len(set(identity.admin_emails)), len(identity.barista_emails)) == (2, 1)
-    assert not set(identity.admin_emails) & set(identity.barista_emails)
+    assert len(set(identity.admin_emails)) == 2
     assert len(example.identity.admin_emails) == 1, "the example keeps one admin"
 
-    changed = {"admin_emails", "barista_emails"}
+    changed = {"admin_emails"}
     assert identity.model_dump(exclude=changed) == example.identity.model_dump(exclude=changed)
     assert base_settings.model_dump(exclude={"identity", "app"}) == example.model_dump(
         exclude={"identity", "app"}
@@ -207,6 +208,96 @@ def test_the_example_publishes_the_stack_on_this_machine_alone() -> None:
     assert value_of(EXAMPLE_ENV_FILE, "NGINX_HTTP_BIND") == "127.0.0.1"
     assert int(value_of(EXAMPLE_ENV_FILE, "API_SHUTDOWN_TIMEOUT_SECONDS")) == 5
     assert {"NGINX_HTTP_BIND", "API_SHUTDOWN_TIMEOUT_SECONDS"} <= INFRA_ONLY_VARIABLES
+
+
+def test_the_example_names_the_network_between_the_proxy_and_the_web_app() -> None:
+    """Compose gives that network this range, and nginx tells the web app from everybody
+    else by Docker's own address on it, the first of the range. Neither is read by the
+    Python code."""
+    subnet = ip_network(value_of(EXAMPLE_ENV_FILE, "EDGE_SUBNET"))
+    gateway = ip_address(value_of(EXAMPLE_ENV_FILE, "EDGE_GATEWAY"))
+
+    assert (str(subnet), str(gateway)) == ("192.168.209.0/28", "192.168.209.1")
+    assert gateway == next(subnet.hosts())
+    assert subnet.is_private
+    assert {"EDGE_SUBNET", "EDGE_GATEWAY"} <= INFRA_ONLY_VARIABLES
+
+
+def test_example_env_sets_the_waits_the_chart_bounds_and_the_most_an_adjustment_adds(
+    base_settings: Settings,
+) -> None:
+    assert base_settings.postgres.pool_timeout_seconds == 10
+    assert base_settings.vouchers.rescan_seconds == 120
+    assert base_settings.vouchers.rescan_window == timedelta(minutes=2)
+    assert base_settings.scylla.history_max_points == 500
+    assert base_settings.scylla.history_read_limit == 5000
+    assert base_settings.risk.max_admin_adjustment_micro == 1000 * MICRO
+
+
+@pytest.mark.parametrize(
+    ("values", "named"),
+    [
+        ({"POSTGRES_POOL_TIMEOUT_SECONDS": "0"}, "POSTGRES_POOL_TIMEOUT_SECONDS"),
+        ({"POSTGRES_POOL_TIMEOUT_SECONDS": "10s"}, "POSTGRES_POOL_TIMEOUT_SECONDS"),
+        ({"VOUCHER_RESCAN_SECONDS": "0"}, "VOUCHER_RESCAN_SECONDS"),
+        ({"VOUCHER_RESCAN_SECONDS": "-120"}, "VOUCHER_RESCAN_SECONDS"),
+        ({"HISTORY_MAX_POINTS": "1"}, "HISTORY_MAX_POINTS"),
+        ({"HISTORY_READ_LIMIT": "0"}, "HISTORY_READ_LIMIT"),
+        (
+            {"HISTORY_READ_LIMIT": "499"},
+            "HISTORY_READ_LIMIT must not be below HISTORY_MAX_POINTS",
+        ),
+        (
+            {"HISTORY_MAX_POINTS": "5001"},
+            "HISTORY_READ_LIMIT must not be below HISTORY_MAX_POINTS",
+        ),
+        ({"MAX_ADMIN_ADJUSTMENT_CR": "-1"}, "MAX_ADMIN_ADJUSTMENT_CR"),
+        ({"MAX_ADMIN_ADJUSTMENT_CR": "plenty"}, "MAX_ADMIN_ADJUSTMENT_CR"),
+        ({"MAX_ADMIN_ADJUSTMENT_CR": "0.0000001"}, "MAX_ADMIN_ADJUSTMENT_CR"),
+    ],
+    ids=[
+        "no-wait-for-the-pool",
+        "pool-timeout-with-a-unit",
+        "no-rescan-window",
+        "a-negative-rescan-window",
+        "a-chart-of-one-point",
+        "nothing-read-for-a-chart",
+        "fewer-points-read-than-answered",
+        "more-points-answered-than-read",
+        "a-negative-adjustment-cap",
+        "an-adjustment-cap-in-words",
+        "an-adjustment-cap-finer-than-a-micro-credit",
+    ],
+)
+def test_a_wait_a_chart_bound_or_an_adjustment_cap_that_cannot_work_fails_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, values: dict[str, str], named: str
+) -> None:
+    with pytest.raises(ValueError, match=named):
+        Settings.load(_example_with(tmp_path, monkeypatch, **values))
+
+
+def test_a_chart_may_be_as_small_as_its_two_ends_and_an_adjustment_may_add_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first and the latest point are always kept, so two is the least a chart
+    answers; reading exactly as many as are answered thins nothing. A cap of zero
+    leaves adjustments that take away."""
+    env_file = _example_with(
+        tmp_path,
+        monkeypatch,
+        HISTORY_MAX_POINTS="2",
+        HISTORY_READ_LIMIT="2",
+        MAX_ADMIN_ADJUSTMENT_CR="0",
+        POSTGRES_POOL_TIMEOUT_SECONDS="1",
+        VOUCHER_RESCAN_SECONDS="1",
+    )
+
+    loaded = Settings.load(env_file)
+
+    assert (loaded.scylla.history_max_points, loaded.scylla.history_read_limit) == (2, 2)
+    assert loaded.risk.max_admin_adjustment_micro == 0
+    assert loaded.postgres.pool_timeout_seconds == 1
+    assert loaded.vouchers.rescan_window == timedelta(seconds=1)
 
 
 def test_public_base_url_is_an_allowed_origin(base_settings: Settings) -> None:
@@ -420,6 +511,53 @@ def test_a_code_value_or_a_lock_timeout_that_cannot_work_fails_loading(
         Settings.load(_example_with(tmp_path, monkeypatch, **values))
 
 
+@pytest.mark.parametrize(
+    "written",
+    ["0", "0.5", "1.5", "2.000001", "-1", "one", ""],
+    ids=[
+        "no-step",
+        "half-a-credit",
+        "one-and-a-half",
+        "a-micro-credit-above-two",
+        "a-negative-step",
+        "a-word",
+        "nothing",
+    ],
+)
+def test_a_stake_step_that_is_no_whole_number_of_credits_fails_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, written: str
+) -> None:
+    """The slider of the trade sheet counts in whole credits, so its step is one or
+    more of them: `MarketViewer.buy_slider` carries it as an integer."""
+    with pytest.raises(ValueError, match="TRADE_STAKE_STEP_CR"):
+        Settings.load(_example_with(tmp_path, monkeypatch, TRADE_STAKE_STEP_CR=written))
+
+
+@pytest.mark.parametrize(("written", "credits"), [("1", 1), ("5", 5), ("25.000000", 25)])
+def test_a_stake_step_of_whole_credits_loads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, written: str, credits: int
+) -> None:
+    env_file = _example_with(tmp_path, monkeypatch, TRADE_STAKE_STEP_CR=written)
+
+    assert Settings.load(env_file).pricing.stake_step_micro == credits * MICRO
+
+
+def test_the_longest_code_the_settings_allow_fits_the_column_that_keeps_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, base_settings: Settings
+) -> None:
+    """A code is kept in `codes.code` while it can be redeemed, so CODE_LENGTH may not
+    ask for more characters than that column holds."""
+    kept_in = Code.__table__.columns["code"].type
+    assert isinstance(kept_in, String)
+    assert kept_in.length == CODE_MAX_LENGTH == 32
+    assert base_settings.codes.length <= CODE_MAX_LENGTH
+
+    longest = _example_with(tmp_path, monkeypatch, CODE_LENGTH=str(CODE_MAX_LENGTH))
+    assert Settings.load(longest).codes.length == CODE_MAX_LENGTH
+    with pytest.raises(ValueError, match="CODE_LENGTH"):
+        Settings.load(_example_with(tmp_path, monkeypatch, CODE_LENGTH=str(CODE_MAX_LENGTH + 1)))
+
+
 def test_code_values_may_all_be_the_same(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """MIN <= DEFAULT <= MAX: every code is then worth exactly that."""
     env_file = _example_with(
@@ -465,27 +603,24 @@ def test_the_largest_market_budget_is_priceable_at_the_configured_precision(
     assert 0 <= by_budget.amount_micro - sold.amount_micro <= 1
 
 
-def test_domains_are_read_in_lower_case_and_role_entries_the_way_an_id_is(
+def test_domains_are_read_in_lower_case_and_bootstrap_admins_the_way_an_id_is(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A domain has one spelling, and so has an id: a role list holds the ids of its
+    """A domain has one spelling, and so has an id: `ADMIN_EMAILS` holds the ids of its
     people as the portal's id is read, in lower case and at the domain written."""
     env_file = _example_with(
         tmp_path,
         monkeypatch,
         ALLOWED_EMAIL_DOMAINS="Student.ETHZ.ch, ethz.CH",
         ADMIN_EMAILS="Ada@ETHZ.ch, grace@student.ethz.ch",
-        BARISTA_EMAILS="",
     )
 
     identity = Settings.load(env_file).identity
 
     assert identity.allowed_email_domains == ["student.ethz.ch", "ethz.ch"]
     assert identity.admin_emails == ["ada@ethz.ch", "grace@student.ethz.ch"]
-    assert identity.barista_emails == []
 
 
-@pytest.mark.parametrize("variable", ["ADMIN_EMAILS", "BARISTA_EMAILS"])
 @pytest.mark.parametrize(
     "entry",
     [
@@ -513,14 +648,14 @@ def test_domains_are_read_in_lower_case_and_role_entries_the_way_an_id_is(
         "local-part-of-65-characters",
     ],
 )
-def test_a_role_entry_that_is_no_id_fails_loading_and_the_error_names_the_variable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, variable: str, entry: str
+def test_a_bootstrap_admin_that_is_no_id_fails_loading_and_the_error_names_the_variable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: str
 ) -> None:
-    """An entry the id rule refuses would give its role to nobody: a typing mistake in
+    """An entry the id rule refuses would make nobody an admin: a typing mistake in
     `.env` that shows as a missing admin. The process does not start on it."""
-    env_file = _example_with(tmp_path, monkeypatch, **{variable: f"admin@ethz.ch,{entry}"})
+    env_file = _example_with(tmp_path, monkeypatch, ADMIN_EMAILS=f"admin@ethz.ch,{entry}")
 
-    with pytest.raises(ValueError, match=variable) as refused:
+    with pytest.raises(ValueError, match="ADMIN_EMAILS") as refused:
         Settings.load(env_file)
 
     message = str(refused.value)
@@ -529,16 +664,24 @@ def test_a_role_entry_that_is_no_id_fails_loading_and_the_error_names_the_variab
     assert "is not an address at ethz.ch" in message
 
 
-def test_a_role_list_may_be_empty_and_a_reserved_list_too(
+def test_the_only_people_the_settings_name_are_the_bootstrap_admins() -> None:
+    """Every other role is one an admin gave to an account: a barista is a row, not an
+    entry of `.env`."""
+    lists_of_people = {name for name in Settings.environment_variables() if "EMAILS" in name}
+
+    assert lists_of_people == {"ADMIN_EMAILS"}
+
+
+def test_the_list_of_bootstrap_admins_may_be_empty_and_a_reserved_list_too(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Nobody is a barista where no address is one; an admin redeems vouchers too."""
-    env_file = _example_with(tmp_path, monkeypatch, BARISTA_EMAILS="", RESERVED_USERNAMES="")
+    """Nobody is an admin by configuration where `.env` names nobody. The settings
+    load; who can then be made an admin is not theirs to say."""
+    env_file = _example_with(tmp_path, monkeypatch, ADMIN_EMAILS="", RESERVED_USERNAMES="")
 
     identity = Settings.load(env_file).identity
 
-    assert (identity.barista_emails, identity.reserved_usernames) == ([], [])
-    assert identity.admin_emails == ["admin@ethz.ch"]
+    assert (identity.admin_emails, identity.reserved_usernames) == ([], [])
 
 
 def test_local_env_has_the_same_keys_as_the_example() -> None:

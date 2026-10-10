@@ -15,22 +15,25 @@ What it leaves behind:
   grant (`ProfileService.save`).
 * Nine markets, one in every state a screen has to show: open in each of the three
   tiers, one paused, one closed, one resolved, one voided, one still proposed and one
-  rejected. The students propose them, trade them with the buy buttons of the trade
-  sheet (`TRADE_STAKE_PRESETS_CR`), and one of them sells again before the resolution.
+  rejected. The students propose them, the desk picks the tier each is opened with,
+  the students trade them with the buy buttons of the trade sheet
+  (`TRADE_STAKE_PRESETS_CR`), and one of them sells again before the resolution.
 * Three vouchers, one of them scanned at the desk.
-* One batch of codes. Its codes are printed, once: only their hashes are stored.
+* One batch of codes. The run that makes it prints its codes. An admin opens the ones
+  nobody has redeemed again in the admin panel.
 
-Who acts. The students are plain users. An address of `ADMIN_EMAILS` or `BARISTA_EMAILS`
-is never registered: those belong to real people, who sign in through the portal. The
-admin actions a demo needs (approve, reject, halt, close, resolve, void, the code batch,
-the scan of a voucher) are done as the demo desk, one more registered demo account, to
-which this script itself gives the admin role for its own calls. That role is in no
-table and in no list: to the API the desk is a plain user like the students, and nobody
-who signs in as it gets an admin screen. The desk trades nothing, so it may settle every
-market (A.4).
+Who acts. The students are plain users. An address of `ADMIN_EMAILS` is never
+registered: those belong to real people, who sign in through the portal. The admin
+actions a demo needs (approve, reject, halt, close, resolve, void, the code batch, the
+scan of a voucher) are done as the demo desk, one more registered demo account, to
+which this script itself gives the admin role for its own calls. That role is written
+nowhere: the row the seed makes for the desk says USER like those of the students, so
+nobody who signs in as it gets an admin screen. The desk trades nothing, so it may
+settle every market (A.4).
 
-Refused when `APP_ENV=production`, and when one of the demo addresses has a role or a
-suspended account: the script acts for nobody the API would not let act.
+Refused when `APP_ENV=production`, and when one of the demo addresses is a bootstrap
+admin or has a suspended account: the script acts for nobody the API would not let
+act. A role somebody gave a demo account in the admin panel is left as it is.
 
 Safe to run again. A second run finds what the first one made and makes nothing more; a
 run that follows one that stopped half way goes on where that one stopped. What makes
@@ -169,14 +172,14 @@ class DemoMarket:
     """Who proposes it, as an index into `STUDENTS`. A proposer cannot trade their own
     market (A.4)."""
 
-    tier: MarketTier
-    """The tier the proposal asks for and the approval grants."""
-
     closes_in_days: int
     """When trading closes, counted from the proposal; `MAX_MARKET_LIFETIME` at most."""
 
     ends: MarketStatus
     """The status the demo leaves it in."""
+
+    tier: MarketTier | None = None
+    """The tier the desk opens it with. None for a market the desk never approves."""
 
     trades: tuple[Step, ...] = ()
     remark: str | None = None
@@ -376,7 +379,6 @@ MARKETS: Final[tuple[DemoMarket, ...]] = (
         resolution_criteria="The programme ETH publishes for the open day decides.",
         resolution_source="The programme of the open day on ethz.ch",
         proposer=BEN,
-        tier=MarketTier.DEFAULT,
         closes_in_days=45,
         ends=MarketStatus.PROPOSED,
     ),
@@ -388,7 +390,6 @@ MARKETS: Final[tuple[DemoMarket, ...]] = (
         resolution_criteria="The grade my flatmate tells me decides.",
         resolution_source="My flatmate",
         proposer=CHIARA,
-        tier=MarketTier.TIGHT,
         closes_in_days=20,
         ends=MarketStatus.REJECTED,
         remark=(
@@ -411,26 +412,29 @@ async def seed(container: Container) -> None:
     Everything goes through the services of `container`, in this order:
 
     1. Refuse (`SeedRefusedError`) when `APP_ENV` is production, and when an address
-       of `STUDENTS` or of `DESK` has a role in `ADMIN_EMAILS` or `BARISTA_EMAILS`.
-       Nothing has been asked of any store by then.
+       of `STUDENTS` or of `DESK` is one of `ADMIN_EMAILS`. Nothing has been asked of
+       any store by then.
     2. People. `IdentityService.authenticate(address, name)` says who an address is,
        as a request with the portal's headers would. All of them are asked first, and
        a demo account that is suspended is refused before anybody is registered. Then
-       every address without a profile gets one through `ProfileService.save`: the
-       user, the account and the signup grant in one transaction.
+       every address without a profile gets one through `ProfileService.save`, which
+       accepts the usage policy for it: the user, the account and the signup grant in
+       one transaction.
     3. Markets, each as far as `DemoMarket.ends` says: `MarketService.propose` as its
-       proposer; then as the desk `approve` or `reject`; the trades
-       (`TradingService.trade`, each under its own fixed Idempotency-Key); then `halt`,
-       or `close`, or `close` and `resolve`, or `close` and `void`. The status the
-       market has decides which step is next, so a market that is where it ends is
-       left alone, and so is one somebody took elsewhere by hand.
+       proposer, with the usage policy accepted; then as the desk `approve`, with the
+       tier of the plan, or `reject`; the trades (`TradingService.trade`, each under
+       its own fixed Idempotency-Key); then `halt`, or `close`, or `close` and
+       `resolve`, or `close` and `void`. The status the market has decides which step
+       is next, so a market that is where it ends is left alone, and so is one
+       somebody took elsewhere by hand.
     4. Vouchers (`VoucherService.issue`), and the scan of one of them at the desk
        (`VoucherService.redeem`). A voucher that is there and still waits for its scan
        gets a fresh code first (`replace_code`): the one it was issued with is known
        to nobody.
     5. The batch of codes (`CodeService.create_batch`), unless a batch with
-       `BATCH_LABEL` exists. Its codes are printed to stdout, which is the only time
-       they exist in the clear.
+       `BATCH_LABEL` exists. The run that makes it prints its codes to stdout. A run
+       that finds it prints none: opening the codes of a batch again is an admin's
+       to do, in the admin panel, and every time it is done is in the audit log.
 
     A line is printed for everything the run did and for everything it found done.
     """
@@ -460,7 +464,7 @@ class _Seed:
         self._students: list[AuthenticatedUser] = []
 
     async def run(self) -> None:
-        self._refuse_addresses_with_a_role()
+        self._refuse_bootstrap_admins()
         _say("People")
         *self._students, desk = await self._people((*STUDENTS, DESK))
         # The one place where the desk becomes an admin: for the calls of this run.
@@ -477,14 +481,14 @@ class _Seed:
     def _address(self, person: Person) -> str:
         return f"{person.mailbox}@{self._settings.identity.allowed_email_domains[0]}"
 
-    def _refuse_addresses_with_a_role(self) -> None:
-        """Step 1: no demo account is somebody the role lists name."""
+    def _refuse_bootstrap_admins(self) -> None:
+        """Step 1: no demo account is somebody `ADMIN_EMAILS` names."""
         for person in (*STUDENTS, DESK):
             address = self._address(person)
-            if self._roles.role_for(self._roles.identify(address)) is not UserRole.USER:
+            if self._roles.is_bootstrap_admin(self._roles.identify(address)):
                 raise SeedRefusedError(
-                    f"{address} is in ADMIN_EMAILS or BARISTA_EMAILS. The seed registers "
-                    "demo accounts only and acts for nobody with a role. Nothing was written."
+                    f"{address} is in ADMIN_EMAILS. The seed registers demo accounts only "
+                    "and acts for no admin the configuration names. Nothing was written."
                 )
 
     async def _people(self, people: Sequence[Person]) -> list[AuthenticatedUser]:
@@ -517,6 +521,7 @@ class _Seed:
                 username=person.username,
                 degree_level=person.degree_level,
                 degree_programme=person.degree_programme,
+                policy_accepted=True,
             ),
         )
         # Asked again, as the next request of that person would be.
@@ -542,6 +547,8 @@ class _Seed:
                     desk, market_id, RejectMarketRequest(reason=_said(plan))
                 )
             else:
+                if plan.tier is None:
+                    raise ValueError(f"the demo market {plan.slug} opens with no tier")
                 detail = await self._lifecycle.approve(
                     desk, market_id, ApproveMarketRequest(tier=plan.tier)
                 )
@@ -591,7 +598,7 @@ class _Seed:
                 resolution_source=plan.resolution_source,
                 close_at=close_at,
                 resolve_by=resolve_by,
-                requested_tier=plan.tier,
+                policy_accepted=True,
             ),
         )
 
@@ -643,8 +650,8 @@ class _Seed:
         """Step 5: the batch, and its codes on stdout."""
         if any(batch.label == BATCH_LABEL for batch in (await self._codes.list_batches()).items):
             _say(
-                f'  The batch "{BATCH_LABEL}" is already there. Its codes were printed by the '
-                "run that made it and are stored nowhere."
+                f'  The batch "{BATCH_LABEL}" is already there. An admin opens the codes '
+                "nobody has redeemed in the admin panel."
             )
             return
         created = await self._codes.create_batch(
@@ -660,7 +667,7 @@ class _Seed:
         _say(
             f'  The batch "{batch.label}": {batch.count} codes worth '
             f"{format_cr(to_micro(batch.value_cr))} CR each, one per user, valid until "
-            f"{batch.expires_at:%Y-%m-%d}. They are shown this once:"
+            f"{batch.expires_at:%Y-%m-%d}:"
         )
         for code in created.codes:
             _say(f"    {code.code}  {code.redeem_url}")

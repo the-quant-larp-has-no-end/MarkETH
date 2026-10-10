@@ -1,8 +1,9 @@
 """The audit log: who did what to what (SPEC §5, §7, §10, Appendix A.5).
 
 Every admin action writes one `audit_log` row in the same transaction as the change it
-describes, so the record exists exactly if the change does. The circuit breaker writes
-its own rows with no actor.
+describes, so the record exists exactly if the change does. One read is audited too:
+an admin who opens the codes of a batch gets them from the transaction that records
+it. The circuit breaker writes its own rows with no actor.
 """
 
 from collections.abc import Mapping
@@ -27,8 +28,13 @@ class AuditAction(StrEnum):
     MARKET_VOID = "market.void"
     CODE_BATCH_CREATE = "code_batch.create"
     CODE_BATCH_REVOKE = "code_batch.revoke"
+    CODE_BATCH_READ_CODES = "code_batch.read_codes"
     ALERT_ACK = "alert.ack"
     MONTHLY_GRANT_RUN = "grants.monthly_run"
+    USER_SUSPEND = "user.suspend"
+    USER_REINSTATE = "user.reinstate"
+    USER_SET_ROLE = "user.set_role"
+    USER_ADJUST_BALANCE = "user.adjust_balance"
 
 
 class AuditTarget(StrEnum):
@@ -38,6 +44,7 @@ class AuditTarget(StrEnum):
     CODE_BATCH = "code_batch"
     ALERT = "alert"
     GRANTS = "grants"
+    USER = "user"
 
 
 class AuditService:

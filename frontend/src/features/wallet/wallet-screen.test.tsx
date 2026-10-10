@@ -6,6 +6,7 @@ import { MINUS } from "@/lib/format";
 import { ledgerItem, me, voucherItem } from "@/test/fixtures";
 import { apiError, deferred, json, mockApi } from "@/test/http";
 import { setViewport } from "@/test/media";
+import { navigation } from "@/test/navigation";
 import { intersect } from "@/test/observers";
 import { createTestQueryClient, renderWithProviders } from "@/test/render";
 
@@ -84,7 +85,11 @@ describe("the Wallet with content", () => {
   test("shows the balance card: the balance as sent, its label and the next monthly tokens", async () => {
     renderWallet(
       {},
-      me({ balance_cr: "1250.5", monthly_grant_cr: "200", next_monthly_grant_on: "2026-11-01" }),
+      me({
+        balance_cr: "1250.5",
+        monthly_grant_cr: "200",
+        next_monthly_grant_at: "2026-11-21T07:15:00Z",
+      }),
     );
 
     const card = within(await waitFor(balanceCard));
@@ -93,8 +98,9 @@ describe("the Wallet with content", () => {
     const figure = balanceCard().querySelector("[data-slot=amount]");
     expect(figure).toHaveClass("type-display");
     expect(figure).toHaveTextContent("1,250.5");
+    // An instant, in the timezone of /config: the day and the time of day.
     expect(card.getByText(/Next monthly tokens:/)).toHaveTextContent(
-      "Next monthly tokens: 200 on 1 Nov 2026",
+      "Next monthly tokens: 200 on 21 Nov 2026, 08:15",
     );
     // The token icon beside the balance is the 32 px one.
     expect(balanceCard().querySelector("[data-slot=token-icon]")).toHaveClass("size-8");
@@ -131,7 +137,7 @@ describe("the Wallet with content", () => {
     const card = within(await waitFor(balanceCard));
     expect(card.getByText("999,999,999,999.99 tokens")).toBeInTheDocument();
     expect(card.getByText(/Next monthly tokens:/)).toHaveTextContent(
-      "Next monthly tokens: 200.99 on 1 Nov 2026",
+      "Next monthly tokens: 200.99 on 21 Oct 2026, 10:15",
     );
 
     // The expanded ledger row shows every digit that arrived.
@@ -190,7 +196,20 @@ describe("the Wallet with content", () => {
             status: "REDEEMED",
             redeemed_at: "2026-10-05T08:02:00Z",
           }),
-          voucherItem({ id: "c", product_name: "Twix", status: "EXPIRED" }),
+          voucherItem({
+            id: "c",
+            product_name: "Twix",
+            status: "EXPIRED",
+            refunded: true,
+            expires_at: "2026-09-30T10:00:00Z",
+          }),
+          voucherItem({
+            id: "d",
+            product_name: "Tea",
+            status: "EXPIRED",
+            refunded: false,
+            expires_at: "2026-10-09T10:00:00Z",
+          }),
         ],
       }),
     });
@@ -204,6 +223,7 @@ describe("the Wallet with content", () => {
       "Mate",
       "Coffee",
       "Twix",
+      "Tea",
     ]);
 
     // Times are shown in the timezone of /config, not the device's.
@@ -211,8 +231,60 @@ describe("the Wallet with content", () => {
     expect(within(items[0]!).getByRole("button", { name: "Show QR" })).toBeEnabled();
     expect(items[1]).toHaveTextContent("Redeemed");
     expect(items[1]).toHaveTextContent("5 Oct 2026, 10:02");
-    expect(items[2]).toHaveTextContent("Expired, refunded");
+    // An expired voucher says whether its tokens are back, which is `refunded` of its row.
+    expect(items[2]!.textContent).toBe("Twix30 Sep 2026, 12:00Expired, refunded");
+    expect(items[3]!.textContent).toBe("Tea9 Oct 2026, 12:00Expired, refund on its way");
     expect(rows.getAllByRole("button", { name: "Show QR" })).toHaveLength(1);
+  });
+
+  test("whether a refund is booked is read from `refunded` alone, whatever the balance says", async () => {
+    // The balance already holds the tokens, and the row still says what the API says of it.
+    renderWallet(
+      {
+        [WALLET.vouchers]: json(200, {
+          items: [voucherItem({ status: "EXPIRED", refunded: false, value_cr: "35" })],
+        }),
+        [WALLET.ledger]: json(200, {
+          items: [
+            ledgerItem({ description: "Voucher expired, refunded: Coffee", amount_cr: "35" }),
+          ],
+          next_cursor: null,
+        }),
+      },
+      me({ balance_cr: "275" }),
+    );
+
+    const row = (await screen.findByText("Coffee")).closest("li")!;
+    expect(row).toHaveTextContent("Expired, refund on its way");
+    expect(row).not.toHaveTextContent("Expired, refunded");
+  });
+
+  test("ends with a footer whose link leads to the usage policy", async () => {
+    const { user } = renderWallet();
+    await screen.findByText("Nothing here yet.");
+
+    const footer = document.querySelector<HTMLElement>("[data-slot=wallet-footer]")!;
+    expect(footer).toHaveClass("type-body-sm", "text-muted-foreground");
+    // At the foot of the screen: after the activity, the last thing in it.
+    expect(screen.getByRole("main").lastElementChild).toBe(footer);
+    const link = within(footer).getByRole("link", { name: "Usage policy" });
+    expect(link).toHaveAttribute("href", "/policy");
+    // It is a text link in its own right: white, underlined, with a target 44 px tall.
+    expect(link).toHaveAttribute("data-slot", "text-link");
+    expect(link).toHaveClass("min-h-11", "underline", "text-foreground");
+    // The page has no form to keep, so the policy opens in place.
+    expect(link).not.toHaveAttribute("target");
+
+    await user.click(link);
+    expect(navigation.pathname).toBe("/policy");
+  });
+
+  test("the footer stands also while the Wallet loads and when it could not be read", async () => {
+    renderWallet({ [WALLET.vouchers]: UNAVAILABLE, [WALLET.ledger]: UNAVAILABLE });
+
+    expect(screen.getByRole("link", { name: "Usage policy" })).toBeInTheDocument();
+    await screen.findByRole("alert");
+    expect(screen.getByRole("link", { name: "Usage policy" })).toBeInTheDocument();
   });
 
   test("lists the activity as the ledger sends it: its label, its time and its signed amount", async () => {

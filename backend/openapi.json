@@ -1,6 +1,134 @@
 {
   "components": {
     "schemas": {
+      "AdjustBalanceRequest": {
+        "additionalProperties": false,
+        "description": "`POST /admin/users/{id}/adjustments`: credit or debit a user's balance.",
+        "properties": {
+          "amount_cr": {
+            "description": "Above zero to add to the balance, below zero to take from it. A debit of more\nthan the account holds is refused with `INSUFFICIENT_BALANCE`.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^-?[0-9]{1,9}(\\.[0-9]{1,6})?$",
+            "title": "Amount Cr",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why. It goes to the audit log; the user's ledger shows the amount, not this.",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount_cr",
+          "reason"
+        ],
+        "title": "AdjustBalanceRequest",
+        "type": "object"
+      },
+      "AdminUserItem": {
+        "description": "A user as the admin panel shows them.",
+        "properties": {
+          "balance_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Balance Cr",
+            "type": "string"
+          },
+          "bootstrap_admin": {
+            "description": "True for an address the server's configuration names as an admin. Nobody can\nchange the role of such an account or suspend it.",
+            "title": "Bootstrap Admin",
+            "type": "boolean"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "degree_level": {
+            "$ref": "#/components/schemas/DegreeLevel"
+          },
+          "degree_programme": {
+            "title": "Degree Programme",
+            "type": "string"
+          },
+          "email": {
+            "description": "The address the portal identifies the user by.",
+            "title": "Email",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "description": "The display name the portal sent when the profile was last saved. May be empty.",
+            "title": "Name",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/UserRole",
+            "description": "The role the user has in effect: ADMIN for a bootstrap admin, otherwise the role\nthat was set for the account."
+          },
+          "status": {
+            "$ref": "#/components/schemas/UserStatus"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "name",
+          "username",
+          "degree_level",
+          "degree_programme",
+          "role",
+          "status",
+          "bootstrap_admin",
+          "balance_cr",
+          "created_at"
+        ],
+        "title": "AdminUserItem",
+        "type": "object"
+      },
+      "AdminUserListResponse": {
+        "description": "`GET /admin/users`, newest profile first.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AdminUserItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "title": "AdminUserListResponse",
+        "type": "object"
+      },
       "AlertItem": {
         "properties": {
           "acked_at": {
@@ -176,6 +304,74 @@
         "title": "ApproveMarketRequest",
         "type": "object"
       },
+      "BalanceAdjustmentResponse": {
+        "description": "A booked adjustment. Sending the same Idempotency-Key again returns it unchanged.",
+        "properties": {
+          "amount_cr": {
+            "description": "What was booked, with its sign.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^-?[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Amount Cr",
+            "type": "string"
+          },
+          "balance_cr": {
+            "description": "The user's balance right after the adjustment.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Balance Cr",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "amount_cr",
+          "balance_cr",
+          "created_at"
+        ],
+        "title": "BalanceAdjustmentResponse",
+        "type": "object"
+      },
+      "BuySlider": {
+        "description": "The slider and the number field of a buy on the trade sheet (A.11): the whole\ncredits between which the viewer can buy right now, and the step between two\npositions. JSON integers, as a range input takes them. Every multiple of `step`\nfrom `min` to `max` is a budget a buy passes with: send it as `amount_cr`.",
+        "properties": {
+          "max": {
+            "description": "The largest multiple of `step` that both the stake left and the balance cover.\nNever below `min`.",
+            "title": "Max",
+            "type": "integer"
+          },
+          "min": {
+            "description": "The smallest multiple of `step` that is a trade: at least `min_trade_cr`.",
+            "title": "Min",
+            "type": "integer"
+          },
+          "step": {
+            "description": "`stake_step_cr` of `GET /config`.",
+            "title": "Step",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "min",
+          "max",
+          "step"
+        ],
+        "title": "BuySlider",
+        "type": "object"
+      },
       "CloseMarketRequest": {
         "additionalProperties": false,
         "description": "`POST /admin/markets/{id}/close`: stop trading for good, before the deadline or after.",
@@ -198,8 +394,29 @@
         "title": "CloseMarketRequest",
         "type": "object"
       },
+      "CodeBatchCodesResponse": {
+        "description": "`GET /admin/code-batches/{id}/codes`: a batch and the codes of it that can still\nbe redeemed, in the order they were created. A code that was redeemed or revoked\nis not among them, and a batch that has expired has none. Every answer is written\nto the audit log with who asked.",
+        "properties": {
+          "batch": {
+            "$ref": "#/components/schemas/CodeBatchItem"
+          },
+          "codes": {
+            "items": {
+              "$ref": "#/components/schemas/CreatedCode"
+            },
+            "title": "Codes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "batch",
+          "codes"
+        ],
+        "title": "CodeBatchCodesResponse",
+        "type": "object"
+      },
       "CodeBatchCreatedResponse": {
-        "description": "The new batch and, this once, its plain codes. The server keeps only hashes.",
+        "description": "The batch that was created, and its codes. Those nobody has redeemed can be\nread again: `GET /admin/code-batches/{id}/codes`.",
         "properties": {
           "batch": {
             "$ref": "#/components/schemas/CodeBatchItem"
@@ -225,6 +442,11 @@
           "active_count": {
             "title": "Active Count",
             "type": "integer"
+          },
+          "can_revoke": {
+            "description": "Whether revoking the batch would revoke at least one code: it has a code that is\nneither redeemed nor revoked.",
+            "title": "Can Revoke",
+            "type": "boolean"
           },
           "count": {
             "title": "Count",
@@ -309,7 +531,8 @@
           "revoked_at",
           "active_count",
           "redeemed_count",
-          "revoked_count"
+          "revoked_count",
+          "can_revoke"
         ],
         "title": "CodeBatchItem",
         "type": "object"
@@ -384,6 +607,7 @@
         "type": "object"
       },
       "CreatedCode": {
+        "description": "A code a user can still redeem, as its card shows it.",
         "properties": {
           "code": {
             "description": "As printed on the card: `XXXX-XXXX-XXXX`.",
@@ -477,7 +701,7 @@
         "type": "string"
       },
       "ErrorResponse": {
-        "description": "The body of every non-2xx response (SPEC §10, Appendix A.2).\n\n`message` is written for the user and can be shown as it is. `details` is an\nobject, empty unless the code is one of these:\n\n* `VALIDATION_ERROR`. A request that does not match its schema: `errors`, a list\n  of `{loc, msg, type}`, one per field. A rule a service checks: `field`, the name\n  of the offending field.\n* `FORBIDDEN`, when the portal's id is not an address MarkETH is open to:\n  `allowed_domains`, a list of the domains it is open to.\n* `PROFILE_REQUIRED`: `name` and `email`, who the portal says is calling. `name`\n  may be an empty string.\n* `USERNAME_TAKEN`: `field`, which is `username`.\n* `RATE_LIMITED`: `retry_after_seconds`, an integer, also sent as the\n  `Retry-After` header.\n* `QUOTE_STALE`: `quote`, a fresh `QuoteResponse` for the same trade.\n* `LIMIT_EXCEEDED`: `limit`, which names the limit: `MAX_STAKE_PER_USER_MARKET`,\n  `MAX_PROPOSALS_PER_USER_PER_DAY`, `MAX_OPEN_MARKETS`, `MAX_MARKET_BUDGET`,\n  `MAX_AGGREGATE_LOSS_BUDGET`, `MAX_CODE_ISSUANCE_PER_MONTH` or\n  `ONE_CODE_PER_USER`. With `MAX_STAKE_PER_USER_MARKET` also `stake_limit_cr` and\n  `stake_left_cr`; with `MAX_CODE_ISSUANCE_PER_MONTH` also `issued_cr`,\n  `requested_cr` and `cap_cr`.\n* `INSUFFICIENT_BALANCE`: `balance_cr` and `required_cr`.\n* `SERVICE_UNAVAILABLE`, from `GET /health` only: `postgres`, `redis` and\n  `scylla`, each `up` or `down`.\n\nAmounts in `details` are decimal strings like every `*_cr` field.",
+        "description": "The body of every non-2xx response (SPEC §10, Appendix A.2).\n\n`message` is written for the user and can be shown as it is. `details` is an\nobject, empty unless the code is one of these:\n\n* `VALIDATION_ERROR`. A request that does not match its schema: `errors`, a list\n  of `{loc, msg, type}`, one per field. `loc` ends with the name of the field,\n  `msg` is a sentence for the person who filled it in, to be shown under the\n  field as it is (\"Use at most 200 characters.\"), and `type` names the rule\n  that was broken. A rule a service checks: `field`, the name of the offending\n  field, and `message` is the sentence for it. A profile created without\n  `policy_accepted: true` is such a rule, and its `field` is `policy_accepted`;\n  so is a filter of the leaderboard whose `min_…` is above its `max_…`, with\n  the `min_…` as its `field`.\n* `FORBIDDEN`, when the portal's id is not an address MarkETH is open to:\n  `allowed_domains`, a list of the domains it is open to.\n* `PROFILE_REQUIRED`: `name` and `email`, who the portal says is calling. `name`\n  may be an empty string.\n* `USERNAME_TAKEN`: `field`, which is `username`.\n* `RATE_LIMITED`: `retry_after_seconds`, an integer, also sent as the\n  `Retry-After` header.\n* `QUOTE_STALE`: `quote`, a fresh `QuoteResponse` for the same trade.\n* `LIMIT_EXCEEDED`: `limit`, which names the limit: `MAX_STAKE_PER_USER_MARKET`,\n  `MAX_PROPOSALS_PER_USER_PER_DAY`, `MAX_OPEN_MARKETS`, `MAX_MARKET_BUDGET`,\n  `MAX_AGGREGATE_LOSS_BUDGET`, `MAX_CODE_ISSUANCE_PER_MONTH`,\n  `ONE_CODE_PER_USER` or `MAX_ADMIN_ADJUSTMENT_CR`. With\n  `MAX_STAKE_PER_USER_MARKET` also `stake_limit_cr` and `stake_left_cr`; with\n  `MAX_CODE_ISSUANCE_PER_MONTH` also `issued_cr`, `requested_cr` and `cap_cr`;\n  with `MAX_ADMIN_ADJUSTMENT_CR` also `requested_cr`, what the adjustment would\n  add, and `cap_cr`, the most one adjustment may add.\n* `INSUFFICIENT_BALANCE`: `balance_cr` and `required_cr`. Where an admin debits\n  somebody's balance, they are what that account holds and what the debit takes.\n* `SERVICE_UNAVAILABLE`, from `GET /health` only: `postgres`, `redis` and\n  `scylla`, each `up` or `down`.\n\nA quote is answered like its trade. `GET /markets/{id}/quote` gives a buy the\ncaller could not make the error the trade would get, with the same details:\n`LIMIT_EXCEEDED` with `MAX_STAKE_PER_USER_MARKET`, `stake_limit_cr` and\n`stake_left_cr` above the stake left, `INSUFFICIENT_BALANCE` with `balance_cr`\nand `required_cr` above the balance.\n\nAmounts in `details` are decimal strings like every `*_cr` field.",
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode"
@@ -587,11 +811,18 @@
           },
           "source": {
             "$ref": "#/components/schemas/HistorySource"
+          },
+          "until": {
+            "description": "The right edge of the chart: the server's now while the market can still trade,\notherwise the moment trading ended. A chart is drawn up to here, and with no\nclock of the device.",
+            "format": "date-time",
+            "title": "Until",
+            "type": "string"
           }
         },
         "required": [
           "points",
-          "source"
+          "source",
+          "until"
         ],
         "title": "HistoryResponse",
         "type": "object"
@@ -667,7 +898,8 @@
           "MARKET_VOID",
           "VOUCHER_ISSUE",
           "VOUCHER_REDEEM",
-          "VOUCHER_REFUND"
+          "VOUCHER_REFUND",
+          "ADMIN_ADJUSTMENT"
         ],
         "title": "JournalKind",
         "type": "string"
@@ -688,8 +920,17 @@
             "description": "What those markets returned per credit put in, each market weighing as much as\nwas put into it. Null while `settled_markets` is 0.",
             "title": "Avg Payout Ratio"
           },
+          "balance_cr": {
+            "description": "The part in the wallet: the balance of the user's account.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Balance Cr",
+            "type": "string"
+          },
           "credits_cr": {
-            "description": "The user's balance right now.",
+            "description": "What the user has right now: `balance_cr` plus `positions_value_cr`. It is what\nthe `credits` sort orders by and what `min_credits_cr` and `max_credits_cr` bound.",
             "examples": [
               "0.25"
             ],
@@ -709,6 +950,15 @@
             "description": "True for the caller's own row.",
             "title": "Is Viewer",
             "type": "boolean"
+          },
+          "positions_value_cr": {
+            "description": "The part in open positions: the shares the user holds in markets that are not\nyet RESOLVED or VOID, each holding at the current price of its outcome and rounded\ndown. It is the `total_value_cr` of that user's `GET /me/positions`. 0 for someone\nwho holds nothing.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Positions Value Cr",
+            "type": "string"
           },
           "rank": {
             "description": "The user's place in the list as it was asked for, 1 being first. It counts within\nthe filters and in the chosen order.",
@@ -750,6 +1000,8 @@
           "degree_level",
           "degree_programme",
           "credits_cr",
+          "balance_cr",
+          "positions_value_cr",
           "trades",
           "settled_markets",
           "win_rate",
@@ -884,12 +1136,20 @@
         "description": "`GET /markets/{id}`, and what proposing or an admin action returns.",
         "properties": {
           "b_cr": {
-            "examples": [
-              "0.25"
+            "anyOf": [
+              {
+                "examples": [
+                  "0.25"
+                ],
+                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
-            "title": "B Cr",
-            "type": "string"
+            "description": "The market's liquidity parameter b. Sent to admins only, null for everyone\nelse. 0 until the market is approved.",
+            "title": "B Cr"
           },
           "close_at": {
             "format": "date-time",
@@ -919,13 +1179,20 @@
             "type": "string"
           },
           "max_loss_cr": {
-            "description": "The market's loss budget (`markets.budget_micro`). Both are 0 until approval.",
-            "examples": [
-              "0.25"
+            "anyOf": [
+              {
+                "examples": [
+                  "0.25"
+                ],
+                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
-            "title": "Max Loss Cr",
-            "type": "string"
+            "description": "The market's loss budget (`markets.budget_micro`). Sent to admins only, null\nfor everyone else. 0 until the market is approved.",
+            "title": "Max Loss Cr"
           },
           "no_definition": {
             "title": "No Definition",
@@ -994,9 +1261,6 @@
             ],
             "title": "Rejection Reason"
           },
-          "requested_tier": {
-            "$ref": "#/components/schemas/MarketTier"
-          },
           "resolution": {
             "anyOf": [
               {
@@ -1022,7 +1286,7 @@
           },
           "status": {
             "$ref": "#/components/schemas/MarketStatus",
-            "description": "The effective status (A.4): an OPEN market past `close_at` is reported CLOSED."
+            "description": "The effective status (A.4): an OPEN market past `close_at` is reported CLOSED,\nand a PROPOSED one past `close_at` is reported EXPIRED."
           },
           "tier": {
             "anyOf": [
@@ -1033,7 +1297,7 @@
                 "type": "null"
               }
             ],
-            "description": "Null until VIS approves the market."
+            "description": "The liquidity tier VIS opened the market with. Sent to admins only, null for\neveryone else. To an admin it is null until the market is approved."
           },
           "trading_open": {
             "description": "True exactly when `status` is OPEN.",
@@ -1048,6 +1312,22 @@
           "viewer": {
             "$ref": "#/components/schemas/MarketViewer",
             "description": "What the market is to whoever asked: every reader of a market is a user."
+          },
+          "void_cost_cr": {
+            "anyOf": [
+              {
+                "examples": [
+                  "0.25"
+                ],
+                "pattern": "^-?[0-9]{1,12}(\\.[0-9]{1,6})?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What VIS would have to add if the market were voided now: the net stakes a void\nrefunds, minus the balance of the market's account, as `RiskMarketRow.void_cost_cr`\nsays it. Sent to admins only, null for everyone else, and null for a market with\nnothing to void: one that was never opened and one that is settled.",
+            "title": "Void Cost Cr"
           },
           "void_rule": {
             "description": "What happens to stakes if the market is voided, shown before anyone trades.",
@@ -1083,10 +1363,10 @@
           "no_definition",
           "resolution_criteria",
           "resolution_source",
-          "requested_tier",
           "tier",
           "b_cr",
           "max_loss_cr",
+          "void_cost_cr",
           "void_rule",
           "created_at",
           "opened_at",
@@ -1141,7 +1421,7 @@
         "type": "object"
       },
       "MarketStatus": {
-        "description": "The seven market states of SPEC §6.",
+        "description": "What a market is reported as: one of the seven states of SPEC §6, which its\nrow keeps, or EXPIRED, which is worked out from the clock and never kept: a\nproposal whose `close_at` passed before an admin decided on it.",
         "enum": [
           "PROPOSED",
           "REJECTED",
@@ -1149,7 +1429,8 @@
           "HALTED",
           "CLOSED",
           "RESOLVED",
-          "VOID"
+          "VOID",
+          "EXPIRED"
         ],
         "title": "MarketStatus",
         "type": "string"
@@ -1202,7 +1483,7 @@
           },
           "status": {
             "$ref": "#/components/schemas/MarketStatus",
-            "description": "The effective status (A.4): an OPEN market past `close_at` is reported CLOSED."
+            "description": "The effective status (A.4): an OPEN market past `close_at` is reported CLOSED,\nand a PROPOSED one past `close_at` is reported EXPIRED."
           },
           "trading_open": {
             "description": "True exactly when `status` is OPEN.",
@@ -1260,6 +1541,17 @@
             "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
             "title": "Balance Cr",
             "type": "string"
+          },
+          "buy_slider": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BuySlider"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the slider of a buy runs. Null when the viewer cannot buy anything right\nnow: they may not trade, or the stake left or the balance is below the smallest\nbuy. An amount typed in between two positions is judged by\n`GET /markets/{id}/quote`."
           },
           "can_settle": {
             "description": "Whether the viewer is someone who may resolve or void this market: an admin who\nnever traded it (A.4). An admin who did trade it is answered 403 by both actions,\nand another admin has to settle it. This says who may settle, not when: which\nactions the market's status allows is SPEC §6. False for everybody who is no admin.",
@@ -1393,6 +1685,7 @@
           "stake_limit_cr",
           "stake_left_cr",
           "stake_presets",
+          "buy_slider",
           "sell_presets",
           "can_trade",
           "cannot_trade_reason",
@@ -1402,7 +1695,7 @@
         "type": "object"
       },
       "MeResponse": {
-        "description": "`GET /me`: profile, balance and the next monthly grant.",
+        "description": "`GET /me`: profile, balance, the next monthly grant and what the user has not\nbeen told yet.",
         "properties": {
           "balance_cr": {
             "examples": [
@@ -1453,15 +1746,29 @@
             "title": "Name",
             "type": "string"
           },
-          "next_monthly_grant_on": {
-            "description": "First day of the next calendar month in the app's timezone (SPEC §2).",
-            "format": "date",
-            "title": "Next Monthly Grant On",
+          "next_monthly_grant_at": {
+            "description": "The instant the next monthly grant falls due (SPEC §2). The grants follow the\nsign-up: each month on the day of the month and at the time of day of\n`created_at` in the app's timezone, on the last day of a month that has no\nsuch day.",
+            "format": "date-time",
+            "title": "Next Monthly Grant At",
+            "type": "string"
+          },
+          "notices": {
+            "description": "The user's notices that are not marked seen, oldest first. Empty when there is\nnothing to tell.",
+            "items": {
+              "$ref": "#/components/schemas/NoticeItem"
+            },
+            "title": "Notices",
+            "type": "array"
+          },
+          "policy_accepted_at": {
+            "description": "When the user accepted the usage policy: the instant the profile was\ncreated.",
+            "format": "date-time",
+            "title": "Policy Accepted At",
             "type": "string"
           },
           "role": {
             "$ref": "#/components/schemas/UserRole",
-            "description": "What the user may do right now. It follows the server's role lists, not the\nprofile."
+            "description": "What the user may do right now: the role an admin gave them, USER for\neverybody else, and ADMIN for an address the server names as an admin."
           },
           "username": {
             "title": "Username",
@@ -1477,10 +1784,12 @@
           "degree_programme",
           "role",
           "created_at",
+          "policy_accepted_at",
           "balance_cr",
           "can_get_voucher",
           "monthly_grant_cr",
-          "next_monthly_grant_on"
+          "next_monthly_grant_at",
+          "notices"
         ],
         "title": "MeResponse",
         "type": "object"
@@ -1521,6 +1830,54 @@
         ],
         "title": "MonthlyGrantRunResponse",
         "type": "object"
+      },
+      "NoticeItem": {
+        "description": "Something the user is told once (SPEC §6): the app shows it and marks it seen\nwith `POST /me/notices/{id}/seen`.",
+        "properties": {
+          "created_at": {
+            "description": "When it happened.",
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/NoticeKind",
+            "description": "What happened. `PROPOSAL_APPROVED`: an admin approved the market the user\nproposed, and it is open."
+          },
+          "market_id": {
+            "description": "The market the notice is about.",
+            "format": "uuid",
+            "title": "Market Id",
+            "type": "string"
+          },
+          "question": {
+            "description": "That market's question, as it reads now.",
+            "title": "Question",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "market_id",
+          "question",
+          "created_at"
+        ],
+        "title": "NoticeItem",
+        "type": "object"
+      },
+      "NoticeKind": {
+        "description": "What a notice tells its user (`notices.kind`).",
+        "enum": [
+          "PROPOSAL_APPROVED"
+        ],
+        "title": "NoticeKind",
+        "type": "string"
       },
       "Obligations": {
         "description": "Outstanding obligations: the most VIS could owe right now (SPEC §5, A.6).",
@@ -1764,15 +2121,29 @@
             "title": "Name",
             "type": "string"
           },
-          "next_monthly_grant_on": {
-            "description": "First day of the next calendar month in the app's timezone (SPEC §2).",
-            "format": "date",
-            "title": "Next Monthly Grant On",
+          "next_monthly_grant_at": {
+            "description": "The instant the next monthly grant falls due (SPEC §2). The grants follow the\nsign-up: each month on the day of the month and at the time of day of\n`created_at` in the app's timezone, on the last day of a month that has no\nsuch day.",
+            "format": "date-time",
+            "title": "Next Monthly Grant At",
+            "type": "string"
+          },
+          "notices": {
+            "description": "The user's notices that are not marked seen, oldest first. Empty when there is\nnothing to tell.",
+            "items": {
+              "$ref": "#/components/schemas/NoticeItem"
+            },
+            "title": "Notices",
+            "type": "array"
+          },
+          "policy_accepted_at": {
+            "description": "When the user accepted the usage policy: the instant the profile was\ncreated.",
+            "format": "date-time",
+            "title": "Policy Accepted At",
             "type": "string"
           },
           "role": {
             "$ref": "#/components/schemas/UserRole",
-            "description": "What the user may do right now. It follows the server's role lists, not the\nprofile."
+            "description": "What the user may do right now: the role an admin gave them, USER for\neverybody else, and ADMIN for an address the server names as an admin."
           },
           "signup_granted": {
             "description": "True when this save created the profile and booked its signup grant.",
@@ -1793,10 +2164,12 @@
           "degree_programme",
           "role",
           "created_at",
+          "policy_accepted_at",
           "balance_cr",
           "can_get_voucher",
           "monthly_grant_cr",
-          "next_monthly_grant_on",
+          "next_monthly_grant_at",
+          "notices",
           "signup_granted"
         ],
         "title": "ProfileSavedResponse",
@@ -1824,6 +2197,17 @@
             "title": "No Definition",
             "type": "string"
           },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolutionOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "YES or NO once RESOLVED, VOID once VOID, otherwise null."
+          },
           "question": {
             "title": "Question",
             "type": "string"
@@ -1838,9 +2222,6 @@
               }
             ],
             "title": "Rejection Reason"
-          },
-          "requested_tier": {
-            "$ref": "#/components/schemas/MarketTier"
           },
           "resolution_criteria": {
             "title": "Resolution Criteria",
@@ -1857,7 +2238,7 @@
           },
           "status": {
             "$ref": "#/components/schemas/MarketStatus",
-            "description": "The effective status, as in `MarketSummary`."
+            "description": "The effective status, as in `MarketSummary`. EXPIRED for a proposal whose\n`close_at` passed before an admin decided on it: it is not under review any more."
           },
           "yes_definition": {
             "title": "Yes Definition",
@@ -1872,7 +2253,7 @@
           "resolution_criteria",
           "resolution_source",
           "status",
-          "requested_tier",
+          "outcome",
           "close_at",
           "resolve_by",
           "created_at",
@@ -1900,7 +2281,7 @@
       },
       "ProposeMarketRequest": {
         "additionalProperties": false,
-        "description": "`POST /markets`: what a proposal must state (SPEC §6).\n\nThe time rules that depend on the clock are the service's: `close_at` in the future\nand within `MAX_MARKET_LIFETIME`, `resolve_by` within `MAX_RESOLUTION_DELAY_DAYS`\nof `close_at`.",
+        "description": "`POST /markets`: what a proposal must state (SPEC §6).\n\nThe time rules that depend on the clock are the service's: `close_at` in the future\nand within `MAX_MARKET_LIFETIME`, `resolve_by` within `MAX_RESOLUTION_DELAY_DAYS`\nof `close_at`.\n\nA proposal says nothing about liquidity: the admin who approves the market picks\nits tier. A field that names one is refused like any field the request does not\nhave.",
         "properties": {
           "close_at": {
             "format": "date-time",
@@ -1913,14 +2294,17 @@
             "title": "No Definition",
             "type": "string"
           },
+          "policy_accepted": {
+            "const": true,
+            "description": "The proposer accepts the usage policy for this proposal. Every proposal says\nso again: `true`, or the request is rejected on this field.",
+            "title": "Policy Accepted",
+            "type": "boolean"
+          },
           "question": {
             "maxLength": 200,
             "minLength": 10,
             "title": "Question",
             "type": "string"
-          },
-          "requested_tier": {
-            "$ref": "#/components/schemas/MarketTier"
           },
           "resolution_criteria": {
             "maxLength": 2000,
@@ -1954,13 +2338,18 @@
           "resolution_source",
           "close_at",
           "resolve_by",
-          "requested_tier"
+          "policy_accepted"
         ],
         "title": "ProposeMarketRequest",
         "type": "object"
       },
       "PublicConfigResponse": {
         "properties": {
+          "code_batch_max_count": {
+            "description": "The most codes one batch may have: the upper bound of `count` in\n`POST /admin/code-batches`.",
+            "title": "Code Batch Max Count",
+            "type": "integer"
+          },
           "code_default_value_cr": {
             "examples": [
               "0.25"
@@ -1968,6 +2357,11 @@
             "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
             "title": "Code Default Value Cr",
             "type": "string"
+          },
+          "code_label_max_length": {
+            "description": "Characters the label of a batch may have at most.",
+            "title": "Code Label Max Length",
+            "type": "integer"
           },
           "code_length": {
             "title": "Code Length",
@@ -2109,6 +2503,15 @@
             "title": "Stake Presets Cr",
             "type": "array"
           },
+          "stake_step_cr": {
+            "description": "The step of the slider of a buy on the trade sheet: a whole number of credits.\nWhere the slider runs for one viewer of one market is `MarketViewer.buy_slider`.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Stake Step Cr",
+            "type": "string"
+          },
           "tiers": {
             "items": {
               "$ref": "#/components/schemas/TierConfig"
@@ -2148,6 +2551,7 @@
           "degrees",
           "max_stake_per_market_cr",
           "stake_presets_cr",
+          "stake_step_cr",
           "min_trade_cr",
           "min_trade_shares",
           "price_display_decimals",
@@ -2167,6 +2571,8 @@
           "code_max_value_cr",
           "code_default_value_cr",
           "max_code_issuance_per_month_cr",
+          "code_batch_max_count",
+          "code_label_max_length",
           "voucher_code_length",
           "voucher_expiry_days"
         ],
@@ -2229,7 +2635,7 @@
         "type": "object"
       },
       "QuoteResponse": {
-        "description": "What a trade would do right now. Also sent as `details.quote` of `QUOTE_STALE`.",
+        "description": "What a trade would do right now. Also sent as `details.quote` of `QUOTE_STALE`.\n\n`GET /markets/{id}/quote` answers with it for a trade the caller could make. For\none they could not, it answers the error the trade would get instead, with the\nsame code, message and details: 403 `FORBIDDEN` in a market the caller proposed,\n409 `MARKET_NOT_OPEN`, 409 `INSUFFICIENT_SHARES` for a sell of more than the\ncaller holds, 422 `TRADE_TOO_SMALL`, 409 `LIMIT_EXCEEDED` for a buy above the\nstake left and 409 `INSUFFICIENT_BALANCE` for one above the balance. So the\nanswer to a typed amount is the server's, and the client compares nothing.",
         "properties": {
           "amount_cr": {
             "description": "The cost of a buy (rounded up) or the proceeds of a sell (rounded down). The\nproceeds of a sell can be 0 when the shares are all but worthless.",
@@ -2374,6 +2780,23 @@
           "code"
         ],
         "title": "RedeemVoucherRequest",
+        "type": "object"
+      },
+      "ReinstateUserRequest": {
+        "additionalProperties": false,
+        "description": "`POST /admin/users/{id}/reinstate`. The reason goes to the audit log.",
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "ReinstateUserRequest",
         "type": "object"
       },
       "RejectMarketRequest": {
@@ -2618,6 +3041,15 @@
       "RiskResponse": {
         "description": "`GET /admin/risk`.",
         "properties": {
+          "adjustments_this_month_cr": {
+            "description": "What the admins' balance adjustments of this calendar month added to users'\nbalances, minus what they took away. Below zero when they took more than they\ngave. It is not part of `code_issuance_this_month_cr` and counts against no cap.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^-?[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Adjustments This Month Cr",
+            "type": "string"
+          },
           "alerts": {
             "description": "Alerts nobody acknowledged yet, newest first.",
             "items": {
@@ -2698,6 +3130,7 @@
           "unredeemed_code_value_cr",
           "code_issuance_this_month_cr",
           "max_code_issuance_per_month_cr",
+          "adjustments_this_month_cr",
           "markets",
           "alerts"
         ],
@@ -2706,7 +3139,7 @@
       },
       "SaveProfileRequest": {
         "additionalProperties": false,
-        "description": "`PUT /me/profile`: the username and the degree a person states.\n\nThis model checks the shape. The service checks what depends on settings and on\nthe catalogue: the username's length against `username_min_length` and\n`username_max_length`, that the username is not one the server reserves, and the\ndegree as a pair that `degrees` of `GET /config` lists. Each failure is\n`VALIDATION_ERROR` with the field in `details.field`.",
+        "description": "`PUT /me/profile`: the username and the degree a person states, and with the\nfirst save their acceptance of the usage policy.\n\nThis model checks the shape. The service checks what depends on settings, on the\ncatalogue and on whether a profile exists: the username's length against\n`username_min_length` and `username_max_length`, that the username is not one\nthe server reserves, the degree as a pair that `degrees` of `GET /config` lists,\nand `policy_accepted` where the save creates the profile. Each failure is\n`VALIDATION_ERROR` with the field in `details.field`.",
         "properties": {
           "degree_level": {
             "$ref": "#/components/schemas/DegreeLevel"
@@ -2717,6 +3150,12 @@
             "minLength": 1,
             "title": "Degree Programme",
             "type": "string"
+          },
+          "policy_accepted": {
+            "default": false,
+            "description": "Whether the person accepts the usage policy. The save that creates a profile\ntakes `true` and nothing else. A save that changes a profile does not look at\nit and may leave it out.",
+            "title": "Policy Accepted",
+            "type": "boolean"
           },
           "username": {
             "description": "Lower-case letters, digits and underscore: a capital letter is not accepted. A\nname somebody else holds is answered with `USERNAME_TAKEN`.",
@@ -2775,6 +3214,21 @@
           "allowed"
         ],
         "title": "SellPreset",
+        "type": "object"
+      },
+      "SetUserRoleRequest": {
+        "additionalProperties": false,
+        "description": "`POST /admin/users/{id}/role`.",
+        "properties": {
+          "role": {
+            "$ref": "#/components/schemas/UserRole",
+            "description": "The role the account has from now on. Setting the one it already has changes\nnothing."
+          }
+        },
+        "required": [
+          "role"
+        ],
+        "title": "SetUserRoleRequest",
         "type": "object"
       },
       "SortOrder": {
@@ -2846,8 +3300,25 @@
         "title": "StatusEvent",
         "type": "object"
       },
+      "SuspendUserRequest": {
+        "additionalProperties": false,
+        "description": "`POST /admin/users/{id}/suspend`. The reason goes to the audit log.",
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "SuspendUserRequest",
+        "type": "object"
+      },
       "TierConfig": {
-        "description": "A fixed liquidity tier of SPEC §4. CUSTOM is not listed: it has no fixed b.",
+        "description": "A fixed liquidity tier of SPEC §4: what an admin picks from when approving a\nmarket. CUSTOM is not listed: it has no fixed b.",
         "properties": {
           "b_cr": {
             "examples": [
@@ -3241,13 +3712,21 @@
         "type": "string"
       },
       "UserRole": {
-        "description": "What a caller may do. Derived from `ADMIN_EMAILS` and `BARISTA_EMAILS` on every\nrequest and stored nowhere (Appendix A.3).",
+        "description": "What a caller may do. `users.role` keeps it: USER when a profile is created,\nand whatever an admin sets after that. An address of `ADMIN_EMAILS` is ADMIN\nwhatever its row says (Appendix A.3).",
         "enum": [
           "USER",
           "ADMIN",
           "BARISTA"
         ],
         "title": "UserRole",
+        "type": "string"
+      },
+      "UserStatus": {
+        "enum": [
+          "ACTIVE",
+          "SUSPENDED"
+        ],
+        "title": "UserStatus",
         "type": "string"
       },
       "VoidMarketRequest": {
@@ -3281,6 +3760,11 @@
             "title": "Expires At",
             "type": "string"
           },
+          "product_name": {
+            "description": "What the voucher is for, as the product was named when the voucher was issued.",
+            "title": "Product Name",
+            "type": "string"
+          },
           "voucher_id": {
             "format": "uuid",
             "title": "Voucher Id",
@@ -3289,6 +3773,7 @@
         },
         "required": [
           "voucher_id",
+          "product_name",
           "code",
           "expires_at"
         ],
@@ -3348,6 +3833,11 @@
             ],
             "title": "Redeemed At"
           },
+          "refunded": {
+            "description": "Whether the refund of an EXPIRED voucher has been booked: its value is back on\nthe balance. False while that refund is still to come, and for a voucher in any\nother status.",
+            "title": "Refunded",
+            "type": "boolean"
+          },
           "status": {
             "$ref": "#/components/schemas/VoucherStatus",
             "description": "The effective status: an ACTIVE voucher past `expires_at` is reported EXPIRED,\nwhether or not its refund has been booked yet."
@@ -3367,6 +3857,7 @@
           "product_id",
           "product_name",
           "status",
+          "refunded",
           "value_cr",
           "created_at",
           "expires_at",
@@ -3416,6 +3907,11 @@
             ],
             "title": "Redeemed At"
           },
+          "refunded": {
+            "description": "Whether the refund of an EXPIRED voucher has been booked: its value is back on\nthe balance. False while that refund is still to come, and for a voucher in any\nother status.",
+            "title": "Refunded",
+            "type": "boolean"
+          },
           "status": {
             "$ref": "#/components/schemas/VoucherStatus",
             "description": "The effective status: an ACTIVE voucher past `expires_at` is reported EXPIRED,\nwhether or not its refund has been booked yet."
@@ -3435,6 +3931,7 @@
           "product_id",
           "product_name",
           "status",
+          "refunded",
           "value_cr",
           "created_at",
           "expires_at",
@@ -3515,7 +4012,7 @@
         "type": "object"
       },
       "VoucherRedeemResponse": {
-        "description": "`POST /barista/vouchers/redeem`: the voucher is now used up.",
+        "description": "`POST /barista/vouchers/redeem`: the voucher is used up.\n\nThe scan that redeems a voucher answers with `repeat` false. The same barista\nscanning that voucher again within `VOUCHER_RESCAN_SECONDS` gets the same answer\nwith `repeat` true: the answer to the first scan may not have arrived. Nothing\nis booked for a repeat.",
         "properties": {
           "product_id": {
             "title": "Product Id",
@@ -3527,9 +4024,15 @@
             "type": "string"
           },
           "redeemed_at": {
+            "description": "When the voucher was redeemed: the instant of the first scan, also in a repeat.",
             "format": "date-time",
             "title": "Redeemed At",
             "type": "string"
+          },
+          "repeat": {
+            "description": "False for the scan that redeemed the voucher. True when this barista redeemed\nit a moment ago and scanned it again: hand the product over once.",
+            "title": "Repeat",
+            "type": "boolean"
           },
           "value_cr": {
             "examples": [
@@ -3550,7 +4053,8 @@
           "product_id",
           "product_name",
           "value_cr",
-          "redeemed_at"
+          "redeemed_at",
+          "repeat"
         ],
         "title": "VoucherRedeemResponse",
         "type": "object"
@@ -3713,7 +4217,58 @@
             ]
           }
         ],
-        "summary": "Create a batch; the plain codes are returned this once",
+        "summary": "Create a batch and get its codes",
+        "tags": [
+          "admin-code-batches"
+        ]
+      }
+    },
+    "/api/admin/code-batches/{batch_id}/codes": {
+      "get": {
+        "description": "Access: role ADMIN.",
+        "operationId": "list_batch_codes",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "batch_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Batch Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodeBatchCodesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "ADMIN"
+            ]
+          }
+        ],
+        "summary": "The codes of a batch that can still be redeemed; every read is audited",
         "tags": [
           "admin-code-batches"
         ]
@@ -4285,6 +4840,389 @@
         ]
       }
     },
+    "/api/admin/users": {
+      "get": {
+        "description": "Access: role ADMIN.",
+        "operationId": "list_users",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "`next_cursor` of the previous page; omit it for the first page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`next_cursor` of the previous page; omit it for the first page.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "description": "Lists the users whose username, name or address contains this text, whatever the\ncase of its letters. Leave it out to list everybody: an empty one is rejected.",
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Lists the users whose username, name or address contains this text, whatever the\ncase of its letters. Leave it out to list everybody: an empty one is rejected.",
+              "title": "Q"
+            }
+          },
+          {
+            "description": "The role a user has in effect, as `AdminUserItem.role` reports it: `ADMIN` lists\nthe bootstrap admins too, and no other role lists one of them.",
+            "in": "query",
+            "name": "role",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/UserRole"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The role a user has in effect, as `AdminUserItem.role` reports it: `ADMIN` lists\nthe bootstrap admins too, and no other role lists one of them.",
+              "title": "Role"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/UserStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "ADMIN"
+            ]
+          }
+        ],
+        "summary": "Users with their role, status and balance, newest first",
+        "tags": [
+          "admin-users"
+        ]
+      }
+    },
+    "/api/admin/users/{user_id}/adjustments": {
+      "post": {
+        "description": "Access: role ADMIN.",
+        "operationId": "adjust_user_balance",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "A UUID the client makes up per adjustment and repeats on every retry of it. The same key returns the same adjustment; it is never booked twice.",
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "description": "A UUID the client makes up per adjustment and repeats on every retry of it. The same key returns the same adjustment; it is never booked twice.",
+              "format": "uuid",
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdjustBalanceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BalanceAdjustmentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "ADMIN"
+            ]
+          }
+        ],
+        "summary": "Credit or debit a user's balance, idempotently",
+        "tags": [
+          "admin-users"
+        ]
+      }
+    },
+    "/api/admin/users/{user_id}/reinstate": {
+      "post": {
+        "description": "Access: role ADMIN.",
+        "operationId": "reinstate_user",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReinstateUserRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserItem"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "ADMIN"
+            ]
+          }
+        ],
+        "summary": "Lift the suspension of a user's account",
+        "tags": [
+          "admin-users"
+        ]
+      }
+    },
+    "/api/admin/users/{user_id}/role": {
+      "post": {
+        "description": "Access: role ADMIN.",
+        "operationId": "set_user_role",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetUserRoleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserItem"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "ADMIN"
+            ]
+          }
+        ],
+        "summary": "Set a user's role",
+        "tags": [
+          "admin-users"
+        ]
+      }
+    },
+    "/api/admin/users/{user_id}/suspend": {
+      "post": {
+        "description": "Access: role ADMIN.",
+        "operationId": "suspend_user",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SuspendUserRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserItem"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "ADMIN"
+            ]
+          }
+        ],
+        "summary": "Suspend a user's account",
+        "tags": [
+          "admin-users"
+        ]
+      }
+    },
     "/api/barista/vouchers/redeem": {
       "post": {
         "description": "Access: role BARISTA or ADMIN.",
@@ -4741,7 +5679,7 @@
         "operationId": "list_markets",
         "parameters": [
           {
-            "description": "Effective statuses to list. Repeat the parameter for several: `?status=OPEN&status=HALTED`. Left out: every status but PROPOSED and REJECTED, which are for admins only.",
+            "description": "Effective statuses to list. Repeat the parameter for several: `?status=OPEN&status=HALTED`. Left out: every status but PROPOSED, EXPIRED and REJECTED, which are for admins only. PROPOSED lists the proposals an admin can still decide on; one whose `close_at` has passed is listed under EXPIRED.",
             "in": "query",
             "name": "status",
             "required": false,
@@ -4757,7 +5695,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Effective statuses to list. Repeat the parameter for several: `?status=OPEN&status=HALTED`. Left out: every status but PROPOSED and REJECTED, which are for admins only.",
+              "description": "Effective statuses to list. Repeat the parameter for several: `?status=OPEN&status=HALTED`. Left out: every status but PROPOSED, EXPIRED and REJECTED, which are for admins only. PROPOSED lists the proposals an admin can still decide on; one whose `close_at` has passed is listed under EXPIRED.",
               "title": "Status"
             }
           }
@@ -5049,7 +5987,7 @@
             ]
           }
         ],
-        "summary": "Price a trade without executing it",
+        "summary": "Price a trade for the caller, or answer the error the trade would get",
         "tags": [
           "trading"
         ]
@@ -5238,7 +6176,7 @@
             ]
           }
         ],
-        "summary": "Profile, balance and next monthly grant",
+        "summary": "Profile, balance, next monthly grant and unseen notices",
         "tags": [
           "me"
         ]
@@ -5312,6 +6250,57 @@
           }
         ],
         "summary": "Every movement on the balance, newest first",
+        "tags": [
+          "me"
+        ]
+      }
+    },
+    "/api/me/notices/{notice_id}/seen": {
+      "post": {
+        "description": "Access: any registered user whose account is active.",
+        "operationId": "mark_notice_seen",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "notice_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Notice Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoticeItem"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "REGISTERED"
+            ]
+          }
+        ],
+        "summary": "Mark a notice as seen",
         "tags": [
           "me"
         ]

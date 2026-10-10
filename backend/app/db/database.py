@@ -31,18 +31,22 @@ _UNREACHABLE: Final = (ConnectionError, TimeoutError, socket.gaierror)
 """What the driver raises, unwrapped, when no connection can be opened: refused or
 reset, timed out, or a host name that does not resolve (a stopped compose service)."""
 
-_LOCK_NOT_AVAILABLE: Final[str] = "55P03"
-"""SQLSTATE lock_not_available: a lock was not granted within the lock timeout."""
-
-_UNAVAILABLE_SQLSTATES: Final[frozenset[str]] = frozenset(
+_TRANSIENT_SQLSTATES: Final[frozenset[str]] = frozenset(
     {
-        "53300",  # too_many_connections
-        _LOCK_NOT_AVAILABLE,
-        "57P01",  # admin_shutdown
-        "57P02",  # crash_shutdown
-        "57P03",  # cannot_connect_now: the server is starting up or shutting down
+        "55P03",  # lock_not_available: a lock was not granted within the lock timeout
+        "40P01",  # deadlock_detected: Postgres ended this transaction to break a cycle
+        "40001",  # serialization_failure: Postgres ended it for a concurrent update
     }
 )
+"""What Postgres reports when it is up and one transaction did not get through. Nothing
+of that transaction is kept, and the same request can go through a moment later."""
+
+_UNAVAILABLE_SQLSTATES: Final[frozenset[str]] = _TRANSIENT_SQLSTATES | {
+    "53300",  # too_many_connections
+    "57P01",  # admin_shutdown
+    "57P02",  # crash_shutdown
+    "57P03",  # cannot_connect_now: the server is starting up or shutting down
+}
 _CONNECTION_EXCEPTION_CLASS: Final[str] = "08"
 """SQLSTATE class 08: the connection failed or was lost."""
 
@@ -51,19 +55,21 @@ def is_unavailable(error: BaseException) -> bool:
     """Whether `error` means that Postgres could not be reached or would not serve.
 
     True for a connection that cannot be opened or was lost, a server that is starting
-    up or shutting down, a connection pool that stayed exhausted, and a lock that
-    another transaction held for longer than `POSTGRES_LOCK_TIMEOUT_MS`. False for
+    up or shutting down, and everything `is_transient` recognises: a pool that had no
+    free connection for `POSTGRES_POOL_TIMEOUT_SECONDS`, a lock that another
+    transaction held for longer than `POSTGRES_LOCK_TIMEOUT_MS`, and a transaction
+    Postgres ended as the victim of a deadlock or for a concurrent update. False for
     everything else a reachable database answers, such as a violated constraint, a
     denied permission or a cancelled statement: those are bugs, not outages.
 
     SPEC §9 answers an outage with 503; `app/api/errors.py` asks this function which
     errors are one. Without it each service would have to recognise them itself.
 
-    A lock that was not granted in time is counted among them although Postgres is up:
-    the statement failed before it changed anything, its transaction is rolled back,
-    and the same request can succeed a moment later. 503 says exactly that, so a client
-    keeps the Idempotency-Key of a trade and sends it again. A caller that has to tell
-    that case from a lost connection asks `is_lock_timeout`.
+    The transient ones are counted among them although Postgres is up: the request
+    failed before it changed anything, its transaction is rolled back, and the same
+    request can succeed a moment later. 503 says exactly that, so a client keeps the
+    Idempotency-Key of a trade and sends it again. A caller that has to tell those
+    from a lost connection asks `is_transient`.
 
     A bare socket error carries no sign of whose socket it was. It is taken to be the
     database's, because the Redis and ScyllaDB adapters wrap their own failures in
@@ -81,22 +87,32 @@ def is_unavailable(error: BaseException) -> bool:
     )
 
 
-def is_lock_timeout(error: BaseException) -> bool:
-    """Whether `error` is a lock that another transaction held for longer than
-    `POSTGRES_LOCK_TIMEOUT_MS`, and nothing worse.
+def is_transient(error: BaseException) -> bool:
+    """Whether `error` means that Postgres is up and one attempt did not get through,
+    and nothing worse:
+
+    * a lock that another transaction held for longer than `POSTGRES_LOCK_TIMEOUT_MS`
+      (SQLSTATE 55P03);
+    * a transaction Postgres ended to break a deadlock (40P01) or for a concurrent
+      update (40001);
+    * a connection pool that had none free for `POSTGRES_POOL_TIMEOUT_SECONDS`: every
+      connection of this process stayed in use, and the request never reached
+      Postgres.
 
     Every such error is one `is_unavailable` recognises too. What sets it apart from
-    the others there: Postgres is up and the connection is whole. Only the one
-    statement failed, having changed nothing, and its transaction is rolled back. Work
-    that can wait, such as a user's upkeep, skips its turn on this error and comes back
-    later, where a lost connection has to leave as the API's 503.
+    the others there: the database serves and the connection, where there was one, is
+    whole. Only the one transaction failed, having changed nothing. Work that can
+    wait, such as a user's upkeep, skips its turn on this error and comes back later,
+    where a lost connection has to leave as the API's 503.
 
-    False for a connection that was lost while it waited for the lock: that is the
-    lost connection.
+    False for a connection that was lost while it waited for a lock: that is the lost
+    connection.
     """
+    if isinstance(error, PoolTimeoutError):
+        return True
     if not isinstance(error, DBAPIError) or error.connection_invalidated:
         return False
-    return _sqlstate(error) == _LOCK_NOT_AVAILABLE
+    return _sqlstate(error) in _TRANSIENT_SQLSTATES
 
 
 def _sqlstate(error: DBAPIError) -> str | None:
@@ -114,6 +130,13 @@ class Database:
             pool_pre_ping=True,
             pool_size=settings.pool_size,
             max_overflow=settings.max_overflow,
+            # How long a request waits for a connection while all of them are in use.
+            # After that the checkout fails, and the API answers 503 like for a lock
+            # that was not granted in time.
+            pool_timeout=settings.pool_timeout_seconds,
+            # A statement that fails is logged with its text and without the values
+            # it was sent with: those are addresses, names and codes that redeem.
+            hide_parameters=True,
             # Sent when a connection opens, so every session of the pool has it: a
             # statement waits this long for a lock and then fails with SQLSTATE 55P03.
             # Without it a request could queue on a market row for longer than the proxy
@@ -132,7 +155,10 @@ class Database:
         return self._session_factory
 
     async def ping(self) -> bool:
-        """Whether Postgres answers a query right now. Never raises; used by `/health`."""
+        """Whether Postgres answers a query right now. Never raises; used by `/health`.
+
+        False also when the pool had no connection free for
+        `POSTGRES_POOL_TIMEOUT_SECONDS`: the probe waits for one like any request."""
         try:
             async with self._engine.connect() as connection:
                 await connection.execute(text("SELECT 1"))

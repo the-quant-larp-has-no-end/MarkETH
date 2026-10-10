@@ -2,7 +2,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
 
 import type { MarketDetailResponse, MarketStatus } from "@/lib/api/schema";
-import { MARKET_ID, marketDetail, marketViewer, me } from "@/test/fixtures";
+import { adminMarketDetail, MARKET_ID, marketViewer, me } from "@/test/fixtures";
 import { apiError, deferred, json, mockApi, type Route } from "@/test/http";
 import { renderWithProviders } from "@/test/render";
 
@@ -14,14 +14,7 @@ const TRADED = "You traded this market, so another admin has to settle it.";
 const admin = { me: me({ role: "ADMIN" }) };
 
 /** A market as an admin who did not trade it reads it. */
-function adminMarket(overrides: Partial<MarketDetailResponse> = {}): MarketDetailResponse {
-  return marketDetail({
-    proposer_email: "bea.beispiel@ethz.ch",
-    requested_tier: "MEDIUM",
-    viewer: marketViewer({ can_settle: true }),
-    ...overrides,
-  });
-}
+const adminMarket = adminMarketDetail;
 
 function show(market: MarketDetailResponse) {
   mockApi({ [MARKET]: json(200, market) });
@@ -102,7 +95,8 @@ describe("Admin: one market", () => {
     await screen.findByRole("heading", { level: 2, name: "Details" });
 
     expect(stated("Proposed by")).toBe("bea.beispiel@ethz.ch");
-    expect(stated("Requested liquidity")).toBe("Medium");
+    // A proposal asks for no tier: there is the one VIS gave the market, and no other.
+    expect(screen.queryByText(/requested/i)).not.toBeInTheDocument();
     expect(stated("Liquidity")).toBe("Default");
     expect(stated("Liquidity b")).toBe("1,0001,000 tokens");
     // Cut after the second decimal, never rounded up.
@@ -119,7 +113,6 @@ describe("Admin: one market", () => {
       adminMarket({
         status: "PROPOSED",
         trading_open: false,
-        requested_tier: "TIGHT",
         tier: null,
         b_cr: "0",
         max_loss_cr: "0",
@@ -127,7 +120,6 @@ describe("Admin: one market", () => {
       }),
     );
     await screen.findByRole("heading", { level: 2, name: "Details" });
-    expect(stated("Requested liquidity")).toBe("Tight");
     expect(stated("Liquidity")).toBe("–none yet");
     // Liquidity and loss budget come with the tier: until then there is nothing to show.
     expect(stated("Liquidity b")).toBe("–none yet");

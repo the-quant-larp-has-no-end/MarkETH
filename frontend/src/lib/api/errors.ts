@@ -132,12 +132,13 @@ export function toApiError(status: number, body: unknown): ApiError {
 }
 
 /**
- * DESIGN.md §14, "A submitted trade": whether the request body and its Idempotency-Key
- * are kept after this failure. Only a 4xx other than 429 says that the trade was refused
- * and nothing was booked. A 5xx, a 429, the portal's 401 and a request without a response
- * say nothing about the trade, so the same body goes out again with the same key.
+ * DESIGN.md §14, "A submitted trade" and "An adjustment of tokens": whether the request
+ * body and its Idempotency-Key are kept after this failure. Only a 4xx other than 429
+ * says that the write was refused and nothing was booked. A 5xx, a 429, the portal's 401
+ * and a request without a response say nothing about it, so the same body goes out again
+ * with the same key.
  */
-export function keepsTradeRequest(error: ApiError): boolean {
+export function keepsSubmission(error: ApiError): boolean {
   if (error.kind === "network" || error.kind === "portal") return true;
   const refused = error.status >= 400 && error.status < 500 && error.status !== 429;
   return !refused;

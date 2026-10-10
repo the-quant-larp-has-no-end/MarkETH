@@ -5,6 +5,10 @@
     HALTED   -> OPEN (resume)  | CLOSED (close)
     CLOSED   -> RESOLVED (resolve YES or NO) | VOID (void)
 
+A proposal nobody decided on before its `close_at` has expired: its row stays PROPOSED,
+it is reported EXPIRED (`MarketView.effective_status`), and `approve` and `reject`
+both refuse it with `ConflictError` (409, `PROPOSAL_EXPIRED_MESSAGE`).
+
 Shared by all seven methods:
 
 * Only an admin acts. An `actor` for whom `actor.is_admin` is false raises
@@ -21,6 +25,9 @@ Shared by all seven methods:
 * A move that `ALLOWED_TRANSITIONS` does not list raises `ConflictError` (409). So does
   an action on a market it does not start from: `approve` and `resume` both end OPEN,
   and only a PROPOSED market is approved, only a HALTED one resumed.
+* The approval of a market somebody else proposed tells its proposer, with a notice
+  written in the same transaction (`NoticeService.proposal_approved`). No other action
+  writes one.
 * Lock order: the market row, then the user accounts a settlement pays (all at once,
   `accounts.lock_user_accounts`), then whatever `LedgerService.post` locks. Positions
   need no lock of their own: every writer of a market's positions holds its row.
@@ -73,6 +80,7 @@ from app.models.trading import Position
 from app.pricing import lmsr
 from app.repositories.unit_of_work import UnitOfWork
 from app.schemas.admin.markets import (
+    BUDGET_NEEDED_MESSAGE,
     ApproveMarketRequest,
     CloseMarketRequest,
     HaltMarketRequest,
@@ -89,6 +97,7 @@ from app.services.ledger import LedgerRef, LedgerService, PostingLine, resolutio
 from app.services.live_quotes import LiveQuoteService
 from app.services.market_view import EVEN_ODDS_MICRO, MarketView
 from app.services.markets import MarketService, check_market_dates, refuse_nul
+from app.services.notices import NoticeService
 from app.services.outbox_events import quote_updated_payload
 from app.services.public_config import FIXED_TIERS
 from app.services.risk import CAPPED_STATUSES
@@ -102,7 +111,8 @@ ALLOWED_TRANSITIONS: Final[Mapping[MarketStatus, frozenset[MarketStatus]]] = {
     MarketStatus.RESOLVED: frozenset(),
     MarketStatus.VOID: frozenset(),
 }
-"""The state machine of SPEC §6, on stored statuses: from a status, where it may go."""
+"""The state machine of SPEC §6, on stored statuses: from a status, where it may go.
+EXPIRED is not in it: no row says it, and nothing leads on from it."""
 
 APPROVAL_LOCK: Final[str] = "market-approval"
 """Name of the advisory lock that makes approvals check the caps one at a time (A.5)."""
@@ -110,6 +120,10 @@ APPROVAL_LOCK: Final[str] = "market-approval"
 SELF_DEALING_MESSAGE: Final[str] = "You traded this market, so another admin has to settle it."
 """Message of the `ForbiddenError` that `resolve` and `void` answer an admin with who
 has a trade in the market (A.4). `MarketViewer.can_settle` is false for that admin."""
+
+PROPOSAL_EXPIRED_MESSAGE: Final[str] = "This proposal expired: its closing time has passed."
+"""Message of the `ConflictError` that `approve` and `reject` answer for a proposal
+whose `close_at` has passed (A.5)."""
 
 CLOSE_FIRST_MESSAGE: Final[str] = "Trading is still open in this market. Close it first."
 """Message of the `ConflictError` that `resolve` and `void` answer for an OPEN market
@@ -187,6 +201,7 @@ class MarketLifecycleService:
         ledger: LedgerService,
         audit: AuditService,
         markets: MarketService,
+        notices: NoticeService,
         cache: MarketCache,
         live: LiveQuoteService,
     ) -> None:
@@ -198,6 +213,7 @@ class MarketLifecycleService:
         self._ledger = ledger
         self._audit = audit
         self._markets = markets
+        self._notices = notices
         self._cache = cache
         self._live = live
 
@@ -211,7 +227,10 @@ class MarketLifecycleService:
            Taking it while holding the market row cannot deadlock: nothing that holds
            this advisory lock waits for a market row. A market that is not PROPOSED
            is refused before it, and the clock is read once it is granted: an approval
-           that waited for another one opens its market at that moment.
+           that waited for another one opens its market at that moment. A proposal
+           whose `close_at` has passed by then has expired and is refused with
+           `ConflictError` (409, `PROPOSAL_EXPIRED_MESSAGE`), whatever dates the
+           request carries: an expired proposal is not opened, it is proposed again.
         2. Apply the edits the request carries (wording, `close_at`, `resolve_by`).
         3. Dates, on the edited values, each a `ValidationFailedError` (422) naming the
            field in `details.field`: `now < close_at <= now + MAX_MARKET_LIFETIME` and
@@ -241,6 +260,9 @@ class MarketLifecycleService:
            0, EVEN_ODDS_MICRO, 0, 0, None)), now)`. Audit `MARKET_APPROVE` with the
            tier, the budget and b, and each wording or date the approval changed, as
            it was and as it is.
+        7. Tell the proposer: `NoticeService.proposal_approved(uow, market, actor,
+           now)` writes their PROPOSAL_APPROVED notice, unless the approver is the
+           proposer. It commits with the approval or not at all.
 
         No credit moves: a market starts at q = 0 with an empty account. That account
         never goes below zero; what the market maker loses here, at most the budget,
@@ -254,6 +276,7 @@ class MarketLifecycleService:
             _require_move(market, MarketStatus.OPEN, start=MarketStatus.PROPOSED)
             await uow.advisory_lock(APPROVAL_LOCK)
             now = self._clock.now()
+            self._refuse_expired(market, now)
 
             before: dict[str, Any] = {
                 "status": market.status.value,
@@ -310,6 +333,7 @@ class MarketLifecycleService:
                     **edited_to,
                 },
             )
+            await self._notices.proposal_approved(uow, market, actor, now)
 
         await self._after_commit(market)
         return await self._markets.detail(actor, market.id)
@@ -319,6 +343,10 @@ class MarketLifecycleService:
     ) -> MarketDetailResponse:
         """Turn a proposal down. PROPOSED -> REJECTED.
 
+        A proposal whose `close_at` has passed has expired and is refused with
+        `ConflictError` (409, `PROPOSAL_EXPIRED_MESSAGE`): its proposer already sees
+        it as expired, and a rejection would say something else afterwards.
+
         Set `status=REJECTED` and `rejection_reason=request.reason`; audit
         `MARKET_REJECT`. A rejected market was never public: no list is dropped from
         the cache and no status event is published.
@@ -327,8 +355,10 @@ class MarketLifecycleService:
         refuse_nul(request)
         async with self._uow_factory() as uow:
             market = await _lock(uow, market_id)
+            now = self._clock.now()
             previous = market.status
             _require_move(market, MarketStatus.REJECTED)
+            self._refuse_expired(market, now)
             market.status = MarketStatus.REJECTED
             market.rejection_reason = request.reason
             await self._record(
@@ -589,11 +619,17 @@ class MarketLifecycleService:
         if request.tier is MarketTier.CUSTOM:
             if request.budget_cr is None:
                 # The request model refuses this; only a request built around it is here.
-                raise ValidationFailedError(details={"field": "budget_cr"})
+                raise ValidationFailedError(BUDGET_NEEDED_MESSAGE, details={"field": "budget_cr"})
             budget_micro = to_micro(request.budget_cr)
             return budget_micro, lmsr.b_from_budget_micro(budget_micro, precision=precision)
         b_micro = pricing.tier_b_micro(request.tier)
         return lmsr.max_loss_micro(b_micro, precision=precision), b_micro
+
+    def _refuse_expired(self, market: Market, now: datetime) -> None:
+        """What `approve` and `reject` share: a proposal that is EXPIRED at `now`
+        (`MarketView.effective_status`) can be neither opened nor turned down."""
+        if self._view.effective_status(market, now) is MarketStatus.EXPIRED:
+            raise ConflictError(PROPOSAL_EXPIRED_MESSAGE)
 
     async def _refuse_a_trader(
         self, uow: UnitOfWork, actor: AuthenticatedUser, market: Market

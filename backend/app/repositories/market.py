@@ -4,12 +4,13 @@ from collections.abc import Collection, Sequence
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.enums import AccountKind, MarketStatus
 from app.models.ledger import Account
 from app.models.market import Market, Resolution
+from app.models.trading import Position
 from app.repositories.base import BaseRepository, sum_micro
 
 
@@ -34,6 +35,14 @@ class MarketRepository(BaseRepository[Market]):
         statement = (
             select(Market).where(Market.status.in_(statuses)).order_by(Market.close_at, Market.id)
         )
+        return (await self._session.scalars(statement)).all()
+
+    async def list_held_outside(self, statuses: Collection[MarketStatus]) -> Sequence[Market]:
+        """Markets whose stored status is none of `statuses` and of which somebody
+        holds shares: with the settled statuses, the markets a holding has a current
+        price in."""
+        held = exists().where(Position.market_id == Market.id, Position.shares_micro > 0)
+        statement = select(Market).where(Market.status.not_in(statuses), held).order_by(Market.id)
         return (await self._session.scalars(statement)).all()
 
     async def count_by_statuses(self, statuses: Collection[MarketStatus]) -> int:

@@ -4,7 +4,7 @@ import { type FormEvent, type ReactNode, useEffect, useRef } from "react";
 
 import { SubmitError } from "@/components/feedback";
 import { revealFirstInvalid } from "@/components/form";
-import { SheetBody, SheetFooter } from "@/components/sheet";
+import { SheetBody, SheetFooter, sheetHeaderClasses } from "@/components/sheet";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/dialog";
 import type { ApiError } from "@/lib/api/errors";
 import { useRetryAfter } from "@/lib/hooks";
+import { cn } from "@/lib/utils";
 
 /** What the screen that opens a dialog decides about it. */
 export type DialogFrame = {
@@ -71,7 +72,8 @@ export type ActionDialogProps = DialogFrame & {
  *
  * The button that goes ahead is disabled from tap until the answer, and for the time a
  * `RATE_LIMITED` names. While the request is out the dialog cannot be closed, so the
- * answer is never lost: a refusal is shown in here, as the API sent it.
+ * answer is never lost: a refusal is shown in here, as the API sent it. Its close cross
+ * stays in its place for that time, disabled.
  */
 export function ActionDialog({
   open,
@@ -122,11 +124,12 @@ export function ActionDialog({
     return (
       <AlertDialog open={open} onOpenChange={onOpenChange}>
         <AlertDialogContent
-          className="gap-0 overflow-hidden p-0"
+          className={cn("gap-0 overflow-hidden p-0", sheetHeaderClasses)}
+          locked={pending}
           onCloseAutoFocus={onCloseAutoFocus}
         >
           <form ref={form} noValidate onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
-            <AlertDialogHeader className="px-4 pt-4">
+            <AlertDialogHeader className="px-4 pt-4 pb-2">
               <AlertDialogTitle>{title}</AlertDialogTitle>
             </AlertDialogHeader>
             <SheetBody>
@@ -149,14 +152,14 @@ export function ActionDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="gap-0 p-0"
-        showCloseButton={!pending}
+        className={cn("gap-0 p-0", sheetHeaderClasses)}
+        locked={pending}
         onCloseAutoFocus={onCloseAutoFocus}
         // Without a description, say so: the dialog must not point at a text that is not there.
         {...(description === undefined ? { "aria-describedby": undefined } : {})}
       >
         <form ref={form} noValidate onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
-          <DialogHeader className="px-4 pt-4">
+          <DialogHeader className="px-4 pt-4 pb-2">
             <DialogTitle>{title}</DialogTitle>
           </DialogHeader>
           <SheetBody>

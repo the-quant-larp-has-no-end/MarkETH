@@ -28,7 +28,7 @@ The default output of a UI kit or an AI tool is a generic startup or SaaS site. 
 | Never | Do this instead |
 | --- | --- |
 | **Gradients of any kind**: on backgrounds, buttons, text, borders, cards, charts, skeletons or images | Flat fills from §4. The chart's area fill is one flat colour at 12% opacity |
-| A landing page: hero headline with subheading and call-to-action, "how it works" in three steps, feature grid of icon cards, testimonials, logo wall, FAQ, pricing, newsletter, big footer | The first screen is the Markets list, as on Polymarket. The one thing that can stand in front of it, once, is the profile set-up: a logo, three fields and one button |
+| A landing page: hero headline with subheading and call-to-action, "how it works" in three steps, feature grid of icon cards, testimonials, logo wall, FAQ, pricing, newsletter, big footer | The first screen is the Markets list, as on Polymarket. The one thing that can stand in front of it, once, is the profile set-up: a logo, three fields, one checkbox and one button |
 | Marketing copy: "Unlock", "Seamless", "Supercharge", "Powerful", "Reimagined", "The future of", exclamation marks | Plain statements and dry campus humour (§3) |
 | Glass and glow: translucent blurred panels, `backdrop-filter`, neon outlines, glowing buttons, coloured or soft drop shadows, floating cards | Opaque surfaces separated by tone and 1 px hairlines (§6) |
 | The SaaS palette: purple, indigo, violet, teal-to-blue, "brand gradient" accents, pure white or pure black | The five colours of §4 and their derived tints, nothing else |
@@ -53,7 +53,7 @@ Polymarket is the model for layout and interaction. When this file is silent, do
 | Dark, flat surfaces separated by tone and hairlines, not shadows | §4, §6 |
 | Market cards: question, a large "% chance" figure, soft-tinted "Yes" and "No" buttons, volume in the footer | §12 |
 | Market page: question, large chance figure, line chart, then the trade ticket, then rules | §13 |
-| Trade ticket: Buy / Sell tabs, outcome buttons that carry their price, quick-amount chips, one wide action button | §13 |
+| Trade ticket: Buy / Sell tabs, outcome buttons that carry their price, an amount field with quick-amount chips, one wide action button | §13 |
 | The Markets list as the home page, with no landing page in front of it | §11, §13 |
 | Logo with the name at the top left of every main screen | §3, §11 |
 | Bottom tab bar on phones; a ticket panel beside the chart on desktop | §6, §11 |
@@ -68,7 +68,7 @@ Polymarket is the model for layout and interaction. When this file is silent, do
 | A leaderboard with pixel trophies for the top three | Polymarket's leaderboard, made into a podium (§13) |
 | A coffee-bean token in place of the dollar sign | The unit is a token; enough of them turn into a coffee at the bar |
 | Pixel-art campus touches and ETH in-jokes (§3) | Polymarket is neutral; MarkETH belongs to one campus |
-| Stake presets only, no free amount when buying | SPEC §4 stake limit; presets come from the server |
+| A stake slider beside the amount field; "Half" and "All" in place of an amount when selling | One market takes few tokens (SPEC §4), so the whole range fits a slider. Its range, the chips and the verdict on a typed amount are the server's (§12, §13) |
 
 ## 2. Principles
 
@@ -133,7 +133,7 @@ Three pixel-art trophies mark the top three places of the leaderboard: gold for 
 
 - The supplied originals are JPEGs on a white background. The served files are the same drawings with the background removed, including the openings of the handles. Never use the JPEGs in the app: a white box on navy is exactly what the cut-outs avoid.
 - A trophy sits directly on `--background` or `--card`, with no disc, tile, ring or shadow behind it.
-- Sizes: 96 px for first place and 72 px for second and third on the podium; 24 px beside a username in a leaderboard row. Never larger than 96 px and never smaller than 24 px.
+- Sizes: 96 px for first place and 72 px for second and third on the podium; 24 px beside a username in a leaderboard row. Never larger than 96 px, never smaller than 24 px, and on the podium never wider than the column it stands in.
 - A trophy always comes with the rank as text ("1st", "2nd", "3rd"). Its `alt` text is "First place", "Second place" or "Third place".
 - Trophies mean a rank on the leaderboard and nothing else. They are not used as generic "success" or "win" icons, on market cards, or for a resolved market.
 - Gold, silver and bronze exist only inside these images, like the bean's brown. They are not colours of the interface: no gold text, no silver border, no bronze badge.
@@ -179,9 +179,9 @@ These files are not drawn yet. Until one exists, its place is taken by the match
 
 Rules that keep it from getting tiresome:
 
-- At most one campus line per screen, with its illustration where it has one, and none inside the trade sheet, a form in progress, or the admin area. The token, the trophies and the bean animations of §7 are the product's own look and are not counted.
+- At most one campus line per screen, with its illustration where it has one, and none inside the trade sheet, a form in progress, the usage policy, or the admin area. The token, the trophies and the bean animations of §7 are the product's own look and are not counted.
 - Errors, balances, limits and anything about why a trade or code failed are never joked about. They show the API's message.
-- References are to places and shared experiences (HG, CAB, Polyterrasse, Polybahn, Mensa, ASVZ, exam session). Never to named people, departments' reputations, grades of anyone, politics or religion (SPEC §6 content rules apply to our copy too).
+- References are to places and shared experiences (HG, CAB, Polyterrasse, Polybahn, Mensa, ASVZ, exam session). Never to named people, departments' reputations, grades of anyone, politics or religion: what the usage policy keeps out of markets (§13, SPEC §6) stays out of our copy too.
 - Jokes are written once and reviewed like any other copy. They are static strings, not generated.
 - Nothing playful blocks a tap, delays a response or replaces a label.
 
@@ -494,8 +494,7 @@ The API sends display-ready values. The frontend may format them and must not de
 | Shares | Decimal string | The string, then "shares": `183.29 shares` |
 | Average price (`average_price`) | Number in [0, 1], already rounded | (bean) `0.524` per share |
 | Signed amount (ledger `amount_cr`) | Signed decimal string | Sign, token icon, figure: `+` (bean) `200` in `--yes-text`, `−` (bean) `25` in `--foreground` |
-| Date and time | ISO 8601 | In the `/config` `timezone`, as `14 Oct 2026, 18:00` |
-| Day (`next_monthly_grant_on`) | ISO 8601 date | The day as sent, without conversion: `1 Nov 2026` |
+| Date and time | ISO 8601 | In the `/config` `timezone`, as `14 Oct 2026, 18:00`. An instant keeps its time of day also where the day alone would do: `next_monthly_grant_at`, `policy_accepted_at`. The time of day stands alone, as "18:02", in one place: the Barista's result for a voucher that was redeemed a moment ago (§13) |
 | Deadline (`close_at`) in a list | ISO 8601 | Relative when under 7 days ("Closes in 3 days", "Closes today, 18:00"), otherwise the date. When `trading_open` is false, the date alone |
 | Code | `code_length` characters (`/config`) | Groups of four, `XXXX-XXXX-XXXX`, Barlow, letter-spacing 0.08em |
 | Voucher code | `voucher_code_length` characters (`/config`) | `XXXX-XXXX`, same style |
@@ -503,22 +502,24 @@ The API sends display-ready values. The frontend may format them and must not de
 | Rate (`win_rate`) | Number in [0, 1], already rounded, or null | A percentage like a probability: `62.5%`. Null is an en dash |
 | Ratio (`avg_payout_ratio`) | Number, already cut to two decimals, or null | Two decimals and a multiplication sign: `1.35×`. Null is an en dash |
 | Count (`trades`, `rank`) | Integer | Digits grouped in threes: `1,204` |
+| Stake range (`viewer.buy_slider`) | Three integers in whole tokens, `min`, `max` and `step`, or null | The range of the stake slider (§12) and nothing else. The slider writes the step it stands on into the amount field as plain digits: `40` |
 | Degree (`degree_level`, `degree_programme`) | A level and the label of a programme | The programme as sent: "BSc Computer Science". A level is shown by its `name` from `/config` `degrees` |
 
 Rules:
 
-- **Amounts are strings.** Never pass a `*_cr` or `shares` value through `parseFloat` or `Number`. Where a list needs a shorter figure, cut the string after the second decimal place (cutting, not rounding, so the app never shows more than the user has). The full string is shown on detail views: the trade receipt and the expanded ledger row. **Decision:** from 1,000 up, the whole part is grouped in threes with a comma, by inserting the commas into the string.
-- **Zero is the one thing read from an amount.** The API trims zeros, so an amount of zero always arrives as the single character `0`. A screen may test for that string to leave out what would be empty (a holding of no shares, a market the viewer never bought into, a payout of nothing). **Decision:** this is a test of the string, not arithmetic. A screen never orders two amounts, adds them or measures one against a limit: `allowed`, `affordable`, `can_trade`, `can_get_voucher` and `can_settle` are the server's answers to those questions.
+- **Amounts are strings.** Never pass a `*_cr` or `shares` value through `parseFloat` or `Number`. An amount the user types (a stake, an adjustment of tokens, a bound of a filter) is a string as well, and is sent with the characters that were typed. Where a list needs a shorter figure, cut the string after the second decimal place (cutting, not rounding, so the app never shows more than the user has). The full string is shown on detail views: the trade receipt and the expanded ledger row. **Decision:** from 1,000 up, the whole part is grouped in threes with a comma, by inserting the commas into the string.
+- **Zero is the one thing read from an amount.** The API trims zeros, so an amount of zero always arrives as the single character `0`. A screen may test for that string to leave out what would be empty (a holding of no shares, a market the viewer never bought into, a payout of nothing). **Decision:** this is a test of the string, not arithmetic. A screen never orders two amounts, adds them or measures one against a limit: `allowed`, `affordable`, `can_trade`, `can_get_voucher` and `can_settle` are the server's answers to those questions, and a stake that was typed is judged by the quote the server gives for it (§13). The three integers of `viewer.buy_slider` are no exception: the server sends them so that a slider can be drawn, and the slider is all that reads them.
 - **Percentages** are formatted with `Intl.NumberFormat("en-GB", { style: "percent" })` and the `/config` decimals. `p_no` comes from the API; the frontend does not subtract. An average price is formatted the same way without the percent style, with two decimals more.
 - **Times** are shown and entered in the `/config` `timezone`, whatever the device is set to. A time the user enters is sent as ISO 8601 with its offset.
 - **Tokens out are not red.** A trade or a voucher lowering the balance is normal, so negative ledger amounts are white. Red is for losses and errors.
 - **No derived figures.** There is no profit, loss, return or "potential winnings" figure, because the API sends none. What a position is worth, took and gave back are the API's `value_cr`, `cost_cr`, `proceeds_cr` and `net_stake_cr`, and after settlement `payout_cr` or `refund_cr`; a screen shows the ones §13 names, each labelled. The win rate and the payout ratio of the leaderboard are the server's figures too.
-- **No hard-coded tunables.** The stake limit, the presets, the welcome and monthly tokens, what a product takes, the days a voucher is valid, the lengths of a username, a code and a text field, and the list of degrees come from `/config` or from the response that shows them. Copy is written with placeholders: "of {stake_limit_cr} tokens", never "of 100 tokens".
+- **How a market is priced is VIS's business.** A market's tier, its liquidity figure and its loss bound (`tier`, `b_cr`, `max_loss_cr`) are sent to admins only and are shown in the admin area only. No card, market page, trade sheet, proposal form, list or sentence for players names any of them.
+- **No hard-coded tunables.** The stake limit, the presets, the range and the step of the stake slider, the welcome and monthly tokens, what a product takes, the days a voucher is valid, the lengths of a username, a code and a text field, the most codes a batch may have, and the list of degrees come from `/config` or from the response that shows them. Copy is written with placeholders: "of {stake_limit_cr} tokens", never "of 100 tokens".
 - **Icon or word.** A standalone figure (balance, row amount, quote value, chip) gets the token icon and no word. A figure inside a sentence gets the word and no icon: "You got 240 tokens." The word follows the string: "token" when the string is `1`, otherwise "tokens".
 - **Names in code are unchanged.** The API, the database and the spec call the unit a credit (`*_cr`, "CR"). "Token" is its name on screen only; do not rename fields.
-- **Keys are not copy.** `status`, `tier`, `degree_level`, `sort`, `side` and `severity` arrive as keys. The words for them are in this file (the badges of §12, the names in §13) or in `/config` (`degrees`). Only "YES" and "NO" are shown as they arrive.
+- **Keys are not copy.** `status`, `tier`, `role`, `degree_level`, `sort`, `side` and `severity` arrive as keys. The words for them are in this file (the badges of §12, the names in §13) or in `/config` (`degrees`). Only "YES" and "NO" are shown as they arrive.
 - **Server text.** API messages, ledger labels and product names are shown as sent. They are written in this file's vocabulary ("Not enough tokens for this.", "Welcome tokens", "Voucher: Coffee"); wording is corrected in the backend, never on screen.
-- **People.** A player is shown by `username` and degree. A real name or an email address is shown in two places only: the viewer's own, on the profile set-up and Profile screens, and `proposer_email` in the admin area. No other screen, row, toast or message shows either.
+- **People.** A player is shown by `username` and degree. A real name or an email address is shown in two places only: the viewer's own, on the profile set-up and Profile screens, and in the admin area, which shows `proposer_email` on a market and `name` and `email` in the Users tab. No other screen, row, toast or message shows either.
 - Locale is fixed to `en-GB` for numbers and dates. The minus sign is U+2212, the en dash of a missing figure U+2013 and the multiplication sign of a ratio U+00D7.
 
 ## 11. App shell and navigation
@@ -528,6 +529,8 @@ Nobody is signed out. The portal in front of the app signs every visitor in thro
 ### Top bar
 
 56 px tall, `--card`, sticky. Left: the logo with name (`logo-lockup.png`, 28 px tall, 16 px from the edge), linking to Markets. This is its fixed place on every main screen (Markets, Portfolio, Leaderboard, Wallet, Admin, Barista), as on Polymarket; from 768 px the tabs follow it on the same line. Right: the balance as a pill (token icon and `balance_cr` of `/me`, Barlow 600) linking to Wallet, then a profile button (the lucide `user-round` icon, 44 px target, `aria-label` "Profile") linking to `/profile`. On inner screens the left side is a back arrow and the screen title; the right side stays. The back arrow goes one step back in the history; on a screen that was opened directly it goes to Markets, and from the admin view of a market to Admin.
+
+The pill shows what `/me` says, and `/me` is read again on every navigation from one screen to another (§14). A payout, a refund or monthly tokens that were booked while the user looked at something else are therefore in the pill on the next screen, not only in the Wallet.
 
 ### Tab bar
 
@@ -542,7 +545,7 @@ Nobody is signed out. The portal in front of the app signs every visitor in thro
 | Scan | `/barista` | Role BARISTA |
 | Admin | `/admin` | Role ADMIN |
 
-The role comes from `MeResponse.role`. Admins reach the scanner from the Admin screen. There are never more than five tabs. The tab bar is hidden on the screens that stand in front of the app (start-up, profile set-up, the full-screen message), on the Barista scanner while the camera is live, and while the trade sheet is open.
+The role comes from `MeResponse.role`. Everyone starts as a plain user. A barista, like a further admin, is appointed by an admin in the Users tab of the admin area (§13); the first admins are named in the server's configuration, and the API marks them `bootstrap_admin`. Admins reach the scanner from the Admin screen. There are never more than five tabs. The tab bar is hidden on the screens that stand in front of the app (start-up, profile set-up, the full-screen message, and the usage policy for a visitor without a profile), on the Barista scanner while the camera is live, and while the trade sheet is open.
 
 ### Routes
 
@@ -555,15 +558,17 @@ The role comes from `MeResponse.role`. Admins reach the scanner from the Admin s
 | `/leaderboard` | Leaderboard; sort and filters live in the query string | Main | this file |
 | `/propose` | Propose market | Inner, "Propose a market" | this file |
 | `/profile` | Profile: username and degree | Inner, "Profile" | this file |
+| `/policy` | Usage policy | Inner, "Usage policy" | this file |
 | `/admin` | Admin: proposal queue and markets | Main | this file |
 | `/admin/markets/[id]` | Admin: one market and its actions | Inner, no title | this file |
 | `/admin/codes` | Admin: code batches | Main | this file |
 | `/admin/risk` | Admin: risk panel | Main | SPEC §12 |
+| `/admin/users` | Admin: users, their roles and their tokens | Main | this file |
 | `/barista` | Barista scanner | Main | this file |
 | every route | Start-up, and in place of the route Profile set-up or the full-screen message | None | SPEC A.3 |
 | any other path | Not found | Main | this file |
 
-- A visitor without a profile sees the profile set-up screen in place of whatever route they opened and continues to that route once it is saved. The address is kept meanwhile, so someone who scanned a code card arrives in the Wallet with the code.
+- A visitor without a profile sees the profile set-up screen in place of whatever route they opened and continues to that route once it is saved. The address is kept meanwhile, so someone who scanned a code card arrives in the Wallet with the code. **Decision:** `/policy` is the one route the set-up does not stand in front of, because the policy is read before it is accepted.
 - A user without the role sees the "not found" screen, not a permission lecture.
 - Three routes read their query string. `/wallet` reads `?code=...` (§13, Wallet). `/markets/[id]` reads `?buy=YES`, `?buy=NO`, `?sell=YES` and `?sell=NO`, which open the trade sheet on that side and outcome. `/leaderboard` keeps its sort and filters there.
 
@@ -578,10 +583,14 @@ Each component lives in `frontend/src/components/` and builds on the shadcn/ui p
 | `primary` | `--primary` fill, `--primary-foreground` label | The one main action of a screen |
 | `secondary` | Transparent, 1 px `--border-strong`, white label | Any other action |
 | `ghost` | No outline, white label | Low-emphasis actions, "Cancel" |
-| `destructive` | `--no` fill, `--ink` label | Reject, void, revoke. Always behind a confirmation dialog |
+| `destructive` | `--no` fill, `--ink` label | Reject, void, revoke, suspend. Always behind a confirmation dialog |
 | `yes` / `no` | `--yes` or `--no` fill, `--ink` label | Outcome buttons, and the Confirm button of a buy |
 
 Height 48 px (56 px for the trade Confirm), `--radius-md`, `label` text style, full width on phones. A loading button keeps its width, shows a spinner in place of its label and is disabled.
+
+### Text link
+
+A link that is text: inside a sentence ("I accept the usage policy") or a line of its own ("Read the usage policy", "Usage policy"). `--foreground`, underlined, in the text style of the line it stands in, with a target 44 px tall. It is never green or red (§4). A link that opens in a tab of its own says so to a screen reader (§15).
 
 ### Outcome buttons and toggle
 
@@ -604,7 +613,7 @@ The probability figure. Sizes: `display` on Market detail, `number-lg` on cards.
 3. A footer row in `body-sm` `--muted-foreground`: the token icon and `volume_cr` with "Vol." on the left, the deadline (§10) on the right.
 4. A status badge in place of the buttons when the market is not open for trading.
 
-The card itself links to the market; the two buttons are separate links inside it. This is Polymarket's card. The buttons use the soft tints, never the full `--yes` and `--no` fills, so a long list stays calm.
+The card itself links to the market; the two buttons are separate links inside it. This is Polymarket's card. The buttons use the soft tints, never the full `--yes` and `--no` fills, so a long list stays calm. A card says nothing about how its market is priced (§10).
 
 ### Status badge (shadcn `badge`)
 
@@ -621,7 +630,7 @@ The card itself links to the market; the two buttons are separate links inside i
 | PROPOSED | "In review" | `--raised` fill, white text |
 | REJECTED | "Not approved" | `--raised` fill, `--muted-foreground` text |
 
-The badge shows the `status` the API sends, which is already the effective status (an OPEN market past its close time arrives as CLOSED). Whether trading is possible is read from `trading_open`, never from the clock.
+The badge shows the `status` the API sends, which is already the effective status (an OPEN market past its close time arrives as CLOSED). Whether trading is possible is read from `trading_open`, never from the clock. The clock has one job: when the `close_at` of a market that is shown as open for trading passes, the screen asks the API again (§14) and shows what the answer says.
 
 ### Probability chart
 
@@ -629,16 +638,35 @@ Plots `p_yes` from `GET /markets/{market_id}/history` over time.
 
 - A **step line** (each trade holds its price until the next), 2 px, `--yes`, with a `--yes` area fill at 12% opacity beneath it.
 - The y axis is fixed from 0% to 100% with gridlines at 25, 50 and 75% in `--border`; labels are `caption`, `--muted-foreground`. The x axis shows the first and last date only.
+- The chart ends at `until` of the answer (`HistoryResponse.until`): the server's now while the market can still trade, otherwise the moment trading ended. The last price holds as a flat line up to there, and the last date of the x axis is that moment. No clock of the device is read for the chart.
 - The series always starts at the 50% opening point the API includes, so a new market shows a flat line, not an empty box.
 - Height 200 px on phones, 280 px from 768 px. Touching the chart shows a vertical guide and a tooltip with the percentage and time.
 - A new stream event appends a point. An event whose `version` is not newer than the last drawn one is ignored.
 - Built on Recharts through shadcn/ui's `chart`. Accessible alternative in §15.
 
-### Stake presets
+### Stake entry (shadcn `input`, and the shadcn slider)
 
-A row of equal chips from `viewer.stake_presets`, each showing the token icon and `amount_cr`. Height 48 px, `--radius-md`. Default: 1 px `--border-strong`. Selected: `--foreground` fill, `--primary-foreground` text. A preset with `allowed: false` is disabled. The frontend never decides this itself (SPEC A.11).
+How much to put into a buy. A slider, an amount field and a row of presets set one amount, and the field always shows what will be sent. Top to bottom, 8 px apart:
 
-Under the row, in `body-sm` `--muted-foreground`: "{stake_left_cr} of {stake_limit_cr} tokens left in this market".
+1. The label "Stake" (`caption`, `--muted-foreground`).
+2. One row, 48 px tall, with 12 px between its two parts:
+   - **The slider** takes the width the field leaves: 219 px in the sheet on a 375 px phone, 264 px in the dialog, 204 px in the panel. It runs over the whole tokens of `viewer.buy_slider`, from `min` to `max` in steps of `step`: three integers the API sends for this control and for nothing else. A 4 px `--border-strong` track with `rounded-full` ends; the part up to the thumb is `--foreground`; the thumb is a 24 px `--foreground` disc inside a 44 px target. Arrow keys move it one step, Home and End take it to its ends. It is never green or red (§4). When `viewer.buy_slider` is null there is no slider, and the field takes the whole row.
+   - **The amount field** is 112 px wide: a form field (below) with the 16 px token icon inside its left end and its text right aligned in `number`. It takes digits and one decimal point. A comma is turned into a point as it is typed and any other character is not taken, so the field shows what is sent. It opens the decimal keypad.
+3. **The presets:** a row of equal chips from `viewer.stake_presets`, each showing the token icon and `amount_cr`. Height 48 px, `--radius-md`. Default: 1 px `--border-strong`. Selected: `--foreground` fill, `--primary-foreground` text. A preset with `allowed: false` is disabled. The frontend never decides this itself (SPEC A.11).
+4. **The stake-left line** in `body-sm` `--muted-foreground`: "{stake_left_cr} of {stake_limit_cr} tokens left in this market".
+5. **The refusal**, while the server refuses the amount (§13): the API's `message` in `body-sm` `--no-text` beside an alert icon, and the border of the field in `--no`.
+
+The slider and the presets are two ways of filling the field:
+
+- Moving the slider writes the step it stands on into the field as plain digits (`40`).
+- A tap on a preset writes its `amount_cr` into the field, as the string that arrived.
+- Typing changes the field and nothing else.
+
+Both then show what the field holds. A preset is selected while the field holds exactly its `amount_cr`. The thumb stands on a step, with the track filled up to it, while the field holds exactly the digits of that step. With any other text (an empty field, `37.5`, an amount beyond the slider) the thumb stays where it is and is drawn as an outline (`--card` fill, 2 px `--border-strong`), and no part of the track is filled: the slider claims nothing about an amount it cannot show.
+
+**Decision:** those are tests of two strings for equality. The frontend does not read what was typed as a number and measures it against nothing: not the ends of the slider, not the stake that is left, not the balance. Whether an amount can be traded is the server's answer to the quote (§13).
+
+The stake-left line belongs to the field as its help text and the refusal as its error. §15 gives the names a screen reader hears.
 
 ### Quote panel
 
@@ -651,20 +679,32 @@ A `--background` inset block inside the sheet, `--radius-md`, with label and val
 | Average price | (bean) `average_price` per share |
 | New probability | `p_yes_after` YES |
 
-Labels are `body-sm` `--muted-foreground`; values are `number`, right aligned. While a quote is loading, the values are skeleton bars and the labels stay put, so the sheet does not jump. Below the panel, one line: "Each share pays 1 token if {outcome} wins."
+Labels are `body-sm` `--muted-foreground`; values are `number`, right aligned. While a quote is loading, the values are skeleton bars and the labels stay put, so the sheet does not jump. With nothing to quote (no amount, or an amount the server refused) the rows keep their labels and show no value, and nothing pulses. Below the panel, one line: "Each share pays 1 token if {outcome} wins."
 
-### Bottom sheet (shadcn `drawer`)
+### Bottom sheet and dialog (shadcn `drawer`, `dialog`, `alert-dialog`)
 
-`--card`, top corners `--radius-xl`, a 36 x 4 px `--border-strong` handle, `--scrim` behind. Maximum height 90% of the viewport; content scrolls inside while the action button stays pinned at the bottom above the safe area. Closes by drag, by tapping the scrim, or with the close button. From 768 px it is a `dialog`. The welcome dialog is that `dialog` at every width.
+- **Bottom sheet:** `--card`, top corners `--radius-xl`, a 36 x 4 px `--border-strong` handle centred at its top, `--scrim` behind. Maximum height 90% of the viewport. The content scrolls inside while the action button stays pinned at the bottom above the safe area, under a 1 px `--border` line that shows where the scrolling part ends. From 768 px it is a dialog.
+- **Dialog:** `--card`, `--radius-xl`, `--scrim` behind, centred, 420 px wide and never wider than the viewport less 16 px on each side, at most 90% of the viewport tall, with the same scrolling content and pinned buttons. The welcome dialog, the "Proposal sent" dialog and the dialogs of the admin area are dialogs at every width.
+- **Close cross:** every sheet and every dialog has one at its top right: a 24 px cross in `--foreground` inside a 44 x 44 px target that stands 4 px from the top and from the right edge, with the `aria-label` "Close". It is there in addition to the other ways out, never in place of one: dragging a sheet down, a tap on the scrim, the Escape key, and a "Done" or "Cancel" button where the surface has one.
+- Nothing lies under the cross and nothing scrolls under it. Every sheet and every dialog has a header row for the cross, which does not scroll. A title in that row ends 48 px before the right edge. Where the title is for screen readers only, the row stands all the same, as tall as the cross: it holds one line that says what the surface is about (the question on the trade sheet), which ends 48 px before the right edge too, or nothing.
+- **A surface that reports a finished action** has the cross as well: the trade receipt, an issued voucher, the "Proposal sent" dialog, the welcome dialog. There the cross does what "Done" does.
+- **Confirmation dialog** (`alert-dialog`): the dialog of an admin action that is destructive or cannot be taken back. Its cross does what "Cancel" does. It is the one surface that a tap on the scrim does not close, so that such an action is neither confirmed nor dropped by a stray tap.
+- **While a request is on its way.** A surface that has to show what became of a request it sent (a trade, issuing a voucher, redeeming a code, an admin action) cannot be closed for as long as that request is out: no drag, no tap on the scrim and no Escape closes it. For that time its cross stays in its place, disabled in `--subtle` like its other buttons. It is never taken away.
+- The sticky trade panel of §6 is neither a sheet nor a dialog. It is part of the page, there is nothing to close, and it has no cross.
 
 ### Filter chips
 
-A row of single-choice chips that scrolls horizontally: the status filter of Markets, the sort of the Leaderboard. Each chip is 44 px tall with 12 px side padding, `--radius-sm` and `body-sm` text. Default: 1 px `--border-strong`, `--muted-foreground` label. Selected: `--raised` fill, `--foreground` label, `aria-pressed="true"`. A chip that states a filter which is set carries a close cross and removes that filter when tapped.
+A group of single-choice chips. Each chip is 44 px tall, `--radius-sm`, with `body-sm` text. Default: 1 px `--border-strong`, `--muted-foreground` label. Selected: `--raised` fill, `--foreground` label, `aria-pressed="true"`. Chips are laid out in one of two ways:
+
+- **As a strip** (the status filter of Markets): each chip as wide as its label with 12 px on either side, 8 px apart, in one row that scrolls horizontally when it is wider than the screen. Nothing else stands in that row.
+- **As a grid** (the sort of the Leaderboard below 768 px): equal columns across the content width, 8 px apart, each label centred in its chip. A grid never scrolls and never runs under another control (§13).
+
+A chip that states a filter which is set carries a close cross and removes that filter when tapped. Such chips wrap onto as many lines as they need. One is never wider than the content column: a label that is longer is cut with an ellipsis, and the whole of it is the chip's name for a screen reader.
 
 ### Tabs and the segmented control (shadcn `tabs`, `toggle-group`)
 
-- **Tabs** switch between the views of one screen (Portfolio: Positions and History; Admin: Markets, Codes, Risk). A row 48 px tall with `label` text. The active tab is `--foreground` with a 2 px `--foreground` line under it; the others are `--muted-foreground`.
-- **The segmented control** switches one form between two modes (Buy and Sell). 48 px tall, `rounded-full`, a `--background` track. The selected segment is a `--foreground` fill with a `--primary-foreground` label; the other has a `--muted-foreground` label.
+- **Tabs** switch between the views of one screen (Portfolio: Positions and History; Admin: Markets, Codes, Risk, Users). A row 48 px tall with `label` text. The active tab is `--foreground` with a 2 px `--foreground` line under it; the others are `--muted-foreground`. A row that is wider than the screen scrolls horizontally and keeps the active tab in sight.
+- **The segmented control** switches one form between two modes (Buy and Sell; "Add" and "Remove" in an adjustment of tokens). 48 px tall, `rounded-full`, a `--background` track. The selected segment is a `--foreground` fill with a `--primary-foreground` label; the other has a `--muted-foreground` label.
 
 ### Form fields (shadcn `input`, `textarea`, `label`, `native-select`)
 
@@ -674,6 +714,8 @@ A row of single-choice chips that scrolls horizontally: the status filter of Mar
 - Help text and character limits sit below the field in `caption`.
 - The code fields use the code style (§10), `autocapitalize="characters"`, `autocorrect="off"`, and insert the dashes as the user types.
 - A choice from a fixed list (degree level, programme, a status) is a native `select` styled like a field (shadcn `native-select`): the phone's own picker is faster than a custom one. A select that depends on another is disabled until the other is set.
+- A number the user types (a stake, an amount of tokens, a bound of a filter) goes into a text field that opens the decimal keypad, or the numeric one for a whole number. The field keeps the characters a figure can have and sends them as they stand (§10).
+- **Checkbox** (the shadcn checkbox): a 20 px box, `--radius-sm`, 1 px `--border-strong` on `--background`; ticked, a `--foreground` fill with a `--primary-foreground` check. The box and its text form one row at least 44 px tall, and a tap on the text ticks the box. A link inside the text is a target of its own: it opens what it names and leaves the box as it is. An error stands below the row, as under a field.
 
 ### List rows
 
@@ -685,10 +727,21 @@ A row of single-choice chips that scrolls horizontally: the status filter of Mar
 | Trade | `market_question` (one line), and "Bought YES" or "Sold NO" with the date below | `amount_cr`, and `shares` below |
 | Position | The question, and holdings below ("183.29 YES shares") | `value_cr`, with a status badge when settled |
 | Product | `name` | The token icon and `price_cr`; the whole row is disabled when `affordable` is false |
-| Voucher | `product_name`, and the expiry below in `caption` | "Show QR", or the status when it is used up |
-| Leaderboard | `rank`, then `username` with `degree_programme` below in `caption` | The figure of the measure the list is sorted by |
+| Voucher | `product_name`, and the expiry below in `caption` | "Show QR", or what became of it: "Redeemed", "Expired, refunded" or "Expired, refund on its way" (§13) |
+| Leaderboard | `rank` in a column 32 px wide, then `username` on one line with `degree_programme` below in `caption` | The figure of the measure the list is sorted by |
 
 A ledger row expands on tap to show the full `amount_cr` string. A position row and a trade row are each one link to their market. A list that pages has `next_cursor` in its answer: when the user reaches its end, the next page is asked for with that value as `cursor`.
+
+In every row the right side keeps its width and the left side gives way: its text wraps, or is cut with an ellipsis where a row has to stay one line, before it comes within 12 px of the figure. Nothing in a row lies over anything else.
+
+### Tables
+
+The tables of the admin area, and the ranking of the Leaderboard from 768 px, built on the shadcn table. A heading row 44 px tall in `caption` `--muted-foreground`, 1 px `--border` dividers between the rows, no outline. A row is at least 44 px tall in the admin area and 56 px on the Leaderboard.
+
+- A column of text is left aligned and gives way: its text wraps, or is cut with an ellipsis where a row has to stay one line.
+- A column of figures is right aligned, in `number`, as wide as its widest figure, and never shrinks.
+- What is neither (a date, a badge, a button) stays on one line and keeps its width.
+- A table that is wider than its column scrolls horizontally inside its own box. The page does not scroll sideways.
 
 ### QR code and scanner
 
@@ -699,9 +752,10 @@ A ledger row expands on tap to show the full `amount_cr` string. A position row 
 
 | Component | Based on | Use |
 | --- | --- | --- |
-| Toast | shadcn `sonner` | Confirmation of a finished action ("Profile saved", "+{value_cr} tokens"). Bottom of the screen, above the tab bar, 4 s. `--raised` fill, white text |
+| Toast | shadcn `sonner` | Confirmation of a finished action whose result is in view already ("Profile saved", "+{value_cr} tokens"). Bottom of the screen, above the tab bar, 4 s, with a close cross at its right end (a 44 px target, `aria-label` "Close"). `--raised` fill, white text |
 | Banner | shadcn `alert` | A condition that lasts: a paused market, a 503. Full width inside the content column, with an icon. Neutral: `--raised`. Error: `--no-soft` with `--no-text` |
 | Inline error | | Under the field or above the action button it concerns |
+| Result | Bottom sheet or dialog | A finished action that leaves something to read or to keep: the trade receipt, an issued voucher, "Proposal sent". It stays until "Done" or the close cross |
 | Confirmation dialog | shadcn `alert-dialog` | Confirmation of destructive or irreversible admin actions only |
 | Skeleton | shadcn `skeleton` | Loading. Shapes match the content they replace |
 | Empty state | | One pixel illustration (§3), one sentence, and at most one button |
@@ -716,6 +770,7 @@ Each screen lists its content from top to bottom. Field names are those of the A
 | --- | --- | --- |
 | Start-up | `GET /config`, `GET /me` | |
 | Profile set-up, Profile | | `PUT /me/profile` |
+| Usage policy | | |
 | Markets | `GET /markets` | |
 | Market detail | `GET /markets/{market_id}`, `GET /markets/{market_id}/history`, `GET /markets/{market_id}/stream` | |
 | Trade sheet | `GET /markets/{market_id}/quote` | `POST /markets/{market_id}/trades` |
@@ -723,7 +778,7 @@ Each screen lists its content from top to bottom. Field names are those of the A
 | Wallet | `GET /me`, `GET /me/vouchers`, `GET /me/ledger`, `GET /vouchers/products` | `POST /vouchers`, `POST /vouchers/{voucher_id}/code`, `POST /codes/redeem` |
 | Leaderboard | `GET /leaderboard` | |
 | Propose market | `GET /me/proposals` | `POST /markets` |
-| Admin | `GET /markets`, `GET /markets/{market_id}`, `GET /admin/code-batches`, `GET /admin/risk` | The seven market actions listed there, `POST /admin/code-batches`, `POST /admin/code-batches/{batch_id}/revoke`, `POST /admin/alerts/{alert_id}/ack` |
+| Admin | `GET /markets`, `GET /markets/{market_id}`, `GET /admin/code-batches`, `GET /admin/code-batches/{batch_id}/codes`, `GET /admin/risk`, `GET /admin/users` | The seven market actions and the four user actions listed there, `POST /admin/code-batches`, `POST /admin/code-batches/{batch_id}/revoke`, `POST /admin/alerts/{alert_id}/ack` |
 | Barista | | `POST /barista/vouchers/redeem` |
 
 No screen calls `GET /health` or `POST /admin/grants/monthly`.
@@ -738,7 +793,7 @@ What stands in front of the app until it knows who is looking. The portal has si
    | `/me` answers | What is shown |
    | --- | --- |
    | The profile | The route that was opened, inside the app shell |
-   | `PROFILE_REQUIRED` | Profile set-up, in place of the route |
+   | `PROFILE_REQUIRED` | Profile set-up, in place of the route. On `/policy` the usage policy is shown, so that it can be read before it is accepted |
    | `FORBIDDEN` | The full-screen message with the API's `message`: the address is one MarkETH is not open to, or the account is suspended |
    | `UNAUTHENTICATED` | The full-screen message with the API's `message` and "Try again": the request reached the API without the portal's identity |
    | The portal's 401 (§14) | The page reloads once. If the reload brings the same answer: the full-screen message "Your ETH sign-in has ended." and "Try again" |
@@ -759,22 +814,104 @@ Shown in place of the route while `/me` answers `PROFILE_REQUIRED`: the first vi
    - **Level** (`degree_level`): a select of the levels in `/config` `degrees`, each shown by its `name` and sent as its `level`.
    - **Programme** (`degree_programme`): a select of the `programmes` of the chosen level, disabled until a level is chosen. Changing the level clears it.
 4. One sentence in `body-sm` `--muted-foreground`: "Other players can see your username, your degree, your tokens and your trading record."
-5. A primary "Create profile" button, disabled until all three fields are filled. It sends `PUT /me/profile`.
-6. A footer, below the form: the main-building dome and under it, in `body-sm` `--muted-foreground`, "Pick a name for the leaderboard. The podium remembers."
+5. A checkbox (§12), not ticked: "I accept the usage policy". The words "usage policy" are a link to `/policy`. It opens in a tab of its own, so the fields keep what was typed. This is a line of the form, not a banner and not a popup.
+6. A primary "Create profile" button, disabled until all three fields are filled and the box is ticked. It sends `PUT /me/profile` with the three fields and `policy_accepted: true`.
+7. A footer, below the form: the main-building dome and under it, in `body-sm` `--muted-foreground`, "Pick a name for the leaderboard. The podium remembers."
 
-The answer is the profile, and the route that was opened takes the place of this screen. When the answer says `signup_granted: true`, the **welcome dialog** opens over that route: the 64 px token icon, "You got {balance_cr} tokens" (`h2`), "Spend them wisely, or on coffee. A share pays 1 token if you are right and nothing if you are wrong.", and a primary "Start trading" that closes it. The amount is `balance_cr` of the same answer: a profile created a moment ago holds its welcome tokens and nothing else. The bean drop plays once. A sheet the route would open by itself (the redeem sheet of a code card) waits until the dialog is closed.
+The answer is the profile, and the route that was opened takes the place of this screen. When the answer says `signup_granted: true`, the **welcome dialog** opens over that route: the 64 px token icon, "You got {balance_cr} tokens" (`h2`), "Spend them wisely, or on coffee. A share pays 1 token if you are right and nothing if you are wrong.", a primary "Start trading" and the close cross of §12, which both close it. The amount is `balance_cr` of the same answer: a profile created a moment ago holds its welcome tokens and nothing else. The bean drop plays once. A sheet the route would open by itself (the redeem sheet of a code card) waits until the dialog is closed.
 
-States: `USERNAME_TAKEN` and a `VALIDATION_ERROR` (a username the API does not accept or keeps reserved, a programme that is not on the list) appear on the field they name, with the API's message; the other fields keep their input. `FORBIDDEN` replaces the screen with the full-screen message. No answer or a 503 shows the banner above the button and keeps the input; saving again is safe.
+States: `USERNAME_TAKEN` and a `VALIDATION_ERROR` (a username the API does not accept or keeps reserved, a programme that is not on the list) appear on the field they name, with the API's message; the other fields keep their input. A `VALIDATION_ERROR` that names `policy_accepted` stands under the checkbox. `FORBIDDEN` replaces the screen with the full-screen message. No answer or a 503 shows the banner above the button and keeps the input; saving again is safe.
 
 ### Profile (`/profile`)
 
-An inner screen, reached from the profile button in the top bar. It changes the same two things the set-up asks for: the username and the degree.
+An inner screen, reached from the profile button in the top bar. It changes what a profile can change: the username and the degree.
 
 1. Top bar with a back arrow and the title "Profile".
-2. A card: `username` (`h2`) and `degree_programme` in `body-sm` `--muted-foreground`; under a divider `name` and `email` with the caption "From your ETH sign-in. Only you and VIS see these." An empty `name` is left out.
-3. The three fields of the set-up screen, filled in, the same sentence about what other players can see, and a primary "Save" button that is disabled until something changed.
+2. A card: `username` (`h2`) and `degree_programme` in `body-sm` `--muted-foreground`; under a divider `name` and `email` with the caption "From your ETH sign-in. Only you and VIS see these." An empty `name` is left out. Under a second divider, in `body-sm` `--muted-foreground`: "You accepted the usage policy on {policy_accepted_at}.", a date and time (§10), and the link "Read the usage policy", which leads to `/policy`.
+3. The three fields of the set-up screen, filled in, the same sentence about what other players can see, and a primary "Save" button that is disabled until something changed. There is no checkbox: the policy was accepted when the profile was created, and "Save" sends the three fields alone.
 
 States as on the set-up screen. Success shows the toast "Profile saved" and stays on the screen. There is no welcome dialog here and nothing to sign out of.
+
+### Usage policy (`/policy`)
+
+The rules of MarkETH on one page of plain text. Whoever creates a profile accepts it, and whoever proposes a market accepts it again with that proposal: both requests carry `policy_accepted: true`. Four places link to it: the checkbox of the profile set-up, the checkbox of the propose form, the card of the Profile screen and the footer of the Wallet.
+
+1. Top bar with a back arrow and the title "Usage policy". No tab is active. A visitor without a profile gets the frame of the boot screen in its place: the top bar with the logo and nothing on its right, no tab bar, and the title as a heading above the text. There the logo leads to the profile set-up.
+2. The text below, in a column of at most 720 px. A heading is set in `h3`, a paragraph in `body` and `--foreground`, a list as a plain bulleted list. 24 px separate two sections, 8 px a heading and its text.
+
+The page asks the API for nothing: its figures are fields of the `/config` that start-up read, written below as placeholders. A noun after a placeholder follows its number, as "tokens" does (§10). There is no illustration, no campus line and no button on the page. It is read, and left with the back arrow.
+
+**Decision:** the policy is copy of this file, like every other sentence of the app. VIS changes it here.
+
+The text of the page:
+
+> **What MarkETH is**
+>
+> MarkETH is a prediction game for people at ETH Zurich, run by VIS. You trade YES and NO shares on questions about campus life. When a market is decided, a share of the outcome that came true pays one token and a share of the other outcome pays nothing.
+>
+> Tokens are free. You get {signup_grant_cr} welcome tokens when you create your profile and {monthly_grant_cr} monthly tokens every month, counted from that day. VIS also hands out codes, which you redeem for tokens in the Wallet.
+>
+> Nothing is sold. Tokens, codes and vouchers cannot be bought, from VIS or from anyone else, and none of them can be turned into money. No real money is involved at any point.
+>
+> **Markets you may propose**
+>
+> Anyone with a profile can propose a market. VIS reads every proposal and opens the ones that fit this policy. A market you may propose:
+>
+> - asks a question with two outcomes, YES and NO, that facts will decide and opinions will not;
+> - says what counts as YES and what counts as NO, so that no case is left open;
+> - names its source: a public page, an official announcement or a count that anyone can check;
+> - has its dates: when trading closes, and by when the result is known. Trading runs for at most {max_market_lifetime_days} days, and the result has to be known at most {max_resolution_delay_days} days after trading closes.
+>
+> You can propose {max_proposals_per_day} markets a day.
+>
+> **Markets you may not propose**
+>
+> VIS opens no market about:
+>
+> - the private matters of a person who is named or can be identified: their health, their relationships, their money, their conduct;
+> - anyone's grades or exam results, your own included;
+> - an outcome that one trader can decide alone, or bring about by what they do;
+> - party politics, elections and votes;
+> - religion.
+>
+> VIS is a student association within VSETH and takes no side in politics or religion.
+>
+> **Fair play**
+>
+> - One account per person. Your account belongs to your ETH sign-in: do not trade through another person's account, and do not let anyone trade through yours.
+> - You cannot trade a market you proposed.
+> - Do not manipulate an outcome. Do not trade a market whose result you can decide or influence, and do nothing to make a market end your way.
+> - You can have at most {max_stake_per_market_cr} tokens at stake in one market, so that no single trader sets a price.
+> - Admins of VIS settle the markets. After trading closes, an admin resolves a market to YES or NO from its source and states the evidence, which is shown on the market's page. An admin who traded a market does not settle it.
+> - An admin may void a market that cannot be decided fairly, for example when its source disappears or its question proves unclear. A voided market pays nobody: every trader gets back their net stake, which is what they paid for shares minus what they received for selling, and never less than zero.
+>
+> **Vouchers**
+>
+> Tokens can be turned into a voucher for one product at the bar: a coffee, a drink or a snack. The Wallet lists the products and the tokens each one takes.
+>
+> A voucher is a QR code. You show it at the bar, it is scanned, and with that it is used up.
+>
+> A voucher is valid for {voucher_expiry_days} days. One that is not used by then expires, and its tokens return to your balance.
+>
+> Vouchers are not for sale and cannot be exchanged for money.
+>
+> **What other players can see about you**
+>
+> Other players see your username, your degree programme and your record on the leaderboard: the tokens you hold, the number of your trades, your win rate and your payout ratio.
+>
+> They do not see your name or your email address. Both come from your ETH sign-in and are shown to you and to the admins of VIS only. They do not see which markets you trade or what you hold in them, and a market does not show who proposed it.
+>
+> VIS keeps a record of every movement of tokens and of every action an admin takes.
+>
+> **What VIS may do**
+>
+> VIS runs MarkETH and keeps it fair. To do that, VIS may:
+>
+> - reject a proposal, or change its wording and its dates before it opens. You see the reason for a rejection;
+> - pause trading in a market, close it early or void it;
+> - correct a balance that is wrong, with the reason on record;
+> - suspend an account that breaks this policy. A suspended account is locked out of MarkETH until VIS reinstates it;
+> - change this policy. This page shows the policy in force.
 
 ### Markets (`/`)
 
@@ -793,9 +930,11 @@ States as on the set-up screen. Success shows the toast "Profile saved" and stay
 
 States: six skeleton cards while loading. Empty: the dome illustration and "No markets yet. Quieter than the HG on a Sunday." with the propose button. Error: a banner with "Try again". The list is not live; it refetches on focus and on pull to refresh.
 
+One thing happens to the list without anybody acting: a market reaches its `close_at`. The list therefore asks `GET /markets` again at the earliest `close_at` among the cards it shows with `trading_open` true, and after the answer at the earliest one that is left. The timer asks; it decides nothing. Whether a card keeps its "Yes" and "No" buttons is `trading_open` of the answer (§14).
+
 ### Market detail (`/markets/[id]`)
 
-The answer of `GET /markets/{market_id}` always carries its `viewer` block, because whoever reads a market has a profile. No part of this screen has a signed-out form.
+The answer of `GET /markets/{market_id}` always carries its `viewer` block, because whoever reads a market has a profile. No part of this screen has a signed-out form, and nothing on it says how the market is priced: no tier, no liquidity figure, no loss bound (§10).
 
 1. Top bar with a back arrow and no title.
 2. The question (`h2`) and the status badge.
@@ -825,16 +964,18 @@ At most one banner shows. The market's status decides it, and `OWN_MARKET` speak
 
 Live: the Price, chart and volume follow the stream (§14). A `status` event refetches the screen.
 
+No event says that `close_at` has passed. While `trading_open` is true, the screen therefore asks `GET /markets/{market_id}` again at the market's `close_at`, and its chart with it. The timer asks; it decides nothing: the badge, the banner, the outcome buttons and the deadline line all follow the answer, which brings CLOSED and `trading_open` false (§14).
+
 States: skeletons in the shape of the Price, the chart and the rules while loading. A market the API does not know is the "not found" screen. Error: a banner with "Try again".
 
 ### Trade sheet (`/markets/[id]`)
 
-Opened over Market detail from an outcome button, from "Sell", or by the address (`?buy=YES`, `?buy=NO`, `?sell=YES`, `?sell=NO`). An address that asks for a trade the viewer cannot make (`viewer.can_trade` is false, or a sell with no preset that is allowed) opens the market without the sheet. Below 768 px it is the bottom sheet, from 768 px a dialog, and from 1024 px the sticky panel of §6, which is in place whenever the outcome buttons are shown and starts on Buy and YES. Top to bottom:
+Opened over Market detail from an outcome button, from "Sell", or by the address (`?buy=YES`, `?buy=NO`, `?sell=YES`, `?sell=NO`). An address that asks for a trade the viewer cannot make (`viewer.can_trade` is false, or a sell with no preset that is allowed) opens the market without the sheet. Below 768 px it is the bottom sheet, from 768 px a dialog, and from 1024 px the sticky panel of §6, which is in place whenever the outcome buttons are shown and starts on Buy and YES. The sheet and the dialog have the close cross of §12; the panel has nothing to close. Top to bottom:
 
-1. The question, one line, `body-sm` `--muted-foreground`.
+1. The header: the question on one line in `body-sm` `--muted-foreground`, and at its right the close cross. It is the header row of §12 and does not scroll. In the panel the question stands alone.
 2. A **Buy / Sell** segmented control. "Sell" is enabled when at least one entry of `viewer.sell_presets` has `allowed: true`.
 3. The outcome toggle. When selling, an outcome is offered when one of its two entries in `viewer.sell_presets` has `allowed: true`.
-4. **Buying:** the stake presets and the stake-left line. **Selling:** two chips, "Half" and "All", from the entries of `viewer.sell_presets` for the selected outcome (`portion` HALF and ALL). Each shows its `shares` and is disabled when `allowed` is false. The chosen preset's `shares` string is sent as it arrived.
+4. **Buying:** the stake entry of §12: the slider and the amount field side by side, under them the presets as shortcuts, then the stake-left line. **Selling:** two chips, "Half" and "All", from the entries of `viewer.sell_presets` for the selected outcome (`portion` HALF and ALL). Each shows its `shares` and is disabled when `allowed` is false. The chosen preset's `shares` string is sent as it arrived.
 5. The quote panel.
 6. A line with the balance: "Balance" and the token icon with `viewer.balance_cr`.
 7. The Confirm button, 56 px. Its fill follows the outcome when buying ("Buy YES" on `--yes`, "Buy NO" on `--no`) and is `primary` white when selling ("Sell YES shares").
@@ -843,13 +984,19 @@ Selling follows SPEC A.11: the server works out half and all of each holding and
 
 Behaviour:
 
-- The quote comes from `GET /markets/{market_id}/quote`, asked for `quote_debounce_ms` (from `/config`) after the last change, with `side`, `outcome` and the preset as `amount_cr` (buying) or as `shares` (selling). Confirm is disabled until a quote for the current input has arrived.
-- Confirm sends `POST /markets/{market_id}/trades` with the preset as it arrived and the quote as its guard. Buying: `side`, `outcome`, `amount_cr`, `min_shares` (the quote's `shares`) and `quote_version`. Selling: `side`, `outcome`, `shares`, `min_proceeds_cr` (the quote's `amount_cr`) and `quote_version`. A price that moved against the user is therefore always answered `QUOTE_STALE`.
+- **The amount of a buy** is what the amount field holds. The slider and the presets fill it (§12), and what the user types stays as typed. The form opens with an empty field.
+- **The quote** comes from `GET /markets/{market_id}/quote`, asked for `quote_debounce_ms` (from `/config`) after the last change to the amount, the outcome or the side. Buying sends `side`, `outcome` and the text of the field as `amount_cr`; selling sends `side`, `outcome` and the preset as `shares`. An empty field asks for nothing, and neither does one that ends in its decimal point: that amount is not finished. Confirm is disabled until a quote for the current input has arrived.
+- **The server judges a typed amount.** For a buy the quote applies the viewer's stake limit, the balance and the smallest trade, and answers what the trade itself would: `LIMIT_EXCEEDED`, `INSUFFICIENT_BALANCE`, `TRADE_TOO_SMALL`, or `VALIDATION_ERROR` for a text that is no amount. The API's `message` then stands under the stake-left line, the border of the field turns `--no`, the quote panel shows no values, and Confirm stays disabled until another amount has been quoted. `LIMIT_EXCEEDED` also refreshes the stake-left line from `stake_left_cr` and `stake_limit_cr` in `details`. The frontend refuses no amount by itself.
+- The quote is about the viewer in every respect, so it can also be answered `MARKET_NOT_OPEN`, `INSUFFICIENT_SHARES` or `FORBIDDEN`: trading ended, the holding changed, or the viewer proposed the market. The API's `message` then stands above the button as it does for a trade, Confirm stays disabled, and the market is refetched, so the sheet shows what can still be done.
+- A quote that fails for another reason (no connection, a 503, `RATE_LIMITED`) shows the banner of §14 above the button with "Try again", and Confirm stays disabled.
+- Confirm sends `POST /markets/{market_id}/trades` with what was quoted and the quote as its guard. Buying: `side`, `outcome`, `amount_cr` (the text of the field), `min_shares` (the quote's `shares`) and `quote_version`. Selling: `side`, `outcome`, `shares`, `min_proceeds_cr` (the quote's `amount_cr`) and `quote_version`. A price that moved against the user is therefore always answered `QUOTE_STALE`.
 - On Confirm the button shows its spinner and is disabled until the response arrives. A double tap cannot create two trades. The request carries an `Idempotency-Key` that belongs to that one request body; §14 says how long the two are kept and when "Try again" sends them again.
-- The panel shows the quote, not the chip: "You pay" is the quote's `amount_cr`.
-- **Success:** the sheet content is replaced by a receipt: a check icon, "Bought 183.29 YES shares" or "Sold 183.29 YES shares", "You paid" or "You received" with `amount_cr`, "New probability" with `p_yes_after`, "Balance" with `balance_cr`, and "Done". The bean bounce plays (§7). The market screen behind it updates from the response.
+- **The sheet cannot be closed while its trade is out.** From Confirm until the answer the cross is disabled (§12), and dragging, the scrim and Escape do nothing. The verdict is therefore always seen where the trade was made: the receipt, a refusal, or "Try again" for a trade without an answer.
+- The quote panel shows the quote, not the input: "You pay" is the quote's `amount_cr`.
+- **Success:** the sheet content is replaced by a receipt: a check icon, "Bought 183.29 YES shares" or "Sold 183.29 YES shares", "You paid" or "You received" with `amount_cr`, "New probability" with `p_yes_after`, "Balance" with `balance_cr`, and "Done". "Done" and the close cross both close it. The bean bounce plays (§7). The market screen behind it updates from the response.
 - **`QUOTE_STALE`:** the panel updates to the quote in `details.quote`, changed values flash, and an inline notice above the button shows the API's `message` ("The price moved. Review the new quote and confirm again."). The button returns to enabled. Nothing is submitted automatically.
-- **Other errors:** shown inline above the button with the API's `message`; the sheet stays open and the input is kept. `LIMIT_EXCEEDED` also refreshes the stake-left line from `stake_left_cr` and `stake_limit_cr` in `details`.
+- **Other errors of the trade:** shown inline above the button with the API's `message`; the sheet stays open and the input is kept. `LIMIT_EXCEEDED` also refreshes the stake-left line from `stake_left_cr` and `stake_limit_cr` in `details`.
+- A sheet that is closed forgets its amount. It does not forget a trade that has no answer (§14): such a trade can be put away and found again, because nothing is on its way while it waits for "Try again".
 
 ### Portfolio (`/portfolio`)
 
@@ -864,21 +1011,22 @@ Empty: the empty-cup illustration and "No positions yet. Your cup is empty." wit
 ### Wallet (`/wallet`)
 
 1. Top bar.
-2. Balance card: the 32 px token icon and `balance_cr` in `display`, labelled "Your tokens", and below it "Next monthly tokens: {monthly_grant_cr} on {next_monthly_grant_on}".
+2. Balance card: the 32 px token icon and `balance_cr` in `display`, labelled "Your tokens", and below it "Next monthly tokens: {monthly_grant_cr} on {next_monthly_grant_at}", a date and time (§10). Monthly tokens come due every month on the day and at the time of day the profile was created.
 3. Two buttons side by side: primary "Get a voucher", secondary "Redeem code".
-4. **Vouchers** from `GET /me/vouchers`, as voucher rows (§12) in the API's order. A voucher whose `status` is ACTIVE shows "Valid until" with `expires_at` and a "Show QR" button. The others are muted and show "Redeemed" with `redeemed_at`, or "Expired, refunded". With none, one line: "No vouchers yet."
+4. **Vouchers** from `GET /me/vouchers`, as voucher rows (§12) in the API's order. A voucher whose `status` is ACTIVE shows "Valid until" with `expires_at` and a "Show QR" button. The others are muted. A REDEEMED voucher shows "Redeemed" with `redeemed_at`. An EXPIRED voucher says whether its tokens are back: "Expired, refunded" when `refunded` is true, and "Expired, refund on its way" while it is false, which is the short time between the expiry and the booking of the refund (§14). The screen reads this from `refunded` and looks at no balance for it. With none, one line: "No vouchers yet."
 5. **Activity:** ledger rows from `GET /me/ledger`, paged with `next_cursor`.
+6. A footer at the foot of the screen, in `body-sm` `--muted-foreground`: the link "Usage policy", which leads to `/policy`.
 
 Flows:
 
-- **Redeem code** opens a sheet with the code field, a "Scan QR" button and a primary "Redeem", which sends the code alone to `POST /codes/redeem`. Success closes the sheet with the toast "+{value_cr} tokens", sets the balance to the answer's `balance_cr` and plays the bean drop. A failure shows the API's `message` under the field and nothing of ours. For a code that cannot be redeemed that is always the same sentence ("This code is not valid."), and the screen never hints at why (SPEC §2).
+- **Redeem code** opens a sheet (§12, with its close cross) that holds the code field, a "Scan QR" button and a primary "Redeem", which sends the code alone to `POST /codes/redeem`. Success closes the sheet with the toast "+{value_cr} tokens", sets the balance to the answer's `balance_cr` and plays the bean drop. A failure shows the API's `message` under the field and nothing of ours. For a code that cannot be redeemed that is always the same sentence ("This code is not valid."), and the screen never hints at why (SPEC §2).
 - **A code card** carries a link, `/wallet?code=...`. The Wallet reads `code` from the address when it opens, removes it from the address at once (replacing the history entry, so that no address, back step or bookmark keeps it) and opens the redeem sheet with the field filled in. The user still taps "Redeem". "Scan QR" inside the sheet reads the same cards: it takes the `code` out of a link, or takes what it read as it is when that is no link, and fills the field. A link without a `code` fills nothing, and the sheet says "No code in this QR." A link is never sent to the API.
-- **Get a voucher** opens a sheet with two steps.
+- **Get a voucher** opens a sheet with two steps. The close cross is there in both, and on the voucher that follows.
   1. The products from `GET /vouchers/products`, in the API's order, as product rows (§12). A product with `affordable: false` is disabled and stays in the list.
   2. After a tap on a product: "Turn {price_cr} tokens into a voucher for {name}?" (the word follows the string, §10), the line "Valid for {voucher_expiry_days} days. An unused voucher is refunded." with the days from `/config`, a primary "Get voucher" and a ghost "Back". "Get voucher" sends the product's `id` as `product_id` to `POST /vouchers`.
 
-  The answer is shown as the voucher: the `product_name` (`h2`), the QR tile holding `code`, the code as text, "Valid until" with `expires_at`, the steaming cup with "Show this at the bar. You earned it, sort of.", the brightness hint and a "Done" button. The balance becomes the answer's `balance_cr`, and the voucher is in the list behind the sheet.
-- **Show QR** asks `POST /vouchers/{voucher_id}/code` for a fresh code and shows the same voucher view with the answer's `code` and `expires_at`. Every tap gives the voucher another code, and a code shown before stops working. An answer of `CONFLICT` (the voucher is used up or has expired) or `NOT_FOUND` shows the API's `message` in the sheet and refetches the vouchers.
+  The answer is shown as the voucher: the `product_name` (`h2`), the QR tile holding `code`, the code as text, "Valid until" with `expires_at`, the steaming cup with "Show this at the bar. You earned it, sort of.", the brightness hint and a "Done" button. "Done" and the close cross both put the voucher away. The balance becomes the answer's `balance_cr`, and the voucher is in the list behind the sheet.
+- **Show QR** asks `POST /vouchers/{voucher_id}/code` for a fresh code and shows the same voucher view, close cross included, with the answer's `product_name`, `code` and `expires_at`. Every tap gives the voucher another code, and a code shown before stops working. An answer of `CONFLICT` (the voucher is used up or has expired) or `NOT_FOUND` shows the API's `message` in the sheet and refetches the vouchers.
 - **A voucher code lives on screen only.** The API sends it once, in the answer that issued the voucher or gave it a fresh code. The Wallet holds it in memory while the voucher view is open and writes it to no browser storage. Closing the view forgets it, and "Show QR" brings another.
 - "Get a voucher" is enabled when `can_get_voucher` in `GET /me` is true. When it is false the button is disabled, with a line under it: "You do not have enough tokens for a voucher yet." The frontend looks at neither the balance nor at what a product takes; `can_get_voucher` and `affordable` are the server's answers (SPEC A.11).
 - **An issue without an answer.** When `POST /vouchers` gets no answer (§14), the sheet closes, a neutral banner reads "We did not get an answer. If your voucher was issued, it is in the list below.", and the Wallet refetches `GET /me/vouchers` and `GET /me`. "Get a voucher" stays disabled until both have answered. A voucher that is in the list was issued, and "Show QR" gives it a code.
@@ -890,18 +1038,78 @@ States: skeletons for the balance card, two voucher rows and five ledger rows wh
 
 Modelled on Polymarket's leaderboard, with the top three turned into a podium. Every player with a profile is on it. The server ranks, sorts and filters; the screen sends the choice and shows the answer in the order it arrives (golden rule 6).
 
-1. Top bar.
-2. Title "Leaderboard" (`h1`) and one `caption` line that states the measure the list is sorted by:
+The screen is one column at every width: 343 px of content on a 375 px phone, and from 768 px the 720 px column of §6, which holds 688 px of content and stays that wide at 1024 px and beyond. A ranking is a list and gains nothing from more width. Nothing on this screen lies over anything else at 375 px, at 768 px or at 1024 px: where two things compete for room, the text below says which one gives way. Top to bottom:
 
-   | `sort` | Chip | Figure | Caption |
+1. Top bar.
+2. **Title row**, 44 px tall: the title "Leaderboard" (`h1`) at the left, and at the right two buttons 8 px apart.
+   - The order button: a 44 px square secondary button with an arrow icon. It flips `order` between "Highest first" (`desc`) and "Lowest first" (`asc`), and its `aria-label` names the active one.
+   - "Filter": a secondary button, 44 px tall, with a count badge while filters are set. It opens the filter sheet.
+   - The title is never cut and the buttons never lie over it. Where the three do not fit on one line (a 320 px phone while filters are set) the two buttons move to a line of their own under the title, at the left.
+3. **Measure line**, 4 px under the title row: one `caption` line in `--muted-foreground` that states the measure the list is sorted by. It wraps onto as many lines as it needs.
+
+   | `sort` | Chip | Figure | Measure line |
    | --- | --- | --- | --- |
    | `credits` | "Tokens" | `credits_cr` | "Tokens held right now." |
    | `win_rate` | "Win rate" | `win_rate` | "Share of resolved markets that returned more than was put in." |
    | `trades` | "Trades" | `trades` | "Number of trades made." |
    | `avg_payout_ratio` | "Payout" | `avg_payout_ratio` | "Tokens returned per token put in, over resolved markets." |
 
-3. **Sort row:** the four chips (filter chips, §12), one of them selected. At the right end of the row, an icon button that flips `order` between "Highest first" (`desc`) and "Lowest first" (`asc`), with an `aria-label` that names the active one, and a secondary "Filter" button with a count badge when filters are set. The list opens on "Tokens", "Highest first".
-4. **Filter sheet:** a Level select and a Programme select from `/config` `degrees` (`degree_level`, `degree_programme`), then one row per measure with a "from" and a "to" field:
+4. **Sort chips**, 16 px under the measure line: the four chips of the table (filter chips, §12), one of them selected. Below 768 px they form a grid of four equal columns across the content width, 8 px apart, which makes each 79 px wide at 375 px; on a screen under 344 px wide the grid is two by two. From 768 px each chip is as wide as its label and the four stand at the left. Nothing shares their row, and they never scroll. The list opens on "Tokens", "Highest first".
+5. **Set filters**, 12 px under the chips and only while filters are set: one removable chip (§12) for each ("BSc Computer Science", "Win rate from 50%").
+6. **Podium**, 16 px below, in a "Highest first" list.
+7. **Ranking**, 16 px under the podium: every row that is not on the podium. More rows load with `next_cursor` as the user scrolls.
+8. **Your row**, pinned at the foot of the screen while the viewer's own row is out of sight.
+
+The order of these eight is the same at every width. What changes with the width:
+
+| Part | 375 px | 768 px | 1024 px |
+| --- | --- | --- | --- |
+| Content width | 343 px | 688 px | 688 px |
+| Title row | 44 px tall; title, order button and "Filter" on one line | The same | The same |
+| Sort chips | Four equal columns of 79 px, 44 px tall | As wide as their labels, 44 px tall | The same |
+| Podium column | 97 px | 212 px | 212 px |
+| Trophies | 96 px and 72 px | 96 px and 72 px | 96 px and 72 px |
+| Username on the podium | `label` | `h3` | `h3` |
+| Figure on the podium | `number` for all three | `number-lg` for first place, `number` for the others | The same |
+| Ranking | Rows of at least 56 px | A table with rows of 56 px | The same |
+| Your row | A bar 73 px tall, above the tab bar | A bar 73 px tall, at the lower edge of the window | The same |
+| Filter sheet | Bottom sheet | Dialog, 420 px wide | The same |
+
+**Podium.** One `--card` with 16 px of padding at its top and sides and none at its foot. Inside it three columns of equal width, 8 px apart, for the rows of `rank` 1, 2 and 3: second place at the left, first in the middle, third at the right. A screen reader hears them as first, second, third. The columns are aligned at their lower edge, so the three steps stand on the lower edge of the card and first place stands highest. Each column is centred and holds, top to bottom, 4 px apart:
+
+1. The trophy: 96 px for first place, 72 px for the others, and never wider than its column.
+2. The rank as text ("1st", "2nd", "3rd") in `caption` `--muted-foreground`.
+3. The `username` on one line. A name wider than the column is cut with an ellipsis. The whole name stays in the title attribute and is what a screen reader hears.
+4. "You" in `caption` `--muted-foreground`, in the column of the row the API marks `is_viewer: true`.
+5. The figure of the sorted measure, on a line of its own. It is never cut and never leaves its column: a figure wider than its column (an amount of a million tokens on a phone) wraps inside it, the amount going under its token icon.
+6. The step, 8 px lower: a flat `--raised` block as wide as the column, with square corners, 48 px tall for first place, 32 px for second and 20 px for third. Pixel-art blocks, not rounded cards.
+
+No text of a column is wider than the column, so a long name or a large figure never reaches into the next one.
+
+How many players the list holds decides what the podium shows:
+
+| The list holds | Podium | Under it |
+| --- | --- | --- |
+| Three players or more with a figure | All three places | The rows from `rank` 4 on, when there are any |
+| Two players with a figure | First and second place; third is an empty place | Nothing, or the players without a figure |
+| One player with a figure | First place, in the middle; second and third are empty places | Nothing, or the players without a figure |
+| Players, but none with a figure for the sorted measure | Three empty places, under the line "Nobody here has a resolved market yet. The podium is yours to take." | Every player, as rows |
+| Nobody, because of the filters | No podium | "Nobody matches these filters." with a secondary "Clear all" |
+
+An **empty place** is the outline of its step and nothing else: a 1 px `--subtle` line along the top and the sides of the block, as tall as the step of that place, with no trophy, no text and no figure. The places that are filled keep their column and its width: a podium of one is the middle column between two outlines. With no row under the podium there is no list and no table heading under it.
+
+**Ranking.** Below 768 px, leaderboard rows (§12) of at least 56 px: `rank` in a column 32 px wide, 12 px of space, then the `username` on one line (cut with an ellipsis, with "You" beside it on the viewer's row) and under it `degree_programme` in `caption` on up to two lines; at the right the figure, which keeps its width and stays at least 12 px from the text. From 768 px the rows are a table (§12) with all four measures as columns: "Rank" (56 px wide), "Player" (the `username` and under it `degree_programme`, each on one line and cut with an ellipsis; this column takes what the others leave), then "Tokens", "Win rate", "Trades" and "Payout", right aligned, each as wide as its widest figure and 16 px from the next. A tap on the heading of a measure sorts by it, a second tap flips the order, and the heading carries `aria-sort`.
+
+**Your row.** The row the API marks with `is_viewer: true` has a `--raised` background and the label "You"; on the podium the label stands under the username. The `viewer` row of the response is the viewer's place under the same sort and filters, wherever it ranks. It is pinned whenever the viewer's row in the list is not on screen: not loaded, scrolled away, or on a podium that is out of sight. When `viewer` is null the filters leave the viewer out and nothing is pinned.
+
+- The pinned row stands in a bar across the whole width of the window: directly above the tab bar below 768 px, and at the lower edge of the window from 768 px, where the tabs are in the top bar. The bar is `--card` with a 1 px `--border` line on top and 8 px of padding above and below the row: 73 px tall, plus the safe area where no tab bar lies under it.
+- Inside the bar, in the content column, stands the viewer's row: 56 px tall, `--raised`, `--radius-md`, with `degree_programme` on one line. A pinned row that is one of the three podium rows carries its 24 px trophy between the rank and the username.
+- While the bar is shown, the content column has as much room at its foot as the bar is tall, and 16 px more. Scrolled to its end, the list shows its last row, or the skeleton of a page that is loading, whole and 16 px above the bar. Rows pass under the bar while the list scrolls, as they pass under the tab bar; the bar never rests on one.
+
+**Filter sheet.** The bottom sheet below 768 px and the dialog from 768 px (§12), with the title "Filter" (`h2`) and the close cross in its header. The part that scrolls holds, 16 px apart:
+
+1. A Level select and a Programme select from `/config` `degrees` (`degree_level`, `degree_programme`), each as wide as the sheet. The first option of each filters nothing: "Any level", "Any programme". Programme is disabled until a level is chosen.
+2. One group per measure: its name in `label`, and under it a "From" and a "To" field side by side in two equal columns, 12 px apart (165 px each at 375 px, 188 px in the dialog).
 
    | Row | Sent as | Typed as |
    | --- | --- | --- |
@@ -910,53 +1118,43 @@ Modelled on Polymarket's leaderboard, with the top three turned into a podium. E
    | "Trades" | `min_trades`, `max_trades` | A whole number |
    | "Payout" | `min_avg_payout_ratio`, `max_avg_payout_ratio` | A number such as 1.5 |
 
-   A primary "Show results" and a ghost "Clear all". Set filters appear under the sort row as removable chips ("BSc Computer Science", "Win rate from 50%").
-5. **Podium**, in a "Highest first" list: three columns on one `--card`, for the rows of `rank` 1, 2 and 3. First place is in the middle and stands highest, second on the left, third on the right. Each column shows the trophy (96 px for first, 72 px for the others), the rank as text ("1st", "2nd", "3rd"), the `username` (`h3`, one line) and the figure of the sorted measure (`number-lg` for first, `number` for the others). The "steps" are flat `--raised` blocks of three heights with square top corners: pixel-art blocks, not rounded cards.
-6. **Rows:** every row that is not on the podium, as leaderboard rows (§12) of 56 px. More rows load with `next_cursor` as the user scrolls.
-7. **Your row:** the row the API marks with `is_viewer: true` has a `--raised` background and the label "You"; on the podium the label stands under the username. The `viewer` row of the response is the viewer's place under the same sort and filters, wherever it ranks. It is pinned to the bottom of the screen, above the tab bar, whenever the viewer's row in the list is not on screen. When `viewer` is null the filters leave the viewer out and nothing is pinned.
+   A field typed in percent ends in "%" and one typed as a ratio in "×": the unit stands inside the right end of the field, and the text ends 36 px before that end, so what is typed never runs under the unit. The two fields of a group are aligned at their tops: an error under one does not move the other.
 
-From 768 px the rows below the podium are a table with all four measures as columns. A tap on a column heading sorts by it, a second tap flips the order, and the heading carries `aria-sort`.
+The foot is pinned under the line of §12: a primary "Show results" and under it a ghost "Clear all", each as wide as the sheet. A field that has the focus is scrolled clear of the foot and of the keyboard.
 
 Rules:
 
 - Sort, order and every filter are query parameters of `GET /leaderboard` and live in the address under the same names (`/leaderboard?sort=win_rate&order=asc&degree_level=MASTER`), so a view can be shared and the back button works. The screen sends no `limit`: the page size is the API's. The frontend never reorders, filters, ranks or totals rows.
 - Usernames, ranks and figures are shown as the API sends them. A real name or an email address never appears here.
-- **Decision:** a podium place needs a figure. A place stays empty, as a `--subtle` outline of its step with no trophy, when the list has no row of that `rank`, or when that row has no figure for the sorted measure; such a row is listed below with the others. A "Lowest first" list has no podium and shows no trophy: a trophy is not for last place.
+- **Decision:** a podium place needs a figure. A place is empty when the list has no row of that `rank`, or when that row has no figure for the sorted measure; such a row is listed under the podium with the others. A "Lowest first" list has no podium and shows no trophy: a trophy is not for last place.
 - A player with no resolved market has no win rate and no payout ratio: the figure is an en dash. The server sorts those players last in both directions and leaves them out as soon as a filter on either rate is set.
-- A pinned row that is one of the three podium rows carries its 24 px trophy beside the username.
 - A filter value the API rejects (`VALIDATION_ERROR`) is marked on its field in the sheet; the list keeps its last result. The frontend does not compare a "from" with a "to" itself.
 - Each page is ranked when it is asked for, so a player can show on two pages or on none while balances move. The screen shows what it gets, and a refetch on focus puts it right.
 - The bean drop (§7) plays once on the first-place figure when the viewer opens the unfiltered "Tokens" list while `viewer.rank` is 1. No other animation, no confetti.
-- Without filters the list always holds at least the viewer. With filters and no row: "Nobody matches these filters." with a "Clear all" button. In a "Highest first" list whose first row has no figure for the sorted measure, the line "Nobody here has a resolved market yet. The podium is yours to take." stands above the empty podium. Loading: skeleton podium and five skeleton rows. Error: a banner with "Try again".
+- Without filters the list always holds at least the viewer. Loading: a skeleton podium (the card, with blocks where the three places will be) and five skeleton rows. Error: a banner with "Try again".
 
 ### Propose market (`/propose`)
 
-An inner screen with the title "Propose a market". A single-column form, one field per row, in this order: "Question" (`question`), "YES means" (`yes_definition`), "NO means" (`no_definition`), "How it is decided" (`resolution_criteria`), "Source" (`resolution_source`), "Trading closes" (`close_at`), "Decided by" (`resolve_by`), "Liquidity" (`requested_tier`).
+An inner screen with the title "Propose a market". A single-column form, one field per row, in this order: "Question" (`question`), "YES means" (`yes_definition`), "NO means" (`no_definition`), "How it is decided" (`resolution_criteria`), "Source" (`resolution_source`), "Trading closes" (`close_at`), "Decided by" (`resolve_by`). The form asks nothing about how the market is priced: VIS sets that when it approves (§10).
 
 - Each text field shows its character limit from `/config`: `question_min_length` to `question_max_length` for the question, `short_text_max_length` for the two definitions and the source, `long_text_max_length` for how it is decided.
 - The two times are entered and shown in the `/config` `timezone` and sent as ISO 8601 with their offset. Their limits (`max_market_lifetime_days`, `max_resolution_delay_days`) are stated in help text from `/config`.
-- The tier is three radio cards from `/config` `tiers`, each with a plain name and one line of explanation:
+- Under the fields, two notes in `body-sm` `--muted-foreground`: "You cannot trade a market you propose." and "You can propose {max_proposals_per_day} markets a day."
+- Then a checkbox (§12), not ticked: "I accept the usage policy". The words "usage policy" are a link to `/policy`. It opens in a tab of its own, so the form keeps what was typed. What a market may and may not be about is said there, and nowhere on this form. The policy is accepted anew with every proposal: the box is empty whenever the form is.
+- Primary "Submit for review", disabled until every field is filled and the box is ticked. It sends `POST /markets` with the seven fields and `policy_accepted: true`. Validation errors from the API are placed on their fields using `details`, one that names `policy_accepted` under the checkbox; `LIMIT_EXCEEDED` shows the API's `message` above the button.
+- **Success** opens the "Proposal sent" dialog (§12): a check icon, "Proposal sent" (`h2`), the sentence "VIS reviews it before it opens. You find it under My proposals, where its status shows.", a primary "Done" and the close cross, which both close it. Behind the dialog the form is empty, its box unticked, and the proposal stands at the top of the list below.
+- Below the form, **My proposals** from `GET /me/proposals`: the question, a status badge and, when rejected, `rejection_reason`, and nothing else about the market. The badge of a proposal that was resolved names its outcome ("Resolved YES", "Resolved NO") from `outcome` of the row. A proposal whose `status` is neither PROPOSED nor REJECTED is a link to its market. With none: the blackboard illustration and "No proposals yet."
 
-  | `tier` | Name | Explanation |
-  | --- | --- | --- |
-  | TIGHT | "Tight" | "The price moves fast. For a question few people will trade." |
-  | DEFAULT | "Default" | "Right for most questions." |
-  | MEDIUM | "Medium" | "The price moves slowly. For a question many people will trade." |
+### Admin (`/admin`, `/admin/markets/[id]`, `/admin/codes`, `/admin/risk`, `/admin/users`)
 
-- Above the submit button, a short list of the content rules of SPEC §6 (no private matters of named people, no grades, no outcomes one trader can decide, no party politics or religion) and the notes "You cannot trade a market you propose." and "You can propose {max_proposals_per_day} markets a day."
-- Primary "Submit for review", which sends `POST /markets`. Validation errors from the API are placed on their fields using `details`; `LIMIT_EXCEEDED` shows the API's `message` above the button. Success shows the toast "Proposal sent", empties the form and puts the proposal at the top of the list below.
-- Below the form, **My proposals** from `GET /me/proposals`: the question, a status badge and, when rejected, `rejection_reason`. A proposal whose `status` is neither PROPOSED nor REJECTED is a link to its market. With none: the blackboard illustration and "No proposals yet."
-
-### Admin (`/admin`, `/admin/markets/[id]`, `/admin/codes`, `/admin/risk`)
-
-For role ADMIN; anyone else sees the "not found" screen. Three tabs under the top bar, each a link to its route: **Markets**, **Codes**, **Risk**. Beside them a "Scan vouchers" link leads to the Barista screen. Designed for 1024 px; usable on a phone with horizontal scrolling tables. Density is higher here: rows are 44 px and `body-sm`.
+For role ADMIN; anyone else sees the "not found" screen. Four tabs under the top bar, each a link to its route: **Markets**, **Codes**, **Risk**, **Users**. Beside them a "Scan vouchers" link leads to the Barista screen. Designed for 1024 px; usable on a phone with horizontal scrolling tables. Density is higher here: rows are 44 px and `body-sm`, and a row with two lines in a cell is as tall as those need. Every dialog of the admin area has the close cross of §12.
 
 - **Markets (`/admin`):** a "Proposals" queue first, from `GET /markets` with `status` PROPOSED, then all markets with a status select. Each choice of the select sends its one `status`; "All" sends all seven, because a request without `status` leaves PROPOSED and REJECTED out. A row shows `question`, the status badge, `p_yes`, `volume_cr` and `close_at`, and opens the admin view of the market.
-- **One market (`/admin/markets/[id]`):** an inner screen from `GET /markets/{market_id}`: the question, the status badge, the rules as on Market detail, the `resolution` when there is one, and the facts only an admin needs: `proposer_email`, `requested_tier`, `tier`, `b_cr`, `max_loss_cr`, `created_at`, `opened_at`, `closed_at` and `rejection_reason`. Tiers are named "Tight", "Default", "Medium" and "Custom". Then an action bar with the actions the market's `status` allows (SPEC §6):
+- **One market (`/admin/markets/[id]`):** an inner screen from `GET /markets/{market_id}`: the question, the status badge, the rules as on Market detail, the `resolution` when there is one, and the facts only an admin needs: `proposer_email`, `created_at`, `opened_at`, `closed_at`, `rejection_reason`, and how the market is priced, which the API sends to admins alone: the `tier` as "Tier", `b_cr` as "Liquidity b" and `max_loss_cr` as "Loss budget". A market has the three from its approval on; before that each shows an en dash. Tiers are named "Tight", "Default", "Medium" and "Custom". Then an action bar with the actions the market's `status` allows (SPEC §6):
 
   | Action | For `status` | Asks for | Sends |
   | --- | --- | --- | --- |
-  | Approve | PROPOSED | A tier: one of the three of `/config` `tiers`, each with its `b_cr` and `max_loss_cr`, or Custom with a budget of at most `max_market_budget_cr`. Optional changes to the wording and the two times | `POST /admin/markets/{market_id}/approve` with `tier`, `budget_cr` for CUSTOM, and each field that was changed |
+  | Approve | PROPOSED | A tier: one of the three of `/config` `tiers`, each with its `b_cr` and `max_loss_cr`, or Custom with a budget of at most `max_market_budget_cr`. The admin picks it, and none is chosen when the dialog opens. Optional changes to the wording and the two times | `POST /admin/markets/{market_id}/approve` with `tier`, `budget_cr` for CUSTOM, and each field that was changed |
   | Reject | PROPOSED | A reason, which the proposer sees | `POST /admin/markets/{market_id}/reject` with `reason` |
   | Halt | OPEN | A reason | `POST /admin/markets/{market_id}/halt` with `reason` |
   | Resume | HALTED | A note, optional | `POST /admin/markets/{market_id}/resume` with `note` |
@@ -964,12 +1162,19 @@ For role ADMIN; anyone else sees the "not found" screen. Three tabs under the to
   | Resolve | CLOSED | The outcome, YES or NO, and the evidence | `POST /admin/markets/{market_id}/resolve` with `outcome` and `evidence` |
   | Void | CLOSED | A reason, which is published as the market's resolution | `POST /admin/markets/{market_id}/void` with `reason` |
 
-  - Only the actions of the market's status are shown. Each opens a dialog that asks for what its row names; text limits come from `/config` (`short_text_max_length` for a reason or note, `long_text_max_length` for the evidence and for the reason of a void).
+  - Only the actions of the market's status are shown. Each opens a dialog, with its close cross, that asks for what its row names; text limits come from `/config` (`short_text_max_length` for a reason or note, `long_text_max_length` for the evidence and for the reason of a void).
   - Reject, Close, Resolve and Void cannot be taken back. Their dialog is an `alert-dialog` that states the consequence, and the confirm button of Reject and Void is `destructive`. Reject: "The proposer sees your reason. A rejected proposal stays rejected." Close: "Trading stops for good. After this the market can only be resolved or voided." Resolve: "Everyone who holds the winning outcome is paid. This cannot be changed afterwards."
   - **Who may settle.** Resolve and Void follow `viewer.can_settle`. When it is false, both buttons are disabled and a neutral banner above the action bar reads "You traded this market, so another admin has to settle it.", the sentence the API answers both actions with. If one of them is answered `FORBIDDEN` all the same, the dialog shows the API's `message` and the market is refetched.
-  - **The void dialog** shows the market's `void_rule` as the consequence and, labelled "What a void costs VIS now", the `void_cost_cr` of this market's row in `GET /admin/risk` (the entry of `markets` with the same `id`), read afresh when the dialog opens. While that figure loads it is a skeleton and the confirm button is disabled; if it cannot be read, the dialog shows the banner of §14 and cannot be confirmed.
+  - **The void dialog** shows the market's `void_rule` as the consequence and, labelled "What a void costs VIS now", the `void_cost_cr` of the market itself, which `GET /markets/{market_id}` sends to admins. The market is read afresh when the dialog opens. While that read is on its way the figure is a skeleton and the confirm button is disabled; if it fails, the dialog shows the banner of §14 and cannot be confirmed.
   - The answer of every action is the market; the screen updates from it. `CONFLICT` and `LIMIT_EXCEEDED` show the API's `message` in the dialog, and the market is refetched.
-- **Codes (`/admin/codes`):** a table of batches from `GET /admin/code-batches` (`label`, `value_cr`, `count`, `active_count`, `redeemed_count`, `revoked_count`, `expires_at`) and "New batch". The dialog asks for `label`, `count`, `value_cr` (filled in with `code_default_value_cr`, with the help text "Between {code_min_value_cr} and {code_max_value_cr} tokens"), `expires_at` and "One code per person" (`one_per_user`), and sends `POST /admin/code-batches`. After creation, the codes are shown **once** with "Download CSV" and "Print QR sheet", both generated in the browser (SPEC A.6), under a banner: "These codes cannot be shown again. Save them now." Leaving the page asks for confirmation. Each QR of the sheet holds the `redeem_url` of its code. "Revoke" on a batch opens an `alert-dialog` ("Every code of this batch that has not been redeemed stops working.") with a `destructive` button and sends `POST /admin/code-batches/{batch_id}/revoke` without `codes`. Nothing here names a price for a code.
+- **Codes (`/admin/codes`):** a table of batches from `GET /admin/code-batches` (`label`, `value_cr`, `count`, `active_count`, `redeemed_count`, `revoked_count`, `expires_at`) and "New batch". The dialog asks for `label` (which counts down `code_label_max_length`), `count` (a whole number, with the help text "At most {code_batch_max_count} codes"), `value_cr` (filled in with `code_default_value_cr`, with the help text "Between {code_min_value_cr} and {code_max_value_cr} tokens"), `expires_at` and "One code per person" (`one_per_user`), and sends `POST /admin/code-batches`. Each batch has two buttons at the end of its row: "View codes" and "Revoke". "Revoke" is enabled while `can_revoke` of the batch is true: the server says whether a code is left that a revocation would stop. Nothing here names a price for a code.
+  - **The codes of a batch** are shown in a dialog titled with the batch's `label`: one line that says how many codes it shows, "Download CSV" and "Print QR sheet", the codes in code style (§10) in a box that scrolls, and "Done"; "Done" and the close cross both close it. It opens by itself with the `codes` of the answer that created a batch. "View codes" opens it for any batch: it asks `GET /admin/code-batches/{batch_id}/codes` and shows the codes of the batch that can be redeemed. A code that was redeemed or revoked is not among them. When none is left, the dialog says "Every code of this batch is redeemed or revoked." and its two buttons are disabled.
+  - The API records every "View codes" in its audit log, and the dialog says so in `caption`: "Viewing codes is recorded."
+  - "Download CSV" saves a file made in the browser from the codes in the dialog: one line per code with the code, its `redeem_url`, and the batch's `label`, `value_cr` and `expires_at`.
+  - "Print QR sheet" lays out the print sheet (below) from the same codes and opens the browser's print dialog. The button waits while a long sheet is laid out.
+  - The codes are held in memory while the dialog is open and are written to no browser storage. Closing the dialog forgets them, and "View codes" brings them back.
+  - While the codes of "View codes" are on their way, the box shows skeleton lines and the two buttons are disabled. A failure shows the banner of §14 in the dialog, with "Try again".
+  - "Revoke" opens an `alert-dialog` ("Every code of this batch that has not been redeemed stops working.") with a `destructive` button, "Cancel" and the close cross, and sends `POST /admin/code-batches/{batch_id}/revoke` without `codes`.
 - **Risk (`/admin/risk`):** every figure is a field of `GET /admin/risk`, shown as sent; the page compares nothing.
 
   | Tile | Figure | Beside it |
@@ -978,28 +1183,65 @@ For role ADMIN; anyone else sees the "not found" screen. Three tabs under the to
   | "Loss budget" | `loss_budget_cr` | "of" `max_loss_budget_cr` |
   | "Open markets" | `open_markets` | "of" `max_open_markets` |
   | "Codes not redeemed yet" | `unredeemed_code_value_cr` | |
-  | "Codes this month" | `code_issuance_this_month_cr` | "of" `max_code_issuance_per_month_cr` |
+  | "Codes this month" | `code_issuance_this_month_cr` | "of" `max_code_issuance_per_month_cr`, and under the two a line "Adjustments this month" with `adjustments_this_month_cr`, sign included |
 
   - The Obligations tile is outlined in `--no` with an alert icon when `obligations.above_threshold` is true. The other tiles show their figure and its limit side by side with no warning state, because the API sends no flag for them and the frontend does not compare figures itself.
+  - "Adjustments this month" is the net of what admins added to balances and took from them this month (Users, below). It stands in the tile of the codes because both are tokens VIS handed out by hand; it counts against no cap, so it has no "of". A net that is below zero keeps its minus sign.
   - Then the alerts nobody acknowledged yet (`alerts`): `message`, `created_at` and the keys and values of `context`, each with an "Acknowledge" button that sends `POST /admin/alerts/{alert_id}/ack`. Alert `severity`: INFO and WARNING are neutral banners with different icons, CRITICAL uses the error banner.
-  - Then the table of `markets`, one row per market that is not settled, in the API's order: `question`, the status badge, `tier`, `p_yes`, `volume_cr`, `q_yes` and `q_no` as shares, `b_cr`, `budget_cr`, `account_balance_cr`, `exposure_cr`, `void_cost_cr` and `close_at`. A row opens the admin view of the market. A figure the API sends with a minus sign keeps it.
+  - Then the table of `markets`, one row per market that is not settled, in the API's order. It fits 1024 px without scrolling sideways, in ten columns whose cells have 8 px at their sides: "Question" (`question`, which wraps and takes the room the others leave, with the status badge under it); "Chance" (`p_yes`); "Volume" (`volume_cr`); "Exposure" (`exposure_cr`) and "Void cost" (`void_cost_cr`), which stand before the share counts because they are what an admin reads first; "Shares" (`q_yes` and `q_no` in one cell, one under the other: "412.5 YES", "220.25 NO"); "Tier" (the name of `tier` and under it, in `caption`, "b" with `b_cr`; an en dash where a market has no tier); "Loss budget" (`budget_cr`); "Account" (`account_balance_cr`); "Closes" (`close_at`, the date and under it the time in `caption`). A row opens the admin view of the market. A figure the API sends with a minus sign keeps it. Below 1024 px the table scrolls inside its own box (§12).
+- **Users (`/admin/users`):** everyone with a profile, from `GET /admin/users`. The server searches, filters and pages; the screen sends the choice and shows the rows in the order they arrive.
+  - Above the table stand three controls, in one row from 768 px (the search takes the room the two selects leave) and under one another on a phone: a search field with the placeholder "Username, name or email", a Role select ("All roles", "User", "Barista", "Admin") and a Status select ("All statuses", "Active", "Suspended"). Each is a query parameter of `GET /admin/users`: the search text is `q`, the selects are `role` and `status`. An empty search field sends no `q`, and the first option of a select sends nothing. A select asks as soon as it is changed; the search asks 300 ms after the last keystroke.
+  - The table (§12) puts two lines into its first two cells, so that it fits 1024 px:
 
-States: every table has skeleton rows while loading and a banner with "Try again" on error. An empty table is one plain sentence: "No proposals waiting.", "No markets.", "No batches yet.", "No alerts." The risk page refetches on focus; nothing on it is live.
+    | Column | Shows |
+    | --- | --- |
+    | "Player" | `username`, and under it `degree_programme` in `caption`. On the admin's own row, "You" beside the username |
+    | "ETH sign-in" | `name`, and under it `email` in `caption` |
+    | "Role" | The word for `role`: "User", "Barista" or "Admin". A row with `bootstrap_admin: true` adds the badge "Bootstrap" |
+    | "Status" | The word for `status`: "Active" in plain text, "Suspended" as a badge in the style of "Paused" (§12) |
+    | "Tokens" | The token icon and `balance_cr` |
+    | "Joined" | `created_at` |
 
-The print sheet is the one light surface in the product, because it is paper: `--ink` on unprinted paper, `logo-lockup-dark.png` at the top, a grid of QR codes with the code and value under each.
+    The first two columns share the width the others leave and cut their lines with an ellipsis. More rows load with `next_cursor` when the admin reaches the end of the table.
+  - **A row opens the dialog of its user**, titled with the `username`, with the close cross beside the title. The dialog repeats the facts of the row one under another, which is how a phone shows all of them, and offers what the admin may do to this user:
+
+    | Action | Offered when | Asks for | Sends |
+    | --- | --- | --- | --- |
+    | Suspend | `status` is ACTIVE, and the user is no bootstrap admin | A reason | `POST /admin/users/{user_id}/suspend` with `reason` |
+    | Reinstate | `status` is SUSPENDED | A reason | `POST /admin/users/{user_id}/reinstate` with `reason` |
+    | Change role | The user is no bootstrap admin | A select of "User", "Barista" and "Admin" (`USER`, `BARISTA`, `ADMIN`) | `POST /admin/users/{user_id}/role` with `role` |
+    | Adjust tokens | Always | "Add" or "Remove", an amount and a reason | `POST /admin/users/{user_id}/adjustments` with `amount_cr`, `reason` and an `Idempotency-Key` |
+
+    A tap on an action puts its step in the place of the facts, with a ghost "Back" that returns to them. **Decision:** the actions stand in the dialog, not in the row. Three buttons in every row would push the table past 1024 px and off a phone's screen, and nothing here is done so often that it has to be one tap away.
+  - **Suspend** is confirmed in its step, which states the consequence ("{username} is locked out of MarkETH until an admin reinstates the account. Nothing is taken from it: its tokens, positions and vouchers are kept.") and asks for the reason. The reason is required and goes into the audit log, not to the user. The button is `destructive`, and while this step is shown the dialog is a confirmation dialog (§12): a tap on the scrim does not close it. **Reinstate** says "{username} can use MarkETH again.", asks for a reason in the same way, and has a primary button.
+  - **Change role** shows the select, set to the user's role, and one line that follows the choice: "Trades and proposes markets." for User, "Also scans vouchers at the bar." for Barista, "Also runs the admin area: markets, codes, risk and users." for Admin. "Save role" is disabled until another role is chosen. The select posts nothing by itself (§14).
+  - **Adjust tokens** has two steps. The first asks: a segmented control "Add" and "Remove" (§12), an amount field that takes digits and one decimal point, and a reason, which is required. "Review", disabled until an amount and a reason are typed, leads to the second, which restates the adjustment in one sentence before anything is sent: "Add {amount_cr} tokens to {username}?" or "Remove {amount_cr} tokens from {username}?", with the reason under it, a primary "Add tokens" or "Remove tokens", and "Back". The confirming tap sends the amount as it was typed, with a minus sign in front of it for "Remove", and the reason. The reason goes into the audit log; the user's Activity shows the amount under the API's label and not the reason. The request and its `Idempotency-Key` are kept as §14 keeps those of a trade.
+  - **Who cannot be changed.** A row with `bootstrap_admin: true` is an admin the server's configuration names. Its dialog says "This admin is named in the server's configuration. The role cannot be changed and the account cannot be suspended here." and offers neither "Suspend" nor "Change role". The admin's own row is the one whose `id` is the `id` of `/me`: it opens no dialog and offers nothing, because an admin does none of this to their own account.
+  - The API alone decides each action. A 2xx closes the dialog and shows a toast ("Account suspended", "Account reinstated", "Role saved", "Tokens adjusted"). The table then shows what the answer says: the user's row after a suspension, a reinstatement or a change of role, and the answer's `balance_cr` after an adjustment. A refusal shows the API's `message` in the dialog, on the field it names or above the button, and the dialog stays open: `FORBIDDEN` for the admin's own account or a bootstrap admin, `CONFLICT` for an account that is suspended or reinstated already, `INSUFFICIENT_BALANCE` for a removal of more than the account holds, `LIMIT_EXCEEDED` for an addition above the most one adjustment may add, `VALIDATION_ERROR` for a reason or an amount the API does not take.
+
+States: every table has skeleton rows while loading and a banner with "Try again" on error. An empty table is one plain sentence: "No proposals waiting.", "No markets.", "No batches yet.", "No alerts.", and "No users match." for a search or a filter that leaves nobody. The risk page refetches on focus; nothing on it is live.
+
+**The print sheet** is the one light surface in the product, because it is paper. It is laid out for A4, upright, with 12 mm margins, and it is all that reaches the paper: the top bar, the tabs, the tables and the dialog are not printed.
+
+- `--ink` on unprinted paper, and no fill anywhere, so the sheet does not depend on whether the browser prints backgrounds. On paper the tile of a QR code is the paper itself: `--ink` modules with a quiet zone of four modules around them.
+- At the top of the first page: `logo-lockup-dark.png`, 10 mm tall, at the left; at the right the batch's `label` and "Valid until" with `expires_at`.
+- Under it the cards, three to a row and 6 mm apart, in the order of the codes. A card is 58 mm wide and holds, centred and one under another: the QR code of the code's `redeem_url`, 40 mm wide; the code in code style (§10); the token icon with `value_cr`. Dashed hairlines in `--ink` between the cards show where to cut.
+- A card is never divided between two pages: a row that does not fit moves to the next page whole.
+- The sheet is made in the browser from the codes in the dialog. Nothing is sent anywhere to print it.
 
 ### Barista (`/barista`)
 
-Built to be used at arm's length, fast, by someone holding a cup. For roles BARISTA and ADMIN; anyone else sees the "not found" screen.
+Built to be used at arm's length, fast, by someone holding a cup. For roles BARISTA and ADMIN; anyone else sees the "not found" screen. A barista is a player an admin gave that role (§11).
 
-1. The scanner fills the screen below the top bar. A "Type the voucher code" button is below it.
+1. The scanner fills the screen below the top bar. A "Type the voucher code" button is below it. It opens a sheet (§12) with the voucher-code field, a primary "Redeem voucher" and the close cross.
 2. A scan, or a typed code, is sent as `code` to `POST /barista/vouchers/redeem`. The scanner pauses until the answer is there, then a full-screen result shows for 2.5 s and the scanner returns:
    - **Accepted:** `--yes` background, `--ink` text, a large check icon, the `product_name` in `display`, then "Voucher accepted" and the token icon with `value_cr` in `number-lg`, and at the bottom "Paid in predictions." The product is the largest thing on the screen: it is what the barista hands over.
    - **Rejected:** `--no` background, `--ink` text, a large cross icon and "Voucher not valid". No reason is given (SPEC A.6). This is the result for `CODE_INVALID` and for a `VALIDATION_ERROR`, which is a scan that cannot be a voucher code.
-3. Each result also triggers a short vibration where supported: one pulse for accepted, two for rejected.
-4. Any other failure is no verdict on the voucher. It shows the banner of §14 over the scanner, never the red screen, and the barista scans again. The API cannot say what became of a scan that got no answer: if that scan did redeem the voucher, the next one answers "Voucher not valid".
+   - **Redeemed a moment ago:** the result for an answer with `repeat: true`. The voucher is one this barista redeemed a moment ago, scanned again: the answer to the first scan may not have arrived, or the same QR came under the camera twice. `--raised` background, `--foreground` text, neither green nor red, because it is no second voucher and no refusal. A large clock icon, the `product_name` in `display`, then "Redeemed a moment ago at this bar" with the time of day of `redeemed_at` ("18:02", §10) in `number-lg`, the token icon with `value_cr`, and at the bottom "It counts once. Hand it over if you have not yet." The barista hands the product out once, whichever of the two scans showed it.
+3. Each result also triggers a short vibration where supported: one pulse for accepted, two for rejected, one long pulse for redeemed a moment ago.
+4. Any other failure is no verdict on the voucher. It shows the banner of §14 over the scanner, never the red screen, and the barista scans again. If the scan that got no answer did redeem the voucher, the API answers the next scan of it by the same barista with `repeat: true`, and the third result says so. The API does that for a short time only. After it, and at another bar, the answer is "Voucher not valid".
 
-This is the only screen that uses a full-bleed green or red surface; the result must be readable from across a counter.
+This is the only screen that uses a full-bleed green or red surface; the result must be readable from across a counter. The third result is full-bleed too, in a colour that is neither.
 
 ### Not found (any other path)
 
@@ -1009,7 +1251,7 @@ Inside the app shell: the Polybahn car, "This page does not exist. Not even in t
 
 ### Every screen has four states
 
-Loading (skeletons), empty (icon, sentence, at most one button), error (banner with "Try again") and content. A screen is not finished until all four exist.
+Loading (skeletons), empty (icon, sentence, at most one button), error (banner with "Try again") and content. A screen is not finished until all four exist. A screen that asks the API for nothing has content alone: the usage policy, and "not found".
 
 ### Errors
 
@@ -1020,19 +1262,19 @@ The API returns `{code, message, details}`. The `message` is written for the use
 | `PROFILE_REQUIRED` | Start-up | The profile set-up screen (§13), with `details.name` and `details.email`. No error styling: the visitor has no profile yet |
 | `USERNAME_TAKEN` | Profile set-up, Profile | On the username field, with the API's message |
 | `QUOTE_STALE` | Trade sheet | New quote from `details.quote`, inline notice, confirm again |
-| `INSUFFICIENT_BALANCE` | Trade sheet, voucher sheet | Inline above the button; the voucher sheet also refetches the products |
-| `INSUFFICIENT_SHARES` | Trade sheet (sell) | Inline above the button, then refetch the market so the sell presets are current |
-| `LIMIT_EXCEEDED` | Trade sheet, propose form, redeem sheet, admin dialogs | Inline; on trades, refresh the stake-left line from `details` |
-| `TRADE_TOO_SMALL` | Trade sheet | Inline above the button |
-| `MARKET_NOT_OPEN` | Trade sheet | Inline, then refetch the market so the screen shows its real status |
+| `INSUFFICIENT_BALANCE` | Trade sheet, voucher sheet, adjustment of tokens | With the stake entry when the quote of a typed amount says it, above the button when the trade does. The voucher sheet shows it above its button and refetches the products. The adjustment dialog shows it above its button: the removal is larger than what the account holds |
+| `INSUFFICIENT_SHARES` | Trade sheet (sell), from the quote or the trade | Inline above the button, then refetch the market so the sell presets are current |
+| `LIMIT_EXCEEDED` | Trade sheet, propose form, redeem sheet, admin dialogs | Inline. On the trade sheet with the stake entry when the quote says it and above the button when the trade does; either way the stake-left line is refreshed from `details`. In the adjustment dialog above its button: the addition is more than one adjustment may add |
+| `TRADE_TOO_SMALL` | Trade sheet | With the stake entry when the quote says it, above the button when the trade does |
+| `MARKET_NOT_OPEN` | Trade sheet, from the quote or the trade | Inline above the button, then refetch the market so the screen shows its real status |
 | `CODE_INVALID` | Redeem sheet, barista | Inline on the field; the rejected screen on the scanner. Always the same wording |
-| `RATE_LIMITED` | Redeem, trade; any request when the proxy's own limit is hit | Inline where an action was refused, otherwise the banner; the action is disabled for `details.retry_after_seconds` with a countdown |
-| `VALIDATION_ERROR` | Forms, leaderboard filters, barista | On the field named in `details`: `details.field`, or the last element of `loc` in an entry of `details.errors`. Without a field, above the submit button. On the scanner, the rejected screen |
+| `RATE_LIMITED` | Redeem, trade, quote; any request when the proxy's own limit is hit | Inline where an action was refused, otherwise the banner; the action is disabled for `details.retry_after_seconds` with a countdown |
+| `VALIDATION_ERROR` | Forms, the stake entry, leaderboard filters, admin dialogs, barista | On the field named in `details`: `details.field`, whose sentence is the error's `message`, or the last element of `loc` in an entry of `details.errors`, whose sentence is that entry's `msg`. Both are written for the person who filled the field in and are shown as sent. The field `policy_accepted` is the checkbox. Without a field, above the submit button. On the scanner, the rejected screen |
 | `UNAUTHENTICATED` | Anywhere | The full-screen message (§13) with the API's message and "Try again", which reloads. The request reached the API without the portal's identity; no screen can repair that |
-| `FORBIDDEN` | Anywhere | The API's message as a banner, or inline in the sheet or dialog that asked. At start-up (an address MarkETH is not open to, a suspended account) the full-screen message |
-| `NOT_FOUND` | Routes, "Show QR" | The "not found" screen. For a voucher, inline in the sheet, then refetch the vouchers |
+| `FORBIDDEN` | Anywhere | The API's message as a banner, or inline in the sheet or dialog that asked: there an admin reads why an account cannot be changed. At start-up (an address MarkETH is not open to, a suspended account) the full-screen message |
+| `NOT_FOUND` | Routes, "Show QR", admin dialogs | The "not found" screen. For a voucher, a batch or a user, inline in the sheet or dialog, then refetch the list behind it |
 | `CONFLICT` | Admin actions, "Show QR" | Inline in the dialog or sheet, then refetch. For a voucher it means the voucher is used up or has expired |
-| `IDEMPOTENCY_KEY_REUSED` | Trade sheet | Should not occur. Show "Something went wrong. Try again." in place of the message and create a new key for the next attempt |
+| `IDEMPOTENCY_KEY_REUSED` | Trade sheet, adjustment of tokens | Should not occur. Show "Something went wrong. Try again." in place of the message and create a new key for the next attempt |
 | `SERVICE_UNAVAILABLE` | Anywhere | Banner with the API's message ("This is temporarily unavailable. Try again shortly."). Code redemption needs Redis; trading does not |
 | `INTERNAL_ERROR` | Anywhere | Banner with the message and "Try again" |
 
@@ -1047,8 +1289,13 @@ A trade carries an `Idempotency-Key`: the same key with the same body returns th
 - Confirm serialises the request body once, makes one key for it and keeps both.
 - Both are kept until an answer says what became of that request: a 2xx (the trade exists) or a 4xx other than 429 (the trade was refused and nothing was booked). Then they are dropped, and the next Confirm builds another body with another key. `QUOTE_STALE` is such a 4xx: the quote of `details.quote` leads to a different body.
 - Every other outcome says nothing about the trade, and both are kept: any 5xx, a 429, the portal's 401 and a request without a response. The message is shown inline, after a 429 with the countdown of `details.retry_after_seconds`, and the button reads "Try again". A tap sends the stored body with the stored key again, unchanged. A body rebuilt from a later quote would be another request and could trade a second time.
-- **Decision:** while the two are kept, the sheet offers nothing but "Try again". The Buy / Sell control, the outcome toggle and the presets are disabled, and closing and reopening the sheet shows the same unanswered trade. Nothing is sent again without a tap.
+- **Decision:** while the two are kept, the sheet offers nothing but "Try again". The Buy / Sell control, the outcome toggle, the stake entry and the sell presets are disabled, and closing and reopening the sheet shows the same unanswered trade. Nothing is sent again without a tap.
+- While a request is on its way, from Confirm or from "Try again", the sheet cannot be closed at all (§13): its answer is a verdict or another "Try again", and either is shown on the sheet that sent it.
 - They are held in memory, not in browser storage. A reload forgets them, and so does the reload that follows the portal's 401; the market, the balance and the History then show what the server recorded.
+
+### An adjustment of tokens
+
+`POST /admin/users/{user_id}/adjustments` carries an `Idempotency-Key` as well, and the dialog that sends it keeps the two together exactly as the trade sheet does: one body and one key from the confirming tap, kept until a 2xx or a 4xx other than 429, sent again unchanged by "Try again" after anything else, and held in memory only. While they are kept, the dialog shows the adjustment as it was sent and offers nothing but "Try again"; closed and opened again for the same user, it shows the same. After a reload, the user's row in the Users tab shows the balance the server recorded.
 
 ### Other writes without an answer
 
@@ -1059,10 +1306,12 @@ A write whose answer never arrived (no connection, a 5xx) may or may not have ha
 | `POST /vouchers` | `GET /me/vouchers` and `GET /me` are refetched (§13, Wallet). A voucher that was issued is in the list, and "Show QR" gives it a code |
 | `POST /codes/redeem` | `GET /me` and `GET /me/ledger` are refetched: the balance and the Activity show whether the code counted |
 | `POST /markets` | `GET /me/proposals` is refetched: a proposal that arrived is in the list |
-| `POST /admin/code-batches` | `GET /admin/code-batches` is refetched. A batch that is in the table without its codes having been shown is revoked and created again, because the API shows codes only in the answer that created them |
+| `POST /admin/code-batches` | `GET /admin/code-batches` is refetched. A batch that arrived is in the table, and "View codes" shows its codes |
+| Suspending, reinstating, changing a role | `GET /admin/users` is refetched: the row shows the status and the role the server holds |
+| `POST /admin/users/{user_id}/adjustments` | Never built again: the stored body and key are sent again (above) |
 | Another admin action | The market or the risk page it acts on is refetched |
 | `POST /vouchers/{voucher_id}/code`, `PUT /me/profile` | Nothing: sending either again is harmless |
-| `POST /barista/vouchers/redeem` | Nothing can be refetched; §13 says what the scanner shows |
+| `POST /barista/vouchers/redeem` | Nothing can be refetched. The barista scans the voucher again: if the first scan redeemed it, the API answers `repeat: true` for a short time, and §13 says what the scanner shows |
 
 ### Live data
 
@@ -1071,12 +1320,15 @@ A write whose answer never arrived (no connection, a 5xx) may or may not have ha
 - While **Your position** is shown, a `quote` event also refetches the market, because what a holding is worth (`value_cr`) and the sell presets are the server's to work out.
 - If the stream ends or answers an error, the screen polls every `live_poll_fallback_seconds` from `/config`, tries the stream again at each poll and keeps working. There is no error banner for this; the user sees slightly slower updates. The first poll doubles as a check of the portal's session: if the portal answers it with its 401, the page reloads (§ Errors).
 - An open quote in the trade sheet is not replaced by a stream event. The user confirms what they were shown, and the server answers `QUOTE_STALE` if it has moved.
-- Balances can change between visits (monthly tokens and voucher refunds are booked lazily, SPEC A.3), so the balance is refetched whenever Wallet or the trade sheet opens.
+- Balances can change without the user acting: a payout or a refund arrives when an admin settles a market, and monthly tokens and voucher refunds are booked lazily (SPEC A.3). So `GET /me` is read again on every navigation from one screen to another, and when the trade sheet opens. The pill in the top bar (§11) and every figure that comes from `/me` follow. A change of the query string alone (a sort of the Leaderboard, an open trade sheet) is no navigation.
+- **Close time.** No event says that a market has reached its `close_at`: `status` events follow what admins and the circuit breaker do. A screen that shows a market as open for trading therefore asks again at that moment: Market detail at the `close_at` of its market, the Markets list at the earliest `close_at` among the cards it shows with `trading_open` true (§13). The timer asks the API and decides nothing. What the screen shows afterwards is the answer's `status` and `trading_open`, never the device's clock.
 - Nothing else is live. Every other screen refetches what it shows when it opens and when the window regains focus.
 
 ### Buttons that change state
 
-Every button that posts is disabled from tap until response. Destructive admin actions additionally go through a confirmation dialog. Nothing in the product is submitted by a page load or a prefilled field alone: there is always a deliberate act, which is a tap or, at the bar, the scan of a voucher.
+Every button that posts is disabled from tap until response. Destructive admin actions additionally go through a confirmation dialog. Nothing in the product is submitted by a page load or a prefilled field alone: there is always a deliberate act, which is a tap or, at the bar, the scan of a voucher. A select, a slider and a checkbox post nothing by being changed: they set what a button then sends.
+
+**A second submit is stopped where it is made.** The disabled button is what the user sees. It is not the guard: the screen learns that its request went out a moment after it did, and two submits in that moment (Enter and a click, a tap that lands twice) would both find the button enabled. Every submit therefore asks, in the same step in which it would send, whether a request of that write is out: the cache of writes that are on their way, or a mark the handler set itself. What the last render knew is never the check. A trade and an adjustment of tokens are guarded by the request they keep (above).
 
 ## 15. Accessibility
 
@@ -1084,7 +1336,12 @@ Every button that posts is disabled from tap until response. Destructive admin a
 - **Colour blindness:** green and red always come with a word, a sign or an icon. The outcome buttons keep a fixed order, YES on the left.
 - **Focus:** a 2 px `--ring` outline on `:focus-visible` for every interactive element. Sheets and dialogs trap focus and return it to the opener on close.
 - **Semantics:** one `h1` element per screen: the title in the top bar of an inner screen, the question on Market detail and on the admin view of a market, the title of a main screen that shows one (Leaderboard), and otherwise a visually hidden one that names the screen. The styles `h1` to `h3` of §5 are looks, not levels. The tab bar is a `nav`; the outcome toggle and the filter chips use `aria-pressed`; a column heading that sorts carries `aria-sort`; form errors use `aria-describedby` and `aria-invalid`.
-- **Live regions:** the live Price is in an `aria-live="polite"` region limited to one announcement per 10 s. The `QUOTE_STALE` notice and trade errors use `role="alert"`.
+- **Live regions:** the live Price is in an `aria-live="polite"` region limited to one announcement per 10 s. The `QUOTE_STALE` notice, the refusal of a typed stake and trade errors use `role="alert"`.
+- **Stake entry:** the three controls form a group named "Stake". The amount field is named "Stake in tokens" and the slider "Stake in whole tokens". The slider says its value as "40 tokens", and as "not set" while the field holds an amount it cannot show. The stake-left line and the refusal describe both (`aria-describedby`), and the field is `aria-invalid` while the server refuses its amount. The presets are a group named "Quick amounts"; each chip is named by its amount ("25 tokens") and carries `aria-pressed`.
+- **Close cross:** a button named "Close" in every sheet and every dialog, reachable with the keyboard. The Escape key does what it does.
+- **Checkbox:** named by its whole text ("I accept the usage policy"). The link inside it is a stop of its own, named "usage policy", and says that it opens in another tab.
+- **Barista results:** each of the three full-screen results is announced when it appears. "Redeemed a moment ago at this bar" is read with its time, so that a barista who does not look hears that nothing was redeemed twice.
+- **Podium:** read as a list of three in the order first, second, third. A name that is cut on screen is read whole, and an empty place is hidden from a screen reader.
 - **Screen-reader text for figures:** the Price reads "YES 54.8 percent". An amount reads "25 tokens". A missing rate reads "none yet", not the dash.
 - **Chart:** an `aria-label` summarises it ("YES probability over time, now 54.8 percent, opened at 50 percent"), and the same information is always present as text on the screen.
 - **Text size:** layouts hold at 200% browser zoom and with large system text; type is set in `rem`.
@@ -1101,11 +1358,20 @@ Do:
 - Give every screen its loading, empty and error state.
 - Keep one white primary button per screen.
 - Check each new screen at 375 px, at 200% zoom and with the keyboard.
+- Give every sheet and every dialog its close cross, also when it only reports what was done. Disable it, and every other way out, while a request the surface sent is out.
+- Stop a second submit in the step that would send it, by asking what is on its way.
+- Ask the API again when the `close_at` of a market on screen passes, and show what it answers.
+- Check the Leaderboard at 375 px, 768 px and 1024 px with a username of the greatest length and with one, two and three players: nothing lies over anything else.
 
 Don't:
 
 - Compute, compare or round a price, balance, limit or share quantity in the frontend. The one test an amount gets is the one for the string `0` (§10).
 - Hard-code a tunable ("100 tokens", "35 tokens", "30 days") in copy or logic.
+- Judge a typed stake in the frontend, or read the ends of the slider as a limit to check an amount against.
+- Read the device's clock to decide whether a market can be traded, or to end the chart: `trading_open` and `until` are the server's.
+- Guard a submit with what the last render knew.
+- Show a tier, a liquidity figure or a loss bound to a player.
+- Post from a select, a slider or a checkbox alone.
 - Use green or red for anything that is not YES, NO, a gain, a loss, an error or a destructive action.
 - Put white text on a green or red fill, or pure red text on a card.
 - Add a gradient of any kind, a light theme, a shadow on a card, a blur, or a remote image or font.
@@ -1113,7 +1379,7 @@ Don't:
 - Use a trophy JPEG, or a trophy for anything but one of the first three places of a "Highest first" leaderboard.
 - Use the ETH logo, or type the name beside the logo with name.
 - Use pure white `#FFFFFF` or pure black `#000000` anywhere on screen.
-- Put a joke in an error, a balance, the trade sheet or the admin area, or more than one campus line on a screen.
+- Put a joke in an error, a balance, the trade sheet, the usage policy or the admin area, or more than one campus line on a screen.
 - Add any screen, button or wording about buying tokens, codes or vouchers, or name a price for one.
 - Show "CR", "credits" or "vouchers" as the unit's name, or the bean without its white disc.
 - Say why a code or voucher was refused.
@@ -1121,5 +1387,5 @@ Don't:
 - Sort, filter, rank or total leaderboard rows in the frontend, or look at the balance to decide whether a product can be had.
 - Build a sign-in, a sign-out or a signed-out state. The session belongs to the portal.
 - Keep a code or a voucher code in browser storage, or leave a code in the address.
-- Rebuild the body of a trade that got no answer, or give it another Idempotency-Key.
+- Rebuild the body of a trade or of an adjustment of tokens that got no answer, or give it another Idempotency-Key.
 - Leave a `dark:` class, a shadow or a raw colour in a component copied from shadcn/ui.

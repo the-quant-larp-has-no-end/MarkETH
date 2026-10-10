@@ -58,8 +58,18 @@ describe("My proposals", () => {
           proposal({ id: "a", question: "Will the Polybahn be free in 2027?" }),
           proposal({ id: "b", question: "Will the CAB get a second cafeteria?", status: "OPEN" }),
           proposal({ id: "c", question: "Will the HG dome be open at night?", status: "REJECTED" }),
-          proposal({ id: "d", question: "Will the Mensa serve fondue?", status: "RESOLVED" }),
-          proposal({ id: "e", question: "Will the ASVZ add a sauna?", status: "VOID" }),
+          proposal({
+            id: "d",
+            question: "Will the Mensa serve fondue?",
+            status: "RESOLVED",
+            outcome: "YES",
+          }),
+          proposal({
+            id: "e",
+            question: "Will the ASVZ add a sauna?",
+            status: "VOID",
+            outcome: "VOID",
+          }),
           proposal({ id: "f", question: "Will the Polyterrasse be rebuilt?", status: "HALTED" }),
           proposal({ id: "g", question: "Will the semester start late?", status: "CLOSED" }),
         ],
@@ -72,11 +82,51 @@ describe("My proposals", () => {
       "Will the Polybahn be free in 2027? In review",
       "Will the CAB get a second cafeteria? Open",
       "Will the HG dome be open at night? Not approved",
-      "Will the Mensa serve fondue? Resolved",
+      "Will the Mensa serve fondue? Resolved YES",
       "Will the ASVZ add a sauna? Voided",
       "Will the Polyterrasse be rebuilt? Paused",
       "Will the semester start late? Closed",
     ]);
+  });
+
+  test("the badge of a resolved proposal names its outcome, from `outcome` of the row, in the outcome's colour", async () => {
+    mockApi({
+      [PROPOSALS]: json(200, {
+        items: [
+          proposal({ id: "y", question: "Resolved to YES?", status: "RESOLVED", outcome: "YES" }),
+          proposal({ id: "n", question: "Resolved to NO?", status: "RESOLVED", outcome: "NO" }),
+          proposal({ id: "p", question: "Still in review?", status: "PROPOSED", outcome: null }),
+        ],
+      }),
+    });
+    renderWithProviders(<MyProposals />);
+
+    await screen.findByText("Resolved to YES?");
+    const badges = rows().map((row) => row.querySelector<HTMLElement>("[data-slot=badge]")!);
+    expect(badges.map((badge) => badge.textContent)).toEqual([
+      "Resolved YES",
+      "Resolved NO",
+      "In review",
+    ]);
+    expect(badges[0]).toHaveAttribute("data-variant", "yes");
+    expect(badges[1]).toHaveAttribute("data-variant", "no");
+    // Green and red are for an outcome alone.
+    expect(badges[2]).toHaveAttribute("data-variant", "raised");
+  });
+
+  test("shows nothing else about the market: no price, no figure, no time", async () => {
+    mockApi({
+      [PROPOSALS]: json(200, {
+        items: [proposal({ id: "a", question: "Only the question?", status: "OPEN" })],
+      }),
+    });
+    renderWithProviders(<MyProposals />);
+
+    await screen.findByText("Only the question?");
+    const row = rows()[0]!;
+    expect(row.textContent).toBe("Only the question? Open");
+    expect(row.querySelector("[data-slot=amount]")).toBeNull();
+    expect(row.querySelector("time")).toBeNull();
   });
 
   test("a rejected proposal shows the reason VIS gave; no other proposal shows one", async () => {

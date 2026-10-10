@@ -41,6 +41,9 @@ class LedgerRef(StrEnum):
     VOUCHER = "voucher"
     """VOUCHER_ISSUE, _REDEEM and _REFUND: `vouchers.id`."""
 
+    USER = "user"
+    """ADMIN_ADJUSTMENT: `users.id`, the user whose balance an admin adjusted."""
+
 
 def signup_grant_key(user_id: UUID) -> str:
     return f"grant:{user_id}:{SIGNUP_GRANT_PERIOD}"
@@ -77,6 +80,13 @@ def voucher_redeem_key(voucher_id: UUID) -> str:
 
 def voucher_refund_key(voucher_id: UUID) -> str:
     return f"voucher:{voucher_id}:refund"
+
+
+def admin_adjustment_key(actor_id: UUID, idempotency_key: UUID) -> str:
+    """`actor_id` is the admin who adjusts and `idempotency_key` the Idempotency-Key
+    of their request: one admin cannot book two adjustments under one key, whoever
+    the adjustments are for."""
+    return f"adjustment:{actor_id}:{idempotency_key}"
 
 
 @dataclass(frozen=True, slots=True)

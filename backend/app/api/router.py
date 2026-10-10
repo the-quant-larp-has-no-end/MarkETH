@@ -37,6 +37,7 @@ from app.api.routes.admin import code_batches as admin_code_batches
 from app.api.routes.admin import grants as admin_grants
 from app.api.routes.admin import markets as admin_markets
 from app.api.routes.admin import risk as admin_risk
+from app.api.routes.admin import users as admin_users
 from app.schemas.common import ErrorResponse
 
 API_PREFIX: Final[str] = "/api"
@@ -53,6 +54,7 @@ admin_router.include_router(admin_markets.router)
 admin_router.include_router(admin_code_batches.router)
 admin_router.include_router(admin_risk.router)
 admin_router.include_router(admin_grants.router)
+admin_router.include_router(admin_users.router)
 
 member_router = APIRouter(dependencies=[Depends(require_user)])
 member_router.include_router(me.router)

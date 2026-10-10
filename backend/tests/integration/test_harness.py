@@ -2,10 +2,10 @@
 
 What `tests/conftest.py` promises is proven here once, so a test that uses it can trust
 it: factories that leave the books straight, the accounting assertions every test of a
-credit movement ends with (`tests/support/books.py`), admins and a barista whose role
-comes from their address, `as_user` standing in for the portal and `portal_headers`
-speaking as it, and the same fixtures giving the application with one dependency down
-(SPEC §9, and the "Failures" tests of §12).
+credit movement ends with (`tests/support/books.py`), bootstrap admins whose role comes
+from their address and a barista whose role is in their row, `as_user` standing in for
+the portal and `portal_headers` speaking as it, and the same fixtures giving the
+application with one dependency down (SPEC §9, and the "Failures" tests of §12).
 """
 
 import asyncio
@@ -53,7 +53,7 @@ from tests.support.clock import TEST_NOW, FrozenClock
 from tests.support.economy import PRECISION
 from tests.support.factories import ActAs, Factory, PortalHeaders, identity_of
 from tests.support.network import SwitchableProxy
-from tests.support.settings import TEST_ADMIN_EMAILS, TEST_BARISTA_EMAILS
+from tests.support.settings import TEST_ADMIN_EMAILS
 
 pytestmark = pytest.mark.integration
 
@@ -86,15 +86,17 @@ async def test_factory_users_have_a_profile_an_account_and_their_signup_grant(
         name="",
         degree_level=DegreeLevel.OTHER,
         degree_programme="ETH staff",
+        role=UserRole.ADMIN,
         status=UserStatus.SUSPENDED,
     )
 
     assert (first.email, first.username, first.name) == ("user1@ethz.ch", "user1", "User 1")
-    assert first.status is UserStatus.ACTIVE
+    assert (first.role, first.status) == (UserRole.USER, UserStatus.ACTIVE)
+    assert first.policy_accepted_at == first.created_at == TEST_NOW
     assert is_programme(first.degree_level, first.degree_programme)
     assert (second.email, second.username, second.name) == ("neo@ethz.ch", "neo", "")
     assert (second.degree_level, second.degree_programme) == (DegreeLevel.OTHER, "ETH staff")
-    assert second.status is UserStatus.SUSPENDED
+    assert (second.role, second.status) == (UserRole.ADMIN, UserStatus.SUSPENDED)
     async with container.uow_factory() as uow:
         for user in (first, second):
             assert await uow.accounts.get_user_account(user.id) is not None
@@ -557,51 +559,61 @@ async def test_count_rows_and_system_balance_read_what_the_factory_wrote(
         await system_balance(uow_factory, AccountKind.USER)
 
 
-# --- Admins and the barista ----------------------------------------------------------
+# --- Admins and baristas --------------------------------------------------------------
 
 
-async def test_the_factory_registers_the_admins_and_the_barista_of_the_test_settings(
+async def test_the_factory_registers_the_bootstrap_admins_of_the_test_settings_and_baristas(
     factory: Factory, container: Container
 ) -> None:
-    """Two admins, so that one can settle what the other traded (A.4), and a barista."""
+    """Two admins, so that one can settle what the other traded (A.4) and act on the
+    other's account, and as many baristas as a test asks for."""
     first, second = await factory.admin(), await factory.admin(1)
     barista = await factory.barista(balance_micro=3 * MICRO)
+    another = await factory.barista(1)
 
     assert (first.email, second.email) == TEST_ADMIN_EMAILS
-    assert (barista.email,) == TEST_BARISTA_EMAILS
-    assert [user.username for user in (first, second, barista)] == [
+    assert (barista.email, another.email) == ("barista0@ethz.ch", "barista1@ethz.ch")
+    assert [user.username for user in (first, second, barista, another)] == [
         "admin0",
         "admin1",
         "barista0",
+        "barista1",
     ]
+    # A bootstrap admin is one by its address: the row says USER, as a profile starts.
+    assert first.role is second.role is UserRole.USER
+    assert barista.role is another.role is UserRole.BARISTA
     assert first.status is second.status is barista.status is UserStatus.ACTIVE
     assert await factory.balance_micro(barista) == 3 * MICRO
     async with container.uow_factory() as uow:
-        for user in (first, second, barista):
+        for user in (first, second, barista, another):
             assert await uow.accounts.get_user_account(user.id) is not None
             assert await uow.grants.list_periods(user.id) == ["SIGNUP"]
     assert await factory.accounts_total_micro() == 0
 
 
-async def test_the_factory_has_no_more_admins_or_baristas_than_the_settings_name(
+async def test_the_factory_has_no_more_bootstrap_admins_than_the_settings_name(
     factory: Factory,
 ) -> None:
-    for make, index in ((factory.admin, 2), (factory.barista, 1), (factory.admin, -1)):
+    for index in (2, -1):
         with pytest.raises(ValueError, match="there is none with index"):
-            await make(index)
+            await factory.admin(index)
+    with pytest.raises(ValueError, match="no barista with index -1"):
+        await factory.barista(-1)
 
 
-async def test_factory_identity_gives_each_user_the_role_of_their_address(
+async def test_factory_identity_gives_each_user_the_role_they_have_in_effect(
     factory: Factory,
 ) -> None:
-    """Nothing on a row says what its user may do; the address and the lists do."""
+    """The role of the row, and ADMIN for a bootstrap admin whatever its row says."""
     student = await factory.user()
     first, second = await factory.admin(), await factory.admin(1)
     barista = await factory.barista()
+    made_admin = await factory.user(role=UserRole.ADMIN)
 
     assert factory.identity(student).role is UserRole.USER
     assert factory.identity(first).role is factory.identity(second).role is UserRole.ADMIN
     assert factory.identity(barista).role is UserRole.BARISTA
+    assert factory.identity(made_admin).role is UserRole.ADMIN
     registered = factory.identity(first)
     assert (registered.id, registered.email, registered.username, registered.status) == (
         first.id,
@@ -611,24 +623,22 @@ async def test_factory_identity_gives_each_user_the_role_of_their_address(
     )
 
 
-async def test_factory_identity_follows_the_lists_of_the_settings_not_the_row(
+async def test_factory_identity_follows_the_row_and_the_bootstrap_admins_of_the_settings(
     factory: Factory, settings: Settings, database: Database, clock: FrozenClock
 ) -> None:
-    """The way the application derives it: the same rows under other lists are other
-    roles, because no role is stored anywhere."""
+    """The way the application works it out: under another list of bootstrap admins the
+    same rows have the roles their rows say, and whoever that list names is an admin."""
     admin, barista, student = await factory.admin(), await factory.barista(), await factory.user()
-    swapped = settings.identity.model_copy(
-        update={"admin_emails": [student.email], "barista_emails": [admin.email]}
-    )
+    swapped = settings.identity.model_copy(update={"admin_emails": [student.email]})
     elsewhere = Container.build(
         settings.model_copy(update={"identity": swapped}), clock=clock, database=database
     )
     try:
-        under_other_lists = Factory(elsewhere)
+        under_another_list = Factory(elsewhere)
 
-        assert under_other_lists.identity(student).role is UserRole.ADMIN
-        assert under_other_lists.identity(admin).role is UserRole.BARISTA
-        assert under_other_lists.identity(barista).role is UserRole.USER
+        assert under_another_list.identity(student).role is UserRole.ADMIN
+        assert under_another_list.identity(admin).role is UserRole.USER
+        assert under_another_list.identity(barista).role is UserRole.BARISTA
     finally:
         await elsewhere.stop()
     assert factory.identity(admin).role is UserRole.ADMIN
@@ -639,7 +649,6 @@ async def test_identity_of_gives_a_row_whatever_role_a_guard_test_names(
 ) -> None:
     student = await factory.user()
 
-    assert identity_of(student).role is UserRole.USER
     for role in UserRole:
         named = identity_of(student, role)
         assert (named.id, named.role) == (student.id, role)
@@ -655,7 +664,7 @@ async def test_without_as_user_nobody_is_calling(client: httpx.AsyncClient) -> N
 async def test_as_user_makes_a_user_of_the_factory_a_plain_user_unless_a_role_is_given(
     client: httpx.AsyncClient, factory: Factory, as_user: ActAs
 ) -> None:
-    """A role is in no column. A guard test names the one it means."""
+    """A guard test names the role it means, whatever the row says."""
     user = await factory.user()
 
     as_user(user)
@@ -672,14 +681,16 @@ async def test_as_user_makes_a_user_of_the_factory_a_plain_user_unless_a_role_is
     assert (await client.post(BARISTA_ROUTE, json=BARISTA_BODY)).status_code not in REFUSED
 
 
-async def test_as_user_gives_an_admin_and_a_barista_the_role_of_their_address(
+async def test_as_user_gives_an_admin_and_a_barista_the_role_they_have_in_effect(
     client: httpx.AsyncClient, factory: Factory, as_user: ActAs
 ) -> None:
-    """`as_user(await factory.admin())` is an admin without the test saying so twice."""
+    """`as_user(await factory.admin())` is an admin without the test saying so twice,
+    and so is a user whose row an admin set to ADMIN."""
     admin, second_admin = await factory.admin(), await factory.admin(1)
     barista = await factory.barista()
+    made_admin = await factory.user(role=UserRole.ADMIN)
 
-    for one_of_them in (admin, second_admin):
+    for one_of_them in (admin, second_admin, made_admin):
         as_user(one_of_them)
         assert (await client.get(ADMIN_ROUTE)).status_code not in REFUSED
         assert (await client.post(BARISTA_ROUTE, json=BARISTA_BODY)).status_code not in REFUSED
@@ -689,15 +700,16 @@ async def test_as_user_gives_an_admin_and_a_barista_the_role_of_their_address(
     assert (await client.post(BARISTA_ROUTE, json=BARISTA_BODY)).status_code not in REFUSED
 
 
-async def test_a_role_named_to_as_user_wins_over_the_address(
+async def test_a_role_named_to_as_user_wins_over_the_address_and_the_row(
     client: httpx.AsyncClient, factory: Factory, as_user: ActAs
 ) -> None:
-    admin = await factory.admin()
+    admin, barista = await factory.admin(), await factory.barista()
 
-    as_user(admin, UserRole.USER)
+    for staff in (admin, barista):
+        as_user(staff, UserRole.USER)
 
-    assert (await client.get(ADMIN_ROUTE)).status_code == 403
-    assert (await client.post(BARISTA_ROUTE, json=BARISTA_BODY)).status_code == 403
+        assert (await client.get(ADMIN_ROUTE)).status_code == 403
+        assert (await client.post(BARISTA_ROUTE, json=BARISTA_BODY)).status_code == 403
 
 
 async def test_as_user_takes_a_registered_caller_as_it_is(
@@ -729,6 +741,7 @@ async def test_as_user_with_a_portal_identity_is_somebody_without_a_profile(
         "username": "fresh",
         "degree_level": "OTHER",
         "degree_programme": "ETH staff",
+        "policy_accepted": True,
     }
     saved = await client.put("/api/me/profile", json=profile)
     assert saved.status_code not in REFUSED, "the one route such a caller may use"

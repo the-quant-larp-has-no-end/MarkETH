@@ -2,7 +2,8 @@
 
 import { toast } from "sonner";
 
-import { Screen } from "@/components/shell";
+import { Screen, TextLink } from "@/components/shell";
+import { DateTime } from "@/components/time";
 import { Card } from "@/components/ui/card";
 import { ProfileForm } from "@/features/session";
 import type { MeResponse } from "@/lib/api/schema";
@@ -39,6 +40,10 @@ export function ProfileScreen() {
  * Who the viewer is: the username and the degree other players see, and under a divider
  * the name and the address the portal sent. This card and the admin area are the only
  * places a real name or an address is shown (DESIGN.md §10, People).
+ *
+ * Under a second divider: when the usage policy was accepted, which is `policy_accepted_at`
+ * of `/me` with its time of day, and the link to the policy. It was accepted when the
+ * profile was created, so there is nothing to tick here.
  */
 function ProfileCard({ me }: { me: MeResponse }) {
   return (
@@ -64,6 +69,18 @@ function ProfileCard({ me }: { me: MeResponse }) {
         <p className="type-caption text-muted-foreground">
           From your ETH sign-in. Only you and VIS see these.
         </p>
+      </div>
+      <div
+        data-slot="profile-policy"
+        className="flex flex-col border-t pt-3 type-body-sm text-muted-foreground"
+      >
+        <p>
+          You accepted the usage policy on <DateTime value={me.policy_accepted_at} />.
+        </p>
+        {/* A line of its own; the link is as wide as its words, not as the card. */}
+        <TextLink href="/policy" className="self-start">
+          Read the usage policy
+        </TextLink>
       </div>
     </Card>
   );

@@ -60,6 +60,7 @@ test("a first visit through a code card: set-up, the welcome dialog, then the re
   await user.type(await screen.findByLabelText("Username"), "anna_m");
   await user.selectOptions(screen.getByLabelText("Level"), "BACHELOR");
   await user.selectOptions(screen.getByLabelText("Programme"), "BSc Computer Science");
+  await user.click(screen.getByRole("checkbox", { name: "I accept the usage policy" }));
   expect(address()).toBe("/wallet?code=4F7KQ2M9XAB3");
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 

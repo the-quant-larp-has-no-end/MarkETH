@@ -62,8 +62,8 @@ def portal_address(raw: str, allowed_domains: Collection[str]) -> str | None:
     bare string is refused with `TypeError`, because looking a domain up in a string
     would find every piece of it.
 
-    The same rule reads the entries of `ADMIN_EMAILS` and `BARISTA_EMAILS`, so a role
-    list names exactly the ids the portal can send.
+    The same rule reads the entries of `ADMIN_EMAILS`, so the list of bootstrap
+    admins names exactly the ids the portal can send.
     """
     if isinstance(allowed_domains, str):
         raise TypeError("allowed_domains is a collection of domains, not one domain")
@@ -112,12 +112,15 @@ class PortalIdentity:
     none."""
 
     role: UserRole
-    """Derived from `ADMIN_EMAILS` and `BARISTA_EMAILS` on every request, stored nowhere."""
+    """What the person may do: ADMIN for an address of `ADMIN_EMAILS`, otherwise the
+    role of their `users` row, and USER while they have none."""
 
 
 @dataclass(frozen=True, slots=True)
 class AuthenticatedUser:
-    """A caller with a profile: the `users` row plus the role of this request."""
+    """A caller with a profile: the `users` row, with the role the caller has in
+    effect. That is the row's own role, unless the address is one of
+    `ADMIN_EMAILS`, which is ADMIN whatever the row says."""
 
     id: UUID
     email: str

@@ -256,7 +256,8 @@ describe("redeeming a code", () => {
     expect(button).toBeDisabled();
     expect(within(sheet).getByLabelText("Code")).toBeDisabled();
     expect(within(sheet).getByRole("button", { name: "Scan QR" })).toBeDisabled();
-    expect(within(sheet).queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
+    // The close cross stays in its place, disabled: the sheet cannot be closed meanwhile.
+    expect(within(sheet).getByRole("button", { name: "Close" })).toBeDisabled();
     await user.keyboard("{Escape}");
     expect(screen.getByRole("dialog")).toBeInTheDocument();
 

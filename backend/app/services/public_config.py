@@ -1,9 +1,11 @@
 """`GET /config`: the tunables the UI needs (Appendix A.2, A.11).
 
 The frontend reads no environment. Whatever it has to know about limits, presets and
-timings comes from here, straight out of `Settings`. Two things that are no tunables
+timings comes from here, straight out of `Settings`. Three things that are no tunables
 travel with it, because a form needs them before anybody types: the degree catalogue,
-and how long the texts of a market may be, which the request models fix.
+how long the texts of a market may be, and how many codes and how long a label a batch
+of codes may have. The last two are constants of the request models, read from where
+those models read them.
 """
 
 from typing import Final
@@ -13,6 +15,7 @@ from app.core.degrees import CATALOGUE
 from app.core.enums import MarketTier
 from app.core.units import to_cr
 from app.pricing import lmsr
+from app.schemas.admin.code_batches import LABEL_MAX_LENGTH, MAX_CODES_PER_BATCH
 from app.schemas.config import DegreeLevelOption, PublicConfigResponse, TierConfig
 from app.schemas.markets import (
     LONG_TEXT_MAX_LENGTH,
@@ -71,6 +74,7 @@ class PublicConfigService:
             degrees=degrees,
             max_stake_per_market_cr=to_cr(pricing.max_stake_per_user_market_micro),
             stake_presets_cr=[to_cr(preset) for preset in pricing.stake_presets_micro],
+            stake_step_cr=to_cr(pricing.stake_step_micro),
             min_trade_cr=to_cr(pricing.min_trade_micro),
             min_trade_shares=to_cr(pricing.min_trade_shares_micro),
             price_display_decimals=pricing.price_display_decimals,
@@ -90,6 +94,8 @@ class PublicConfigService:
             code_max_value_cr=to_cr(codes.max_value_micro),
             code_default_value_cr=to_cr(codes.default_value_micro),
             max_code_issuance_per_month_cr=to_cr(codes.max_issuance_per_month_micro),
+            code_batch_max_count=MAX_CODES_PER_BATCH,
+            code_label_max_length=LABEL_MAX_LENGTH,
             voucher_code_length=vouchers.code_length,
             voucher_expiry_days=vouchers.expiry_days,
         )

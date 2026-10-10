@@ -1,8 +1,8 @@
 """The demo seed, run on a real Postgres and Redis (`scripts/seed.py`, `make seed`).
 
 What it has to be: demo data the application could have written, made through the
-services alone; never run in production and never for an address that has a role; and
-safe to run again, whether the run before it finished or stopped half way.
+services alone; never run in production and never for a bootstrap admin; and safe to
+run again, whether the run before it finished or stopped half way.
 
 `tests/unit/test_seed_plan.py` checks the plan against the rules without a database.
 Here the plan runs. What a market paid or gave back is what `MarketView` makes of the
@@ -62,6 +62,7 @@ from app.models import (
     Voucher,
 )
 from app.pricing import lmsr
+from app.schemas.admin.users import SetUserRoleRequest
 from app.schemas.me import PortfolioResponse
 from app.schemas.profile import SaveProfileRequest
 from app.services.audit import AuditAction
@@ -138,8 +139,9 @@ class Interruption:
 
 
 CODES_NEVER_SHOWN: Final[Interruption] = Interruption("codes", "create_batch", 1, after=True)
-"""The one place where a run that dies loses something for good: the batch is made, and
-the codes it answered with were never printed."""
+"""The one place where the next run prints less than an undisturbed one: the batch is
+made, and the codes it answered with were never printed. They are not gone: an admin
+opens them in the admin panel."""
 
 INTERRUPTIONS: Final[tuple[Interruption, ...]] = (
     # Some of the people are registered.
@@ -233,6 +235,7 @@ async def demo_state(container: Container) -> dict[str, object]:
                 user.name,
                 user.degree_level,
                 user.degree_programme,
+                user.role,
                 user.status,
                 balance[user.id],
             )
@@ -247,7 +250,6 @@ async def demo_state(container: Container) -> dict[str, object]:
             (
                 market.question,
                 market.status,
-                market.requested_tier,
                 market.tier,
                 market.budget_micro,
                 market.b_micro,
@@ -377,15 +379,14 @@ def in_production(settings: Settings) -> Settings:
     )
 
 
-def with_a_role_for(person: Person, role_list: str) -> Callable[[Settings], Settings]:
-    """Settings in which the address of `person` is one more entry of `ADMIN_EMAILS` or
-    of `BARISTA_EMAILS`."""
+def as_a_bootstrap_admin(person: Person) -> Callable[[Settings], Settings]:
+    """Settings in which the address of `person` is one more entry of `ADMIN_EMAILS`."""
 
     def named(settings: Settings) -> Settings:
         identity = settings.identity
-        entries = [*getattr(identity, role_list), address_of(person, settings)]
+        entries = [*identity.admin_emails, address_of(person, settings)]
         return settings.model_copy(
-            update={"identity": identity.model_copy(update={role_list: entries})}
+            update={"identity": identity.model_copy(update={"admin_emails": entries})}
         )
 
     return named
@@ -393,15 +394,11 @@ def with_a_role_for(person: Person, role_list: str) -> Callable[[Settings], Sett
 
 REFUSED_ON: Final[dict[str, tuple[Callable[[Settings], Settings], str]]] = {
     "production": (in_production, "APP_ENV=production"),
-    "a-student-is-an-admin": (
-        with_a_role_for(STUDENTS[2], "admin_emails"),
+    "a-student-is-a-bootstrap-admin": (
+        as_a_bootstrap_admin(STUDENTS[2]),
         f"{STUDENTS[2].mailbox}@",
     ),
-    "a-student-is-a-barista": (
-        with_a_role_for(STUDENTS[0], "barista_emails"),
-        f"{STUDENTS[0].mailbox}@",
-    ),
-    "the-desk-is-an-admin": (with_a_role_for(DESK, "admin_emails"), f"{DESK.mailbox}@"),
+    "the-desk-is-a-bootstrap-admin": (as_a_bootstrap_admin(DESK), f"{DESK.mailbox}@"),
 }
 """Settings the seed does not run on, and what its refusal names."""
 
@@ -453,8 +450,8 @@ def no_call_of(container: Container, service_name: str, method: str) -> Iterator
 async def test_a_refused_seed_registers_nobody_and_makes_nothing(
     container: Container, capsys: pytest.CaptureFixture[str], why: str
 ) -> None:
-    """In production, and when a demo address is somebody the role lists name: the seed
-    is for demo accounts on a stack that is nobody's real one."""
+    """In production, and when a demo address is somebody `ADMIN_EMAILS` names: the
+    seed is for demo accounts on a stack that is nobody's real one."""
     alter, named = REFUSED_ON[why]
     before = await everything(container)
 
@@ -518,7 +515,8 @@ async def test_the_seed_registers_its_people_with_a_profile_an_account_and_the_s
         )
         assert user.username == user.username.lower()
         assert is_programme(user.degree_level, user.degree_programme)
-        assert user.status is UserStatus.ACTIVE
+        assert (user.role, user.status) == (UserRole.USER, UserStatus.ACTIVE)
+        assert user.policy_accepted_at == user.created_at
         async with container.uow_factory() as uow:
             assert await uow.accounts.get_user_account(user.id) is not None
             assert await uow.grants.list_periods(user.id) == ["SIGNUP"]
@@ -532,33 +530,33 @@ async def test_the_seed_registers_its_people_with_a_profile_an_account_and_the_s
     await assert_books_balance(container.uow_factory)
 
 
-async def test_the_seed_registers_no_address_that_has_a_role(
+async def test_the_seed_registers_no_bootstrap_admin_and_gives_nobody_a_role(
     seeded: str, container: Container
 ) -> None:
-    """Not one of `ADMIN_EMAILS`, not one of `BARISTA_EMAILS`: those are real people's,
-    and they sign in through the portal."""
+    """Not one of `ADMIN_EMAILS`: those are real people's, and they sign in through
+    the portal. And every row it leaves says USER, the desk's included."""
     identity = container.settings.identity
     roles = container.email_policy
-    registered = [user.email for user in await rows(container, User)]
+    registered = await rows(container, User)
 
     assert identity.admin_emails
-    assert identity.barista_emails
-    assert set(registered).isdisjoint(identity.admin_emails)
-    assert set(registered).isdisjoint(identity.barista_emails)
-    assert {roles.role_for(email) for email in registered} == {UserRole.USER}
+    assert {user.email for user in registered}.isdisjoint(identity.admin_emails)
+    assert {user.role for user in registered} == {UserRole.USER}
+    assert {roles.effective_role(user.email, user.role) for user in registered} == {UserRole.USER}
     await assert_books_balance(container.uow_factory)
 
 
-async def test_the_admin_role_of_the_desk_is_in_no_table_and_no_list(
+async def test_the_admin_role_of_the_desk_is_written_nowhere(
     seeded: str,
     container: Container,
     client: httpx.AsyncClient,
     portal_headers: PortalHeaders,
 ) -> None:
-    """The script gave the desk the admin role for its own calls. Whoever signs in as
-    the desk afterwards is a plain user: the real headers lead to no admin route, to no
-    barista route and to the role USER."""
+    """The script gave the desk the admin role for its own calls. Its row says USER,
+    so whoever signs in as the desk afterwards is a plain user: the real headers lead
+    to no admin route, to no barista route and to the role USER."""
     desk = await user_of(container, DESK)
+    assert desk.role is UserRole.USER
     headers = portal_headers(desk)
     market = await market_of(container, MARKETS[0])
 
@@ -597,8 +595,10 @@ async def test_the_seed_leaves_every_market_in_the_state_its_plan_names(
         market = markets[plan.question]
         proposer = await user_of(container, STUDENTS[plan.proposer])
         assert market.status is plan.ends, plan.slug
-        assert (market.created_by, market.requested_tier) == (proposer.id, plan.tier)
+        assert market.created_by == proposer.id
         if plan in OPENED:
+            # The tier is the desk's choice at the approval; the proposal named none.
+            assert plan.tier is not None
             b_micro = container.settings.pricing.tier_b_micro(plan.tier)
             assert (market.tier, market.b_micro) == (plan.tier, b_micro)
             assert market.budget_micro == lmsr.max_loss_micro(b_micro, precision=precision)
@@ -796,6 +796,8 @@ async def test_every_screen_of_every_demo_account_is_answered(
     for path in (
         "/api/admin/risk",
         "/api/admin/code-batches",
+        "/api/admin/users",
+        "/api/admin/users?q=demo&role=USER&status=ACTIVE",
         "/api/markets?status=PROPOSED&status=REJECTED",
     ):
         response = await client.get(path)
@@ -862,9 +864,10 @@ async def test_the_seed_issues_a_voucher_per_plan_and_scans_one_at_the_desk(
 # --- Codes ---------------------------------------------------------------------------------
 
 
-async def test_the_seed_prints_the_codes_of_its_batch_and_only_their_hashes_are_stored(
+async def test_the_seed_prints_the_codes_of_its_batch_and_each_is_kept_with_its_row(
     seeded: str, container: Container
 ) -> None:
+    """Under its hash, and beside it for as long as it can be redeemed."""
     settings = container.settings
     desk = await user_of(container, DESK)
     (batch,) = await rows(container, CodeBatch)
@@ -878,10 +881,42 @@ async def test_the_seed_prints_the_codes_of_its_batch_and_only_their_hashes_are_
     assert len(printed) == len(set(printed)) == BATCH_SIZE
     for code, card in printed:
         assert card == f"{settings.app.public_base_url}/wallet?code={code}"
-    hashes = {hash_code(normalize_code(code) or "") for code, _ in printed}
-    assert hashes == {row.code_hash for row in stored}
+    kept = {
+        hash_code(plain): plain for plain in (normalize_code(code) or "" for code, _ in printed)
+    }
+    assert kept == {row.code_hash: row.code for row in stored}
     assert {row.status for row in stored} == {CodeStatus.ACTIVE}
     assert f"worth {format_cr(batch.value_micro)} CR each" in seeded
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_an_admin_opens_the_codes_of_the_demo_batch_again_and_the_log_says_who(
+    seeded: str,
+    container: Container,
+    factory: Factory,
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+) -> None:
+    """What `make seed` printed is what the admin panel shows: the codes of a second
+    look are those of the first, with their cards' links, and the look is audited."""
+    (batch,) = await rows(container, CodeBatch)
+    admin = await factory.admin()
+    as_user(admin)
+
+    opened = await client.get(f"/api/admin/code-batches/{batch.id}/codes")
+
+    assert opened.status_code == 200, opened.text
+    assert [(read["code"], read["redeem_url"]) for read in opened.json()["codes"]] == (
+        printed_codes(seeded)
+    )
+    reads = [
+        row
+        for row in await rows(container, AuditLogEntry)
+        if row.action == AuditAction.CODE_BATCH_READ_CODES
+    ]
+    assert [(row.actor_id, row.target, row.after) for row in reads] == [
+        (admin.id, f"code_batch:{batch.id}", {"code_count": BATCH_SIZE})
+    ]
     await assert_books_balance(container.uow_factory)
 
 
@@ -923,18 +958,45 @@ async def test_a_second_run_finds_everything_and_writes_nothing(
     `MAX_ORDERS_PER_MINUTE` whatever it is answered."""
     after_the_first = await everything(container)
 
-    with no_call_of(container, "trading", "trade"), no_call_of(container, "profile", "save"):
+    with (
+        no_call_of(container, "trading", "trade"),
+        no_call_of(container, "profile", "save"),
+        no_call_of(container, "codes", "batch_codes"),
+    ):
         await seed(container)
     again = capsys.readouterr().out
 
     assert await everything(container) == after_the_first
+    # It opens the codes of its batch for nobody: that is an admin's to do, and audited.
     assert printed_codes(again) == []
-    assert "stored nowhere" in again
+    assert f'The batch "{BATCH_LABEL}" is already there. An admin opens' in again
     assert again.count("already there") == len(PEOPLE) + len(VOUCHERS) + 1
     assert "registered" not in again
     assert "issued" not in again
     for plan in MARKETS:
         assert f"{plan.ends:<9} {plan.question}" in again
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_role_somebody_gave_a_demo_account_is_left_as_it_is_by_the_next_run(
+    seeded: str, container: Container, factory: Factory, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """On a development stack an admin tries the panel on the demo accounts: a student
+    becomes a barista, the desk an admin. The seed still runs, finds everything, and
+    writes nothing: not a role either."""
+    admin = factory.identity(await factory.admin())
+    ben, desk = await user_of(container, STUDENTS[1]), await user_of(container, DESK)
+    await container.admin_users.set_role(admin, ben.id, SetUserRoleRequest(role=UserRole.BARISTA))
+    await container.admin_users.set_role(admin, desk.id, SetUserRoleRequest(role=UserRole.ADMIN))
+    after_the_panel = await everything(container)
+    capsys.readouterr()
+
+    await seed(container)
+
+    assert await everything(container) == after_the_panel
+    assert (await user_of(container, STUDENTS[1])).role is UserRole.BARISTA
+    assert (await user_of(container, DESK)).role is UserRole.ADMIN
+    assert printed_codes(capsys.readouterr().out) == []
     await assert_books_balance(container.uow_factory)
 
 

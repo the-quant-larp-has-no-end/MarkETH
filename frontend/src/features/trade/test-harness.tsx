@@ -11,6 +11,7 @@ import { type Handler, json, mockApi, type MockRequest, type Route } from "@/tes
 import { createTestQueryClient, renderWithProviders } from "@/test/render";
 
 import { type TradeIntent, TradeTicket } from "./trade-ticket";
+import { useTradeOut } from "./use-ticket";
 
 /**
  * What the tests of the trade ticket share: a stand-in for Market detail, which owns the
@@ -38,9 +39,14 @@ const OPENERS = [
 /**
  * Where the ticket stands. `bare`: nothing around it, mounted while an intent is set.
  * `sheet`: in the `ResponsiveSheet` of the app, a bottom sheet that is a dialog from
- * 768 px. `closing-sheet`: a sheet that takes its time to go, as a real one does while it
- * slides away: when the ticket is done it stays until "Close the sheet". `panel`: always
- * there, as the sticky panel from 1024 px; "Done" starts over on Buy and YES.
+ * 768 px, with the question in its header and closed to dismissal while its trade is on
+ * its way, as Market detail has it. `closing-sheet`: a sheet that takes its time to go, as
+ * a real one does while it slides away: when the ticket is done it stays until "Close the
+ * sheet". `panel`: always there, as the sticky panel from 1024 px; "Done" starts over on
+ * Buy and YES.
+ *
+ * "Close the sheet" takes the ticket off the screen whatever it is doing: it stands for
+ * what no sheet can prevent, such as leaving the market's page.
  */
 type Surface = "bare" | "sheet" | "closing-sheet" | "panel";
 
@@ -55,6 +61,7 @@ function MarketDetailStandIn({
 }) {
   const market = useQuery(marketQuery(MARKET_ID));
   const [intent, setIntent] = useState<TradeIntent | null>(start);
+  const out = useTradeOut(MARKET_ID, surface === "sheet" && intent !== null);
   if (market.data === undefined) return null;
 
   const ticket = intent !== null && (
@@ -87,6 +94,8 @@ function MarketDetailStandIn({
           }}
           title="Trade"
           hideTitle
+          header={<p>{market.data.question}</p>}
+          dismissible={!out}
         >
           {ticket}
         </ResponsiveSheet>
@@ -142,9 +151,17 @@ export function openTicket({
 export const ticketFrame = () => document.querySelector<HTMLElement>("[data-slot=trade-ticket]");
 export const sideSegment = (name: "Buy" | "Sell") => screen.getByRole("radio", { name });
 export const outcomeSegment = (name: "YES" | "NO") => screen.getByRole("button", { name });
-/** A stake chip, by its amount: its name is the amount and the word, "25 tokens". */
+/** The amount field of the stake entry. */
+export const stakeField = () =>
+  screen.getByRole<HTMLInputElement>("textbox", { name: "Stake in tokens" });
+/** The slider of the stake entry: its thumb is what has the role. */
+export const stakeSlider = () => screen.getByRole("slider", { name: "Stake in whole tokens" });
+/** A preset of the stake entry, by its amount: its name is the amount and the word, "25 tokens". */
 export const stakeChip = (amount: string) =>
   screen.getByRole("button", { name: `${amount} tokens` });
+/** What the server said about the amount, where the stake entry shows it. */
+export const stakeRefusal = () =>
+  document.querySelector<HTMLElement>("[data-slot=stake-entry] [data-slot=inline-error]");
 export const sellChip = (portion: "Half" | "All") =>
   screen.getByRole("button", { name: new RegExp(`^${portion}`) });
 export const button = (name: string) => screen.getByRole("button", { name });

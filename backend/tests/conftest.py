@@ -8,23 +8,23 @@ serve the run.
 
 What a test of the API or of a service uses (mark the module `integration`):
 
-    settings    `.example.env` with two admins and one barista, pointing at the
-                Postgres and Redis containers. ScyllaDB points at a closed port: the
+    settings    `.example.env` with two bootstrap admins, pointing at the Postgres
+                and Redis containers. ScyllaDB points at a closed port: the
                 default suite proves the API works without it.
     clock       a `FrozenClock`; move it with `advance()` or `set()`
     container   the application's `Container`, built with that clock on the shared
                 database, started, and stopped after the test
-    factory     writes users, markets and positions directly; `factory.admin()` and
-                `factory.barista()` are users whose address has that role
-                (tests/support/factories.py)
+    factory     writes users, markets and positions directly; `factory.admin()` is
+                a bootstrap admin and `factory.barista()` a user whose row has
+                that role (tests/support/factories.py)
     app         the FastAPI application around that container
     client      an `httpx.AsyncClient` on it; paths start with `/api`, and the Origin
                 header is already set. It sends no portal header: nobody is calling
                 until `as_user` says who
     as_user     `as_user(user)` makes every request come from that user, with the
-                role the application derives from their address: a plain user, unless
-                the factory made them an admin or a barista. `as_user(user,
-                UserRole.ADMIN)` names the role instead, for a test of a guard.
+                role the application gives them: the one of their row, or ADMIN
+                for a bootstrap admin. `as_user(user, UserRole.ADMIN)` names the
+                role instead, for a test of a guard.
                 `as_user(PortalIdentity(...))` is somebody the portal named who has no
                 profile yet; `as_user(None)` is nobody again. It stands in for the
                 headers and `IdentityService`.
@@ -154,8 +154,8 @@ def _start_reaper() -> None:
 
 @pytest.fixture(scope="session")
 def base_settings() -> Settings:
-    """The committed `.example.env` with APP_ENV=test and the role lists of the tests:
-    two admins and one barista. Nothing runs behind its hosts.
+    """The committed `.example.env` with APP_ENV=test and the bootstrap admins of the
+    tests, of which there are two. Nothing runs behind its hosts.
 
     For tests that need tunables but no services; it never starts Docker.
     """
@@ -428,7 +428,7 @@ def portal_headers(base_settings: Settings) -> PortalHeaders:
 
     A request that carries them is not acted for: it goes through the real
     `authenticate_request` and `IdentityService`, so the role it gets is the one the
-    application derives. The header names are those of the settings.
+    application gives. The header names are those of the settings.
     """
 
     def headers(who: Named) -> dict[str, str]:

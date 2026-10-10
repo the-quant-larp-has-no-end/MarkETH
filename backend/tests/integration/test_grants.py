@@ -1,17 +1,20 @@
 """`GrantService`: the signup grant, the monthly grants and the admin's run
 (SPEC §2, §12 "Grants", Appendix A.3, A.5, A.8).
 
-A grant happens once because its `grants` row is unique per user and period. The months
-a user is owed are those of `APP_TIMEZONE` after the one they signed up in; the tests
-that sit on a month's edge say in UTC where that edge is, because that is where a
-calendar taken in UTC would give another answer.
+A grant happens once because its `grants` row is unique per user and period. A monthly
+grant falls due a whole number of calendar months after the sign-up, on its day and at
+its time of day in `APP_TIMEZONE`. The clock of the tests starts on 9 October 2026 at
+14:00 in Zurich, so a user the factory makes then is owed a grant on the 9th of every
+later month at 14:00 there. When exactly a grant falls due, through short months and
+clock changes, is `tests/unit/test_monthly_grants.py`; here what falls due is booked.
 """
 
 import asyncio
 import logging
+from calendar import monthrange
 from collections.abc import AsyncIterator, Iterator
 from contextlib import contextmanager
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 from zoneinfo import ZoneInfo
 
@@ -21,13 +24,20 @@ from hypothesis import HealthCheck, given
 from hypothesis import settings as hypothesis_settings
 from hypothesis import strategies as st
 from sqlalchemy import event, select, text
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.container import Container
 from app.core.config import Settings
 from app.core.degrees import CATALOGUE
-from app.core.enums import SIGNUP_GRANT_PERIOD, AccountKind, JournalKind, UserStatus
+from app.core.enums import (
+    SIGNUP_GRANT_PERIOD,
+    AccountKind,
+    JournalKind,
+    UserRole,
+    UserStatus,
+)
 from app.core.units import format_cr, to_cr
 from app.db import database as database_errors
 from app.models import Account, AuditLogEntry, Grant, JournalEntry, Posting, User
@@ -49,23 +59,32 @@ SIGNUP: Final[int] = BASE.grants.signup_grant_micro
 MONTHLY: Final[int] = BASE.grants.monthly_grant_micro
 """SIGNUP_GRANT_CR and MONTHLY_GRANT_CR of the test settings, in µCR."""
 
-NOVEMBER: Final[datetime] = datetime(2026, 11, 1, tzinfo=ZURICH)
-DECEMBER: Final[datetime] = datetime(2026, 12, 1, tzinfo=ZURICH)
-"""The first instants of the two months after `TEST_NOW`, as Zurich has them."""
+FIRST_DUE: Final[datetime] = datetime(2026, 11, 9, 14, 0, tzinfo=ZURICH)
+SECOND_DUE: Final[datetime] = datetime(2026, 12, 9, 14, 0, tzinfo=ZURICH)
+THIRD_DUE: Final[datetime] = datetime(2027, 1, 9, 14, 0, tzinfo=ZURICH)
+"""When the first three monthly grants fall due for somebody who signed up at
+`TEST_NOW`: the 9th of the three months after it, at 14:00 in Zurich."""
+
+TICK: Final[timedelta] = timedelta(microseconds=1)
+"""The smallest step a clock can take."""
 
 IMPATIENT_MS: Final[int] = 200
 """A POSTGRES_LOCK_TIMEOUT_MS short enough to sit through in a test."""
 
 
-def test_the_tests_run_where_a_month_begins_before_it_does_in_utc() -> None:
-    """What the timezone tests below stand on: the settings say Zurich, both grants
-    move credits, and a Zurich month starts while UTC is still in the one before."""
+def test_the_tests_sign_up_at_two_in_the_afternoon_of_the_ninth_in_zurich() -> None:
+    """What the tests below stand on: the settings say Zurich, both grants move
+    credits, and the time of day a grant falls due at is Zurich's. Summer time ends
+    between the sign-up and the first grant, so in UTC that grant falls due an hour
+    later in the day than the sign-up was."""
     assert BASE.app.timezone_name == "Europe/Zurich"
     assert SIGNUP > 0
     assert MONTHLY > 0
-    assert NOVEMBER.astimezone(UTC) == datetime(2026, 10, 31, 23, 0, tzinfo=UTC)
-    assert DECEMBER.astimezone(UTC) == datetime(2026, 11, 30, 23, 0, tzinfo=UTC)
-    assert TEST_NOW.astimezone(ZURICH).date() == date(2026, 10, 9)
+    assert TEST_NOW.astimezone(ZURICH) == datetime(2026, 10, 9, 14, 0, tzinfo=ZURICH)
+    assert TEST_NOW.astimezone(UTC) == datetime(2026, 10, 9, 12, 0, tzinfo=UTC)
+    assert FIRST_DUE.astimezone(UTC) == datetime(2026, 11, 9, 13, 0, tzinfo=UTC)
+    assert SECOND_DUE.astimezone(UTC) == datetime(2026, 12, 9, 13, 0, tzinfo=UTC)
+    assert THIRD_DUE.astimezone(UTC) == datetime(2027, 1, 9, 13, 0, tzinfo=UTC)
 
 
 async def without_a_grant(container: Container, name: str = "newcomer") -> User:
@@ -80,7 +99,9 @@ async def without_a_grant(container: Container, name: str = "newcomer") -> User:
                 username=name,
                 degree_level=level,
                 degree_programme=programme,
+                role=UserRole.USER,
                 status=UserStatus.ACTIVE,
+                policy_accepted_at=container.clock.now(),
                 created_at=container.clock.now(),
             )
         )
@@ -232,27 +253,32 @@ async def test_a_signup_grant_of_nothing_is_recorded_and_posts_nothing(
 # --- The monthly grants ----------------------------------------------------------------
 
 
-async def test_no_monthly_grant_is_owed_in_the_month_of_sign_up(
+async def test_no_monthly_grant_is_owed_before_a_month_has_passed_since_the_sign_up(
     container: Container, factory: Factory, clock: FrozenClock
 ) -> None:
+    """Not on the first of the next month either: the grant follows the sign-up, not
+    the calendar."""
     user = await factory.user()
 
-    assert await grant_owed_months(container.grants, container, user) == 0
-    clock.set(NOVEMBER - timedelta(microseconds=1))
-    assert await grant_owed_months(container.grants, container, user) == 0
+    for now in (
+        TEST_NOW,
+        datetime(2026, 11, 1, tzinfo=ZURICH),
+        datetime(2026, 11, 9, 0, 0, tzinfo=ZURICH),
+        FIRST_DUE - TICK,
+    ):
+        clock.set(now)
+        assert await grant_owed_months(container.grants, container, user) == 0
 
     assert await periods_of(container, user) == []
     assert await factory.balance_micro(user) == 0
     await assert_books_balance(container.uow_factory)
 
 
-async def test_the_first_monthly_grant_is_booked_as_the_month_after_sign_up_begins(
+async def test_the_first_monthly_grant_is_booked_a_month_after_the_sign_up_to_the_instant(
     container: Container, factory: Factory, clock: FrozenClock
 ) -> None:
-    """At midnight in Zurich, an hour before UTC leaves October."""
     user = await factory.user()
-    clock.set(NOVEMBER)
-    assert clock.now().month == 10
+    clock.set(FIRST_DUE)
 
     assert await grant_owed_months(container.grants, container, user) == 1
 
@@ -267,11 +293,28 @@ async def test_the_first_monthly_grant_is_booked_as_the_month_after_sign_up_begi
     await assert_books_balance(container.uow_factory)
 
 
+async def test_a_grant_is_dated_when_it_is_booked_and_filed_under_the_month_it_fell_due_in(
+    container: Container, factory: Factory, clock: FrozenClock
+) -> None:
+    """Somebody who comes by three weeks late: the row and the entry carry that
+    instant, the period is the month of the due day."""
+    user = await factory.user()
+    late = FIRST_DUE + timedelta(days=21)
+    clock.set(late)
+
+    assert await grant_owed_months(container.grants, container, user) == 1
+
+    (grant,) = [grant for grant in await grants_of(container, user) if grant.entry_id]
+    (entry,) = await entries(container, JournalKind.MONTHLY_GRANT)
+    assert (grant.period, grant.created_at, entry.created_at) == ("2026-11", late, late)
+    await assert_books_balance(container.uow_factory)
+
+
 async def test_a_repeated_monthly_grant_inserts_nothing(
     container: Container, factory: Factory, clock: FrozenClock
 ) -> None:
     user = await factory.user()
-    clock.set(DECEMBER)
+    clock.set(SECOND_DUE)
     assert await grant_owed_months(container.grants, container, user) == 2
     rows = await count_rows(container.uow_factory, Grant)
     booked = await count_rows(container.uow_factory, JournalEntry)
@@ -288,7 +331,7 @@ async def test_a_repeated_monthly_grant_inserts_nothing(
 async def test_every_missed_month_is_booked_oldest_first(
     container: Container, factory: Factory, clock: FrozenClock
 ) -> None:
-    """Signed up in October 2026 and back in the middle of February 2027."""
+    """Signed up on 9 October 2026 and back in the middle of February 2027."""
     user = await factory.user()
     clock.set(datetime(2027, 2, 14, 9, 30, tzinfo=ZURICH))
     owed = ["2026-11", "2026-12", "2027-01", "2027-02"]
@@ -308,12 +351,26 @@ async def test_every_missed_month_is_booked_oldest_first(
     await assert_books_balance(container.uow_factory)
 
 
+async def test_a_month_that_has_begun_brings_no_grant_until_its_day_has_come(
+    container: Container, factory: Factory, clock: FrozenClock
+) -> None:
+    """Back on 5 February: January's grant fell due on the 9th of January, February's
+    falls due on the 9th of February."""
+    user = await factory.user()
+    clock.set(datetime(2027, 2, 5, 18, 0, tzinfo=ZURICH))
+
+    assert await grant_owed_months(container.grants, container, user) == 3
+
+    assert await periods_of(container, user) == ["2026-11", "2026-12", "2027-01"]
+    await assert_books_balance(container.uow_factory)
+
+
 async def test_only_the_months_still_owed_are_booked(
     container: Container, factory: Factory, clock: FrozenClock
 ) -> None:
     """A user who came by in November and again in January."""
     user = await factory.user()
-    clock.set(NOVEMBER + timedelta(days=10))
+    clock.set(FIRST_DUE + timedelta(days=10))
     assert await grant_owed_months(container.grants, container, user) == 1
 
     clock.set(datetime(2027, 1, 20, tzinfo=ZURICH))
@@ -324,79 +381,132 @@ async def test_only_the_months_still_owed_are_booked(
     await assert_books_balance(container.uow_factory)
 
 
-async def test_the_month_of_sign_up_is_the_one_of_the_app_timezone(
+async def test_every_user_has_a_grant_day_of_their_own(
     container: Container, factory: Factory, clock: FrozenClock
 ) -> None:
-    """Signed up on 31 October at 23:30 UTC, which is 1 November in Zurich. November is
-    the month of sign-up, so the first grant is December's."""
+    """Two people who signed up eleven days apart are owed their grants eleven days
+    apart, month after month."""
+    early = await factory.user()
+    clock.set(datetime(2026, 10, 20, 10, 0, tzinfo=ZURICH))
+    late = await factory.user()
+
+    clock.set(datetime(2026, 11, 15, tzinfo=ZURICH))
+    assert await grant_owed_months(container.grants, container, early) == 1
+    assert await grant_owed_months(container.grants, container, late) == 0
+
+    clock.set(datetime(2026, 11, 20, 10, 0, tzinfo=ZURICH) - TICK)
+    assert await grant_owed_months(container.grants, container, late) == 0
+    clock.set(datetime(2026, 11, 20, 10, 0, tzinfo=ZURICH))
+    assert await grant_owed_months(container.grants, container, late) == 1
+
+    assert await periods_of(container, early) == ["2026-11"]
+    assert await periods_of(container, late) == ["2026-11"]
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_the_day_of_sign_up_is_the_one_of_the_app_timezone(
+    container: Container, factory: Factory, clock: FrozenClock
+) -> None:
+    """Signed up on 31 October at 23:30 UTC, which is 1 November at 00:30 in Zurich.
+    The first grant falls due on 1 December at 00:30 there and is December's, though
+    UTC is still in November then."""
     clock.set(datetime(2026, 10, 31, 23, 30, tzinfo=UTC))
     user = await factory.user()
-    assert user.created_at.astimezone(ZURICH).date() == date(2026, 11, 1)
+    due = datetime(2026, 12, 1, 0, 30, tzinfo=ZURICH)
+    assert due.astimezone(UTC) == datetime(2026, 11, 30, 23, 30, tzinfo=UTC)
 
-    clock.set(DECEMBER - timedelta(seconds=1))
+    clock.set(due - timedelta(seconds=1))
     assert await grant_owed_months(container.grants, container, user) == 0
-    clock.set(DECEMBER)
+    clock.set(due)
     assert await grant_owed_months(container.grants, container, user) == 1
 
     assert await periods_of(container, user) == ["2026-12"]
     await assert_books_balance(container.uow_factory)
 
 
-async def test_a_year_ends_like_any_other_month(
+async def test_a_sign_up_on_the_31st_is_owed_on_the_last_day_of_a_shorter_month(
     container: Container, factory: Factory, clock: FrozenClock
 ) -> None:
-    clock.set(datetime(2026, 12, 31, 22, 59, tzinfo=UTC))
+    """31 December, then 31 January, 28 February and 31 March: February takes its last
+    day, and March is back on the 31st."""
+    clock.set(datetime(2026, 12, 31, 12, 0, tzinfo=ZURICH))
     user = await factory.user()
 
-    clock.set(datetime(2026, 12, 31, 23, 0, tzinfo=UTC))
+    clock.set(datetime(2027, 1, 31, 12, 0, tzinfo=ZURICH) - TICK)
+    assert await grant_owed_months(container.grants, container, user) == 0
+    clock.set(datetime(2027, 2, 28, 12, 0, tzinfo=ZURICH) - TICK)
+    assert await grant_owed_months(container.grants, container, user) == 1
+    clock.set(datetime(2027, 2, 28, 12, 0, tzinfo=ZURICH))
+    assert await grant_owed_months(container.grants, container, user) == 1
+    clock.set(datetime(2027, 3, 30, 23, 59, tzinfo=ZURICH))
+    assert await grant_owed_months(container.grants, container, user) == 0
+    clock.set(datetime(2027, 3, 31, 12, 0, tzinfo=ZURICH))
     assert await grant_owed_months(container.grants, container, user) == 1
 
-    assert await periods_of(container, user) == ["2027-01"]
+    assert await periods_of(container, user) == ["2027-01", "2027-02", "2027-03"]
+    assert await factory.balance_micro(user) == 3 * MONTHLY
     await assert_books_balance(container.uow_factory)
 
 
-def months_after(signed_up: datetime, now: datetime) -> list[str]:
-    """The months after the one of `signed_up` up to the one of `now`, as Zurich counts
-    them, each as `YYYY-MM`. Counted in whole months since year 0, not walked."""
-    first, last = signed_up.astimezone(ZURICH), now.astimezone(ZURICH)
-    month_after_sign_up = first.year * 12 + first.month
-    this_month = last.year * 12 + last.month - 1
+def months_owed(signed_up: datetime, now: datetime) -> list[str]:
+    """The months whose grant has fallen due by `now` for somebody who signed up at
+    `signed_up`, each as `YYYY-MM`, as Zurich counts them.
+
+    Counted, not walked: the whole calendar months from the one of the sign-up to the
+    one of `now`, less the last when its day and time of day have not come yet. This
+    month's grant falls due on the day of the sign-up, or on the last day of a shorter
+    month, at the time of day of the sign-up.
+    """
+    start, end = signed_up.astimezone(ZURICH), now.astimezone(ZURICH)
+    # Months are numbered from year 0, so that the next number is the next month.
+    first_month = start.year * 12 + start.month
+    months = end.year * 12 + end.month - first_month
+    if months > 0:
+        day = min(start.day, monthrange(end.year, end.month)[1])
+        due = datetime.combine(end.date().replace(day=day), start.time(), tzinfo=ZURICH)
+        if now < due.replace(fold=0):
+            months -= 1
     return [
         f"{index // 12:04d}-{index % 12 + 1:02d}"
-        for index in range(month_after_sign_up, this_month + 1)
+        for index in range(first_month, first_month + max(months, 0))
     ]
 
 
-def test_the_oracle_of_the_property_below_counts_the_months_of_zurich() -> None:
-    assert months_after(TEST_NOW, TEST_NOW) == []
-    assert months_after(TEST_NOW, NOVEMBER - timedelta(seconds=1)) == []
-    assert months_after(TEST_NOW, NOVEMBER) == ["2026-11"]
-    assert months_after(TEST_NOW, datetime(2027, 1, 1, tzinfo=UTC)) == [
+def test_the_oracle_of_the_property_below_counts_the_grants_that_have_fallen_due() -> None:
+    assert months_owed(TEST_NOW, TEST_NOW) == []
+    assert months_owed(TEST_NOW, datetime(2026, 11, 1, tzinfo=ZURICH)) == []
+    assert months_owed(TEST_NOW, FIRST_DUE - TICK) == []
+    assert months_owed(TEST_NOW, FIRST_DUE) == ["2026-11"]
+    assert months_owed(TEST_NOW, SECOND_DUE - TICK) == ["2026-11"]
+    assert months_owed(TEST_NOW, datetime(2027, 1, 9, 13, 0, tzinfo=UTC)) == [
         "2026-11",
         "2026-12",
         "2027-01",
     ]
-    assert months_after(NOVEMBER, DECEMBER - timedelta(seconds=1)) == []
+    on_the_31st = datetime(2027, 1, 31, 8, 0, tzinfo=ZURICH)
+    assert months_owed(on_the_31st, datetime(2027, 2, 28, 7, 59, tzinfo=ZURICH)) == []
+    assert months_owed(on_the_31st, datetime(2027, 2, 28, 8, 0, tzinfo=ZURICH)) == ["2027-02"]
+    assert months_owed(on_the_31st, datetime(2027, 3, 30, 23, 0, tzinfo=ZURICH)) == ["2027-02"]
 
 
-EDGES_OF_MONTHS = st.builds(
+ENDS_OF_MONTHS = st.builds(
     lambda year, month, seconds: (
         datetime(year, month, 1, tzinfo=ZURICH) + timedelta(seconds=seconds)
     ),
     st.integers(min_value=2026, max_value=2027),
     st.integers(min_value=1, max_value=12),
-    st.integers(min_value=-3 * 3600, max_value=3 * 3600),
+    st.integers(min_value=-4 * 86_400, max_value=3 * 3600),
 )
-"""Instants within three hours of the start of a Zurich month: on both sides of it, and
-on both sides of the start of the same month in UTC."""
+"""Instants from four days before the start of a Zurich month to three hours after it:
+the 28th to the 31st, and both sides of the start of the month in Zurich and in UTC."""
 
 INSTANTS = st.one_of(
-    EDGES_OF_MONTHS,
+    ENDS_OF_MONTHS,
     st.integers(min_value=0, max_value=2 * 365 * 86_400).map(
         lambda seconds: datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=seconds)
     ),
 )
-"""An edge of a month, or any second of the two years from 2026 on."""
+"""The end of a month, or any second of the two years from 2026 on."""
 
 
 @hypothesis_settings(
@@ -405,7 +515,7 @@ INSTANTS = st.one_of(
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
 @given(signed_up=INSTANTS, away=INSTANTS)
-async def test_a_user_is_owed_one_grant_for_every_month_after_the_one_they_signed_up_in(
+async def test_a_user_is_owed_one_grant_for_every_month_that_has_passed_since_the_sign_up(
     container: Container,
     factory: Factory,
     clock: FrozenClock,
@@ -418,7 +528,7 @@ async def test_a_user_is_owed_one_grant_for_every_month_after_the_one_they_signe
     clock.set(signed_up)
     user = await factory.user()
     clock.set(now)
-    owed = months_after(signed_up, now)
+    owed = months_owed(signed_up, now)
 
     assert await grant_owed_months(container.grants, container, user) == len(owed)
     assert await grant_owed_months(container.grants, container, user) == 0
@@ -449,7 +559,7 @@ async def test_a_monthly_grant_of_nothing_is_recorded_and_posts_nothing(
 ) -> None:
     """MONTHLY_GRANT_CR=0: the rows are there, so the months are not owed again."""
     user = await factory.user()
-    clock.set(DECEMBER)
+    clock.set(SECOND_DUE)
     grants = grants_with(container, settings, monthly_grant_micro=0)
 
     assert await grant_owed_months(grants, container, user) == 2
@@ -469,30 +579,49 @@ async def test_a_monthly_grant_of_nothing_is_recorded_and_posts_nothing(
 
 
 @pytest.mark.parametrize(
-    ("now", "next_grant_on"),
+    ("now", "next_grant_at"),
     [
-        (TEST_NOW, date(2026, 11, 1)),
-        (datetime(2026, 10, 31, 22, 59, 59, tzinfo=UTC), date(2026, 11, 1)),
-        (datetime(2026, 10, 31, 23, 0, tzinfo=UTC), date(2026, 12, 1)),
-        (datetime(2026, 12, 15, 12, 0, tzinfo=UTC), date(2027, 1, 1)),
-        (datetime(2027, 3, 31, 21, 59, 59, tzinfo=UTC), date(2027, 4, 1)),
-        (datetime(2027, 3, 31, 22, 0, tzinfo=UTC), date(2027, 5, 1)),
+        (TEST_NOW, FIRST_DUE),
+        (datetime(2026, 11, 1, tzinfo=ZURICH), FIRST_DUE),
+        (FIRST_DUE - TICK, FIRST_DUE),
+        (FIRST_DUE, SECOND_DUE),
+        (datetime(2026, 12, 15, 12, 0, tzinfo=UTC), THIRD_DUE),
+        (datetime(2027, 3, 31, 22, 0, tzinfo=UTC), datetime(2027, 4, 9, 14, 0, tzinfo=ZURICH)),
     ],
     ids=[
-        "inside-a-month",
-        "the-last-second-of-october-in-zurich",
-        "the-first-of-november-in-zurich",
-        "december",
-        "the-last-second-of-march-in-summer-time",
-        "the-first-of-april-in-summer-time",
+        "at-the-sign-up",
+        "on-the-first-of-the-next-month",
+        "the-instant-before-the-first-grant",
+        "as-the-first-grant-falls-due",
+        "between-the-second-and-the-third",
+        "in-summer-time",
     ],
 )
-async def test_the_next_grant_falls_due_on_the_first_of_the_next_month_in_the_app_timezone(
-    container: Container, clock: FrozenClock, now: datetime, next_grant_on: date
+async def test_the_next_grant_of_a_user_falls_due_on_the_next_monthly_return_of_their_sign_up(
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    now: datetime,
+    next_grant_at: datetime,
 ) -> None:
+    """A grant that falls due this very instant is owed, so the next is the one after."""
+    user = await factory.user()
     clock.set(now)
 
-    assert container.grants.next_grant_date() == next_grant_on
+    assert container.grants.next_grant_at(user) == next_grant_at
+
+
+async def test_the_next_grant_is_asked_per_user(
+    container: Container, factory: Factory, clock: FrozenClock
+) -> None:
+    early = await factory.user()
+    clock.set(datetime(2026, 10, 31, 9, 0, tzinfo=ZURICH))
+    on_the_31st = await factory.user()
+
+    assert container.grants.next_grant_at(early) == FIRST_DUE
+    assert container.grants.next_grant_at(on_the_31st) == datetime(
+        2026, 11, 30, 9, 0, tzinfo=ZURICH
+    )
 
 
 # --- The admin's run -------------------------------------------------------------------
@@ -508,14 +637,14 @@ async def test_the_admin_run_books_what_every_active_user_is_owed_and_reports_it
     admin = await factory.admin()
     since_october = await factory.user()
     suspended = await factory.user(status=UserStatus.SUSPENDED)
-    clock.set(NOVEMBER + timedelta(days=3))
+    clock.set(FIRST_DUE + timedelta(days=3))
     since_november = await factory.user()
-    clock.set(DECEMBER + timedelta(days=3))
+    clock.set(SECOND_DUE + timedelta(days=4))
 
     run = await container.grants.run_monthly(factory.identity(admin))
 
     # The admin is a user like any other: two months for them and for the user of
-    # October, one for the user of November, none for the suspended one.
+    # October, one for the user of 12 November, none for the suspended one.
     assert run_report(run) == (3, 0, 5)
     assert run.total_cr == to_cr(5 * MONTHLY)
     assert await periods_of(container, admin) == ["2026-11", "2026-12"]
@@ -545,7 +674,7 @@ async def test_suspended_users_get_no_monthly_grant_from_the_run(
 ) -> None:
     admin = await factory.admin()
     suspended = await factory.user(status=UserStatus.SUSPENDED, balance_micro=SIGNUP)
-    clock.set(DECEMBER)
+    clock.set(SECOND_DUE)
 
     run = await container.grants.run_monthly(factory.identity(admin))
 
@@ -560,7 +689,7 @@ async def test_a_second_run_books_nothing_and_is_audited_all_the_same(
 ) -> None:
     admin = await factory.admin()
     await factory.user()
-    clock.set(NOVEMBER)
+    clock.set(FIRST_DUE)
     first = await container.grants.run_monthly(factory.identity(admin))
     booked = await count_rows(container.uow_factory, JournalEntry)
 
@@ -583,7 +712,7 @@ async def test_two_runs_at_once_book_every_grant_once(
     admin, second_admin = await factory.admin(), await factory.admin(1)
     for _ in range(4):
         await factory.user()
-    clock.set(DECEMBER)
+    clock.set(SECOND_DUE)
 
     runs = await asyncio.gather(
         container.grants.run_monthly(factory.identity(admin)),
@@ -606,7 +735,7 @@ async def test_the_run_locks_a_users_account_before_it_touches_their_grants(
     waited for the account would hold `vis:issuance` while it waits, and a code that
     the same user redeems holds the account while it waits for `vis:issuance`."""
     admin = await factory.admin()
-    clock.set(NOVEMBER)
+    clock.set(FIRST_DUE)
 
     with recorded_statements(container) as statements:
         run = await container.grants.run_monthly(factory.identity(admin))
@@ -637,7 +766,7 @@ async def test_a_user_whose_grants_fail_costs_only_that_user_and_a_repeat_retrie
     admin = await factory.admin()
     unlucky = await factory.user()
     after_them = await factory.user()
-    clock.set(DECEMBER)
+    clock.set(SECOND_DUE)
     post = container.ledger.post
     posted_for_the_unlucky: list[str] = []
 
@@ -701,7 +830,7 @@ async def test_a_user_whose_lock_times_out_counts_as_failed_and_the_run_goes_on(
     admin = await factory.admin()
     busy = await factory.user()
     after_them = await factory.user()
-    clock.set(NOVEMBER)
+    clock.set(FIRST_DUE)
 
     async with owner_engine.connect() as holder:
         await holder.execute(
@@ -734,6 +863,72 @@ async def test_a_user_whose_lock_times_out_counts_as_failed_and_the_run_goes_on(
     await assert_books_balance(container.uow_factory)
 
 
+class DriverError(Exception):
+    """Stands in for the driver's error, which carries Postgres' SQLSTATE."""
+
+    def __init__(self, sqlstate: str) -> None:
+        super().__init__(f"SQLSTATE {sqlstate}")
+        self.sqlstate = sqlstate
+
+
+def ended_by_postgres(sqlstate: str) -> DBAPIError:
+    """A transaction Postgres ended for another, on a connection that is whole."""
+    return OperationalError("UPDATE accounts", {}, DriverError(sqlstate))
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ended_by_postgres("40P01"),
+        ended_by_postgres("40001"),
+        PoolTimeoutError("QueuePool limit reached, connection timed out"),
+    ],
+    ids=["deadlock-victim", "serialization-failure", "pool-exhausted"],
+)
+async def test_a_user_whose_transaction_did_not_get_through_counts_as_failed_and_the_run_goes_on(
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    error: Exception,
+) -> None:
+    """Postgres ended the transaction of the second of three users for another, or the
+    pool had no connection free for it. Postgres is up, so the run does not end there,
+    as it does not for a lock that was not granted in time: that user waits for the
+    next run, and a warning says so without a traceback."""
+    admin = await factory.admin()
+    unlucky = await factory.user()
+    after_them = await factory.user()
+    clock.set(FIRST_DUE)
+    grant_owed = container.grants.grant_owed_months
+    assert database_errors.is_transient(error)
+
+    async def fail_for_the_unlucky(uow: UnitOfWork, user: User, account: Account) -> int:
+        if user.id == unlucky.id:
+            raise error
+        return await grant_owed(uow, user, account)
+
+    with monkeypatch.context() as patched, caplog.at_level(logging.WARNING, "app.services.grants"):
+        patched.setattr(container.grants, "grant_owed_months", fail_for_the_unlucky)
+        run = await container.grants.run_monthly(factory.identity(admin))
+
+    assert run_report(run) == (3, 1, 2)
+    assert await periods_of(container, unlucky) == []
+    assert await periods_of(container, admin) == ["2026-11"]
+    assert await periods_of(container, after_them) == ["2026-11"]
+    (logged,) = [record for record in caplog.records if record.name == "app.services.grants"]
+    assert logged.levelno == logging.WARNING
+    assert str(unlucky.id) in logged.getMessage()
+    assert logged.exc_info is None
+
+    again = await container.grants.run_monthly(factory.identity(admin))
+
+    assert run_report(again) == (3, 0, 1)
+    assert await periods_of(container, unlucky) == ["2026-11"]
+    await assert_books_balance(container.uow_factory)
+
+
 async def test_a_lost_connection_ends_the_run_instead_of_failing_every_user(
     impatient: Container,
     container: Container,
@@ -748,7 +943,7 @@ async def test_a_lost_connection_ends_the_run_instead_of_failing_every_user(
     admin = await factory.admin()
     cut_off = await factory.user()
     after_them = await factory.user()
-    clock.set(NOVEMBER)
+    clock.set(FIRST_DUE)
     grant_owed = impatient.grants.grant_owed_months
 
     async def lose_the_connection(uow: UnitOfWork, user: User, account: Account) -> int:
@@ -764,7 +959,7 @@ async def test_a_lost_connection_ends_the_run_instead_of_failing_every_user(
             await impatient.grants.run_monthly(factory.identity(admin))
 
     assert database_errors.is_unavailable(lost.value)
-    assert not database_errors.is_lock_timeout(lost.value)
+    assert not database_errors.is_transient(lost.value)
     assert await periods_of(container, admin) == ["2026-11"]
     assert await periods_of(container, cut_off) == []
     assert await periods_of(container, after_them) == []
@@ -789,7 +984,7 @@ async def test_the_route_runs_the_grants_for_an_admin_and_answers_with_the_repor
 ) -> None:
     admin = await factory.admin()
     user = await factory.user()
-    clock.set(DECEMBER)
+    clock.set(SECOND_DUE)
     as_user(admin)
 
     response = await client.post("/api/admin/grants/monthly")
@@ -815,7 +1010,7 @@ async def test_the_route_is_for_admins_and_books_nothing_for_anybody_else(
     clock: FrozenClock,
 ) -> None:
     user, barista = await factory.user(), await factory.barista()
-    clock.set(DECEMBER)
+    clock.set(SECOND_DUE)
 
     for somebody in (user, barista):
         as_user(somebody)
