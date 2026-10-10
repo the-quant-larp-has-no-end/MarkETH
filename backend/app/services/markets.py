@@ -362,6 +362,9 @@ class MarketService:
         * `buy_slider = MarketView.buy_slider(<stake left>, <balance>, can_trade)`:
           the whole credits between which a buy for a budget passes right now, in
           steps of `TRADE_STAKE_STEP_CR`; null when the viewer cannot buy anything.
+        * `can_buy = MarketView.can_buy(<stake left>, <balance>, can_trade)`: whether
+          any amount is a buy that passes right now. False once the stake limit is
+          reached, so the trade sheet takes no amount then.
         * `sell_presets = MarketView.sell_presets(<the market>, <the positions>,
           can_trade)`: half and all of each holding, each with what it brings in at
           the price of this read, so the client halves, prices and compares nothing
@@ -495,6 +498,7 @@ class MarketService:
             buy=self._view.buy_entries(market, stake_left_micro, balance_micro, can_trade),
             stake_presets=self._view.stake_presets(stake_left_micro, balance_micro, can_trade),
             buy_slider=self._view.buy_slider(stake_left_micro, balance_micro, can_trade),
+            can_buy=self._view.can_buy(stake_left_micro, balance_micro, can_trade),
             sell_presets=self._view.sell_presets(market, positions, can_trade),
             sell=self._view.sell_entries(positions, can_trade),
             can_trade=can_trade,

@@ -288,6 +288,12 @@ class MarketViewer(ResponseModel):
     is below the smallest buy. An amount typed in between two positions is judged by
     `GET /markets/{id}/quote`."""
 
+    can_buy: bool
+    """Whether any amount is a buy the viewer can make right now: they may trade, and
+    the stake left and the balance both cover the smallest buy (`min_trade_cr` of
+    `GET /config`). While it is false no amount passes, whatever is sent as
+    `amount_cr`, so the trade sheet takes none."""
+
     sell_presets: list[SellPreset]
     """Always four entries: YES half, YES all, NO half, NO all."""
 

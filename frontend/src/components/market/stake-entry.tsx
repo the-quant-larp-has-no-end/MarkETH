@@ -28,7 +28,10 @@ export type StakeEntryProps = {
   stakeLimitCr: string;
   /** The API's message while the server refuses the amount. */
   refusal?: string | null;
-  /** Switches all three controls off: the viewer cannot trade, or a trade waits. */
+  /**
+   * Switches all three controls off: the viewer cannot trade, the server says that no
+   * amount is a buy (`viewer.can_buy`), or a trade waits.
+   */
   disabled?: boolean;
   className?: string;
 };

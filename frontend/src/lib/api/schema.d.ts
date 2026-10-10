@@ -1841,6 +1841,14 @@ export interface components {
              */
             buy_slider: components["schemas"]["BuySlider"] | null;
             /**
+             * Can Buy
+             * @description Whether any amount is a buy the viewer can make right now: they may trade, and
+             *     the stake left and the balance both cover the smallest buy (`min_trade_cr` of
+             *     `GET /config`). While it is false no amount passes, whatever is sent as
+             *     `amount_cr`, so the trade sheet takes none.
+             */
+            can_buy: boolean;
+            /**
              * Can Settle
              * @description Whether the viewer is someone who may resolve or void this market: an admin who
              *     never traded it (A.4). An admin who did trade it is answered 403 by both actions,

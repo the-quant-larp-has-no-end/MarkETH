@@ -1756,6 +1756,11 @@
             ],
             "description": "Where the slider of a buy by amount runs, counted in whole credits: every\nmultiple of `step` from `min` to `max` is a budget a buy passes with, sent as\n`amount_cr`, and `step` is `stake_step_cr` of `GET /config`. Null when the viewer\ncannot buy anything right now: they may not trade, or the stake left or the balance\nis below the smallest buy. An amount typed in between two positions is judged by\n`GET /markets/{id}/quote`."
           },
+          "can_buy": {
+            "description": "Whether any amount is a buy the viewer can make right now: they may trade, and\nthe stake left and the balance both cover the smallest buy (`min_trade_cr` of\n`GET /config`). While it is false no amount passes, whatever is sent as\n`amount_cr`, so the trade sheet takes none.",
+            "title": "Can Buy",
+            "type": "boolean"
+          },
           "can_settle": {
             "description": "Whether the viewer is someone who may resolve or void this market: an admin who\nnever traded it (A.4). An admin who did trade it is answered 403 by both actions,\nand another admin has to settle it. This says who may settle, not when: which\nactions the market's status allows is SPEC §6. False for everybody who is no admin.",
             "title": "Can Settle",
@@ -1898,6 +1903,7 @@
           "buy",
           "stake_presets",
           "buy_slider",
+          "can_buy",
           "sell_presets",
           "sell",
           "can_trade",

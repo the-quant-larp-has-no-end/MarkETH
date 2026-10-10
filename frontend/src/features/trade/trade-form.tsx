@@ -79,9 +79,11 @@ function aboutTheSize(error: ApiError, side: TradeSide): string {
  * It decides nothing about amounts. The amount of a buy is the text of the amount field
  * and the size of a sell the text of the shares field, each sent as it stands; whether it
  * can be traded is the server's answer to the quote. Which preset can be chosen is its
- * `allowed`, whether selling is offered is `allowed` of the sell presets, and whether the
- * viewer may trade is `can_trade`. The quote on screen goes
- * along as the guard of the trade.
+ * `allowed`, whether selling is offered is `allowed` of the sell presets, whether the
+ * viewer may trade is `can_trade`, and whether any amount is a buy is `can_buy`: while it
+ * is false, at the stake limit or without the balance of the smallest buy, the stake
+ * entry takes no amount and no quote is asked. The quote on screen goes along as the
+ * guard of the trade.
  *
  * While a trade waits for its verdict (DESIGN.md §14) the form shows that trade as it was
  * sent, with everything disabled, and offers nothing but "Try again".
@@ -118,11 +120,14 @@ export function TradeForm({
   // figure is not finished.
   const size = side === "BUY" ? stake : shares;
   const finished = size !== "" && !size.endsWith(".");
-  const entered: QuoteRequest | null = !finished
-    ? null
-    : side === "BUY"
-      ? { side, outcome, amount_cr: stake }
-      : { side, outcome, shares };
+  // The server says that no amount is a buy right now: there is nothing to ask about one.
+  const nothingToBuy = side === "BUY" && !viewer.can_buy;
+  const entered: QuoteRequest | null =
+    !finished || nothingToBuy
+      ? null
+      : side === "BUY"
+        ? { side, outcome, amount_cr: stake }
+        : { side, outcome, shares };
   // A trade that waits was made from a request: that one is what was sent.
   const request = attempt?.request ?? entered;
 
@@ -225,7 +230,7 @@ export function TradeForm({
             stakeLeftCr={stakeLimit.stake_left_cr}
             stakeLimitCr={stakeLimit.stake_limit_cr}
             refusal={sizeRefused === null ? null : aboutTheSize(sizeRefused, side)}
-            disabled={waiting || !viewer.can_trade}
+            disabled={waiting || !viewer.can_trade || !viewer.can_buy}
           />
         ) : (
           <SharesEntry

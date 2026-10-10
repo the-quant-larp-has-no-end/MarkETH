@@ -235,6 +235,7 @@ export function marketViewer(overrides: Partial<MarketViewer> = {}): MarketViewe
       { amount_cr: "100", allowed: true },
     ],
     buy_slider: { min: 1, max: 100, step: 1 },
+    can_buy: true,
     sell_presets: [
       { outcome: "YES", portion: "HALF", shares: "0", proceeds_cr: "0", allowed: false },
       { outcome: "YES", portion: "ALL", shares: "0", proceeds_cr: "0", allowed: false },

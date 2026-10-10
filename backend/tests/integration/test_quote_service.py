@@ -1315,6 +1315,48 @@ async def test_every_position_of_the_buy_slider_is_quoted_and_the_step_beyond_it
     await assert_books_balance(container.uow_factory)
 
 
+async def test_what_can_buy_says_is_what_the_quote_and_the_trade_answer(
+    client: httpx.AsyncClient, container: Container, factory: Factory, as_user: ActAs
+) -> None:
+    """`viewer.can_buy` of the market page, the quote and the trade are one rule. At the
+    stake limit and with an empty account it is false, and the smallest buy is refused
+    for the reason that made it so. With the smallest buy and half a credit more left
+    it is true, and all of what is left is a buy that executes."""
+    pricing = container.settings.pricing
+    limit, smallest = pricing.max_stake_per_user_market_micro, pricing.min_trade_micro
+    market = await factory.market()
+    at_the_limit = await factory.user(balance_micro=WALLET)
+    await factory.position(
+        at_the_limit, market, Outcome.YES, shares_micro=5 * MICRO, cost_micro=limit
+    )
+    broke = await factory.user(balance_micro=0)
+    left = smallest + MICRO // 2
+    nearly = await factory.user(balance_micro=WALLET)
+    await factory.position(
+        nearly, market, Outcome.YES, shares_micro=5 * MICRO, cost_micro=limit - left
+    )
+
+    async def can_buy(trader: User) -> bool:
+        as_user(trader)
+        detail = MarketDetailResponse.model_validate(
+            (await client.get(f"/api/markets/{market.id}")).json()
+        )
+        return detail.viewer.can_buy
+
+    for trader, code in ((at_the_limit, "LIMIT_EXCEEDED"), (broke, "INSUFFICIENT_BALANCE")):
+        assert not await can_buy(trader)
+        await refused_alike(client, container, market.id, buy_for(Outcome.NO, smallest), 409, code)
+
+    assert await can_buy(nearly)
+    quoted = await get_quote(client, market.id, buy_for(Outcome.NO, left))
+    assert quoted.status_code == 200, quoted.text
+    bought = await post_trade(client, market.id, buy_for(Outcome.NO, left))
+    assert bought.status_code == 201, bought.text
+    assert not await can_buy(nearly)
+
+    await assert_books_balance(container.uow_factory)
+
+
 async def test_every_position_of_the_slider_of_each_outcome_is_quoted_and_the_step_beyond_is_not(
     client: httpx.AsyncClient, container: Container, factory: Factory, as_user: ActAs
 ) -> None:
