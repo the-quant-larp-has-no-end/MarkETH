@@ -65,6 +65,10 @@ SCANNED: Final[dict[str, str]] = {"code": "ABCD-EFGH"}
 NOT_A_MARKET: Final[str] = "/api/markets/not-a-uuid"
 """A member route with a path it cannot take: 422 for whoever gets past its guard."""
 
+STREAM: Final[str] = "/api/stream"
+"""The event stream, asked for without its `tab`: 422 for whoever gets past its guard,
+and no stream."""
+
 MEMBER_OPERATIONS: Final[tuple[Operation, ...]] = (
     ("GET", ME),
     ("GET", "/api/markets"),
@@ -74,9 +78,10 @@ MEMBER_OPERATIONS: Final[tuple[Operation, ...]] = (
     ("POST", "/api/codes/redeem"),
     ("POST", BARISTA_ROUTE),
     ("GET", ADMIN_ROUTE),
+    ("GET", STREAM),
 )
 """Routes behind the member guard, of every kind: read and write, plain, barista and
-admin."""
+admin, and the event stream."""
 
 PROFILE_BODY: Final[dict[str, object]] = {
     "username": "newcomer",

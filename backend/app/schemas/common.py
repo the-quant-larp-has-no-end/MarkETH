@@ -74,6 +74,11 @@ the price is near zero), and that number of shares must still fit into the answe
 DEFAULT_PAGE_SIZE: Final[int] = 50
 MAX_PAGE_SIZE: Final[int] = 200
 
+MAX_ERRORS_LISTED: Final[int] = 50
+"""The most entries `details.errors` of a `VALIDATION_ERROR` has: the first ones the
+request was refused with. No form has that many fields, and a request made of
+thousands of fields nobody asked for is not answered with a line for each."""
+
 _PLAIN_DECIMAL: Final[re.Pattern[str]] = re.compile(r"-?[0-9]+(\.[0-9]+)?")
 
 SENTENCE: Final[str] = "sentence"
@@ -87,6 +92,12 @@ AMOUNT_NOT_POSITIVE_MESSAGE: Final[str] = "Enter an amount above 0."
 AMOUNT_NEGATIVE_MESSAGE: Final[str] = "Enter an amount of 0 or more."
 AMOUNT_ZERO_MESSAGE: Final[str] = "Enter an amount other than 0."
 """What an amount field says for each rule an amount can break (`_DecimalString`)."""
+
+NOT_A_NUMBER_OF_SHARES_MESSAGE: Final[str] = "Enter a number of shares, for example 50."
+SHARES_NOT_POSITIVE_MESSAGE: Final[str] = "Enter a number of shares above 0."
+SHARES_TOO_LARGE_MESSAGE: Final[str] = "Enter a smaller number of shares."
+"""What a size in shares says for the rules it words itself (`PositiveShareAmount`).
+Its decimal places are told like an amount's, with `TOO_MANY_PLACES_MESSAGE`."""
 
 ACCEPT_THE_POLICY_MESSAGE: Final[str] = "Accept the usage policy to continue."
 """What a request says that has to state the acceptance of the usage policy and does
@@ -282,9 +293,17 @@ ShareAmount = Annotated[Decimal, _DecimalString()]
 """Shares, zero or more. One winning share pays 1 CR."""
 
 PositiveShareAmount = Annotated[
-    Decimal, _DecimalString(positive=True, integer_digits=REQUEST_INTEGER_DIGITS)
+    Decimal,
+    _DecimalString(positive=True, integer_digits=REQUEST_INTEGER_DIGITS),
+    in_its_own_words(
+        decimal_string=NOT_A_NUMBER_OF_SHARES_MESSAGE,
+        decimal_not_positive=SHARES_NOT_POSITIVE_MESSAGE,
+        decimal_too_large=SHARES_TOO_LARGE_MESSAGE,
+        decimal_places=TOO_MANY_PLACES_MESSAGE,
+    ),
 ]
-"""Shares a request asks for: more than zero, below 10^9."""
+"""Shares a request asks for: more than zero, below 10^9. A rule it breaks is told in
+words about shares, where an amount speaks of an amount."""
 
 Probability = Annotated[float, Field(ge=0, le=1)]
 """A price in [0, 1], rounded to `PRICE_DISPLAY_DECIMALS + 2` places (Appendix A.2)."""
@@ -347,14 +366,15 @@ class ErrorResponse(ResponseModel):
     object, empty unless the code is one of these:
 
     * `VALIDATION_ERROR`. A request that does not match its schema: `errors`, a list
-      of `{loc, msg, type}`, one per field. `loc` ends with the name of the field,
-      `msg` is a sentence for the person who filled it in, to be shown under the
-      field as it is ("Use at most 200 characters."), and `type` names the rule
-      that was broken. A rule a service checks: `field`, the name of the offending
-      field, and `message` is the sentence for it. A profile created without
-      `policy_accepted: true` is such a rule, and its `field` is `policy_accepted`;
-      so is a filter of the leaderboard whose `min_…` is above its `max_…`, with
-      the `min_…` as its `field`.
+      of `{loc, msg, type}`, one per field, the first 50 at most. `loc` ends with the
+      name of the field, `msg` is a sentence for the person who filled it in, to be
+      shown under the field as it is ("Use at most 200 characters."), and `type`
+      names the rule that was broken. A body that is no JSON has one entry, whose
+      `loc` begins with `body` and whose `type` is `json_invalid`. A rule a service
+      checks: `field`, the name of the offending field, and `message` is the
+      sentence for it. A profile created without `policy_accepted: true` is such a
+      rule, and its `field` is `policy_accepted`; so is a filter of the leaderboard
+      whose `min_…` is above its `max_…`, with the `min_…` as its `field`.
     * `FORBIDDEN`, when the portal's id is not an address MarkETH is open to:
       `allowed_domains`, a list of the domains it is open to.
     * `PROFILE_REQUIRED`: `name` and `email`, who the portal says is calling. `name`
@@ -367,20 +387,21 @@ class ErrorResponse(ResponseModel):
       `MAX_PROPOSALS_PER_USER_PER_DAY`, `MAX_OPEN_MARKETS`, `MAX_MARKET_BUDGET`,
       `MAX_AGGREGATE_LOSS_BUDGET`, `MAX_CODE_ISSUANCE_PER_MONTH`,
       `ONE_CODE_PER_USER` or `MAX_ADMIN_ADJUSTMENT_CR`. With
-      `MAX_STAKE_PER_USER_MARKET` also `stake_limit_cr` and `stake_left_cr`; with
-      `MAX_CODE_ISSUANCE_PER_MONTH` also `issued_cr`, `requested_cr` and `cap_cr`;
-      with `MAX_ADMIN_ADJUSTMENT_CR` also `requested_cr`, what the adjustment would
-      add, and `cap_cr`, the most one adjustment may add.
+      `MAX_STAKE_PER_USER_MARKET` also `stake_limit_cr`, `stake_left_cr` and
+      `required_cr`, what the buy costs; with `MAX_CODE_ISSUANCE_PER_MONTH` also
+      `issued_cr`, `requested_cr` and `cap_cr`; with `MAX_ADMIN_ADJUSTMENT_CR` also
+      `requested_cr`, what the adjustment would add, and `cap_cr`, the most one
+      adjustment may add.
     * `INSUFFICIENT_BALANCE`: `balance_cr` and `required_cr`. Where an admin debits
       somebody's balance, they are what that account holds and what the debit takes.
     * `SERVICE_UNAVAILABLE`, from `GET /health` only: `postgres`, `redis` and
       `scylla`, each `up` or `down`.
 
     A quote is answered like its trade. `GET /markets/{id}/quote` gives a buy the
-    caller could not make the error the trade would get, with the same details:
-    `LIMIT_EXCEEDED` with `MAX_STAKE_PER_USER_MARKET`, `stake_limit_cr` and
-    `stake_left_cr` above the stake left, `INSUFFICIENT_BALANCE` with `balance_cr`
-    and `required_cr` above the balance.
+    caller could not make the error the trade would get, with the same message and
+    details: `LIMIT_EXCEEDED` with `MAX_STAKE_PER_USER_MARKET`, `stake_limit_cr`,
+    `stake_left_cr` and `required_cr` above the stake left, `INSUFFICIENT_BALANCE`
+    with `balance_cr` and `required_cr` above the balance.
 
     Amounts in `details` are decimal strings like every `*_cr` field.
     """

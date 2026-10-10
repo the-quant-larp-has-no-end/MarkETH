@@ -24,6 +24,7 @@ from app.repositories.unit_of_work import UnitOfWork
 from app.services import UowFactory
 from app.services.account import AccountService
 from app.services.admin_users import AdminUserService
+from app.services.announcer import Announcer, LeaderboardPace
 from app.services.audit import AuditService
 from app.services.codes import CodeService
 from app.services.email_policy import EmailPolicy
@@ -34,6 +35,8 @@ from app.services.identity import IdentityService
 from app.services.invariants import InvariantChecker
 from app.services.leaderboard import LeaderboardService
 from app.services.ledger import LedgerService
+from app.services.live_events import LiveEvents
+from app.services.live_hub import LiveHub
 from app.services.live_quotes import LiveQuoteService
 from app.services.market_access import MarketAccess
 from app.services.market_lifecycle import MarketLifecycleService
@@ -74,10 +77,19 @@ class Container:
         self.scylla = ScyllaClient(settings.scylla)
         self.quote_history = QuoteHistoryStore(self.scylla, settings.scylla)
 
+        # The event stream. A unit of work hands what its transaction announced to
+        # the announcer once the commit has returned; the hub holds the open
+        # streams and gives each event to the ones it is for.
+        self.live = LiveHub(settings.live, clock)
+        self.announcer = Announcer(self.live, self.market_cache)
+        self.leaderboard_pace = LeaderboardPace(settings.live, clock, self.live.publish)
+        self.live.watch(self.leaderboard_pace.saw)
+
         # Services, in dependency order.
         uow_factory = self.uow_factory
         self.market_view = MarketView(settings)
         self.market_access = MarketAccess()
+        self.live_events = LiveEvents(self.market_view)
         self.ledger = LedgerService()
         self.audit = AuditService(clock)
         self.email_policy = EmailPolicy(settings)
@@ -156,20 +168,32 @@ class Container:
         return cls(settings, clock=clock or SystemClock(), database=database)
 
     async def start(self) -> None:
-        """Start what runs in the background: the listener for live quotes.
+        """Start what runs in the background: the listener for live quotes and the
+        ticker of the event stream.
 
         Safe with Redis or ScyllaDB down. The listener waits at most one Redis timeout
         for its first connection and otherwise starts disconnected and keeps retrying;
-        ScyllaDB is not contacted until its first statement.
+        ScyllaDB is not contacted until its first statement. The ticker reaches no
+        store: it beats on the open streams and ends the ones whose life is over.
         """
         await self.quote_bus.start()
+        await self.live.start()
 
     async def stop(self) -> None:
-        """Release every connection. Safe to call without `start`, and once only.
+        """End every open stream and release every connection. Safe to call without
+        `start`, and once only.
 
-        Each step runs even if an earlier one failed; the failure is logged.
+        The streams go first: the pace of the leaderboard drops what it still
+        owes, then the hub ends every stream at once and its ticker. Each step
+        runs even if an earlier one failed; the failure is logged.
         """
-        steps = [self.quote_bus.stop, self.redis.close, self.scylla.close]
+        steps = [
+            self._stop_leaderboard_pace,
+            self.live.stop,
+            self.quote_bus.stop,
+            self.redis.close,
+            self.scylla.close,
+        ]
         if self._owns_database:
             steps.append(self.database.dispose)
         for step in steps:
@@ -178,5 +202,8 @@ class Container:
             except Exception:
                 logger.exception("Shutdown step %s failed", step.__qualname__)
 
+    async def _stop_leaderboard_pace(self) -> None:
+        self.leaderboard_pace.stop()
+
     def _new_unit_of_work(self) -> UnitOfWork:
-        return UnitOfWork(self.database.session_factory)
+        return UnitOfWork(self.database.session_factory, self.announcer)

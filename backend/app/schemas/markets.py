@@ -2,8 +2,8 @@
 
 The frontend computes nothing (golden rule 6), so a market carries every number its
 screens show: display probabilities, the effective status, and for the viewer their
-holdings, their stake, which buy buttons would be accepted, between which amounts the
-slider of a buy runs and how many shares each sell button stands for.
+holdings, their stake, what they can buy of each outcome right now, and how many shares
+each sell button stands for and what it would bring in.
 
 How much liquidity a market has is VIS's business. A proposal names none, an admin
 picks the tier when approving, and a market tells its tier, its b and its loss budget
@@ -137,20 +137,49 @@ class StakePreset(ResponseModel):
 
 
 class BuySlider(ResponseModel):
-    """The slider and the number field of a buy on the trade sheet (A.11): the whole
-    credits between which the viewer can buy right now, and the step between two
-    positions. JSON integers, as a range input takes them. Every multiple of `step`
-    from `min` to `max` is a budget a buy passes with: send it as `amount_cr`."""
+    """The slider of a buy on the trade sheet (A.11): the whole shares of one outcome
+    between which the viewer can buy right now, and the step between two positions.
+    JSON integers, as a range input takes them. Every multiple of `step` from `min`
+    to `max` is a size a buy passes with: send it as `shares`."""
 
     min: int
-    """The smallest multiple of `step` that is a trade: at least `min_trade_cr`."""
+    """The smallest multiple of `step` that is a trade: at least `min_trade_shares`."""
 
     max: int
-    """The largest multiple of `step` that both the stake left and the balance cover.
-    Never below `min`."""
+    """The largest multiple of `step` whose cost the stake left and the balance both
+    cover at the price of this answer. Never below `min`."""
 
     step: int
-    """`stake_step_cr` of `GET /config`."""
+    """`share_step` of `GET /config`."""
+
+
+class BuyPreset(ResponseModel):
+    """One shortcut of a buy on the trade sheet (A.11)."""
+
+    shares: ShareAmount
+    """A whole number of shares, one entry of `share_presets` of `GET /config`. Send
+    it as `shares` of a BUY, and as `shares` of its quote."""
+
+    allowed: bool
+    """Whether a buy of this many shares of the outcome would pass right now: the
+    viewer may trade, the size is no smaller than the minimum trade, and its cost is
+    covered by the stake left and by the balance."""
+
+
+class BuyEntry(ResponseModel):
+    """What the viewer can buy of one outcome right now (SPEC §4, A.11). The server
+    works it out with the market maker's prices, so the client prices and compares
+    nothing."""
+
+    outcome: Outcome
+    slider: BuySlider | None
+    """Where the slider of a buy of `outcome` runs. Null when the viewer cannot buy a
+    whole step of it right now: they may not trade, or the stake left or the balance
+    does not cover the smallest buy. A size typed beside the slider is judged by
+    `GET /markets/{id}/quote`."""
+
+    presets: list[BuyPreset]
+    """One entry per shortcut, in the order of `share_presets` of `GET /config`."""
 
 
 class SellPortion(StrEnum):
@@ -170,6 +199,11 @@ class SellPreset(ResponseModel):
     portion: SellPortion
     shares: ShareAmount
     """Send this as `shares` of a SELL of `outcome`, and as `shares` of its quote."""
+
+    proceeds_cr: CreditAmount
+    """What selling `shares` of `outcome` would bring in at the price of this answer,
+    rounded down: the `amount_cr` `GET /markets/{id}/quote` gives for that sale. 0
+    when `shares` is 0 or the viewer may not trade."""
 
     allowed: bool
     """Whether that sell would pass right now: the viewer may trade and `shares` is at
@@ -212,13 +246,18 @@ class MarketViewer(ResponseModel):
     stake_left_cr: CreditAmount
     """`stake_limit_cr - net_stake_cr`, never below zero."""
 
+    buy: list[BuyEntry]
+    """Always two entries, YES then NO."""
+
     stake_presets: list[StakePreset]
     """One entry per buy button, in the order of `stake_presets_cr` of `GET /config`."""
 
     buy_slider: BuySlider | None
-    """Where the slider of a buy runs. Null when the viewer cannot buy anything right
-    now: they may not trade, or the stake left or the balance is below the smallest
-    buy. An amount typed in between two positions is judged by
+    """Where the slider of a buy by amount runs, counted in whole credits: every
+    multiple of `step` from `min` to `max` is a budget a buy passes with, sent as
+    `amount_cr`, and `step` is `stake_step_cr` of `GET /config`. Null when the viewer
+    cannot buy anything right now: they may not trade, or the stake left or the balance
+    is below the smallest buy. An amount typed in between two positions is judged by
     `GET /markets/{id}/quote`."""
 
     sell_presets: list[SellPreset]

@@ -3,6 +3,7 @@ import type {
   AdminUserListResponse,
   AlertItem,
   BalanceAdjustmentResponse,
+  BuyEntry,
   CodeBatchCodesResponse,
   CodeBatchCreatedResponse,
   CodeBatchItem,
@@ -34,6 +35,7 @@ import type {
   VoucherProductItem,
   VoucherRedeemResponse,
 } from "@/lib/api/schema";
+import type { LiveEventOf } from "@/lib/live/events";
 
 /**
  * API answers for tests, typed by the generated schema: when the contract changes, the
@@ -72,9 +74,14 @@ export function config(overrides: Partial<PublicConfigResponse> = {}): PublicCon
     price_display_decimals: 1,
     quote_debounce_ms: 300,
     live_poll_fallback_seconds: 10,
+    live_heartbeat_seconds: 15,
+    live_announce_spread_ms: 1000,
+    live_viewer_refresh_seconds: 5,
     signup_grant_cr: "500",
     monthly_grant_cr: "200",
     max_stake_per_market_cr: "100",
+    share_presets: ["10", "50", "100"],
+    share_step: "1",
     stake_presets_cr: ["25", "50", "100"],
     stake_step_cr: "1",
     min_trade_cr: "1",
@@ -184,6 +191,26 @@ export function holdings(yes: Partial<Holding> = {}, no: Partial<Holding> = {}):
 }
 
 /**
+ * What the viewer can buy, as the API sends it: always two entries, YES then NO, each with
+ * the slider of its outcome and one shortcut per entry of `share_presets` of `config()`.
+ * Without arguments every shortcut is allowed and the sliders run as far as a stake of 100
+ * reaches at the price of `marketSummary()`:
+ *
+ *     buyEntries({ slider: null, presets: [] })     // nothing of YES can be bought
+ */
+export function buyEntries(yes: Partial<BuyEntry> = {}, no: Partial<BuyEntry> = {}): BuyEntry[] {
+  const presets = () => [
+    { shares: "10", allowed: true },
+    { shares: "50", allowed: true },
+    { shares: "100", allowed: true },
+  ];
+  return [
+    { outcome: "YES", slider: { min: 1, max: 175, step: 1 }, presets: presets(), ...yes },
+    { outcome: "NO", slider: { min: 1, max: 209, step: 1 }, presets: presets(), ...no },
+  ];
+}
+
+/**
  * A viewer who has not bought into the market and may trade it. The slider of a buy runs
  * up to what the stake limit leaves, which is less than the balance here.
  */
@@ -201,6 +228,7 @@ export function marketViewer(overrides: Partial<MarketViewer> = {}): MarketViewe
     payout_cr: null,
     refund_cr: null,
     holdings: holdings(),
+    buy: buyEntries(),
     stake_presets: [
       { amount_cr: "25", allowed: true },
       { amount_cr: "50", allowed: true },
@@ -208,16 +236,20 @@ export function marketViewer(overrides: Partial<MarketViewer> = {}): MarketViewe
     ],
     buy_slider: { min: 1, max: 100, step: 1 },
     sell_presets: [
-      { outcome: "YES", portion: "HALF", shares: "0", allowed: false },
-      { outcome: "YES", portion: "ALL", shares: "0", allowed: false },
-      { outcome: "NO", portion: "HALF", shares: "0", allowed: false },
-      { outcome: "NO", portion: "ALL", shares: "0", allowed: false },
+      { outcome: "YES", portion: "HALF", shares: "0", proceeds_cr: "0", allowed: false },
+      { outcome: "YES", portion: "ALL", shares: "0", proceeds_cr: "0", allowed: false },
+      { outcome: "NO", portion: "HALF", shares: "0", proceeds_cr: "0", allowed: false },
+      { outcome: "NO", portion: "ALL", shares: "0", proceeds_cr: "0", allowed: false },
     ],
     ...overrides,
   };
 }
 
-/** A viewer who put 50 into YES: holds 91.645 shares and can sell half or all of them. */
+/**
+ * A viewer who put 50 into YES: holds 91.645 shares and can sell half of them for
+ * 24.850327 or all of them for 49.17859. The 50 that the stake limit leaves buy up to 89
+ * YES shares or 107 NO shares, so the shortcut of 100 is allowed for NO alone.
+ */
 export function marketViewerWithPosition(overrides: Partial<MarketViewer> = {}): MarketViewer {
   return marketViewer({
     balance_cr: "190",
@@ -225,6 +257,17 @@ export function marketViewerWithPosition(overrides: Partial<MarketViewer> = {}):
     net_stake_cr: "50",
     stake_left_cr: "50",
     holdings: holdings({ shares: "91.645", value_cr: "50.221461" }),
+    buy: buyEntries(
+      {
+        slider: { min: 1, max: 89, step: 1 },
+        presets: [
+          { shares: "10", allowed: true },
+          { shares: "50", allowed: true },
+          { shares: "100", allowed: false },
+        ],
+      },
+      { slider: { min: 1, max: 107, step: 1 } },
+    ),
     stake_presets: [
       { amount_cr: "25", allowed: true },
       { amount_cr: "50", allowed: true },
@@ -232,10 +275,16 @@ export function marketViewerWithPosition(overrides: Partial<MarketViewer> = {}):
     ],
     buy_slider: { min: 1, max: 50, step: 1 },
     sell_presets: [
-      { outcome: "YES", portion: "HALF", shares: "45.8225", allowed: true },
-      { outcome: "YES", portion: "ALL", shares: "91.645", allowed: true },
-      { outcome: "NO", portion: "HALF", shares: "0", allowed: false },
-      { outcome: "NO", portion: "ALL", shares: "0", allowed: false },
+      {
+        outcome: "YES",
+        portion: "HALF",
+        shares: "45.8225",
+        proceeds_cr: "24.850327",
+        allowed: true,
+      },
+      { outcome: "YES", portion: "ALL", shares: "91.645", proceeds_cr: "49.17859", allowed: true },
+      { outcome: "NO", portion: "HALF", shares: "0", proceeds_cr: "0", allowed: false },
+      { outcome: "NO", portion: "ALL", shares: "0", proceeds_cr: "0", allowed: false },
     ],
     ...overrides,
   });
@@ -305,7 +354,7 @@ export function history(overrides: Partial<HistoryResponse> = {}): HistoryRespon
   };
 }
 
-/** A quote for buying YES with 25. */
+/** A quote for buying 45.12 YES shares: they cost 25 and pay 45.12 if YES comes true. */
 export function quote(overrides: Partial<QuoteResponse> = {}): QuoteResponse {
   return {
     market_id: MARKET_ID,
@@ -314,6 +363,7 @@ export function quote(overrides: Partial<QuoteResponse> = {}): QuoteResponse {
     amount_cr: "25",
     shares: "45.12",
     average_price: 0.554,
+    payout_cr: "45.12",
     p_yes_before: 0.548,
     p_yes_after: 0.559,
     p_no_before: 0.452,
@@ -713,4 +763,63 @@ export function statusEvent(overrides: Partial<StatusEvent> = {}): StatusEvent {
     ts: "2026-10-04T10:05:00Z",
     ...overrides,
   };
+}
+
+/*
+ * The events of the event stream (`GET /stream`), each under the name it travels by. A
+ * test plays one with `streams.latest().send(marketQuoteEvent({ version: 9 }))`.
+ */
+
+/** `ready`: the last of what a stream gets when it opens. */
+export function readyEvent(overrides: Partial<LiveEventOf<"ready">> = {}): LiveEventOf<"ready"> {
+  return { type: "ready", ts: "2026-10-04T10:00:00Z", ...overrides };
+}
+
+/** `beat`: the stream is alive. */
+export function beatEvent(overrides: Partial<LiveEventOf<"beat">> = {}): LiveEventOf<"beat"> {
+  return { type: "beat", ts: "2026-10-04T10:00:15Z", ...overrides };
+}
+
+/** `market.quote`: a trade moved the market of `marketSummary()` on to version 8. */
+export function marketQuoteEvent(
+  overrides: Partial<LiveEventOf<"market.quote">> = {},
+): LiveEventOf<"market.quote"> {
+  return {
+    type: "market.quote",
+    market_id: MARKET_ID,
+    version: 8,
+    p_yes: 0.559,
+    p_no: 0.441,
+    volume_cr: "1275.5",
+    ts: "2026-10-04T10:00:00Z",
+    ...overrides,
+  };
+}
+
+/** `market.status`: an admin halted the market of `marketSummary()`. */
+export function marketStatusEvent(
+  overrides: Partial<LiveEventOf<"market.status">> = {},
+): LiveEventOf<"market.status"> {
+  return {
+    type: "market.status",
+    market_id: MARKET_ID,
+    status: "HALTED",
+    trading_open: false,
+    ts: "2026-10-04T10:05:00Z",
+    ...overrides,
+  };
+}
+
+/** `leaderboard.changed`: the ranking moved. It carries no figure. */
+export function leaderboardChangedEvent(
+  overrides: Partial<LiveEventOf<"leaderboard.changed">> = {},
+): LiveEventOf<"leaderboard.changed"> {
+  return { type: "leaderboard.changed", ts: "2026-10-04T10:00:05Z", ...overrides };
+}
+
+/** `me.changed`: something of the caller's own changed. It carries no figure. */
+export function meChangedEvent(
+  overrides: Partial<LiveEventOf<"me.changed">> = {},
+): LiveEventOf<"me.changed"> {
+  return { type: "me.changed", ts: "2026-10-04T10:00:00Z", ...overrides };
 }

@@ -236,7 +236,7 @@ describe("useMarketStream", () => {
 
   test("an open quote of the trade sheet is never touched by an event", async () => {
     const { streams, client } = await open();
-    const request = { side: "BUY", outcome: "YES", amount_cr: "25" } as const;
+    const request = { side: "BUY", outcome: "YES", shares: "50" } as const;
     const confirmed = quote({ quote_version: 7 });
     client.setQueryData(keys.markets.quote(MARKET_ID, request), confirmed);
 

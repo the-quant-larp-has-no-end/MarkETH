@@ -43,7 +43,7 @@ describe("reads", () => {
     const loadedConfig = await queries.fetchQuery(configQuery);
     const loadedMe = await queries.fetchQuery(meQuery);
 
-    expect(loadedConfig.stake_presets_cr).toEqual(["25", "50", "100"]);
+    expect(loadedConfig.share_presets).toEqual(["10", "50", "100"]);
     expect(loadedMe.balance_cr).toBe("240");
   });
 
@@ -68,20 +68,30 @@ describe("reads", () => {
     expect(market.viewer.stake_left_cr).toBe("100");
   });
 
-  test("a quote sends the preset as it arrived: a budget when buying, shares when selling", async () => {
+  test("a quote is asked by shares on both sides, with the characters it was given", async () => {
     const api = mockApi({ "GET /api/markets/{market_id}/quote": json(200, quote()) });
     const queries = client();
 
-    await queries.fetchQuery(
-      quoteQuery(MARKET_ID, { side: "BUY", outcome: "YES", amount_cr: "25" }),
-    );
+    await queries.fetchQuery(quoteQuery(MARKET_ID, { side: "BUY", outcome: "YES", shares: "50" }));
     await queries.fetchQuery(
       quoteQuery(MARKET_ID, { side: "SELL", outcome: "NO", shares: "45.8225" }),
     );
 
     const [buy, sell] = api.calls("GET /api/markets/{market_id}/quote");
-    expect(buy?.query.toString()).toBe("side=BUY&outcome=YES&amount_cr=25");
+    expect(buy?.query.toString()).toBe("side=BUY&outcome=YES&shares=50");
     expect(sell?.query.toString()).toBe("side=SELL&outcome=NO&shares=45.8225");
+  });
+
+  test("the key of a quote holds its request: side, outcome and shares", () => {
+    const asked = quoteQuery(MARKET_ID, { side: "BUY", outcome: "YES", shares: "50" });
+
+    expect(asked.queryKey).toEqual([
+      "markets",
+      "quote",
+      MARKET_ID,
+      { side: "BUY", outcome: "YES", shares: "50" },
+    ]);
+    expect(asked.queryKey.slice(0, 3)).toEqual(keys.markets.quotes(MARKET_ID));
   });
 
   test("a failed read throws the API's error", async () => {

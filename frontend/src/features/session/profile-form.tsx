@@ -3,7 +3,7 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 
 import { SubmitError } from "@/components/feedback";
-import { revealFirstInvalid, SelectField, TextField } from "@/components/form";
+import { PickerField, revealFirstInvalid, TextField } from "@/components/form";
 import { Button } from "@/components/ui/button";
 import { PolicyCheckbox } from "@/features/policy";
 import { placeError } from "@/lib/api/errors";
@@ -43,7 +43,8 @@ export type ProfileFormProps = {
  * this form; on the set-up screen (`creating`) it ends with the usage-policy checkbox,
  * which has to be ticked before the profile can be created.
  *
- * The username's lengths and the list of degrees come from `/config`. The API decides
+ * The username's lengths and the list of degrees come from `/config`; level and programme
+ * are chosen with the picker (DESIGN.md §12), the programme once a level is set. The API decides
  * what is valid: `USERNAME_TAKEN` and a `VALIDATION_ERROR` appear on the field they name,
  * with the API's message, and the other fields keep their input; one that names
  * `policy_accepted` stands under the checkbox. Without an answer, or with a 503, the
@@ -121,7 +122,7 @@ export function ProfileForm({
         error={placed?.fields.username}
         help={`${config.username_min_length} to ${config.username_max_length} characters: lower-case letters, digits and underscores.`}
       />
-      <SelectField
+      <PickerField
         label="Level"
         name="degree_level"
         value={level}
@@ -133,9 +134,11 @@ export function ProfileForm({
         }}
         options={config.degrees.map((degree) => ({ value: degree.level, label: degree.name }))}
         placeholder="Choose a level"
+        searchLabel="Search levels"
+        noMatch="No level matches."
         error={placed?.fields.degree_level}
       />
-      <SelectField
+      <PickerField
         label="Programme"
         name="degree_programme"
         value={programme}
@@ -145,6 +148,8 @@ export function ProfileForm({
         }}
         options={programmes.map((label) => ({ value: label, label }))}
         placeholder="Choose a programme"
+        searchLabel="Search programmes"
+        noMatch="No programme matches."
         disabled={level === ""}
         error={placed?.fields.degree_programme}
       />

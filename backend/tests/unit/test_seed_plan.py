@@ -88,11 +88,12 @@ def buys_of(market: DemoMarket) -> list[Buy]:
     return [step for step in market.trades if isinstance(step, Buy)]
 
 
-def preset_micro(buy: Buy, settings: Settings) -> int:
-    """What the buy button of `buy` costs: the seed takes the last button when the
-    settings have fewer."""
-    presets = settings.pricing.stake_presets_micro
-    return presets[min(buy.preset, len(presets) - 1)]
+def shortcut_micro(buy: Buy, settings: Settings) -> int:
+    """The shares the shortcut of `buy` stands for, in µshares: the seed takes the last
+    shortcut when the settings have fewer. A share costs less than one credit, so
+    this number, read as µCR, is more than the buy costs at any price."""
+    shortcuts = settings.pricing.share_presets_micro
+    return shortcuts[min(buy.preset, len(shortcuts) - 1)]
 
 
 # --- People ----------------------------------------------------------------------------
@@ -294,24 +295,35 @@ def test_every_sale_gives_back_the_shares_of_an_earlier_buy_of_the_same_student(
 
 
 @every_market
-def test_what_a_student_puts_into_one_market_stays_within_the_stake_limit(
+def test_every_buy_of_the_plan_names_a_shortcut_that_exists(
     market: DemoMarket, base_settings: Settings
 ) -> None:
-    """Counted without what a sale brings back, so the plan holds whatever the prices."""
-    staked: Counter[int] = Counter()
+    """An index into TRADE_SHARE_PRESETS, as `.example.env` has them."""
     for buy in buys_of(market):
-        assert 0 <= buy.preset < len(base_settings.pricing.stake_presets_micro)
-        staked[buy.student] += preset_micro(buy, base_settings)
+        assert 0 <= buy.preset < len(base_settings.pricing.share_presets_micro)
 
-    assert max(staked.values(), default=0) <= base_settings.pricing.max_stake_per_user_market_micro
+
+@every_market
+def test_the_shares_a_student_buys_in_one_market_add_up_to_at_most_the_stake_limit_as_a_number(
+    market: DemoMarket, base_settings: Settings
+) -> None:
+    """The rule of the plan. A share costs less than one credit, so shares that add up
+    to no more than MAX_STAKE_PER_USER_MARKET cost less than the stake limit: the plan
+    cannot meet it, whatever the prices. Counted without what a sale brings back."""
+    bought: Counter[int] = Counter()
+    for buy in buys_of(market):
+        bought[buy.student] += shortcut_micro(buy, base_settings)
+
+    assert max(bought.values(), default=0) <= base_settings.pricing.max_stake_per_user_market_micro
 
 
 def test_the_signup_grant_pays_for_everything_a_student_buys(base_settings: Settings) -> None:
-    """Every buy and the voucher, again without counting on a sale or a payout."""
+    """Every buy and the voucher, again without counting on a sale or a payout. A buy
+    is counted as one credit per share, which is more than it costs."""
     spent: Counter[int] = Counter()
     for market in MARKETS:
         for buy in buys_of(market):
-            spent[buy.student] += preset_micro(buy, base_settings)
+            spent[buy.student] += shortcut_micro(buy, base_settings)
     products = base_settings.vouchers.products
     for place, voucher in enumerate(VOUCHERS):
         spent[voucher.student] += products[place % len(products)].price_micro

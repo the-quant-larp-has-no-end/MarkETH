@@ -38,6 +38,14 @@ from app.core.enums import (
 )
 from app.core.errors import ErrorCode, NotFoundError, ServiceUnavailableError
 from app.core.identity import USERNAME_PATTERN, AuthenticatedUser, Caller, PortalIdentity
+from app.core.live import (
+    TOPIC_MAX_LENGTH,
+    TOPICS_HARD_MAX,
+    Audience,
+    Topic,
+    TopicKind,
+)
+from app.core.live import LiveEvent as AnnouncedEvent
 from app.core.units import MICRO, format_cr, to_cr
 from app.main import create_app
 from app.pricing import lmsr
@@ -53,6 +61,7 @@ from app.schemas.admin.markets import (
 )
 from app.schemas.admin.users import AdjustBalanceRequest, AdminUserListQuery
 from app.schemas.common import (
+    MAX_ERRORS_LISTED,
     CreditAmount,
     ErrorResponse,
     Limit,
@@ -61,7 +70,19 @@ from app.schemas.common import (
     PositiveCreditAmount,
     SignedCreditAmount,
 )
-from app.schemas.live import QuoteEvent, StatusEvent
+from app.schemas.live import (
+    LIVE_EVENTS,
+    TAB_PATTERN,
+    BeatEvent,
+    LeaderboardChangedEvent,
+    LiveStreamQuery,
+    MarketQuoteEvent,
+    MarketStatusEvent,
+    MeChangedEvent,
+    QuoteEvent,
+    ReadyEvent,
+    StatusEvent,
+)
 from app.schemas.markets import ProposeMarketRequest
 from app.schemas.profile import SaveProfileRequest
 from app.schemas.trading import (
@@ -89,6 +110,7 @@ SPEC_SECTION_10: Final[frozenset[Operation]] = frozenset(
         ("POST", "/api/markets/{market_id}/trades"),
         ("GET", "/api/markets/{market_id}/history"),
         ("GET", "/api/markets/{market_id}/stream"),
+        ("GET", "/api/stream"),
         ("GET", "/api/me/positions"),
         ("GET", "/api/me/trades"),
         ("GET", "/api/me/ledger"),
@@ -163,11 +185,11 @@ IDENTITY_ACCESS: Final[frozenset[Operation]] = frozenset({("PUT", "/api/me/profi
 OPERATIONS_PER_ACCESS: Final[dict[str, int]] = {
     "public": 2,
     "identity": 1,
-    "member": 19,
+    "member": 20,
     "staff": 1,
     "admin": 19,
 }
-"""How the 42 operations fall into the five access levels of A.2."""
+"""How the 43 operations fall into the five access levels of A.2."""
 
 VOUCHER_FIELDS: Final[frozenset[str]] = frozenset(
     {
@@ -195,6 +217,7 @@ MARKET_VIEWER_FIELDS: Final[frozenset[str]] = frozenset(
         "refund_cr",
         "stake_limit_cr",
         "stake_left_cr",
+        "buy",
         "stake_presets",
         "buy_slider",
         "sell_presets",
@@ -214,6 +237,8 @@ CONFIG_FIELDS: Final[frozenset[str]] = frozenset(
         "username_max_length",
         "degrees",
         "max_stake_per_market_cr",
+        "share_presets",
+        "share_step",
         "stake_presets_cr",
         "stake_step_cr",
         "min_trade_cr",
@@ -221,6 +246,9 @@ CONFIG_FIELDS: Final[frozenset[str]] = frozenset(
         "price_display_decimals",
         "quote_debounce_ms",
         "live_poll_fallback_seconds",
+        "live_heartbeat_seconds",
+        "live_announce_spread_ms",
+        "live_viewer_refresh_seconds",
         "tiers",
         "max_market_budget_cr",
         "max_market_lifetime_days",
@@ -351,7 +379,7 @@ def test_every_endpoint_of_the_spec_is_served_and_nothing_else(document: dict[st
     expected = SPEC_SECTION_10 | APPENDIX_A2
     assert expected - served == set(), "in SPEC §10 or A.2 but not served"
     assert served - expected == set(), "served but in neither SPEC §10 nor A.2"
-    assert len(served) == 42
+    assert len(served) == 43
 
 
 def test_the_document_names_the_api_and_lives_under_api(document: dict[str, Any]) -> None:
@@ -428,7 +456,7 @@ def test_every_operation_says_who_may_call_it(document: dict[str, Any]) -> None:
 
 
 def test_the_operations_fall_into_the_five_access_levels(document: dict[str, Any]) -> None:
-    """Two need nobody, one needs a name, nineteen a profile, one a barista, nineteen
+    """Two need nobody, one needs a name, twenty a profile, one a barista, nineteen
     an admin: a route that moved to another level shows here."""
     levels = {
         json.dumps(NO_IDENTITY): "public",
@@ -442,7 +470,7 @@ def test_the_operations_fall_into_the_five_access_levels(document: dict[str, Any
         counted[levels[json.dumps(spec.get("security", NO_IDENTITY))]] += 1
 
     assert counted == OPERATIONS_PER_ACCESS
-    assert sum(counted.values()) == 42
+    assert sum(counted.values()) == 43
 
 
 def test_the_one_security_scheme_is_the_header_in_which_the_portal_names_the_caller(
@@ -709,6 +737,88 @@ def test_the_viewers_side_carries_the_slider_of_a_buy_in_whole_credits(
     assert config["stake_step_cr"]["pattern"] == config["min_trade_cr"]["pattern"]
     # The buttons stay beside it.
     assert viewer["stake_presets"]["items"] == {"$ref": "#/components/schemas/StakePreset"}
+
+
+def test_the_viewers_side_says_what_can_be_bought_of_each_outcome_in_shares(
+    schemas: dict[str, dict[str, Any]],
+) -> None:
+    """`buy` has an entry per outcome: where the slider of a buy runs, in whole shares
+    as JSON integers or null, and one shortcut per entry of `share_presets`. The
+    shortcuts and the step are in `/config` too, as numbers of shares."""
+    viewer = schemas["MarketViewer"]
+    assert viewer["properties"]["buy"]["type"] == "array"
+    assert viewer["properties"]["buy"]["items"] == {"$ref": "#/components/schemas/BuyEntry"}
+    assert "buy" in viewer["required"]
+
+    entry = schemas["BuyEntry"]
+    assert set(entry["required"]) == set(entry["properties"]) == {"outcome", "slider", "presets"}
+    assert entry["properties"]["outcome"] == {"$ref": "#/components/schemas/Outcome"}
+    assert entry["properties"]["slider"]["anyOf"] == [
+        {"$ref": "#/components/schemas/BuySlider"},
+        {"type": "null"},
+    ]
+    assert entry["properties"]["presets"]["type"] == "array"
+    assert entry["properties"]["presets"]["items"] == {"$ref": "#/components/schemas/BuyPreset"}
+
+    preset = schemas["BuyPreset"]
+    assert set(preset["required"]) == set(preset["properties"]) == {"shares", "allowed"}
+    assert preset["properties"]["allowed"]["type"] == "boolean"
+    shares = preset["properties"]["shares"]
+    assert shares["type"] == "string"
+
+    config = schemas["PublicConfigResponse"]
+    for told in ("share_presets", "share_step"):
+        assert told in config["required"], told
+    assert config["properties"]["share_presets"]["type"] == "array"
+    for a_number_of_shares in (
+        config["properties"]["share_presets"]["items"],
+        config["properties"]["share_step"],
+    ):
+        assert a_number_of_shares["type"] == "string"
+        assert a_number_of_shares["pattern"] == shares["pattern"]
+
+
+def test_a_sell_button_says_how_many_shares_it_sells_and_what_they_bring_in(
+    schemas: dict[str, dict[str, Any]],
+) -> None:
+    """The proceeds are the server's, at the price of the answer: the client prices
+    nothing."""
+    preset = schemas["SellPreset"]
+    assert (
+        set(preset["required"])
+        == set(preset["properties"])
+        == {"outcome", "portion", "shares", "proceeds_cr", "allowed"}
+    )
+    proceeds = preset["properties"]["proceeds_cr"]
+    assert proceeds["type"] == "string"
+    assert proceeds["pattern"] == schemas["QuoteResponse"]["properties"]["amount_cr"]["pattern"]
+    assert "`GET /markets/{id}/quote`" in proceeds["description"]
+
+
+def test_a_quote_says_what_its_shares_pay(schemas: dict[str, dict[str, Any]]) -> None:
+    """`payout_cr` is the shares of the trade in credits, so the sheet shows what a buy
+    can pay without multiplying anything."""
+    quote = schemas["QuoteResponse"]
+    assert "payout_cr" in quote["required"]
+    payout = quote["properties"]["payout_cr"]
+    assert payout["type"] == "string"
+    assert payout["pattern"] == quote["properties"]["amount_cr"]["pattern"]
+    assert "1 CR per share" in payout["description"]
+    assert "price per share" in quote["properties"]["average_price"]["description"]
+
+
+def test_config_tells_the_live_client_its_paces(schemas: dict[str, dict[str, Any]]) -> None:
+    """How often a stream beats, over how long tabs spread their reads, how soon a
+    holder's market is read again, and how often a tab without a stream reads."""
+    config = schemas["PublicConfigResponse"]
+    for pace in (
+        "live_heartbeat_seconds",
+        "live_announce_spread_ms",
+        "live_viewer_refresh_seconds",
+        "live_poll_fallback_seconds",
+    ):
+        assert config["properties"][pace]["type"] == "integer", pace
+        assert pace in config["required"], pace
 
 
 def test_a_proposal_asks_for_no_liquidity_and_a_market_tells_it_to_admins_only(
@@ -1040,6 +1150,12 @@ def test_the_error_schema_says_what_details_carries(schemas: dict[str, dict[str,
         assert f"`{code.value}`" in description, code
     assert "`policy_accepted`" in description
     assert "`GET /markets/{id}/quote`" in description, "a quote is answered like its trade"
+    as_one_line = " ".join(description.split())
+    assert f"one per field, the first {MAX_ERRORS_LISTED} at most" in as_one_line
+    assert "`json_invalid`" in description, "a body that is no JSON"
+    # What a buy above the stake left would cost, on the trade and on its quote.
+    assert as_one_line.count("`stake_left_cr` and `required_cr`") == 2
+    assert "with the same message and details" in as_one_line
     for key in (
         "errors",
         "field",
@@ -1541,6 +1657,7 @@ def test_the_largest_budget_a_request_accepts_fits_into_a_quote_response(b_micro
         shares=to_cr(quote.shares_micro),
         amount_cr=to_cr(quote.amount_micro),
         average_price=1.0,
+        payout_cr=to_cr(quote.shares_micro),
         p_yes_before=0.0,
         p_no_before=1.0,
         p_yes_after=1.0,
@@ -1548,6 +1665,7 @@ def test_the_largest_budget_a_request_accepts_fits_into_a_quote_response(b_micro
         quote_version=0,
     )
     assert response.shares > query.amount_cr
+    assert response.payout_cr == response.shares, "1 CR per share, and the answer holds it"
 
 
 # --- Trade sizing and guards (A.4) --------------------------------------------------
@@ -1820,6 +1938,177 @@ def test_a_page_has_a_default_and_a_maximum_size() -> None:
 
 # --- The event stream ---------------------------------------------------------------
 
+LIVE_EVENT_NAMES: Final[tuple[str, ...]] = (
+    "ready",
+    "beat",
+    "market.quote",
+    "market.status",
+    "leaderboard.changed",
+    "me.changed",
+)
+"""The events the API pushes, in the order `LIVE_EVENTS` lists their models."""
+
+BARE_EVENTS: Final[tuple[type[BaseModel], ...]] = (
+    ReadyEvent,
+    BeatEvent,
+    LeaderboardChangedEvent,
+    MeChangedEvent,
+)
+"""Events that say what happened by their name alone."""
+
+TAB: Final[str] = "tab-0123"
+
+
+def test_the_event_models_are_these_six_and_each_is_named_by_its_type() -> None:
+    assert list(LIVE_EVENTS) == [
+        ReadyEvent,
+        BeatEvent,
+        MarketQuoteEvent,
+        MarketStatusEvent,
+        LeaderboardChangedEvent,
+        MeChangedEvent,
+    ]
+    named = [model.model_json_schema()["properties"]["type"]["const"] for model in LIVE_EVENTS]
+    assert named == list(LIVE_EVENT_NAMES)
+    for model in LIVE_EVENTS:
+        schema = model.model_json_schema()
+        assert set(schema["required"]) == set(schema["properties"]), model.__name__
+        assert schema["properties"]["ts"]["format"] == "date-time", model.__name__
+        assert model.model_fields["type"].is_required(), "a body always says its name"
+
+
+def test_an_event_carries_what_its_name_promises_and_nothing_about_who_it_is_for() -> None:
+    """`ready` is `{type, ts}`: a stream carries no cursor, so nothing says whether it
+    resumed. No body names an audience."""
+    for bare in BARE_EVENTS:
+        assert set(bare.model_fields) == {"type", "ts"}, bare.__name__
+    assert set(MarketQuoteEvent.model_fields) == {
+        "type",
+        "market_id",
+        "version",
+        "p_yes",
+        "p_no",
+        "volume_cr",
+        "ts",
+    }
+    assert set(MarketStatusEvent.model_fields) == {
+        "type",
+        "market_id",
+        "status",
+        "trading_open",
+        "ts",
+    }
+
+
+def test_a_price_event_travels_with_its_amount_as_a_string_and_fits_an_announcement() -> None:
+    market_id = uuid7()
+    quote = MarketQuoteEvent(
+        type="market.quote",
+        market_id=market_id,
+        version=8,
+        p_yes=0.548,
+        p_no=0.452,
+        volume_cr=to_cr(1_250_500_000),
+        ts=TEST_NOW,
+    )
+
+    assert json.loads(quote.model_dump_json()) == {
+        "type": "market.quote",
+        "market_id": str(market_id),
+        "version": 8,
+        "p_yes": 0.548,
+        "p_no": 0.452,
+        "volume_cr": "1250.5",
+        "ts": json.loads(ReadyEvent(type="ready", ts=TEST_NOW).model_dump_json())["ts"],
+    }
+    # Every event model is a payload of `uow.announce`: its `type` is the event's name.
+    announced = AnnouncedEvent(
+        topics=(Topic(TopicKind.MARKETS), Topic(TopicKind.MARKET, market_id)),
+        audience=Audience.everyone(),
+        payload=quote,
+    )
+    assert announced.payload.type == "market.quote"
+    with pytest.raises(ValidationError):
+        ReadyEvent.model_validate({"type": "beat", "ts": TEST_NOW})
+
+
+def test_a_stream_names_its_tab_and_any_number_of_topics_each_counted_once() -> None:
+    market = uuid7()
+    query = LiveStreamQuery.model_validate(
+        {
+            "tab": TAB,
+            "topic": [
+                "markets",
+                f"market:{market}",
+                "markets",
+                f"market:{str(market).upper()}",
+                "leaderboard",
+                f"broadcast:{market}",
+            ],
+        }
+    )
+
+    assert query.topics == (
+        Topic(TopicKind.MARKETS),
+        Topic(TopicKind.MARKET, market),
+        Topic(TopicKind.LEADERBOARD),
+        Topic(TopicKind.BROADCAST, market),
+    )
+    # A tab's id may be a UUID, and a stream may follow nothing but its viewer's own.
+    assert LiveStreamQuery.model_validate({"tab": str(uuid7())}).topics == ()
+    most = [f"market:{uuid7()}" for _ in range(TOPICS_HARD_MAX)]
+    assert len(LiveStreamQuery.model_validate({"tab": TAB, "topic": most}).topics) == len(most)
+    assert set(LiveStreamQuery.model_fields) == {"tab", "topic"}, "no cursor"
+
+
+@pytest.mark.parametrize(
+    ("query", "loc", "kind"),
+    [
+        ({}, ("tab",), "missing"),
+        ({"tab": "short"}, ("tab",), "string_pattern_mismatch"),
+        ({"tab": "x" * 37}, ("tab",), "string_pattern_mismatch"),
+        ({"tab": "tab 0123"}, ("tab",), "string_pattern_mismatch"),
+        ({"tab": TAB, "topic": ["me"]}, ("topic", 0), "string_pattern_mismatch"),
+        ({"tab": TAB, "topic": [f"me:{uuid7()}"]}, ("topic", 0), "string_pattern_mismatch"),
+        ({"tab": TAB, "topic": ["market"]}, ("topic", 0), "string_pattern_mismatch"),
+        ({"tab": TAB, "topic": [f"markets:{uuid7()}"]}, ("topic", 0), "string_pattern_mismatch"),
+        ({"tab": TAB, "topic": ["markets", "market:1"]}, ("topic", 1), "string_pattern_mismatch"),
+        (
+            {"tab": TAB, "topic": ["x" * (TOPIC_MAX_LENGTH + 1)]},
+            ("topic", 0),
+            "string_too_long",
+        ),
+        (
+            {"tab": TAB, "topic": ["markets"] * (TOPICS_HARD_MAX + 1)},
+            ("topic",),
+            "too_long",
+        ),
+        ({"tab": TAB, "after": "0a0a0a0a-12"}, ("after",), "extra_forbidden"),
+    ],
+    ids=[
+        "no tab",
+        "a short tab",
+        "a long tab",
+        "a tab with a blank",
+        "me",
+        "me with a key",
+        "a market without its id",
+        "markets with an id",
+        "an id that is none",
+        "a long topic",
+        "more topics than a request takes",
+        "a cursor",
+    ],
+)
+def test_a_stream_query_without_a_tab_or_with_what_is_no_topic_is_refused(
+    query: dict[str, Any], loc: tuple[str | int, ...], kind: str
+) -> None:
+    with pytest.raises(ValidationError) as refused:
+        LiveStreamQuery.model_validate(query)
+
+    (error,) = refused.value.errors()
+    assert (error["loc"], error["type"]) == (loc, kind)
+
 
 class ScriptedLiveQuotes:
     """Stands in for `LiveQuoteService`: plays a fixed list of events, then ends."""
@@ -1950,3 +2239,50 @@ async def test_a_stream_that_cannot_start_is_a_json_error_not_an_empty_stream(
     assert response.status_code == status_code
     assert response.headers["content-type"] == "application/json"
     assert response.json()["code"] == code
+
+
+def test_the_event_stream_is_documented_as_the_union_of_its_events_and_nothing_beside_it(
+    document: dict[str, Any], schemas: dict[str, dict[str, Any]]
+) -> None:
+    """What the frontend types its events from: every event model, under the one media
+    type of the answer, without the `type: string` of an answer that is no JSON."""
+    stream = document["paths"]["/api/stream"]["get"]
+    assert (stream["operationId"], stream["tags"]) == ("stream_live", ["live"])
+    assert stream["summary"] == "Everything the app pushes (server-sent events)"
+
+    answer = stream["responses"]["200"]
+    assert list(answer["content"]) == ["text/event-stream"]
+    events = answer["content"]["text/event-stream"]
+    assert list(events) == ["schema"]
+    assert set(events["schema"]) == {"anyOf", "title"}
+    assert events["schema"]["anyOf"] == [
+        {"$ref": f"#/components/schemas/{model.__name__}"} for model in LIVE_EVENTS
+    ]
+    named = [schemas[model.__name__]["properties"]["type"]["const"] for model in LIVE_EVENTS]
+    assert named == list(LIVE_EVENT_NAMES)
+
+    # A refusal is answered before the stream starts, as JSON in the one error shape.
+    assert stream["responses"]["default"]["content"] == {
+        "application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}
+    }
+    assert set(stream["responses"]) == {"200", "default"}
+
+
+def test_a_stream_is_asked_for_with_its_tab_and_its_topics_in_the_query(
+    document: dict[str, Any],
+) -> None:
+    stream = document["paths"]["/api/stream"]["get"]
+    parameters = {parameter["name"]: parameter for parameter in stream["parameters"]}
+    assert set(parameters) == {"tab", "topic"}
+    assert all(parameter["in"] == "query" for parameter in parameters.values())
+    assert (parameters["tab"]["required"], parameters["topic"]["required"]) == (True, False)
+    assert parameters["tab"]["schema"]["pattern"] == TAB_PATTERN
+    assert parameters["topic"]["schema"]["type"] == "array"
+    assert "requestBody" not in stream
+
+
+def test_the_tag_live_holds_the_event_stream_the_chart_and_the_stream_of_one_market(
+    document: dict[str, Any],
+) -> None:
+    live = {spec["operationId"] for _, spec in each_operation(document) if spec["tags"] == ["live"]}
+    assert live == {"stream_live", "get_market_history", "stream_market"}

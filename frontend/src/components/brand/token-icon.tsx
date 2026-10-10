@@ -1,7 +1,8 @@
-import Image from "next/image";
 import type { CSSProperties } from "react";
 
 import { cn } from "@/lib/utils";
+
+import { BrandImage } from "./brand-image";
 
 const SIZES = {
   16: "size-4",
@@ -42,13 +43,7 @@ export function TokenIcon({
       )}
       style={style}
     >
-      <Image
-        src="/brand/token.png"
-        alt=""
-        width={256}
-        height={256}
-        className="size-[70%] pixelated"
-      />
+      <BrandImage name="token" alt="" width={256} height={256} className="size-[70%] pixelated" />
     </span>
   );
 }

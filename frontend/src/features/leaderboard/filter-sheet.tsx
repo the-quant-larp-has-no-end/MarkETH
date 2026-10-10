@@ -4,11 +4,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 
 import { ErrorBanner, InlineError, RetryCountdown } from "@/components/feedback";
-import { AmountField, Field, revealFirstInvalid } from "@/components/form";
+import { AmountField, Field, PickerField, revealFirstInvalid } from "@/components/form";
 import { ResponsiveSheet, SheetBody, SheetFooter } from "@/components/sheet";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { type ApiError, isApiError, placeError } from "@/lib/api/errors";
 import { leaderboardQuery } from "@/lib/api/queries";
 import { useConfig } from "@/lib/api/session";
@@ -54,8 +53,9 @@ export type FilterSheetProps = {
 /**
  * The filter sheet of the leaderboard (DESIGN.md §13): the bottom sheet below 768 px and
  * the dialog from 768 px, with the title "Filter" and the close cross. The part that
- * scrolls holds a Level and a Programme select from `/config` `degrees`, then one group
- * per measure with a "From" and a "To" field in two equal columns. The foot is pinned
+ * scrolls holds a Level and a Programme picker from `/config` `degrees` (DESIGN.md §12),
+ * each with a first option that stands for no filter, then one group per measure with a
+ * "From" and a "To" field in two equal columns. The foot is pinned
  * under its line: a primary "Show results" and a ghost "Clear all".
  *
  * The API is the judge of every value. "Show results" asks it for the list with these
@@ -155,16 +155,19 @@ export function FilterSheet({ open, onOpenChange, view, rejected, onApply }: Fil
     >
       <form ref={form} noValidate onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
         <SheetBody>
-          <ChoiceField
+          <PickerField
             label="Level"
             name="degree_level"
             any="Any level"
             value={draft.degree_level}
             onChange={(value) => change("degree_level", value)}
             options={degrees.map((degree) => ({ value: degree.level, label: degree.name }))}
+            placeholder="Choose a level"
+            searchLabel="Search levels"
+            noMatch="No level matches."
             error={placed?.fields.degree_level}
           />
-          <ChoiceField
+          <PickerField
             label="Programme"
             name="degree_programme"
             any="Any programme"
@@ -174,6 +177,9 @@ export function FilterSheet({ open, onOpenChange, view, rejected, onApply }: Fil
               value: programme,
               label: programme,
             }))}
+            placeholder="Choose a programme"
+            searchLabel="Search programmes"
+            noMatch="No programme matches."
             disabled={draft.degree_level === ""}
             error={placed?.fields.degree_programme}
           />
@@ -217,56 +223,6 @@ export function FilterSheet({ open, onOpenChange, view, rejected, onApply }: Fil
         </SheetFooter>
       </form>
     </ResponsiveSheet>
-  );
-}
-
-/**
- * A select of the filter sheet: the phone's own picker, styled like a field. Unlike a
- * form's select it can be set back, to the option that stands for no filter.
- */
-function ChoiceField({
-  label,
-  name,
-  any,
-  value,
-  onChange,
-  options,
-  disabled = false,
-  error,
-}: {
-  label: string;
-  name: string;
-  /** What the select says while it filters nothing: "Any level". */
-  any: string;
-  value: string;
-  onChange: (value: string) => void;
-  options: readonly { value: string; label: string }[];
-  disabled?: boolean;
-  error?: string;
-}) {
-  // A value the address brought that is not on the list is still what is set.
-  const listed = value === "" || options.some((option) => option.value === value);
-
-  return (
-    <Field label={label} error={error}>
-      {(control) => (
-        <NativeSelect
-          {...control}
-          name={name}
-          value={value}
-          disabled={disabled}
-          onChange={(event) => onChange(event.target.value)}
-        >
-          <NativeSelectOption value="">{any}</NativeSelectOption>
-          {!listed && <NativeSelectOption value={value}>{value}</NativeSelectOption>}
-          {options.map((option) => (
-            <NativeSelectOption key={option.value} value={option.value}>
-              {option.label}
-            </NativeSelectOption>
-          ))}
-        </NativeSelect>
-      )}
-    </Field>
   );
 }
 

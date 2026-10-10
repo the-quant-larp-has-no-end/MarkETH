@@ -39,7 +39,7 @@ from app.core.enums import (
 )
 from app.core.errors import LimitExceededError
 from app.core.identity import AuthenticatedUser
-from app.core.units import MICRO, format_cr, to_cr
+from app.core.units import MICRO, format_cr, format_tokens, to_cr
 from app.db.base import Base
 from app.integrations.redis.market_cache import MarketCache
 from app.integrations.scylla.quote_history import QuotePoint
@@ -191,6 +191,7 @@ def shown(view: MarketView, market: Market, quote: lmsr.TradeQuote) -> QuoteResp
         shares=to_cr(quote.shares_micro),
         amount_cr=to_cr(quote.amount_micro),
         average_price=view.average_price(quote.amount_micro, quote.shares_micro),
+        payout_cr=to_cr(quote.shares_micro),
         p_yes_before=p_yes_before,
         p_no_before=p_no_before,
         p_yes_after=p_yes_after,
@@ -561,7 +562,9 @@ async def test_selling_half_returns_what_lmsr_pays_for_those_shares_rounded_down
     half = next(
         preset
         for preset in container.market_view.sell_presets(
-            await positions_of(container, trader, market), can_trade=True
+            await stored(container, market),
+            await positions_of(container, trader, market),
+            can_trade=True,
         )
         if (preset.outcome, preset.portion) == (Outcome.YES, SellPortion.HALF)
     )
@@ -753,7 +756,9 @@ async def test_a_buy_that_takes_the_net_stake_above_the_limit_is_refused_with_it
         "limit": Limit.MAX_STAKE_PER_USER_MARKET.value,
         "stake_limit_cr": format_cr(STAKE_LIMIT),
         "stake_left_cr": format_cr(0),
+        "required_cr": format_cr(MIN_TRADE_AMOUNT),
     }
+    assert refused.json()["message"] == "You have reached the limit of 100 tokens in this market."
     assert await books(container, factory, market, trader) == before
     await assert_books_balance(container.uow_factory)
 
@@ -779,7 +784,12 @@ async def test_a_single_buy_above_the_limit_is_refused_and_says_how_much_stake_i
         "limit": "MAX_STAKE_PER_USER_MARKET",
         "stake_limit_cr": format_cr(STAKE_LIMIT),
         "stake_left_cr": format_cr(stake_left),
+        "required_cr": format_cr(stake_left + 1),
     }
+    assert refused.json()["message"] == (
+        f"This costs {format_tokens(stake_left + 1)}. "
+        f"You can still put {format_tokens(stake_left)} into this market."
+    )
     assert await books(container, factory, market, trader) == before
     # What the answer says is left is a buy that passes.
     filled = executed(await post_trade(client, market.id, buy_for(Outcome.YES, stake_left)))
@@ -917,6 +927,7 @@ async def test_the_limit_is_on_the_net_stake_after_the_buy_so_a_gain_taken_can_b
         "limit": "MAX_STAKE_PER_USER_MARKET",
         "stake_limit_cr": format_cr(STAKE_LIMIT),
         "stake_left_cr": format_cr(STAKE_LIMIT),
+        "required_cr": format_cr(STAKE_LIMIT + gain + 1),
     }
     all_of_it = executed(
         await post_trade(client, market.id, buy_for(Outcome.NO, STAKE_LIMIT + gain))
@@ -965,7 +976,9 @@ async def test_whatever_a_trader_buys_and_sells_their_net_stake_never_passes_the
         if side is TradeSide.SELL:
             preset = next(
                 preset
-                for preset in view.sell_presets(positions, can_trade=True)
+                for preset in view.sell_presets(
+                    await stored(container, market), positions, can_trade=True
+                )
                 if (preset.outcome, preset.portion) == (outcome, size)
             )
             if not preset.allowed:
@@ -983,6 +996,7 @@ async def test_whatever_a_trader_buys_and_sells_their_net_stake_never_passes_the
                 "limit": Limit.MAX_STAKE_PER_USER_MARKET,
                 "stake_limit_cr": to_cr(view.stake_limit_micro),
                 "stake_left_cr": to_cr(view.stake_left_micro(stake_before)),
+                "required_cr": to_cr(size),
             }
             continue
         bought = await container.trading.trade(who, market.id, uuid7(), buying)
@@ -1017,6 +1031,9 @@ async def test_a_buy_the_balance_does_not_cover_is_insufficient_balance_with_bot
         "balance_cr": format_cr(balance),
         "required_cr": format_cr(SMALLEST_PRESET),
     }
+    assert refused.json()["message"] == (
+        f"This costs {format_tokens(SMALLEST_PRESET)}. You have {format_tokens(balance)}."
+    )
     assert await books(container, factory, market, poor) == before
     # A buy by shares is refused for its cost, which lmsr rounds up.
     cost = lmsr_quote(market, buy_shares(Outcome.YES, 2 * balance)).amount_micro
@@ -1920,3 +1937,157 @@ async def test_without_postgres_a_trade_is_answered_503(
     refused = await post_trade(client, uuid7(), buy_for(Outcome.YES, SMALLEST_PRESET))
 
     assert assert_error(refused, 503, "SERVICE_UNAVAILABLE") == {}
+
+
+# --- An order in shares, as the trade sheet sends it (A.4, A.11) ---------------------------
+
+
+async def quote_of(client: httpx.AsyncClient, market: Market, body: Body) -> QuoteResponse:
+    """The quote of the size of `body`, for whoever `as_user` named."""
+    size = {name: body[name] for name in ("side", "outcome", "shares")}
+    response = await client.get(f"/api/markets/{market.id}/quote", params=size)
+    assert response.status_code == 200, response.text
+    return QuoteResponse.model_validate(response.json())
+
+
+def guarded_by(body: Body, quote: QuoteResponse) -> Body:
+    """`body` as the trade sheet sends a buy: guarded by the cost of the quote on
+    screen, with its version."""
+    return body | {
+        "max_cost_cr": format_cr(micro(quote.amount_cr)),
+        "quote_version": quote.quote_version,
+    }
+
+
+async def test_a_buy_of_shares_guarded_by_its_quoted_cost_executes_at_that_cost_for_those_shares(
+    client: httpx.AsyncClient,
+    container: Container,
+    factory: Factory,
+    market: Market,
+    trader: User,
+) -> None:
+    """The buyer gets exactly the shares asked for, at what `quote_buy_shares` says of
+    the row: that cost is what the account pays and what the position grows by."""
+    fifty = buy_shares(Outcome.YES, 50 * MICRO)
+    quote = await quote_of(client, market, fifty)
+    cost = lmsr_quote(market, fifty).amount_micro
+    assert (quote.amount_cr, quote.payout_cr) == (to_cr(cost), to_cr(50 * MICRO))
+    balance = await factory.balance_micro(trader)
+
+    bought = executed(await post_trade(client, market.id, guarded_by(fifty, quote)))
+
+    assert (bought.shares, bought.amount_cr) == (to_cr(50 * MICRO), to_cr(cost))
+    assert bought.net_stake_cr == to_cr(cost)
+    (position,) = await positions_of(container, trader, market)
+    assert (position.shares_micro, position.cost_micro) == (50 * MICRO, cost)
+    assert await factory.balance_micro(trader) == balance - cost
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_buy_of_shares_is_stale_once_its_price_rose_and_costs_less_once_it_fell(
+    client: httpx.AsyncClient,
+    container: Container,
+    factory: Factory,
+    market: Market,
+    trader: User,
+) -> None:
+    """The guard of a buy is its cost. Somebody buys the same outcome in between: 409
+    with a fresh quote, which says what the shares pay; nothing is booked and the key
+    is free. Then the other outcome is bought until the price lies below the quoted
+    one: the same request under the same key executes, for less than the quote said."""
+    fifty = buy_shares(Outcome.YES, 50 * MICRO)
+    quote = await quote_of(client, market, fifty)
+    guarded = guarded_by(fifty, quote)
+    key = uuid7()
+    await someone_holding(factory, market, Outcome.YES, 40 * MICRO)
+    before = await books(container, factory, market, trader)
+
+    stale = await post_trade(client, market.id, guarded, key)
+
+    risen = await stored(container, market)
+    fresh = shown(container.market_view, risen, lmsr_quote(risen, fifty))
+    assert assert_error(stale, 409, "QUOTE_STALE") == {"quote": fresh.model_dump(mode="json")}
+    assert stale.json()["details"]["quote"]["payout_cr"] == "50"
+    assert fresh.amount_cr > quote.amount_cr
+    assert await books(container, factory, market, trader) == before
+
+    await someone_holding(factory, market, Outcome.NO, 200 * MICRO)
+    fallen = await stored(container, market)
+    cheaper = executed(await post_trade(client, market.id, guarded, key))
+
+    assert cheaper.shares == to_cr(50 * MICRO)
+    assert cheaper.amount_cr == to_cr(lmsr_quote(fallen, fifty).amount_micro)
+    assert cheaper.amount_cr < quote.amount_cr
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_the_last_position_of_a_slider_is_bought_and_one_step_beyond_it_is_refused(
+    client: httpx.AsyncClient,
+    container: Container,
+    factory: Factory,
+    market: Market,
+    trader: User,
+    as_user: ActAs,
+) -> None:
+    """`MarketView.buy_entries` and the trade are one rule. One step past the end of
+    the slider costs more than the stake left for somebody with the tokens, and more
+    than the account holds for somebody without; the end itself is a buy."""
+    view = container.market_view
+    step = container.settings.pricing.share_step_micro
+    short = await factory.user(balance_micro=17 * MICRO + MICRO // 2)
+
+    for who, refusal in ((trader, "LIMIT_EXCEEDED"), (short, "INSUFFICIENT_BALANCE")):
+        as_user(who)
+        row = await stored(container, market)
+        stake_left = view.stake_left_micro(
+            view.net_stake_micro(await positions_of(container, who, market))
+        )
+        yes, _ = view.buy_entries(row, stake_left, await factory.balance_micro(who), can_trade=True)
+        assert yes.slider is not None
+        last = yes.slider.max * MICRO
+        one_more = buy_shares(Outcome.YES, last + step)
+
+        refused = await post_trade(client, market.id, one_more)
+
+        details = assert_error(refused, 409, refusal)
+        assert details["required_cr"] == format_cr(lmsr_quote(row, one_more).amount_micro)
+        bought = executed(await post_trade(client, market.id, buy_shares(Outcome.YES, last)))
+        assert bought.shares == to_cr(last)
+
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_buy_and_a_sale_under_two_keys_are_two_trades_and_one_key_twice_is_one(
+    client: httpx.AsyncClient,
+    container: Container,
+    factory: Factory,
+    market: Market,
+    trader: User,
+) -> None:
+    """The trade sheet stays open after a trade, and the next Confirm sends another
+    body under another key. The sale is a sell shortcut: its shares, guarded by what
+    the shortcut said it brings in."""
+    bought = executed(await post_trade(client, market.id, buy_shares(Outcome.YES, 50 * MICRO)))
+    half = next(
+        preset
+        for preset in container.market_view.sell_presets(
+            await stored(container, market),
+            await positions_of(container, trader, market),
+            can_trade=True,
+        )
+        if (preset.outcome, preset.portion) == (Outcome.YES, SellPortion.HALF)
+    )
+    selling = sell(
+        Outcome.YES, micro(half.shares), min_proceeds_cr=format_cr(micro(half.proceeds_cr))
+    )
+    key = uuid7()
+
+    sold = executed(await post_trade(client, market.id, selling, key))
+    again = executed(await post_trade(client, market.id, selling, key))
+
+    assert sold.amount_cr == half.proceeds_cr
+    assert again == sold
+    assert bought.trade_id != sold.trade_id
+    assert len(await trades_of(container, market)) == 2
+    assert await held(container, trader, market, Outcome.YES) == 50 * MICRO - micro(half.shares)
+    await assert_books_balance(container.uow_factory)

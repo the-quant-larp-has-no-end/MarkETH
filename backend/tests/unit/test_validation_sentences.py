@@ -25,6 +25,7 @@ import re
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from datetime import timedelta
+from decimal import Decimal
 from typing import Annotated, Any, Final, Self
 from uuid import uuid7
 
@@ -42,6 +43,7 @@ from app.core.config import Settings
 from app.core.enums import UserRole, UserStatus
 from app.core.errors import AppError, ConflictError
 from app.core.identity import AuthenticatedUser, Caller, PortalIdentity
+from app.core.live import TOPICS_HARD_MAX
 from app.core.units import MICRO
 from app.main import create_app
 from app.schemas.admin.code_batches import CreateCodeBatchRequest, RevokeCodesRequest
@@ -71,8 +73,11 @@ from app.schemas.common import (
     AMOUNT_NOT_POSITIVE_MESSAGE,
     AMOUNT_TOO_LARGE_MESSAGE,
     AMOUNT_ZERO_MESSAGE,
+    NOT_A_NUMBER_OF_SHARES_MESSAGE,
     NOT_AN_AMOUNT_MESSAGE,
     SENTENCE,
+    SHARES_NOT_POSITIVE_MESSAGE,
+    SHARES_TOO_LARGE_MESSAGE,
     TOO_MANY_PLACES_MESSAGE,
     CreditAmount,
     NonZeroCreditAmount,
@@ -88,6 +93,7 @@ from app.schemas.leaderboard import (
     NOT_A_RATIO_MESSAGE,
     LeaderboardQuery,
 )
+from app.schemas.live import LiveStreamQuery
 from app.schemas.markets import DECIDED_BEFORE_CLOSE_MESSAGE, ProposeMarketRequest
 from app.schemas.profile import USERNAME_CHARACTERS_MESSAGE, SaveProfileRequest
 from app.schemas.trading import (
@@ -424,6 +430,94 @@ def test_the_sentences_of_an_amount_read_as_they_are_shown() -> None:
     assert AMOUNT_ZERO_MESSAGE == "Enter an amount other than 0."
 
 
+@pytest.mark.parametrize("model", [QuoteQuery, TradeRequest], ids=["a quote", "a trade"])
+@pytest.mark.parametrize(
+    ("sent", "kind", "sentence"),
+    [
+        ("abc", "decimal_string", NOT_A_NUMBER_OF_SHARES_MESSAGE),
+        ("1,5", "decimal_string", NOT_A_NUMBER_OF_SHARES_MESSAGE),
+        ("", "decimal_string", NOT_A_NUMBER_OF_SHARES_MESSAGE),
+        (2.5, "decimal_string", NOT_A_NUMBER_OF_SHARES_MESSAGE),
+        ("0", "decimal_not_positive", SHARES_NOT_POSITIVE_MESSAGE),
+        ("-3", "decimal_not_positive", SHARES_NOT_POSITIVE_MESSAGE),
+        ("1000000000", "decimal_too_large", SHARES_TOO_LARGE_MESSAGE),
+        ("0.0000001", "decimal_places", TOO_MANY_PLACES_MESSAGE),
+    ],
+)
+def test_a_size_in_shares_says_what_is_wrong_with_it_in_words_about_shares(
+    model: type[BaseModel], sent: object, kind: str, sentence: str
+) -> None:
+    """The four rules a size can break, each under the name an amount breaks it with."""
+    (error,) = errors_of(model, SELL | {"shares": sent})
+
+    assert (error["loc"], error["type"]) == (("shares",), kind)
+    assert sentence_of(error) == sentence
+    assert_is_a_sentence(sentence)
+    assert "amount" not in sentence
+
+
+def test_the_fewest_shares_a_buy_accepts_are_told_in_words_about_shares_too() -> None:
+    assert said_for(TradeRequest, BUY | {"min_shares": "abc"}) == {
+        ("min_shares",): NOT_A_NUMBER_OF_SHARES_MESSAGE
+    }
+    assert said_for(TradeRequest, BUY | {"min_shares": "0"}) == {
+        ("min_shares",): SHARES_NOT_POSITIVE_MESSAGE
+    }
+    # A budget beside it keeps the words of an amount.
+    assert said_for(TradeRequest, BUY | {"amount_cr": "abc"}) == {
+        ("amount_cr",): NOT_AN_AMOUNT_MESSAGE
+    }
+
+
+def test_the_sentences_of_a_size_in_shares_read_as_they_are_shown() -> None:
+    assert NOT_A_NUMBER_OF_SHARES_MESSAGE == "Enter a number of shares, for example 50."
+    assert SHARES_NOT_POSITIVE_MESSAGE == "Enter a number of shares above 0."
+    assert SHARES_TOO_LARGE_MESSAGE == "Enter a smaller number of shares."
+
+
+def test_the_words_about_shares_leave_the_schema_of_a_size_as_it_is() -> None:
+    """A client still reads the pattern of the field, and a size still arrives as the
+    number it is."""
+    for model, field in (
+        (QuoteQuery, "shares"),
+        (TradeRequest, "shares"),
+        (TradeRequest, "min_shares"),
+    ):
+        size, nothing = model.model_json_schema()["properties"][field]["anyOf"]
+        assert size == {
+            "type": "string",
+            "pattern": r"^[0-9]{1,9}(\.[0-9]{1,6})?$",
+            "examples": ["0.25"],
+        }, field
+        assert nothing == {"type": "null"}, field
+
+    sized = TradeRequest.model_validate(SELL | {"shares": "2.50"})
+    assert sized.shares == Decimal("2.5")
+    assert sized.model_dump(mode="json")["shares"] == "2.5"
+
+
+def test_a_stream_query_says_what_is_wrong_with_its_tab_and_its_topics() -> None:
+    """The query of the event stream is made by the page, not typed, and is still
+    refused in sentences: none of its rules is left to the neutral one."""
+    tab = "tab-0123"
+
+    assert said_for(LiveStreamQuery, {}) == {("tab",): "This is required."}
+    assert said_for(LiveStreamQuery, {"tab": "short", "topic": ["markets", "me"]}) == {
+        ("tab",): "Use only the characters this field takes.",
+        ("topic", 1): "Use only the characters this field takes.",
+    }
+    assert said_for(LiveStreamQuery, {"tab": tab, "topic": ["x" * 65]}) == {
+        ("topic", 0): "Use at most 64 characters."
+    }
+    too_many = ["markets"] * (TOPICS_HARD_MAX + 1)
+    assert said_for(LiveStreamQuery, {"tab": tab, "topic": too_many}) == {
+        ("topic",): "Give at most 32 entries."
+    }
+    assert said_for(LiveStreamQuery, {"tab": tab, "after": "0a0a0a0a-12"}) == {
+        ("after",): "This field is not part of the request."
+    }
+
+
 @pytest.mark.parametrize(
     "username", ["anna-m", "max.muster", "jürg", "anna m", "Anna", "ANNA", "a@b"]
 )
@@ -749,6 +843,11 @@ VALID: Final[dict[type[RequestModel], dict[str, Any]]] = {
 BASES_ONLY: Final[frozenset[type[RequestModel]]] = frozenset({TradeSize})
 """Request models no route takes by itself: what a quote and a trade have in common."""
 
+WITHOUT_AN_OPERATION: Final[frozenset[type[RequestModel]]] = frozenset({LiveStreamQuery})
+"""Request models whose operation the application does not serve: the query of the
+event stream, `GET /stream`. Its rules and their sentences are held on the model, above
+and in `tests/integration/test_api_contract.py`."""
+
 WRONG_IN_A_BODY: Final[tuple[object, ...]] = (
     None,
     True,
@@ -876,7 +975,7 @@ def test_every_request_model_is_taken_by_an_operation_and_has_a_request_to_start
     shows up on its operation. What it needs is an entry in `VALID`."""
     used = {use.model for use in USES}
 
-    assert request_models() - used == BASES_ONLY
+    assert request_models() - used == BASES_ONLY | WITHOUT_AN_OPERATION
     assert used == set(VALID)
     assert len(USES) >= 24, "five query models and nineteen bodies"
     assert len(FIELDS) >= 77

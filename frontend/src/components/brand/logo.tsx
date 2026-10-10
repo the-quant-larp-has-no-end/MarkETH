@@ -1,13 +1,14 @@
-import Image from "next/image";
-
 import { cn } from "@/lib/utils";
+
+import { BrandImage } from "./brand-image";
+import type { BrandFile } from "./files";
 
 const LOCKUPS = {
   /** The shapes in `--foreground`, for the navy surfaces of the app. */
-  screen: "/brand/logo-lockup.png",
+  screen: "logo-lockup",
   /** The shapes in `--ink`, for paper: the printable QR sheet only. */
-  paper: "/brand/logo-lockup-dark.png",
-} as const;
+  paper: "logo-lockup-dark",
+} as const satisfies Record<string, BrandFile>;
 
 /**
  * The logo with name (DESIGN.md §3): the cup with the rising arrow, followed by
@@ -25,12 +26,11 @@ export function Logo({
   className?: string;
 }) {
   return (
-    <Image
-      src={LOCKUPS[on]}
+    <BrandImage
+      name={LOCKUPS[on]}
       alt="MarkETH"
       width={716}
       height={168}
-      loading="eager"
       className={cn("w-auto shrink-0", size === "bar" ? "h-7" : "h-12", className)}
     />
   );
@@ -39,8 +39,8 @@ export function Logo({
 /** The logo alone, for where only a square fits. */
 export function LogoMark({ className }: { className?: string }) {
   return (
-    <Image
-      src="/brand/logo-mark.png"
+    <BrandImage
+      name="logo-mark"
       alt="MarkETH"
       width={320}
       height={320}

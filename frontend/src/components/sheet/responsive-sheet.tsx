@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useEffect, useRef } from "react";
+import { createContext, type ReactNode, useContext, useEffect, useRef } from "react";
 
 import {
   CloseCross,
@@ -17,6 +17,7 @@ import {
   DrawerContent,
   DrawerDescription,
   DrawerHeader,
+  DrawerNested,
   DrawerTitle,
 } from "@/components/ui/drawer";
 import { WIDE_QUERY } from "@/lib/design";
@@ -55,6 +56,15 @@ export type ResponsiveSheetProps = {
 };
 
 /**
+ * What a sheet tells its content: the form of the surface it stands in. A sheet that opens
+ * from inside a bottom sheet (a picker in the filter sheet) reads it and nests itself.
+ */
+const SheetSurface = createContext<"sheet" | "dialog" | null>(null);
+
+/** A picker's list that is open in place: the next Escape or click outside is the list's. */
+const OPEN_LIST = '[role="combobox"][aria-expanded="true"]';
+
+/**
  * The bottom sheet that becomes a dialog (DESIGN.md §12). Below 768 px it slides up from
  * the bottom and closes by drag, by tapping the scrim, with Escape or with the close
  * cross; from 768 px, and with `dialog` at every width, it is a centred dialog, 420 px
@@ -79,6 +89,12 @@ export type ResponsiveSheetProps = {
  * closed. The dialog takes the focus to its first control. The bottom sheet takes it to
  * itself: a field that got the focus would slide a keyboard up over a sheet nobody has
  * read yet, and with the focus left on the page behind, the Tab key would walk off there.
+ *
+ * A sheet inside a sheet (DESIGN.md §12, Picker). Below 768 px a sheet that is opened from
+ * the content of a bottom sheet is nested in it: the sheet under it stays open and keeps
+ * the page locked when the upper one closes. As a dialog, the sheet leaves Escape and a
+ * click beside it to a picker whose list is open in it: the list closes and the dialog
+ * stays.
  */
 export function ResponsiveSheet({
   open,
@@ -93,11 +109,25 @@ export function ResponsiveSheet({
   className,
 }: ResponsiveSheetProps) {
   const wide = useMediaQuery(WIDE_QUERY);
+  const around = useContext(SheetSurface);
+  /** Whether a picker's list was open in the dialog when the pointer went down. */
+  const listWasOpen = useRef(false);
   /** What had the focus when the sheet opened. */
   const opener = useRef<HTMLElement | null>(null);
   const isOpen = useRef(open);
   useEffect(() => {
     isOpen.current = open;
+  }, [open]);
+
+  // Noted when the pointer goes down, before anything else hears of it: by the time the
+  // dialog asks what a touch beside it means, the list has closed already.
+  useEffect(() => {
+    if (!open) return;
+    const note = () => {
+      listWasOpen.current = document.querySelector(OPEN_LIST) !== null;
+    };
+    document.addEventListener("pointerdown", note, true);
+    return () => document.removeEventListener("pointerdown", note, true);
   }, [open]);
 
   const rememberOpener = () => {
@@ -127,6 +157,15 @@ export function ResponsiveSheet({
           {...undescribed}
           onOpenAutoFocus={rememberOpener}
           onCloseAutoFocus={returnFocus}
+          onEscapeKeyDown={(event) => {
+            if (event.target instanceof Element && event.target.matches(OPEN_LIST)) {
+              event.preventDefault();
+            }
+          }}
+          onInteractOutside={(event) => {
+            if (listWasOpen.current) event.preventDefault();
+            listWasOpen.current = false;
+          }}
           className={cn("gap-0 p-0", sheetHeaderClasses, className)}
         >
           {hideTitle ? (
@@ -144,14 +183,17 @@ export function ResponsiveSheet({
               {description !== undefined && <DialogDescription>{description}</DialogDescription>}
             </DialogHeader>
           )}
-          {children}
+          <SheetSurface value="dialog">{children}</SheetSurface>
         </DialogContent>
       </Dialog>
     );
   }
 
+  // Inside a bottom sheet this one is nested. Inside a dialog it is a sheet of its own.
+  const Root = around === "sheet" ? DrawerNested : Drawer;
+
   return (
-    <Drawer open={open} onOpenChange={onOpenChange} dismissible={dismissible}>
+    <Root open={open} onOpenChange={onOpenChange} dismissible={dismissible}>
       <DrawerContent
         {...undescribed}
         onOpenAutoFocus={(event) => {
@@ -177,13 +219,13 @@ export function ResponsiveSheet({
             {description !== undefined && <DrawerDescription>{description}</DrawerDescription>}
           </DrawerHeader>
         )}
-        {children}
+        <SheetSurface value="sheet">{children}</SheetSurface>
         {/* After the content, as in the dialog: the cross is the last stop of the Tab key. */}
         <DrawerClose aria-label="Close" disabled={!dismissible} className={closeCrossClasses}>
           <CloseCross />
         </DrawerClose>
       </DrawerContent>
-    </Drawer>
+    </Root>
   );
 }
 

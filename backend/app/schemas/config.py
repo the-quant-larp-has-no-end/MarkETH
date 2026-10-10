@@ -42,6 +42,14 @@ class PublicConfigResponse(ResponseModel):
     """Every level, in the order to offer them."""
 
     max_stake_per_market_cr: CreditAmount
+    share_presets: list[ShareAmount]
+    """The shortcuts of a buy on the trade sheet, in shares: whole numbers. Which of
+    them a viewer can take for an outcome of a market is `MarketViewer.buy`."""
+
+    share_step: ShareAmount
+    """The step of the slider of a buy on the trade sheet: a whole number of shares.
+    Where the slider runs for one viewer and one outcome is `MarketViewer.buy`."""
+
     stake_presets_cr: list[CreditAmount]
     stake_step_cr: CreditAmount
     """The step of the slider of a buy on the trade sheet: a whole number of credits.
@@ -54,6 +62,21 @@ class PublicConfigResponse(ResponseModel):
 
     quote_debounce_ms: int
     live_poll_fallback_seconds: int
+    """Seconds between two reads of what is on screen while a tab holds no event
+    stream."""
+
+    live_heartbeat_seconds: int
+    """Seconds between two beats of an open event stream. A tab that hears nothing for
+    twice as long calls its stream lost."""
+
+    live_announce_spread_ms: int
+    """Milliseconds over which the tabs that hear one announcement spread their reads:
+    each waits a random time up to this before it reads. 0: every tab reads at once."""
+
+    live_viewer_refresh_seconds: int
+    """Seconds within which a tab whose viewer holds shares of the market on screen
+    reads the market again after its price moved: once, after a random wait up to
+    this."""
 
     tiers: list[TierConfig]
     max_market_budget_cr: CreditAmount
