@@ -14,7 +14,7 @@ nothing here waits for the trading service.
 """
 
 import asyncio
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -67,6 +67,8 @@ from app.models import (
     User,
 )
 from app.pricing import lmsr
+from app.repositories.market import MarketRepository
+from app.repositories.trading import TradeRepository
 from app.schemas.admin.markets import (
     ApproveMarketRequest,
     CloseMarketRequest,
@@ -125,6 +127,10 @@ RECEIVE_TIMEOUT_SECONDS: Final[float] = 5.0
 
 BLOCKED_FOR_SECONDS: Final[float] = 0.3
 """Long enough for a request to reach the row lock it then waits for."""
+
+LINGER_SECONDS: Final[float] = 0.15
+"""How long a transaction is kept open by `linger_after`: many times what a parallel
+request needs to get a connection and reach the same statement."""
 
 MARKER: Final[Mapping[str, str]] = {"type": "marker"}
 """What a test sends on a market's channel to prove that nothing else is on its way."""
@@ -268,6 +274,12 @@ async def everything(container: Container) -> Rows:
     return found
 
 
+def held_in(market: Market, positions: list[tuple[object, ...]]) -> list[tuple[object, ...]]:
+    """The rows of `market` out of the `positions` of a reading of `everything`: user,
+    market, outcome, shares, cost, proceeds."""
+    return [held for held in positions if held[1] == market.id]
+
+
 async def market_row(container: Container, market_id: UUID) -> Market:
     async with container.uow_factory() as uow:
         row = await uow.markets.get(market_id)
@@ -405,6 +417,25 @@ def lifecycle_with(container: Container, **risk: int) -> MarketLifecycleService:
         container.market_cache,
         container.live_quotes,
     )
+
+
+def linger_after(monkeypatch: pytest.MonkeyPatch, repository: type, query: str) -> None:
+    """Keep every transaction open for a moment after it ran `query` of `repository`.
+
+    Two requests sent at once overlap only if the first is still in its transaction
+    when the second gets as far. Left alone, the first is often done before the second
+    has its connection, and a missing lock would go unnoticed. With this, a second
+    request reaches the same point while the first lingers there, unless a lock keeps
+    it waiting.
+    """
+    original: Callable[..., Awaitable[Any]] = getattr(repository, query)
+
+    async def lingering(self: object, *args: Any, **kwargs: Any) -> Any:
+        answer = await original(self, *args, **kwargs)
+        await asyncio.sleep(LINGER_SECONDS)
+        return answer
+
+    monkeypatch.setattr(repository, query, lingering)
 
 
 def tier_budget(tier: MarketTier) -> int:
@@ -641,8 +672,8 @@ async def test_the_service_refuses_an_admin_who_ever_traded_the_market_whatever_
     lifecycle: MarketLifecycleService,
     action: Action,
 ) -> None:
-    """Sold out, the admin still decided nothing they had no part in. An admin who
-    traded another market is not meant."""
+    """An admin who sold everything again is still one who traded the market. One who
+    traded some other market is not meant."""
     first = await factory.admin(0, balance_micro=WALLET)
     second = await factory.admin(1, balance_micro=WALLET)
     market = await factory.market()
@@ -1281,7 +1312,7 @@ async def test_closing_a_market_frees_its_slot_under_max_open_markets(
 
 
 @pytest.mark.parametrize("status", [MarketStatus.OPEN, MarketStatus.HALTED])
-async def test_the_budgets_of_open_and_halted_markets_plus_the_new_one_must_fit_the_aggregate_cap(
+async def test_the_budgets_of_open_and_halted_markets_plus_this_one_must_fit_the_aggregate_cap(
     container: Container, factory: Factory, admin: AuthenticatedUser, status: MarketStatus
 ) -> None:
     """SPEC §5: exactly at MAX_AGGREGATE_LOSS_BUDGET passes, one micro-credit above is
@@ -1363,14 +1394,21 @@ async def test_an_approval_that_runs_into_a_cap_leaves_the_proposal_as_it_was_ed
     ids=["one-slot", "room-for-one-budget"],
 )
 async def test_two_parallel_approvals_cannot_both_pass_a_cap(
-    container: Container, factory: Factory, risk: dict[str, int], limit: Limit
+    container: Container,
+    factory: Factory,
+    monkeypatch: pytest.MonkeyPatch,
+    risk: dict[str, int],
+    limit: Limit,
 ) -> None:
-    """Each approval counts the open markets before it opens its own. They hold
-    different market rows, so without the approval lock both would count none (A.5)."""
+    """Each approval counts the open markets and adds up their budgets before it opens
+    its own. They hold different market rows, so without the approval lock two that
+    overlap would both count none (A.5). Each is kept in its transaction between the
+    counting and the opening."""
     tight = lifecycle_with(container, **risk)
     first = factory.identity(await factory.admin(0))
     second = factory.identity(await factory.admin(1))
     proposals = [await factory.market(status=MarketStatus.PROPOSED) for _ in range(2)]
+    linger_after(monkeypatch, MarketRepository, "sum_budget_by_statuses")
 
     answers = await asyncio.gather(
         APPROVE.by(tight, first, proposals[0].id),
@@ -1386,6 +1424,40 @@ async def test_two_parallel_approvals_cannot_both_pass_a_cap(
     assert statuses == [MarketStatus.OPEN, MarketStatus.PROPOSED]
     assert await count_rows(container.uow_factory, AuditLogEntry) == 1
     assert await count_rows(container.uow_factory, OutboxEvent) == 1
+
+
+async def test_an_approval_waits_for_the_one_before_it_and_is_judged_and_dated_at_its_turn(
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    lifecycle: MarketLifecycleService,
+    admin: AuthenticatedUser,
+) -> None:
+    """Approvals check the caps one at a time (A.5), so one may have to wait. It opens
+    its market at the moment it gets its turn: that is `opened_at`, the start of the
+    chart and the instant its dates are held against."""
+    in_time = await factory.market(status=MarketStatus.PROPOSED)
+    too_late = await factory.market(status=MarketStatus.PROPOSED, close_in=timedelta(hours=1))
+
+    async with container.uow_factory() as another_approval:
+        await another_approval.advisory_lock(market_lifecycle.APPROVAL_LOCK)
+        opening = asyncio.create_task(APPROVE.by(lifecycle, admin, in_time.id))
+        expiring = asyncio.create_task(APPROVE.by(lifecycle, admin, too_late.id))
+        await asyncio.sleep(BLOCKED_FOR_SECONDS)
+        assert not opening.done()
+        assert not expiring.done()
+        turn_at = clock.advance(timedelta(hours=2))
+
+    opened = await asyncio.wait_for(opening, RECEIVE_TIMEOUT_SECONDS)
+    with pytest.raises(ValidationFailedError) as refused:
+        await asyncio.wait_for(expiring, RECEIVE_TIMEOUT_SECONDS)
+
+    assert refused.value.details == {"field": "close_at"}
+    assert opened.opened_at == turn_at
+    async with container.uow_factory() as uow:
+        (queued,) = (await uow.session.scalars(select(OutboxEvent))).all()
+    assert quote_point_from_payload(queued.payload).ts == turn_at
+    assert (await market_row(container, too_late.id)).status is MarketStatus.PROPOSED
 
 
 # --- Reject ------------------------------------------------------------------------------
@@ -1994,14 +2066,19 @@ async def test_a_voided_market_cannot_be_resolved_or_voided_again(
 
 
 async def test_two_admins_resolving_at_once_settle_the_market_once(
-    container: Container, factory: Factory, lifecycle: MarketLifecycleService
+    container: Container,
+    factory: Factory,
+    lifecycle: MarketLifecycleService,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """One gets the row first and settles; the other finds the market RESOLVED under
-    the lock. The winners are paid once, as the first to get the row decided."""
+    """One gets the row first and settles; the other waits for it and finds the market
+    RESOLVED under the lock. The winners are paid once, as the first to get the row
+    decided. The first is kept in its transaction right after it got the row."""
     first = factory.identity(await factory.admin(0))
     second = factory.identity(await factory.admin(1))
     book = await traded(container, factory)
     before = await balances(factory, book.traders)
+    linger_after(monkeypatch, TradeRepository, "exists_for_user_market")
 
     answers = await asyncio.gather(
         lifecycle.resolve(first, book.market.id, resolve_to(Outcome.YES)),
@@ -2255,25 +2332,19 @@ async def test_whatever_was_traded_a_settlement_pays_what_is_owed_and_vis_takes_
         assert owed_micro == stakes_micro
         assert paid_micro >= in_the_account
         assert (row.q_yes_micro, row.q_no_micro) == (0, 0)
-        left = positions_of_market((await everything(container))["positions"], market)
-        assert all(shares == 0 for *_, shares, _cost, _proceeds in left)
-        assert [row[-2:] for row in left] == [
-            row[-2:] for row in positions_of_market(positions_before, market)
+        left = held_in(market, (await everything(container))["positions"])
+        assert [shares for *_, shares, _cost, _proceeds in left] == [0] * len(left)
+        assert [held[-2:] for held in left] == [
+            held[-2:] for held in held_in(market, positions_before)
         ]
     else:
         won = row.q_yes_micro if ending is ResolutionOutcome.YES else row.q_no_micro
         assert paid_micro == won
         assert paid_micro - in_the_account <= row.budget_micro
-        assert positions_of_market((await everything(container))["positions"], market) == (
-            positions_of_market(positions_before, market)
+        assert held_in(market, (await everything(container))["positions"]) == (
+            held_in(market, positions_before)
         )
     await assert_books_balance(container.uow_factory)
-
-
-def positions_of_market(rows: list[tuple[object, ...]], market: Market) -> list[tuple[object, ...]]:
-    """The rows of `positions` (user, market, outcome, shares, cost, proceeds) that are
-    of `market`, out of a reading of `everything`."""
-    return [row for row in rows if row[1] == market.id]
 
 
 # --- What every action leaves behind -----------------------------------------------------

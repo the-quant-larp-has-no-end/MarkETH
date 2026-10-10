@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { keys } from "@/lib/api/keys";
 import { marketHistoryQuery, marketQuery } from "@/lib/api/queries";
-import type { HistoryResponse, MarketDetailResponse } from "@/lib/api/schema";
+import type { HistoryResponse, MarketDetailResponse, StatusEvent } from "@/lib/api/schema";
 import { installFakeEventSource } from "@/test/fake-event-source";
 import {
   config,
@@ -25,10 +25,16 @@ const MARKET: Route = "GET /api/markets/{market_id}";
 const HISTORY: Route = "GET /api/markets/{market_id}/history";
 
 /** A market screen in miniature: it reads the two queries the stream keeps current. */
-function Market({ enabled = true }: { enabled?: boolean }) {
+function Market({
+  enabled = true,
+  onStatus,
+}: {
+  enabled?: boolean;
+  onStatus?: (event: StatusEvent) => void;
+}) {
   const market = useQuery(marketQuery(MARKET_ID));
   const chart = useQuery(marketHistoryQuery(MARKET_ID));
-  const { live } = useMarketStream(MARKET_ID, { enabled });
+  const { live } = useMarketStream(MARKET_ID, { enabled, onStatus });
   if (market.data === undefined || chart.data === undefined) return <p>loading</p>;
   return (
     <p>
@@ -41,10 +47,13 @@ function Market({ enabled = true }: { enabled?: boolean }) {
 
 const shown = () => screen.getByText(/p_yes/).textContent;
 
-async function open(detail = marketDetail(), options: { pollSeconds?: number } = {}) {
+async function open(
+  detail = marketDetail(),
+  options: { pollSeconds?: number; onStatus?: (event: StatusEvent) => void } = {},
+) {
   const api = mockApi({ [MARKET]: json(200, detail), [HISTORY]: json(200, history()) });
   const streams = installFakeEventSource();
-  const view = renderWithProviders(<Market />, {
+  const view = renderWithProviders(<Market onStatus={options.onStatus} />, {
     config: config({ live_poll_fallback_seconds: options.pollSeconds ?? 10 }),
   });
   await screen.findByText(/p_yes 0\.548/);
@@ -179,6 +188,52 @@ describe("useMarketStream", () => {
     expect(api.calls(MARKET)).toHaveLength(2);
   });
 
+  test("a status event is handed to the screen, after the market was asked for again", async () => {
+    const seen: { status: string; asking: number }[] = [];
+    const view = await open(marketDetail(), {
+      onStatus: (event) =>
+        seen.push({
+          status: event.status,
+          asking: view.client.isFetching({ queryKey: keys.markets.detail(MARKET_ID) }),
+        }),
+    });
+
+    act(() => view.streams.latest().emit("status", statusEvent({ status: "CLOSED" })));
+    act(() =>
+      view.streams
+        .latest()
+        .emit("status", statusEvent({ market_id: "another", status: "RESOLVED" })),
+    );
+
+    expect(seen).toEqual([{ status: "CLOSED", asking: 1 }]);
+    await waitFor(() => expect(view.api.calls(MARKET)).toHaveLength(2));
+  });
+
+  test.each(["RESOLVED", "VOID"] as const)(
+    "a status event that says the market is %s marks the caller's own reads out of date: the balance is another now",
+    async (status) => {
+      const { api, streams, client } = await open();
+      client.setQueryData(keys.positions, { items: [], total_value_cr: "0" });
+      api.on(MARKET, json(200, marketDetail({ status, trading_open: false })));
+
+      act(() => streams.latest().emit("status", statusEvent({ status, trading_open: false })));
+
+      await waitFor(() => expect(shown()).toContain(`status ${status}`));
+      expect(client.getQueryState(keys.me)?.isInvalidated).toBe(true);
+      expect(client.getQueryState(keys.positions)?.isInvalidated).toBe(true);
+    },
+  );
+
+  test("a status event that settles nothing leaves the balance alone", async () => {
+    const { api, streams, client } = await open();
+    api.on(MARKET, json(200, marketDetail({ status: "HALTED", trading_open: false })));
+
+    act(() => streams.latest().emit("status", statusEvent({ status: "HALTED" })));
+
+    await waitFor(() => expect(shown()).toContain("status HALTED"));
+    expect(client.getQueryState(keys.me)?.isInvalidated).toBe(false);
+  });
+
   test("an open quote of the trade sheet is never touched by an event", async () => {
     const { streams, client } = await open();
     const request = { side: "BUY", outcome: "YES", amount_cr: "25" } as const;
@@ -228,6 +283,31 @@ describe("useMarketStream", () => {
       await waitFor(() => expect(api.calls(MARKET)).toHaveLength(3));
       // Each poll tries the stream again.
       expect(streams.instances).toHaveLength(2);
+    });
+
+    test("a poll that finds the market settled does what the status event would have done", async () => {
+      const { api, streams, client } = await open(marketDetail(), { pollSeconds: 4 });
+      client.setQueryData(keys.markets.list(["OPEN", "HALTED"]), { items: [] });
+      api.on(
+        MARKET,
+        json(200, marketDetail({ status: "RESOLVED", outcome: "YES", trading_open: false })),
+      );
+
+      act(() => streams.latest().fail());
+
+      await waitFor(() => expect(shown()).toContain("status RESOLVED"));
+      await waitFor(() => expect(client.getQueryState(keys.me)?.isInvalidated).toBe(true));
+      expect(client.getQueryState(keys.markets.list(["OPEN", "HALTED"]))?.isInvalidated).toBe(true);
+    });
+
+    test("a poll that finds the market as it was marks nothing else", async () => {
+      const { api, streams, client } = await open(marketDetail(), { pollSeconds: 4 });
+
+      act(() => streams.latest().fail());
+
+      await waitFor(() => expect(api.calls(MARKET)).toHaveLength(2));
+      await act(() => vi.advanceTimersByTimeAsync(50));
+      expect(client.getQueryState(keys.me)?.isInvalidated).toBe(false);
     });
 
     test("keeps the screen current from the polls, and stops polling when the stream is back", async () => {

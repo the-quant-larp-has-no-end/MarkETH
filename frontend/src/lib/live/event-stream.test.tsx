@@ -142,6 +142,31 @@ describe("useEventStream", () => {
     expect(onPoll).toHaveBeenCalledTimes(1);
   });
 
+  test("a stream that opens and ends again at once does not make the polls come faster", () => {
+    const { onPoll } = follow();
+    // The browser reconnects by itself every three seconds, and each time the stream is
+    // cut right after it opened.
+    const cut = () => {
+      act(() => streams.latest().open());
+      act(() => streams.latest().fail({ closed: false }));
+    };
+
+    cut();
+    expect(onPoll).toHaveBeenCalledTimes(1);
+
+    for (let second = 3; second <= 9; second += 3) {
+      act(() => vi.advanceTimersByTime(3_000));
+      cut();
+    }
+    expect(onPoll).toHaveBeenCalledTimes(1);
+
+    // Twelve seconds after the first poll, which is more than the interval of ten.
+    act(() => vi.advanceTimersByTime(3_000));
+    cut();
+    expect(onPoll).toHaveBeenCalledTimes(2);
+    expect(streams.instances).toHaveLength(1);
+  });
+
   test("takes its poll interval from the caller", () => {
     const { onPoll } = follow({ pollSeconds: 3 });
     act(() => streams.latest().fail());
@@ -197,11 +222,22 @@ describe("useEventStream", () => {
     expect(onEvent).not.toHaveBeenCalled();
   });
 
-  test("where the browser has no EventSource, nothing breaks", () => {
+  test("where the browser has no EventSource, it polls at the pace of the interval from the start", () => {
     vi.stubGlobal("EventSource", undefined);
 
-    const { result } = follow();
+    const { result, onPoll, unmount } = follow();
 
     expect(result.current.live).toBe(false);
+    // The screen has just read what it shows.
+    expect(onPoll).not.toHaveBeenCalled();
+
+    act(() => vi.advanceTimersByTime(10_000));
+    expect(onPoll).toHaveBeenCalledTimes(1);
+    act(() => vi.advanceTimersByTime(10_000));
+    expect(onPoll).toHaveBeenCalledTimes(2);
+
+    unmount();
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(onPoll).toHaveBeenCalledTimes(2);
   });
 });

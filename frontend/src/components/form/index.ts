@@ -11,3 +11,4 @@ export {
   TextField,
   type TextFieldProps,
 } from "./fields";
+export { revealFirstInvalid } from "./reveal-invalid";

@@ -200,6 +200,28 @@ describe("a caller without a profile", () => {
     expect(await screen.findByText("The wallet")).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
+
+  test("whose save is answered FORBIDDEN gets the full-screen message in place of the form", async () => {
+    const api = mockApi({
+      [CONFIG]: json(200, config()),
+      [ME]: PROFILE_REQUIRED,
+      [SAVE]: apiError(403, "FORBIDDEN", "MarkETH is open to ETH addresses only."),
+    });
+    const { user } = renderApp();
+    await user.type(await screen.findByLabelText("Username"), "anna_m");
+    await user.selectOptions(screen.getByLabelText("Level"), "Bachelor");
+    await user.selectOptions(screen.getByLabelText("Programme"), "BSc Computer Science");
+    // What the API now says about the caller, wherever it is asked.
+    api.on(ME, apiError(403, "FORBIDDEN", "MarkETH is open to ETH addresses only."));
+
+    await user.click(screen.getByRole("button", { name: "Create profile" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Create profile" })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("MarkETH is open to ETH addresses only.");
+    expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+  });
 });
 
 describe("a caller the API refuses", () => {

@@ -4,7 +4,13 @@ import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import { keys } from "../api/keys";
-import type { HistoryResponse, MarketDetailResponse, QuoteEvent, StatusEvent } from "../api/schema";
+import type {
+  HistoryResponse,
+  MarketDetailResponse,
+  MarketStatus,
+  QuoteEvent,
+  StatusEvent,
+} from "../api/schema";
 import { useConfig } from "../api/session";
 import { isZero } from "../format/amount";
 import { useEventStream } from "./event-stream";
@@ -65,6 +71,18 @@ export function createMarketFollower(client: QueryClient, marketId: string) {
     }
   };
 
+  /**
+   * What a change of the market's status leaves out of date besides the market itself:
+   * the lists it is in, and, once it is settled, everything that is the caller's own. A
+   * resolution pays out and a void refunds, so the balance in the top bar is another now.
+   */
+  const statusChanged = (status: MarketStatus) => {
+    void client.invalidateQueries({ queryKey: keys.markets.lists });
+    if (status === "RESOLVED" || status === "VOID") {
+      void client.invalidateQueries({ queryKey: keys.me });
+    }
+  };
+
   return {
     quote(event: QuoteEvent) {
       if (event.market_id !== marketId) return;
@@ -75,20 +93,38 @@ export function createMarketFollower(client: QueryClient, marketId: string) {
       if (boughtIn && event.version > before.version) void refreshViewer();
     },
 
-    /** An admin action changed the market: its detail, and the lists it is in, are out of date. */
+    /** An admin action changed the market: ask for it again, and for what follows from it. */
     status(event: StatusEvent) {
       if (event.market_id !== marketId) return;
       void client.invalidateQueries({ queryKey: detailKey, exact: true });
-      void client.invalidateQueries({ queryKey: keys.markets.lists });
+      statusChanged(event.status);
     },
 
-    /** The stream is down: ask for what it would have brought. */
-    poll() {
-      void client.invalidateQueries({ queryKey: detailKey, exact: true });
+    /**
+     * The stream is down: ask for what it would have brought. A status that is another
+     * one in the answer is treated as the `status` event that did not arrive.
+     */
+    async poll() {
+      const before = client.getQueryData<MarketDetailResponse>(detailKey)?.status;
       void client.invalidateQueries({ queryKey: historyKey, exact: true });
+      await client.invalidateQueries({ queryKey: detailKey, exact: true });
+      const after = client.getQueryData<MarketDetailResponse>(detailKey)?.status;
+      if (before !== undefined && after !== undefined && after !== before) statusChanged(after);
     },
   };
 }
+
+export type MarketStreamOptions = {
+  /** False for a market that has no stream to follow: a proposal, a settled market. */
+  enabled?: boolean;
+  /**
+   * Called for every `status` event of this market, after the market was asked for again.
+   * It is how a screen knows that something happened in front of the user, which only the
+   * event can say: the bean drop of a payout plays for a resolution that arrived like
+   * this, and for no other (DESIGN.md §13).
+   */
+  onStatus?: (event: StatusEvent) => void;
+};
 
 /**
  * Keeps one market live while its screen is open: the price, the chart and the volume
@@ -97,13 +133,13 @@ export function createMarketFollower(client: QueryClient, marketId: string) {
  * `live_poll_fallback_seconds`.
  *
  * It changes `marketQuery(marketId)` and `marketHistoryQuery(marketId)` in the cache; a
- * screen that reads those two needs nothing else. An open quote of the trade sheet is
- * never touched. Pass `enabled: false` for a market that has no stream to follow (a
- * proposal).
+ * screen that reads those two needs nothing else. A market that settles also marks the
+ * caller's own reads out of date, the balance among them. An open quote of the trade
+ * sheet is never touched.
  */
 export function useMarketStream(
   marketId: string,
-  { enabled = true }: { enabled?: boolean } = {},
+  { enabled = true, onStatus }: MarketStreamOptions = {},
 ): { live: boolean } {
   const client = useQueryClient();
   const { live_poll_fallback_seconds } = useConfig();
@@ -114,10 +150,15 @@ export function useMarketStream(
     events: STREAM_EVENTS,
     pollSeconds: live_poll_fallback_seconds,
     onEvent: (name, data) => {
-      if (name === "quote") follower.quote(data as QuoteEvent);
-      else if (name === "status") follower.status(data as StatusEvent);
+      if (name === "quote") {
+        follower.quote(data as QuoteEvent);
+      } else if (name === "status") {
+        const event = data as StatusEvent;
+        follower.status(event);
+        if (event.market_id === marketId) onStatus?.(event);
+      }
     },
-    onPoll: follower.poll,
+    onPoll: () => void follower.poll(),
   });
 }
 

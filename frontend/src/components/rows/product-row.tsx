@@ -30,6 +30,8 @@ export function ProductRow({
           rowClasses,
           rowPressClasses,
           "disabled:pointer-events-none disabled:text-subtle",
+          // The token icon of a product that cannot be had is dimmed with its figure.
+          "disabled:[&_[data-slot=token-icon]]:opacity-50",
         )}
       >
         <RowText title={product.name} />

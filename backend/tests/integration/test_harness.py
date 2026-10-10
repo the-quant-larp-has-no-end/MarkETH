@@ -62,7 +62,8 @@ ADMIN_ROUTE = "/api/admin/risk"
 BARISTA_ROUTE = "/api/barista/vouchers/redeem"
 BARISTA_BODY = {"code": "ABCD-EFGH"}
 REFUSED = (401, 403)
-"""What a guard answers. Behind the guards the services are skeletons and answer 501."""
+"""What a guard answers. The routes called here answer whoever the guards let through
+with something else: 200, or 400 for a code that is no voucher's."""
 SCYLLA_RECOVERY_SECONDS = 30.0
 """The driver retries a dead node every 5 seconds; this leaves it several attempts."""
 

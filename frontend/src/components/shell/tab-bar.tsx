@@ -29,9 +29,11 @@ export function TabBar() {
     <nav
       aria-label="Main"
       data-slot="tab-bar"
-      className="fixed inset-x-0 bottom-0 z-40 border-t bg-card pb-safe print:hidden"
+      // Its height, hairline and safe area included, is --tab-bar-space: what the
+      // content and anything pinned keep clear of.
+      className="fixed inset-x-0 bottom-0 z-40 h-(--tab-bar-space) border-t bg-card pb-safe print:hidden"
     >
-      <ul className="flex h-16 items-stretch">
+      <ul className="flex h-full items-stretch">
         {tabsFor(role).map((tab) => {
           const active = tab.matches(pathname);
           return (

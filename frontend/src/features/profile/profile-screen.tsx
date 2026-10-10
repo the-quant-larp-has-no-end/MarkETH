@@ -1,17 +1,70 @@
 "use client";
 
-import { EmptyState } from "@/components/feedback";
+import { toast } from "sonner";
+
 import { Screen } from "@/components/shell";
+import { Card } from "@/components/ui/card";
+import { ProfileForm } from "@/features/session";
+import type { MeResponse } from "@/lib/api/schema";
+import { useMe } from "@/lib/api/session";
 
 /**
- * Profile (`/profile`): DESIGN.md §13. It shows the three fields of the set-up screen
- * (`ProfileForm` of `@/features/session`). A stand-in until the screen is built: the name
- * and the props are final, the content is not.
+ * Profile (`/profile`): DESIGN.md §13. An inner screen, reached from the profile button
+ * of the top bar. It changes the two things the set-up asks for, the username and the
+ * degree, with the same form (`ProfileForm` of `@/features/session`), so every state of
+ * that form is a state of this screen: `USERNAME_TAKEN` and a `VALIDATION_ERROR` on the
+ * field they name, the banner above the button when no answer came.
+ *
+ * It reads nothing itself: the profile is the `/me` the app already holds, and the answer
+ * of a save takes its place. There is no welcome dialog here and nothing to sign out of.
  */
 export function ProfileScreen() {
+  const me = useMe();
+
   return (
     <Screen top="inner" title="Profile" width="narrow">
-      <EmptyState>This screen is not built yet.</EmptyState>
+      <ProfileCard me={me} />
+      <ProfileForm
+        initial={me}
+        submitLabel="Save"
+        requireChange
+        // Success stays on the screen and says so.
+        onSaved={() => toast("Profile saved")}
+      />
     </Screen>
+  );
+}
+
+/**
+ * Who the viewer is: the username and the degree other players see, and under a divider
+ * the name and the address the portal sent. This card and the admin area are the only
+ * places a real name or an address is shown (DESIGN.md §10, People).
+ */
+function ProfileCard({ me }: { me: MeResponse }) {
+  return (
+    <Card data-slot="profile-card">
+      <dl className="flex flex-col gap-1">
+        <dt className="sr-only">Username</dt>
+        <dd className="type-h2 wrap-break-word">{me.username}</dd>
+        <dt className="sr-only">Degree</dt>
+        <dd className="type-body-sm text-muted-foreground">{me.degree_programme}</dd>
+      </dl>
+      <div className="flex flex-col gap-2 border-t pt-3">
+        <dl className="flex flex-col gap-1">
+          {/* The portal may send no name; then there is none to show. */}
+          {me.name !== "" && (
+            <>
+              <dt className="sr-only">Name</dt>
+              <dd className="type-body wrap-break-word">{me.name}</dd>
+            </>
+          )}
+          <dt className="sr-only">Email</dt>
+          <dd className="type-body wrap-break-word">{me.email}</dd>
+        </dl>
+        <p className="type-caption text-muted-foreground">
+          From your ETH sign-in. Only you and VIS see these.
+        </p>
+      </div>
+    </Card>
   );
 }

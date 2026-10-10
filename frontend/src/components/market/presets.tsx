@@ -8,7 +8,12 @@ import type { Outcome, SellPortion, SellPreset, StakePreset } from "@/lib/api/sc
 import { formatAmount, formatShares, formatTokens } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-/** One chip of a preset row: 48 px tall, `--radius-md`, a 1 px `--border-strong` outline. */
+/**
+ * One chip of a preset row: 48 px tall, `--radius-md`, a 1 px `--border-strong` outline.
+ * A chip that cannot be chosen looks it: its outline and its figure in `--subtle`, its
+ * token icon at half strength. Those classes name the state too, or they would lose to
+ * the ones for "not chosen".
+ */
 function PresetChip({
   selected,
   disabled,
@@ -31,7 +36,8 @@ function PresetChip({
         "min-h-12 min-w-0 flex-col gap-0 rounded-md border px-2 py-1",
         "data-[state=off]:border-border-strong data-[state=off]:text-foreground data-[state=off]:hover:bg-raised data-[state=off]:active:bg-raised",
         "data-[state=on]:border-foreground data-[state=on]:bg-foreground data-[state=on]:text-primary-foreground",
-        "disabled:border-subtle disabled:text-subtle disabled:data-[state=on]:opacity-50",
+        "disabled:data-[state=off]:border-subtle disabled:data-[state=off]:text-subtle disabled:data-[state=on]:opacity-50",
+        "disabled:data-[state=off]:[&_[data-slot=token-icon]]:opacity-50",
       )}
     >
       {children}

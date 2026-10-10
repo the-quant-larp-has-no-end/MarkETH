@@ -11,6 +11,10 @@ import { cn } from "@/lib/utils";
  * labels in `caption` and `--muted-foreground`, gridlines and the touch guide in
  * `--border`, a tooltip on `--card`. A series takes its colour from `config`, as a token:
  * `{ p_yes: { label: "YES", color: "var(--chart-1)" } }` gives `var(--color-p_yes)`.
+ *
+ * A chart stands on the page, so the ring of its active dot is `--background`. It takes
+ * the keyboard's focus (the arrow keys move its readout) and shows that like every other
+ * control: a 2 px `--ring` outline, for the keyboard only.
  */
 
 const INITIAL_DIMENSION = { width: 320, height: 200 } as const;
@@ -67,13 +71,15 @@ function ChartContainer({
         data-chart={chartId}
         className={cn(
           "flex justify-center type-caption",
-          "[&_.recharts-cartesian-axis-tick_text]:fill-muted-foreground",
+          "[&_.recharts-cartesian-axis-tick-value]:fill-muted-foreground",
           "[&_.recharts-cartesian-grid_line]:stroke-border",
           "[&_.recharts-reference-line_line]:stroke-border",
           "[&_.recharts-curve.recharts-tooltip-cursor]:stroke-border-strong",
           "[&_.recharts-rectangle.recharts-tooltip-cursor]:fill-raised",
-          "[&_.recharts-active-dot_circle]:stroke-card",
+          "[&_.recharts-active-dot_circle]:stroke-background",
           "[&_.recharts-layer]:outline-hidden [&_.recharts-surface]:outline-hidden",
+          "[&_.recharts-surface:focus-visible]:outline-2 [&_.recharts-surface:focus-visible]:outline-offset-2",
+          "[&_.recharts-surface:focus-visible]:outline-ring [&_.recharts-surface:focus-visible]:outline-solid",
           className,
         )}
         {...props}

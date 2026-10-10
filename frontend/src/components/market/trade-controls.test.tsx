@@ -64,6 +64,32 @@ describe("OutcomeToggle", () => {
     expect(screen.getByRole("button", { name: "YES" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "NO" })).toBeDisabled();
   });
+
+  test("can start with neither outcome chosen, and is then named and described by what stands around it", async () => {
+    const onChange = vi.fn();
+    const { user } = renderWithProviders(
+      <>
+        <span id="outcome-label">Outcome of the market</span>
+        <OutcomeToggle
+          value={null}
+          onChange={onChange}
+          labelledBy="outcome-label"
+          describedBy="outcome-error"
+        />
+        <p id="outcome-error">Choose the outcome.</p>
+      </>,
+    );
+
+    const group = screen.getByRole("group", { name: "Outcome of the market" });
+    expect(group).toHaveAccessibleDescription("Choose the outcome.");
+    expect(group).not.toHaveAttribute("aria-label");
+    for (const segment of within(group).getAllByRole("button")) {
+      expect(segment).toHaveAttribute("aria-pressed", "false");
+    }
+
+    await user.click(within(group).getByRole("button", { name: "NO" }));
+    expect(onChange).toHaveBeenCalledWith("NO");
+  });
 });
 
 describe("StakePresets", () => {
@@ -99,6 +125,28 @@ describe("StakePresets", () => {
 
     await user.click(large!);
     expect(onChange).toHaveBeenCalledWith("100");
+  });
+
+  test("a chip that cannot be chosen looks it: figure and outline in subtle, the token icon dimmed", () => {
+    renderWithProviders(
+      <StakePresets
+        presets={[
+          { amount_cr: "25", allowed: false },
+          { amount_cr: "50", allowed: true },
+        ]}
+        value={null}
+        onChange={() => {}}
+      />,
+    );
+
+    const [refused] = screen.getAllByRole("button");
+    // Each names the state as well, so that it wins over the look of "not chosen".
+    expect(refused).toHaveClass(
+      "disabled:data-[state=off]:text-subtle",
+      "disabled:data-[state=off]:border-subtle",
+      "disabled:data-[state=off]:[&_[data-slot=token-icon]]:opacity-50",
+    );
+    expect(refused!.className).not.toMatch(/(^| )disabled:text-subtle( |$)/);
   });
 
   test("the chosen chip is pressed and filled white", () => {
@@ -238,5 +286,36 @@ describe("QuotePanel", () => {
       expect(row(label).querySelector("[data-slot=skeleton]")).toBeInTheDocument();
     }
     expect(document.querySelector("dl")).toHaveAttribute("aria-busy", "true");
+  });
+
+  test("with nothing to quote and nothing on its way, the rows stand without figures and do not pulse", () => {
+    renderWithProviders(<QuotePanel side="SELL" outcome="NO" quote={null} idle />);
+
+    for (const label of ["You receive", "Shares", "Average price", "New probability"]) {
+      expect(within(row(label)).getByText("none yet")).toHaveClass("sr-only");
+      expect(row(label)).toHaveTextContent("–");
+      expect(row(label).querySelector("[data-slot=skeleton]")).not.toBeInTheDocument();
+    }
+    expect(document.querySelector("dl")).not.toHaveAttribute("aria-busy");
+    expect(screen.getByText("Each share pays 1 token if NO wins.")).toBeInTheDocument();
+  });
+
+  test("a row is as tall with a figure as without one, so the sheet does not jump", () => {
+    const { rerender } = renderWithProviders(
+      <QuotePanel side="BUY" outcome="YES" quote={null} idle />,
+    );
+    const heights = () =>
+      ["You pay", "Shares", "Average price", "New probability"].map((label) =>
+        row(label)
+          .className.split(" ")
+          .filter((name) => /^(min-)?h-/.test(name)),
+      );
+    const idle = heights();
+
+    rerender(<QuotePanel side="BUY" outcome="YES" quote={null} />);
+    expect(heights()).toEqual(idle);
+    rerender(<QuotePanel side="BUY" outcome="YES" quote={quote()} />);
+    expect(heights()).toEqual(idle);
+    expect(idle).toEqual([["h-6"], ["h-6"], ["h-6"], ["h-6"]]);
   });
 });

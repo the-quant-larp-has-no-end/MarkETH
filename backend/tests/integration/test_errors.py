@@ -911,16 +911,6 @@ async def test_schema_objects_in_details_are_serialised_like_responses(
     assert details["as_dict"] == details["quote"]
 
 
-async def test_a_service_that_is_still_a_skeleton_answers_501(
-    client: httpx.AsyncClient, app: FastAPI
-) -> None:
-    async def skeleton() -> None:
-        raise NotImplementedError
-
-    app.add_api_route("/api/_test/skeleton", skeleton)
-    assert_error(await client.get("/api/_test/skeleton"), 501, "INTERNAL_ERROR")
-
-
 async def test_an_unexpected_error_is_500_logged_and_tells_the_client_nothing(
     unhandled_client: httpx.AsyncClient, app: FastAPI, caplog: pytest.LogCaptureFixture
 ) -> None:

@@ -5,11 +5,30 @@ export type QuoteRequest =
   | { side: "BUY"; outcome: Outcome; amount_cr: string }
   | { side: "SELL"; outcome: Outcome; shares: string };
 
-/** Sort, order and filters of `GET /leaderboard`, under the names the API and the address use. */
-export type LeaderboardParams = Omit<
-  NonNullable<operations["get_leaderboard"]["parameters"]["query"]>,
-  "limit" | "cursor"
->;
+/** The query of `GET /leaderboard`, as the contract types it. */
+export type LeaderboardQuery = NonNullable<operations["get_leaderboard"]["parameters"]["query"]>;
+
+/**
+ * The filters the contract types as a number or as a key of a fixed list. In a query
+ * string each of them is its characters, and the screen sends what was typed or what the
+ * address holds: the API is the judge of it (DESIGN.md §13).
+ */
+type SentAsText =
+  | "min_trades"
+  | "max_trades"
+  | "min_win_rate"
+  | "max_win_rate"
+  | "min_avg_payout_ratio"
+  | "max_avg_payout_ratio"
+  | "degree_level";
+
+/**
+ * Sort, order and filters of `GET /leaderboard`, under the names the API and the address
+ * use. No `limit` (the page size is the API's) and no `cursor` (the query pages itself).
+ */
+export type LeaderboardParams = Omit<LeaderboardQuery, "limit" | "cursor" | SentAsText> & {
+  [Name in SentAsText]?: LeaderboardQuery[Name] | string;
+};
 
 /**
  * The key of every query. A key that is a prefix of others invalidates them with it:

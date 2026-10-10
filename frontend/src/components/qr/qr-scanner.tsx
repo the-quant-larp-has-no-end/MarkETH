@@ -75,6 +75,12 @@ export type QrScannerProps = {
   onAlternative: () => void;
   /** Told when the camera starts and stops showing a picture. */
   onLiveChange?: (live: boolean) => void;
+  /**
+   * The camera view takes the height that is left instead of being a square: the Barista
+   * screen, where the scanner fills the screen below the top bar. The guide stays a square
+   * in the middle. The scanner's parent has to be a flex column with a height.
+   */
+  fill?: boolean;
   className?: string;
 };
 
@@ -91,6 +97,7 @@ export function QrScanner({
   alternativeLabel,
   onAlternative,
   onLiveChange,
+  fill = false,
   className,
 }: QrScannerProps) {
   const video = useRef<HTMLVideoElement>(null);
@@ -196,20 +203,40 @@ export function QrScanner({
   const failed = camera === "refused" || camera === "insecure" || camera === "unavailable";
 
   return (
-    <div data-slot="qr-scanner" className={cn("flex flex-col gap-4", className)}>
+    <div
+      data-slot="qr-scanner"
+      className={cn("flex flex-col gap-4", fill && "min-h-0 flex-1", className)}
+    >
       {failed ? (
         <Banner>{MESSAGES[camera]}</Banner>
       ) : (
-        <div className="relative aspect-square w-full overflow-hidden rounded-lg bg-card">
+        <div
+          data-slot="camera-view"
+          className={cn(
+            "relative w-full overflow-hidden rounded-lg bg-card",
+            fill ? "min-h-60 flex-1" : "aspect-square",
+          )}
+        >
           <video
             ref={video}
             muted
             playsInline
             aria-label="Camera"
-            className="size-full object-cover"
+            // A height in per cent does not hold against a parent that grew to its
+            // height: the picture that fills such a view is laid over it instead.
+            className={cn("object-cover", fill ? "absolute inset-0 size-full" : "size-full")}
           />
           {/* The square guide: four corners. */}
-          <div aria-hidden className="pointer-events-none absolute inset-[15%]">
+          <div
+            aria-hidden
+            data-slot="scan-guide"
+            className={cn(
+              "pointer-events-none absolute",
+              fill
+                ? "top-1/2 left-1/2 size-[min(70vw,45dvh)] -translate-x-1/2 -translate-y-1/2"
+                : "inset-[15%]",
+            )}
+          >
             <span className="absolute top-0 left-0 size-8 rounded-tl-md border-t-4 border-l-4 border-foreground" />
             <span className="absolute top-0 right-0 size-8 rounded-tr-md border-t-4 border-r-4 border-foreground" />
             <span className="absolute bottom-0 left-0 size-8 rounded-bl-md border-b-4 border-l-4 border-foreground" />
@@ -217,7 +244,7 @@ export function QrScanner({
           </div>
         </div>
       )}
-      <Button variant="secondary" onClick={onAlternative}>
+      <Button variant="secondary" width="full" onClick={onAlternative}>
         {alternativeLabel}
       </Button>
     </div>

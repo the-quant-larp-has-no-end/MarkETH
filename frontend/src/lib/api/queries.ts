@@ -1,7 +1,7 @@
 import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
 
 import { call } from "./client";
-import { keys, type LeaderboardParams, type QuoteRequest } from "./keys";
+import { keys, type LeaderboardParams, type LeaderboardQuery, type QuoteRequest } from "./keys";
 import type { MarketStatus } from "./schema";
 
 /**
@@ -132,7 +132,8 @@ export const productsQuery = queryOptions({
 
 /**
  * `GET /leaderboard`, page by page. `params` are sent as they are: the server sorts,
- * filters and ranks, and every page carries the `viewer` row.
+ * filters and ranks, and every page carries the `viewer` row. A filter that is text here
+ * and a number in the contract goes into the query string as its characters either way.
  */
 export const leaderboardQuery = (params: LeaderboardParams) =>
   infiniteQueryOptions({
@@ -140,7 +141,7 @@ export const leaderboardQuery = (params: LeaderboardParams) =>
     queryFn: ({ pageParam, signal }) =>
       call((api) =>
         api.GET("/api/leaderboard", {
-          params: { query: { ...params, cursor: pageParam } },
+          params: { query: { ...params, cursor: pageParam } as LeaderboardQuery },
           signal,
         }),
       ),

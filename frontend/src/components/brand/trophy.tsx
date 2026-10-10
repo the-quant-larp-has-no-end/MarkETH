@@ -31,10 +31,16 @@ export function rankLabel(place: TrophyPlace): string {
 export function Trophy({
   place,
   size,
+  eager = false,
   className,
 }: {
   place: TrophyPlace;
   size: keyof typeof SIZES;
+  /**
+   * Fetch the image at once instead of when it comes near the screen: the trophies of
+   * the podium, which are the largest thing the leaderboard opens with.
+   */
+  eager?: boolean;
   className?: string;
 }) {
   const { src, alt } = PLACES[place];
@@ -44,6 +50,7 @@ export function Trophy({
       alt={alt}
       width={256}
       height={256}
+      loading={eager ? "eager" : "lazy"}
       className={cn("shrink-0 pixelated", SIZES[size], className)}
     />
   );

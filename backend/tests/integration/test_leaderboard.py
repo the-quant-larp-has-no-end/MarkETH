@@ -94,6 +94,9 @@ PROGRAMME_WITH_A_DASH: Final[str] = next(
 
 NOBODYS_PROGRAMME: Final[str] = "MSc Underwater Basket Weaving"
 
+NUL: Final[str] = "\x00"
+"""A character a query string can carry and no text of Postgres can hold."""
+
 checks = settings(
     max_examples=100,
     deadline=None,
@@ -866,6 +869,45 @@ async def test_a_degree_nobody_has_gives_an_empty_list_and_no_error(
 
     assert no_programme == LeaderboardResponse(items=[], next_cursor=None, viewer=None)
     assert no_level == LeaderboardResponse(items=[], next_cursor=None, viewer=None)
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_programme_with_a_nul_in_it_is_a_programme_nobody_has(
+    league: League,
+    container: Container,
+    factory: Factory,
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+) -> None:
+    """A query string can carry a NUL, no column holds one, and Postgres refuses even to
+    compare with it. The answer is the one for a label nobody has, not an error of the
+    database: asked through the route, which is where such a text comes from, and with
+    everything else a query can say beside it."""
+    as_user(league.ada)
+    unstorable = f"BSc Computer{NUL}Science"
+
+    alone = await client.get(LEADERBOARD, params={"degree_programme": unstorable})
+    with_more = await client.get(
+        LEADERBOARD,
+        params={
+            "degree_programme": unstorable,
+            "degree_level": BACHELOR.value,
+            "sort": LeaderboardSort.WIN_RATE.value,
+            "min_trades": "1",
+            "cursor": "1",
+        },
+    )
+
+    for response in (alone, with_more):
+        assert response.status_code == 200, response.text
+        assert response.json() == {"items": [], "next_cursor": None, "viewer": None}
+    asked_directly = await ask(container, factory, league.ada, degree_programme=NUL)
+    assert asked_directly == LeaderboardResponse(items=[], next_cursor=None, viewer=None)
+    # The rule about the cursor comes first, as for every other query.
+    refused = await client.get(
+        LEADERBOARD, params={"degree_programme": unstorable, "cursor": "second-page"}
+    )
+    assert (refused.status_code, refused.json()["details"]) == (422, {"field": "cursor"})
     await assert_books_balance(container.uow_factory)
 
 

@@ -102,6 +102,55 @@ describe("QrScanner", () => {
     await waitFor(() => expect(screen.getByLabelText("Camera")).toBeInTheDocument());
   });
 
+  test("is a square camera view with a square guide inside it", async () => {
+    camera(async () => stream());
+    detector(() => null);
+    render(
+      <QrScanner
+        onScan={() => {}}
+        alternativeLabel="Type the code instead"
+        onAlternative={() => {}}
+      />,
+    );
+
+    const video = await screen.findByLabelText("Camera");
+    expect(document.querySelector("[data-slot=camera-view]")).toHaveClass("aspect-square");
+    expect(video).toHaveClass("size-full", "object-cover");
+    expect(video).not.toHaveClass("absolute");
+    expect(document.querySelector("[data-slot=scan-guide]")).toHaveClass("inset-[15%]");
+  });
+
+  test("with fill the view takes the height that is left, the picture covers it, and the guide stays a square in the middle", async () => {
+    camera(async () => stream());
+    detector(() => null);
+    render(
+      <QrScanner
+        onScan={() => {}}
+        alternativeLabel="Type the voucher code"
+        onAlternative={() => {}}
+        fill
+        className="p-4"
+      />,
+    );
+
+    const video = await screen.findByLabelText("Camera");
+    expect(document.querySelector("[data-slot=qr-scanner]")).toHaveClass(
+      "min-h-0",
+      "flex-1",
+      "p-4",
+    );
+    const view = document.querySelector("[data-slot=camera-view]")!;
+    expect(view).toHaveClass("flex-1", "min-h-60");
+    expect(view).not.toHaveClass("aspect-square");
+    // Laid over the view: a height in per cent would not hold against a parent that grew.
+    expect(video).toHaveClass("absolute", "inset-0", "object-cover");
+    const guide = document.querySelector("[data-slot=scan-guide]")!;
+    expect(guide).toHaveClass("top-1/2", "left-1/2", "size-[min(70vw,45dvh)]");
+    expect(guide).not.toHaveClass("inset-[15%]");
+    // The typed alternative stays below it.
+    expect(screen.getByRole("button", { name: "Type the voucher code" })).toBeInTheDocument();
+  });
+
   test("says so when the page is not served securely, and still offers typing", () => {
     Reflect.deleteProperty(navigator, "mediaDevices");
     vi.stubGlobal("isSecureContext", false);

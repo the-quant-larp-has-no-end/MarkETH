@@ -80,7 +80,8 @@ class QuoteService:
 
         Pass the row's integers and the request's `Outcome` as they are: lmsr raises
         `TypeError` for anything else and `ValueError` for a b its precision cannot
-        cover, both of which are bugs here, not answers to a user.
+        cover, both of which are bugs here, not answers to a user. So is a size that
+        got around its model and carries neither `amount_cr` nor `shares`: `ValueError`.
 
         Whether this trader holds the shares, has the balance or stays within the
         stake limit is the trading service's check.

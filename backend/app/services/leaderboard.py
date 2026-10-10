@@ -39,6 +39,9 @@ _RATIO_STEPS_PER_UNIT: Final[int] = 10**PAYOUT_RATIO_PLACES
 _MILLIONTHS_PER_RATIO_STEP: Final[int] = MICRO // _RATIO_STEPS_PER_UNIT
 """How many millionths one such step stands for: 10,000."""
 
+_NUL: Final[str] = "\x00"
+"""The one character Postgres holds in no text, and so in nobody's degree programme."""
+
 
 class LeaderboardService:
     def __init__(self, uow_factory: UowFactory, settings: Settings) -> None:
@@ -91,7 +94,9 @@ class LeaderboardService:
 
         * `degree_level` and `degree_programme`: equal to the user's columns, as they
           are stored. Neither is checked against the catalogue; a pair nobody has
-          gives an empty list.
+          gives an empty list. So does a programme with a NUL character in it: a
+          query string can carry one, no column holds one, and Postgres refuses even
+          to compare with it, so that list is answered without asking the database.
         * `min_credits_cr` and `max_credits_cr`: against `credits_micro`, through
           `to_micro`.
         * `min_trades` and `max_trades`: against the number of trades.
@@ -136,6 +141,8 @@ class LeaderboardService:
         """
         after = _after_rank(query.cursor)
         filters = _filters(query)
+        if filters.degree_programme is not None and _NUL in filters.degree_programme:
+            return LeaderboardResponse(items=[], next_cursor=None, viewer=None)
 
         async with self._uow_factory() as uow:
             rows = await uow.leaderboard.rank(

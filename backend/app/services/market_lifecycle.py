@@ -18,7 +18,9 @@ Shared by all seven methods:
 * `now = clock.now()` is read after that lock was granted and is the instant of the
   action everywhere below. An action that waited for the row is dated when it happened,
   and a deadline is judged at that moment, not when the request arrived.
-* A move that `ALLOWED_TRANSITIONS` does not list raises `ConflictError` (409).
+* A move that `ALLOWED_TRANSITIONS` does not list raises `ConflictError` (409). So does
+  an action on a market it does not start from: `approve` and `resume` both end OPEN,
+  and only a PROPOSED market is approved, only a HALTED one resumed.
 * Lock order: the market row, then the user accounts a settlement pays (all at once,
   `accounts.lock_user_accounts`), then whatever `LedgerService.post` locks. Positions
   need no lock of their own: every writer of a market's positions holds its row.

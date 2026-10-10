@@ -19,6 +19,7 @@ import {
   me,
   portfolio,
   profileSaved,
+  proposal,
   tradeResponse,
   voucherCode,
   voucherIssued,
@@ -408,6 +409,8 @@ describe("markets", () => {
     const proposed = marketDetail({ id: "new-market", status: "PROPOSED", trading_open: false });
     mockApi({ "POST /api/markets": json(201, proposed) });
     const client = seeded();
+    const earlier = proposal({ status: "OPEN" });
+    client.setQueryData(keys.proposals, { items: [earlier] });
 
     await run(client, proposeMarketMutation, {
       question: proposed.question,
@@ -421,8 +424,52 @@ describe("markets", () => {
     });
 
     expect(client.getQueryData(keys.markets.detail("new-market"))).toEqual(proposed);
+    // At the top of the caller's proposals before the list has been read again, as a row
+    // of that list: nothing of the market that the list does not have.
+    expect(client.getQueryData(keys.proposals)).toEqual({
+      items: [
+        {
+          id: "new-market",
+          question: proposed.question,
+          yes_definition: proposed.yes_definition,
+          no_definition: proposed.no_definition,
+          resolution_criteria: proposed.resolution_criteria,
+          resolution_source: proposed.resolution_source,
+          close_at: proposed.close_at,
+          resolve_by: proposed.resolve_by,
+          requested_tier: proposed.requested_tier,
+          status: "PROPOSED",
+          rejection_reason: proposed.rejection_reason,
+          created_at: proposed.created_at,
+        },
+        earlier,
+      ],
+    });
     expect(stale(client, keys.proposals)).toBe(true);
     expect(stale(client, OPEN_MARKETS)).toBe(true);
+  });
+
+  test("a proposal the list already holds is not listed twice", async () => {
+    const proposed = marketDetail({ id: "new-market", status: "PROPOSED", trading_open: false });
+    mockApi({ "POST /api/markets": json(201, proposed) });
+    const client = seeded();
+    client.setQueryData(keys.proposals, {
+      items: [proposal({ status: "OPEN" }), proposal({ id: "new-market" })],
+    });
+
+    await run(client, proposeMarketMutation, {
+      question: proposed.question,
+      yes_definition: proposed.yes_definition,
+      no_definition: proposed.no_definition,
+      resolution_criteria: proposed.resolution_criteria,
+      resolution_source: proposed.resolution_source,
+      close_at: "2026-12-11T18:00:00+01:00",
+      resolve_by: "2026-12-18T18:00:00+01:00",
+      requested_tier: "DEFAULT",
+    });
+
+    const listed = client.getQueryData<{ items: { id: string }[] }>(keys.proposals);
+    expect(listed?.items.map((item) => item.id)).toEqual(["new-market", proposal().id]);
   });
 
   test("an admin action makes its answer the market and marks what settles with it", async () => {

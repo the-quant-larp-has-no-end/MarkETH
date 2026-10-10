@@ -1,5 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
+import { toast } from "sonner";
 import { afterEach, beforeEach, vi } from "vitest";
 
 import { verifyApiMock } from "./http";
@@ -30,6 +31,9 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  // A toast that is still up belongs to the test that raised it: sonner keeps its toasts
+  // outside React and would hand them to the next test's Toaster.
+  toast.dismiss();
   vi.unstubAllGlobals();
   // Last: a request without a route fails the test that made it.
   verifyApiMock();

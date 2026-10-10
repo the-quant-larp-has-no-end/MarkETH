@@ -32,6 +32,11 @@ export type EventStreamOptions = {
  * say why; the poll is an ordinary API call, and if the portal answers that one with its
  * 401, the page reloads (`call()`).
  *
+ * The polls keep their own pace. A stream that opens and ends again at once (a proxy that
+ * cuts it) fails every few seconds, and each failure would otherwise ask the API at once:
+ * `onPoll` is never called sooner than `pollSeconds` after the call before. A browser
+ * without event streams is treated as one whose stream is down for good.
+ *
  * Returns `live`: true while the stream is open.
  */
 export function useEventStream(options: EventStreamOptions): { live: boolean } {
@@ -47,6 +52,8 @@ export function useEventStream(options: EventStreamOptions): { live: boolean } {
     let source: EventSource | null = null;
     let open = false;
     let timer: number | null = null;
+    let polledAt = Number.NEGATIVE_INFINITY;
+    const everyMs = pollSeconds * 1000;
 
     const listeners = eventList.split("\n").map((name) => {
       const listener = (event: Event) => {
@@ -60,6 +67,18 @@ export function useEventStream(options: EventStreamOptions): { live: boolean } {
       };
       return [name, listener] as const;
     });
+
+    const pollNow = () => {
+      polledAt = Date.now();
+      poll();
+    };
+
+    /** The stream is not there: ask instead, now and then at the pace of `pollSeconds`. */
+    const fallBack = () => {
+      if (timer !== null) return;
+      if (Date.now() - polledAt >= everyMs) pollNow();
+      timer = window.setInterval(tick, everyMs);
+    };
 
     const connect = () => {
       if (source !== null || typeof EventSource === "undefined") return;
@@ -82,15 +101,13 @@ export function useEventStream(options: EventStreamOptions): { live: boolean } {
         }
         open = false;
         setLive(false);
-        if (timer !== null) return;
-        poll();
-        timer = window.setInterval(tick, pollSeconds * 1000);
+        fallBack();
       };
       for (const [name, listener] of listeners) next.addEventListener(name, listener);
     };
 
     const tick = () => {
-      poll();
+      pollNow();
       connect();
     };
 
@@ -100,6 +117,12 @@ export function useEventStream(options: EventStreamOptions): { live: boolean } {
     };
 
     connect();
+    if (typeof EventSource === "undefined") {
+      // Nothing will ever open: poll from the start. The screen has just read what it
+      // shows, so the first poll is one interval away.
+      polledAt = Date.now();
+      fallBack();
+    }
     document.addEventListener("visibilitychange", wake);
     window.addEventListener("online", wake);
 

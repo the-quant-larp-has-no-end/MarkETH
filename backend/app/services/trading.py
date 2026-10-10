@@ -135,7 +135,7 @@ class TradingService:
            nothing but a SHA-256.
            `idempotency.claim(user.id, str(idempotency_key), request_hash,
            clock.now())`:
-           * None: the key is new and this transaction owns it.
+           * None: nobody used the key before and this transaction owns it.
            * A row with another `request_hash`: `IdempotencyKeyReusedError` (422).
            * A row with the same hash: return `TradeResponse.model_validate(
              row.response_json)` and do nothing else.
@@ -149,7 +149,8 @@ class TradingService:
            timestamps of a market's trades never run against their versions. Then
            lock the user's account (`accounts.get_user_account(user.id,
            for_update=True)`): market row first, account second, always. Every user
-           has an account, because the profile transaction creates the two together.
+           has an account, because the profile transaction creates the two together;
+           one that is missing is a broken database and raises `LookupError`.
 
         4. May this trade happen at all?
            * `market.created_by == user.id`: `ForbiddenError(OWN_MARKET_MESSAGE)`
@@ -203,9 +204,9 @@ class TradingService:
              `version += 1`, `volume_micro += amount`.
            * `Trade(id=trade_id, market_id, user_id, side, outcome, shares_micro,
              amount_micro, p_yes_before_micro, p_yes_after_micro,
-             market_version=<the new version>, created_at=now)`: exactly one row per
+             market_version=<the version after it>, created_at=now)`: exactly one row per
              executed trade, also for a sell that brought in nothing.
-           * Outbox: `quote_updated_payload(QuotePoint(market.id, now, <new version>,
+           * Outbox: `quote_updated_payload(QuotePoint(market.id, now, <that version>,
              quote.p_yes_after_micro, q_yes_micro, q_no_micro, trade_id))` under
              `OutboxTopic.QUOTE_UPDATED`.
 

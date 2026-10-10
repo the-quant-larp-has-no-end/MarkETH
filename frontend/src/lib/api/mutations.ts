@@ -12,6 +12,8 @@ import type {
   MarketDetailResponse,
   MeResponse,
   ProfileSavedResponse,
+  ProposalItem,
+  ProposalListResponse,
   ProposeMarketRequest,
   RejectMarketRequest,
   ResolveMarketRequest,
@@ -44,8 +46,9 @@ import type {
  * | `replaceVoucherCodeMutation` | nothing; vouchers when the voucher  | nothing: asking again  |
  * |                              | is used up or gone                  | is safe                |
  * | `redeemVoucherMutation`      | nothing                             | nothing can be read    |
- * | `proposeMarketMutation`      | the market is the answer;           | proposals              |
- * |                              | proposals, market lists             |                        |
+ * | `proposeMarketMutation`      | the market is the answer, and the   | proposals              |
+ * |                              | first of the proposals; proposals,  |                        |
+ * |                              | market lists                        |                        |
  * | the seven market actions     | the market is the answer; its       | the market, market     |
  * |                              | history, market lists, risk, all    | lists, risk            |
  * |                              | under `me`, leaderboard             |                        |
@@ -215,11 +218,41 @@ export const redeemVoucherMutation = mutationOptions({
 
 /* ---- Markets ---------------------------------------------------------------------- */
 
-/** `POST /markets`: a proposal. The answer is the market, in status PROPOSED. */
+/** A market as its row of `GET /me/proposals`: the fields of the answer that list has. */
+function asProposal(market: MarketDetailResponse): ProposalItem {
+  return {
+    id: market.id,
+    question: market.question,
+    yes_definition: market.yes_definition,
+    no_definition: market.no_definition,
+    resolution_criteria: market.resolution_criteria,
+    resolution_source: market.resolution_source,
+    close_at: market.close_at,
+    resolve_by: market.resolve_by,
+    requested_tier: market.requested_tier,
+    status: market.status,
+    rejection_reason: market.rejection_reason,
+    created_at: market.created_at,
+  };
+}
+
+/**
+ * `POST /markets`: a proposal. The answer is the market, in status PROPOSED. It stands at
+ * the top of the caller's proposals at once (DESIGN.md §13): the list is newest first,
+ * and this is the newest. The list is read again all the same.
+ */
 export const proposeMarketMutation = mutationOptions({
   mutationFn: (body: ProposeMarketRequest) => call((api) => api.POST("/api/markets", { body })),
   onSuccess: (market, _body, _result, { client }) => {
     client.setQueryData<MarketDetailResponse>(keys.markets.detail(market.id), market);
+    client.setQueryData<ProposalListResponse>(keys.proposals, (list) =>
+      list === undefined
+        ? list
+        : {
+            ...list,
+            items: [asProposal(market), ...list.items.filter((item) => item.id !== market.id)],
+          },
+    );
     void refresh(client, keys.proposals, keys.markets.lists);
   },
   onError: (error: ApiError, _body, _result, { client }) => {

@@ -68,7 +68,7 @@ from app.services.trading import ORDER_WINDOW_SECONDS, OWN_MARKET_MESSAGE
 from tests.support.books import assert_books_balance, count_rows
 from tests.support.clock import FrozenClock
 from tests.support.economy import MIN_TRADE_SHARES, PRECISION, STAKE_LIMIT, TIER_B
-from tests.support.factories import ActAs, Factory
+from tests.support.factories import ActAs, Factory, PortalHeaders
 from tests.support.settings import load_base_settings
 
 pytestmark = pytest.mark.integration
@@ -130,7 +130,7 @@ def sell(outcome: Outcome, shares_micro: int, **more: Any) -> Body:
 async def post_trade(
     client: httpx.AsyncClient, market_id: UUID, body: Body, key: UUID | None = None
 ) -> httpx.Response:
-    """Send a trade as whoever `as_user` named, under `key` or under a new one."""
+    """Send a trade as whoever `as_user` named, under `key` or under one of its own."""
     return await client.post(
         f"/api/markets/{market_id}/trades",
         json=body,
@@ -344,22 +344,28 @@ async def sent_and_waiting_for_a_lock[T](
     owner_engine: AsyncEngine, request: Coroutine[Any, Any, T]
 ) -> asyncio.Task[T]:
     """Start `request` and return once a statement of the database waits for a lock,
-    which is the request waiting for the row somebody holds."""
+    which is the request waiting for the row somebody holds.
+
+    The connection that watches is open before the request starts and commits after
+    every look: Postgres shows a transaction the activity it saw first.
+    """
     waiting = text(
         "SELECT count(*) FROM pg_stat_activity"
         " WHERE datname = current_database() AND wait_event_type = 'Lock'"
     )
-    task = asyncio.create_task(request)
-    try:
-        async with asyncio.timeout(WAIT_SECONDS):
-            while True:
-                async with owner_engine.connect() as connection:
-                    if await connection.scalar(waiting):
-                        return task
-                await asyncio.sleep(0.01)
-    except BaseException:
-        task.cancel()
-        raise
+    async with owner_engine.connect() as connection:
+        watching = await connection.execution_options(isolation_level="AUTOCOMMIT")
+        task = asyncio.create_task(request)
+        try:
+            async with asyncio.timeout(WAIT_SECONDS):
+                while True:
+                    if await watching.scalar(waiting):
+                        break
+                    await asyncio.sleep(0.01)
+        except BaseException:
+            task.cancel()
+            raise
+    return task
 
 
 async def next_event(events: AsyncIterator[LiveEvent]) -> LiveEvent:
@@ -457,6 +463,34 @@ async def test_a_buy_confirms_at_the_quoted_cost_and_moves_the_price(
     assert trade["p_yes_after"] > trade["p_yes_before"]
     assert trade["balance_cr"] == format_cr(SIGNUP_GRANT - STAKE_LIMIT)
     assert await factory.balance_micro(trader) == SIGNUP_GRANT - STAKE_LIMIT
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_trade_under_the_portal_s_headers_is_the_trade_of_the_user_they_name(
+    client: httpx.AsyncClient,
+    container: Container,
+    factory: Factory,
+    market: Market,
+    portal_headers: PortalHeaders,
+) -> None:
+    """Nobody is acted for here: the request goes through the real seam, and whoever
+    the two headers name is the one who pays."""
+    alice = await factory.user(balance_micro=SIGNUP_GRANT)
+    bob = await factory.user(balance_micro=SIGNUP_GRANT)
+    path = f"/api/markets/{market.id}/trades"
+    body = buy_for(Outcome.YES, SMALLEST_PRESET)
+
+    unnamed = await client.post(path, json=body, headers={"Idempotency-Key": str(uuid7())})
+    named = await client.post(
+        path, json=body, headers=portal_headers(alice) | {"Idempotency-Key": str(uuid7())}
+    )
+
+    assert_error(unnamed, 401, "UNAUTHENTICATED")
+    trade = executed(named)
+    (row,) = await rows(container, Trade)
+    assert (row.id, row.user_id) == (trade.trade_id, alice.id)
+    assert await factory.balance_micro(alice) == SIGNUP_GRANT - SMALLEST_PRESET
+    assert await factory.balance_micro(bob) == SIGNUP_GRANT
     await assert_books_balance(container.uow_factory)
 
 
@@ -803,6 +837,44 @@ async def test_the_stake_limit_counts_both_outcomes_of_a_market_together_and_eac
     await assert_books_balance(container.uow_factory)
 
 
+async def test_a_buy_button_the_trade_sheet_offers_passes_and_one_greyed_out_for_the_stake_does_not(
+    client: httpx.AsyncClient,
+    container: Container,
+    factory: Factory,
+    market: Market,
+    trader: User,
+) -> None:
+    """The buy buttons are `MarketView.stake_presets` of the stake that is left (A.11),
+    and the trade agrees with them all the way to the limit: the smallest one offered
+    is bought until none is, and each time the largest one greyed out is refused."""
+    view = container.market_view
+    presets = sorted(container.settings.pricing.stake_presets_micro)
+    assert STAKE_LIMIT + presets[-1] <= SIGNUP_GRANT, "only the stake greys a button out here"
+    assert 2 * (STAKE_LIMIT // presets[0]) < MAX_ORDERS, "or the rate limit would answer"
+
+    while True:
+        stake_left = view.stake_left_micro(
+            view.net_stake_micro(await positions_of(container, trader, market))
+        )
+        buttons = view.stake_presets(
+            stake_left, await factory.balance_micro(trader), can_trade=True
+        )
+        offered = [micro(button.amount_cr) for button in buttons if button.allowed]
+        greyed_out = [micro(button.amount_cr) for button in buttons if not button.allowed]
+        if greyed_out:
+            refused = await post_trade(client, market.id, buy_for(Outcome.YES, max(greyed_out)))
+            assert assert_error(refused, 409, "LIMIT_EXCEEDED")["stake_left_cr"] == format_cr(
+                stake_left
+            )
+        if not offered:
+            break
+        bought = executed(await post_trade(client, market.id, buy_for(Outcome.YES, min(offered))))
+        assert bought.stake_left_cr == to_cr(stake_left - min(offered))
+
+    assert stake_left < presets[0]
+    await assert_books_balance(container.uow_factory)
+
+
 async def test_a_trader_at_the_limit_may_always_sell(
     client: httpx.AsyncClient,
     container: Container,
@@ -1002,16 +1074,24 @@ async def test_shares_other_people_hold_cannot_be_sold(
     market: Market,
     trader: User,
 ) -> None:
-    """The market has sold enough of both outcomes, and the trader holds YES: neither
-    makes a NO share theirs to sell."""
+    """The market has sold plenty of both outcomes to somebody else, so it could take
+    these sells: what refuses them is the seller's own position, which holds no NO
+    share and fewer YES shares than asked for."""
+    owned = 50 * MICRO
     await someone_holding(factory, market, Outcome.NO, 80 * MICRO)
-    await factory.position(trader, market, Outcome.YES, shares_micro=50 * MICRO)
+    await someone_holding(factory, market, Outcome.YES, 80 * MICRO)
+    await factory.position(trader, market, Outcome.YES, shares_micro=owned)
     before = await books(container, factory, market, trader)
 
-    refused = await post_trade(client, market.id, sell(Outcome.NO, 10 * MICRO))
+    for body in (sell(Outcome.NO, 10 * MICRO), sell(Outcome.YES, owned + 1)):
+        assert (
+            assert_error(await post_trade(client, market.id, body), 409, "INSUFFICIENT_SHARES")
+            == {}
+        )
 
-    assert_error(refused, 409, "INSUFFICIENT_SHARES")
     assert await books(container, factory, market, trader) == before
+    executed(await post_trade(client, market.id, sell(Outcome.YES, owned)))
+    assert await held(container, trader, market, Outcome.YES) == 0
     await assert_books_balance(container.uow_factory)
 
 
@@ -1039,6 +1119,7 @@ async def test_a_trade_below_the_smallest_size_of_its_mode_is_trade_too_small(
 
     assert assert_error(refused, 422, "TRADE_TOO_SMALL") == {}
     assert await books(container, factory, market, trader) == before
+    await assert_books_balance(container.uow_factory)
 
 
 @pytest.mark.parametrize(
@@ -1130,7 +1211,7 @@ async def test_a_sell_that_brings_in_nothing_executes_without_a_journal_entry(
 
 def with_a_guard_at(body: Body, quote: lmsr.TradeQuote, *, worse_by: int) -> Body:
     """`body` with the guard of its mode set to what `quote` gives, or tightened past
-    it by `worse_by` micro-units, so that the quote no longer satisfies it."""
+    it by `worse_by` micro-units, so that the quote falls short of it."""
     if "amount_cr" in body:
         return body | {"min_shares": format_cr(quote.shares_micro + worse_by)}
     if body["side"] == "BUY":
@@ -1217,7 +1298,7 @@ async def test_a_trade_guarded_by_a_quote_somebody_traded_past_gets_the_quote_of
         mode="json"
     )
     assert details["quote"]["quote_version"] == now.version == guarded["quote_version"] + 1
-    # Confirming the new quote under the same key executes at it.
+    # Confirming the quote of now under the same key executes at it.
     again = with_a_guard_at(body, lmsr_quote(now, body), worse_by=0)
     confirmed = executed(await post_trade(client, market.id, again, key))
     assert confirmed.shares == to_cr(lmsr_quote(now, body).shares_micro)
@@ -1284,6 +1365,7 @@ async def test_trading_a_settled_market_is_market_not_open(
 
     assert_error(refused, 409, "MARKET_NOT_OPEN")
     assert await books(container, factory, settled, trader) == before
+    await assert_books_balance(container.uow_factory)
 
 
 async def test_an_open_market_trades_until_its_deadline_and_not_from_then_on(
@@ -1335,6 +1417,7 @@ async def test_a_market_that_is_unknown_proposed_or_rejected_is_not_found(
         assert assert_error(refused, 404, "NOT_FOUND") == {}
 
     assert await count_rows(container.uow_factory, IdempotencyKey) == 0
+    await assert_books_balance(container.uow_factory)
 
 
 async def test_a_trade_that_waited_for_the_market_s_row_until_the_deadline_passed_is_refused(
@@ -1359,6 +1442,7 @@ async def test_a_trade_that_waited_for_the_market_s_row_until_the_deadline_passe
 
     assert_error(refused, 409, "MARKET_NOT_OPEN")
     assert await books(container, factory, market, trader) == before
+    await assert_books_balance(container.uow_factory)
 
 
 async def test_a_trade_is_dated_when_its_turn_came_not_when_its_request_arrived(
@@ -1459,6 +1543,7 @@ async def test_an_answer_names_the_first_thing_that_is_wrong(
 
     assert await count_rows(container.uow_factory, Trade) == 0
     assert await count_rows(container.uow_factory, IdempotencyKey) == 0
+    await assert_books_balance(container.uow_factory)
 
 
 # --- Idempotency (SPEC §8 step 2, A.4) -----------------------------------------------------
@@ -1758,6 +1843,7 @@ async def test_a_trade_drops_the_cached_market_lists(
     executed(await post_trade(client, market.id, buy_for(Outcome.YES, SMALLEST_PRESET)))
 
     assert [await cache.get(key) for key in keys] == [None, None]
+    await assert_books_balance(container.uow_factory)
 
 
 async def test_a_trade_publishes_the_new_quote_to_the_streams_of_its_market(
@@ -1780,6 +1866,7 @@ async def test_a_trade_publishes_the_new_quote_to_the_streams_of_its_market(
     assert (published.version, published.volume_cr) == (trade.market_version, trade.amount_cr)
     assert (published.p_yes, published.p_no) == (trade.p_yes_after, trade.p_no_after)
     assert published.ts == clock.now()
+    await assert_books_balance(container.uow_factory)
 
 
 async def test_a_replay_and_a_refused_trade_announce_nothing(
@@ -1805,6 +1892,7 @@ async def test_a_replay_and_a_refused_trade_announce_nothing(
         assert isinstance(await next_event(events), StatusEvent)
 
     assert await cache.get(cached) == '{"items":[]}'
+    await assert_books_balance(container.uow_factory)
 
 
 # --- Postgres decides ----------------------------------------------------------------------

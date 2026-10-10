@@ -26,7 +26,6 @@ from app.schemas.common import ErrorResponse
 logger = logging.getLogger(__name__)
 
 VALIDATION_MESSAGE: Final[str] = "The request is not valid."
-NOT_IMPLEMENTED_MESSAGE: Final[str] = "This endpoint is not implemented yet."
 INTERNAL_MESSAGE: Final[str] = "Something went wrong."
 
 _HTTP_STATUS_CODES: Final[Mapping[int, ErrorCode]] = {
@@ -63,7 +62,6 @@ def install_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(AppError, _app_error)
     app.add_exception_handler(RequestValidationError, _validation_error)
     app.add_exception_handler(StarletteHTTPException, _http_error)
-    app.add_exception_handler(NotImplementedError, _not_implemented)
     for family in database.ERROR_FAMILIES:
         app.add_exception_handler(family, _database_error)
     app.add_exception_handler(Exception, _unexpected_error)
@@ -93,11 +91,6 @@ async def _http_error(request: Request, exc: Exception) -> JSONResponse:
     fallback = ErrorCode.INTERNAL_ERROR if exc.status_code >= 500 else ErrorCode.VALIDATION_ERROR
     code = _HTTP_STATUS_CODES.get(exc.status_code, fallback)
     return error_response(exc.status_code, code, str(exc.detail), headers=exc.headers)
-
-
-async def _not_implemented(request: Request, exc: Exception) -> JSONResponse:
-    """501 for a service method that is still a skeleton while the build is in progress."""
-    return error_response(501, ErrorCode.INTERNAL_ERROR, NOT_IMPLEMENTED_MESSAGE)
 
 
 async def _database_error(request: Request, exc: Exception) -> JSONResponse:

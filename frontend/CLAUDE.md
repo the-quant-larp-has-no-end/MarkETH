@@ -58,24 +58,32 @@ Imports only point downwards. ESLint fails the build otherwise.
 | The frame of a screen, its top bar and `h1`; what stays pinned above the tab bar | `Screen` (`top`, `title`, `backTo`, `width`, `bleed`, `pinned`) | `@/components/shell` |
 | Links, the "not found" screen (returned in place of a screen, never inside its `Screen`), hiding the tab bar | `Link`, `NotFoundScreen`, `useHideTabBar` | `@/components/shell` |
 | The current user, the tunables | `useMe()`, `useConfig()` | `@/lib/api/session` |
-| An amount, a signed amount, a code as text | `Amount`, `SignedAmount`, `CodeText` | `@/components/money` |
+| An amount, a signed amount, a code as text, a figure the API has none of | `Amount`, `SignedAmount`, `CodeText`, `Missing` | `@/components/money` |
 | An amount, shares or a percentage inside a sentence | `formatTokens`, `formatShares`, `formatAmount`, `formatPercent`, `formatRate`, `formatRatio`, `formatCount` | `@/lib/format` |
 | Dates and times | `DateTime`, `Day`; `formatDateTime`, `formatDeadline` | `@/components/time`, `@/lib/format` |
 | A market in a list, the price, the status | `MarketCard`, `MarketCardSkeleton`, `Price`, `StatusBadge`, `Deadline` | `@/components/market` |
+| The words for a `status` and a `tier` | `statusName`, `tierName`, `tierExplanation` | `@/components/market` |
 | The trade controls | `OutcomeButtons`, `OutcomeToggle`, `StakePresets`, `SellPresets`, `StakeLeftLine`, `QuotePanel` | `@/components/market` |
 | Rows of a list | `RowList` with `LedgerRow`, `TradeRow`, `PositionRow`, `ProductRow`, `VoucherRow`, `LeaderboardRow`; `RowSkeletons`, `LeaderboardFigure`, `holdingsText` | `@/components/rows` |
 | Loading, error, empty, more pages | `QueryState`, `ErrorBanner`, `Banner`, `InlineError`, `EmptyState`, `LoadMore`, `RetryCountdown`; `Skeleton` | `@/components/feedback`, `@/components/ui/skeleton` |
+| What a form shows above its button for an answer that names no field | `SubmitError` (with `placeError(...).form`) | `@/components/feedback` |
 | The bean animations, a figure that flashes | `BeanDrop`, `BeanBounce`, `Flash` | `@/components/feedback` |
 | A sheet that is a dialog from 768 px | `ResponsiveSheet`, `SheetBody`, `SheetFooter` | `@/components/sheet` |
-| Form fields | `TextField`, `TextAreaField`, `SelectField`, `DateTimeField`, `CodeInput`, `Field` | `@/components/form` |
+| Form fields; bringing the first refused field into view | `TextField`, `TextAreaField`, `SelectField`, `DateTimeField`, `CodeInput`, `Field`; `revealFirstInvalid` | `@/components/form` |
 | Buy/Sell, filter chips, tabs that are links | `SegmentedControl`, `FilterChips`, `RemovableChip`, `LinkTabs` | `@/components/controls` |
 | QR code and camera | `QrCode`, `QrScanner` | `@/components/qr` |
 | Logo, token icon, trophies, illustration slots | `Logo`, `TokenIcon`, `Trophy`, `Illustration` | `@/components/brand` |
-| Buttons, dialogs, tabs, tables, toasts | `Button`, `Dialog`, `AlertDialog`, `Tabs`, `Table`, `Card`, `Badge`, `Checkbox`, `RadioGroup`; `toast` from `sonner` | `@/components/ui/*` |
+| Buttons, dialogs, tabs, tables, toasts | `Button`, `Dialog`, `AlertDialog`, `Tabs`, `Table`, `Card`, `Badge`, `Checkbox`, `RadioGroup` (`radioCardClasses` for a radio card); `toast` from `sonner` | `@/components/ui/*` |
 | The profile form, the welcome dialog's state | `ProfileForm`, `useWelcomeOpen` | `@/features/session` |
 | Media queries, a debounced value, a countdown, the clock | `useMediaQuery`, `usePrefersReducedMotion`, `useDebouncedValue`, `useRetryAfter`, `useSecondsUntil`, `useNow` | `@/lib/hooks` |
 
 Two lengths of the shell are CSS variables, for what has to keep clear of the bars: `--top-bar-space` and `--tab-bar-space` (which is `0px` from 768 px). `bottom-(--tab-bar-space)` is "right above the tab bar".
+
+`ResponsiveSheet` does the focus of DESIGN §15 itself: it notes what had the focus when it opened and gives the focus back to that when it has closed, and below 768 px it takes the focus to the sheet (not to a field, which would slide a keyboard up). A screen opens it by state and does nothing else about focus. `SheetBody` scrolls and its blocks keep their height; `SheetFooter` stays pinned.
+
+`Button` decides its own width: as wide as its column below 768 px, as wide as its label from there, also inside a column that stretches its children. `width="full"` (the buttons of a sheet, a pair that shares a row) and `width="fit"` (a button beside text, in a banner or a table) say otherwise. An icon button takes no width.
+
+`Tabs` shows the focus ring for the keyboard only: a tab that was clicked or tapped has none, although the primitive focuses it with a script. The view of a tab is a keyboard stop of its own and keeps its ring.
 
 ## Reads and writes
 
@@ -83,15 +91,19 @@ A read: `useQuery(marketQuery(id))`, `useInfiniteQuery(ledgerQuery)`. The option
 
 A write: `useMutation(redeemCodeMutation)`. Each mutation of `lib/api/mutations.ts` brings what the write does to the cache, so a screen never invalidates by hand. Add what is the screen's own (a toast, closing a sheet) in the callbacks of `mutate(variables, { onSuccess, onError })`, and do not replace the callbacks of the options. Disable the button while `isPending`: after a write without an answer the mutation stays pending until what it would have changed has been read again (DESIGN §14).
 
+Every request goes out when it is made, whatever the browser says about the connection (`createQueryClient`). A read that cannot get through fails and the screen shows "No connection. Try again."; it is asked again by itself when the connection is back. A write that cannot get through fails at once and is never sent later by itself. No screen sets `networkMode` or `retry`.
+
 | After | In the cache |
 | --- | --- |
 | Save profile | `me` is the answer; leaderboard |
 | Trade | balance and market from the answer; the market, its history, everything under `me`, the market lists, leaderboard |
 | Redeem a code, get a voucher | balance from the answer; everything under `me`, products, leaderboard |
 | Fresh voucher code | nothing; the vouchers when the voucher is used up or gone |
-| Propose | the market is the answer; proposals, the market lists |
+| Propose | the market is the answer, and the first of the caller's proposals; proposals, the market lists |
 | Admin action on a market | the market is the answer; its history, the market lists, risk, everything under `me`, leaderboard |
 | Create or revoke codes, acknowledge an alert | batches, risk |
+
+Two things change the cache without a write of the screen. A `status` event of the market stream (or a poll that finds another status) marks the market lists out of date, and for a market that was resolved or voided everything under `me` too: a payout or a refund changed the balance in the top bar. And the trade ticket reads `/me` together with the market when it opens, as the Wallet does, because monthly tokens and refunds are booked between visits.
 
 A write the contract gains gets its mutation and its row in that file; `lib/api/contract.test.ts` fails until it has one.
 
@@ -103,16 +115,19 @@ An error is placed with the helpers of `lib/api/errors.ts`, never by digging in 
 
 Both are kept until an answer says what became of the request: a 2xx, or a 4xx other than 429. Then they are dropped and the next Confirm builds another body with another key; `QUOTE_STALE` is such a 4xx, so show `details.quote` and wait for the user. Every other outcome says nothing about the trade (a 5xx, a 429, the portal's 401, no response: `keepsTradeRequest(error)`): the button reads "Try again" and sends the stored body with the stored key again, unchanged. While they are kept the sheet offers nothing else, and closing and reopening it shows the same unanswered trade. They live in memory, not in browser storage.
 
+The ticket's state is in `features/trade/ticket-store.ts`: one state per market and query client, in memory. It is the only caller of `tradeMutation`. A host places `TradeTicket` straight into `ResponsiveSheet` or onto a panel surface: it brings its own `SheetBody` and `SheetFooter`. `features/market-detail/market-detail-with-ticket.test.tsx` runs the real ticket inside the real screen; the other tests of the two features each put a stand-in in place of the other.
+
 ## Live data
 
-`useMarketStream(marketId)` keeps `marketQuery` and `marketHistoryQuery` current from the event stream and drops any event whose `version` is not newer. When the stream fails it polls every `live_poll_fallback_seconds` and tries the stream again at each poll, with no error on screen. The poll is a normal API call, so an ended portal session shows up there and reloads the page. An open quote is never touched by an event. Nothing else is live: a screen reads what it shows when it opens and when the window gets the focus back.
+`useMarketStream(marketId, { enabled, onStatus })` keeps `marketQuery` and `marketHistoryQuery` current from the event stream and drops any event whose `version` is not newer. `onStatus` is called for a `status` event of the market: it is how a screen knows that something happened in front of the user (the bean drop of a payout). When the stream fails it polls every `live_poll_fallback_seconds` and tries the stream again at each poll, with no error on screen; the polls keep that pace also when a stream opens and is cut again at once. The poll is a normal API call, so an ended portal session shows up there and reloads the page. An open quote is never touched by an event. Nothing else is live: a screen reads what it shows when it opens and when the window gets the focus back.
 
 ## Tests
 
 - Beside the code: `thing.test.tsx`. `renderWithProviders` (`@/test/render`) gives a query client with the tunables and a user in it; `mockApi` (`@/test/http`) answers `fetch` by contract route and records the requests; fixtures typed by the contract are in `@/test/fixtures`.
 - A request without a route fails the test. `json`, `apiError`, `portal401`, `errorPage`, `noAnswer` and `deferred` make the answers.
-- The router is in memory (`@/test/navigation`): `navigation.go("/wallet?code=...")` before rendering, `navigation.href` after.
-- A test starts as a phone with reduced motion: `setViewport("wide")` and `setMediaQuery` (`@/test/media`) change that. `installFakeEventSource` plays stream events; `intersect()` scrolls a list to its end.
+- The router is in memory (`@/test/navigation`): `navigation.go("/leaderboard?sort=trades")` before rendering, `navigation.href` after. A screen that keeps state in its query string writes it with the browser's History API; `followHistoryWrites()` in `beforeEach` makes the router follow those writes and returns the two spies. The Wallet's tests of `?code=` look at `window.location` instead, and set the address in both places.
+- A test starts as a phone with reduced motion: `setViewport("wide")` and `setMediaQuery` (`@/test/media`) change that. `installFakeEventSource` plays stream events; `intersect()` scrolls a list to its end, and `watchScrolling()` (`@/test/observers`) says where an element lies. `sizeCharts()` (`@/test/charts`) gives a Recharts chart a size, without which jsdom draws none.
+- A toast is dismissed after every test (`src/test/setup.ts`): sonner keeps its toasts outside React.
 - With a clock, use `vi.useFakeTimers({ shouldAdvanceTime: true })` so that `user` and `findBy` keep working, and `vi.useRealTimers()` in a `finally`.
 - The cache tells its observers a moment after it changed: after an event or a `setQueryData`, wait with `findBy` or `waitFor` before looking at the screen.
 - Assert on what the user sees and on what was sent. An expected amount is the string of the fixture, never arithmetic in the test.

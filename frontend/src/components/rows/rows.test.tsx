@@ -61,6 +61,23 @@ describe("LedgerRow", () => {
     expect(screen.getByText("Exact amount").parentElement).toBeVisible();
     expect(screen.getByText("Exact amount").parentElement).toHaveTextContent("23.874512");
   });
+
+  test("its description is one line, and all of it once the row is expanded", async () => {
+    const description =
+      "Bought YES: Will the Mensa Polyterrasse serve Älplermagronen on the last Friday of the semester?";
+    const { user } = renderWithProviders(
+      <RowList>
+        <LedgerRow item={ledgerItem({ description })} />
+      </RowList>,
+    );
+
+    expect(screen.getByText(description)).toHaveClass("truncate");
+
+    await user.click(screen.getByRole("button"));
+
+    expect(screen.getByText(description)).not.toHaveClass("truncate");
+    expect(screen.getByText(description)).toHaveClass("wrap-break-word");
+  });
 });
 
 describe("TradeRow", () => {
@@ -205,6 +222,11 @@ describe("ProductRow", () => {
     const [cheapButRefused, dearButAllowed] = screen.getAllByRole("button");
     expect(cheapButRefused).toBeDisabled();
     expect(dearButAllowed).toBeEnabled();
+    // The whole row looks disabled: its name and figure in subtle, its token icon dimmed.
+    expect(cheapButRefused).toHaveClass(
+      "disabled:text-subtle",
+      "disabled:[&_[data-slot=token-icon]]:opacity-50",
+    );
   });
 });
 

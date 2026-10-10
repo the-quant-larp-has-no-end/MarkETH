@@ -10,6 +10,17 @@ import { cn } from "@/lib/utils";
  * the propose form are radio cards built on this (DESIGN.md §13). The mark is 20 px; the
  * tap target is the card or the row around it.
  */
+/**
+ * The frame of one radio card, for the `label` around a `RadioGroupItem`: a 1 px outline
+ * that turns white, on `--raised`, when its item is chosen.
+ */
+export const radioCardClasses = cn(
+  "flex min-h-11 cursor-pointer items-start gap-3 rounded-md border border-border-strong p-3",
+  "transition-colors duration-(--duration-fast)",
+  "has-[[data-state=checked]]:border-foreground has-[[data-state=checked]]:bg-raised",
+  "has-[:disabled]:cursor-not-allowed has-[:disabled]:border-subtle has-[:disabled]:text-subtle",
+);
+
 function RadioGroup({
   className,
   ...props

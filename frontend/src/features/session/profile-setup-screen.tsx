@@ -40,7 +40,7 @@ export function ProfileSetupScreen({
         <p className="type-body-sm text-muted-foreground">Signed in as {signedInAs}</p>
       )}
 
-      <ProfileForm submitLabel="Create profile" onSaved={onCreated} />
+      <ProfileForm submitLabel="Create profile" wideSubmit onSaved={onCreated} />
 
       <footer className="flex flex-col items-center gap-2 pt-2 text-center">
         <Illustration name="dome" />

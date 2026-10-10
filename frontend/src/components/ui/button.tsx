@@ -44,12 +44,15 @@ const buttonVariants = cva(
         icon: "size-11",
       },
       width: {
-        /** Full width on phones, as wide as its label from 768 px. */
-        responsive: "w-full md:w-auto",
+        /**
+         * Full width on phones, as wide as its label from 768 px. The width is its own
+         * there, so a column that stretches its children does not stretch the button.
+         */
+        responsive: "w-full md:w-fit",
         /** Full width at every size: the action of a sheet or a dialog. */
         full: "w-full",
-        /** As wide as its label. */
-        fit: "",
+        /** As wide as its label, also in a column that stretches its children. */
+        fit: "w-fit",
       },
     },
     defaultVariants: {
@@ -82,7 +85,8 @@ function Button({
   type,
   ...props
 }: ButtonProps) {
-  const resolvedWidth = size === "icon" ? "fit" : (width ?? "responsive");
+  // An icon button is a square: its size is its width.
+  const resolvedWidth = size === "icon" ? null : (width ?? "responsive");
   const classes = cn(buttonVariants({ variant, size, width: resolvedWidth }), className);
 
   if (asChild) {

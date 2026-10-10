@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, test, vi } from "vitest";
 
@@ -103,6 +103,89 @@ describe.each([
     expect(await screen.findByRole("dialog", { name: "Redeem code" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Redeem code" })).toHaveClass("sr-only");
   });
+
+  test("takes the focus when it opens, keeps the Tab key inside, and gives the focus back to what opened it", async () => {
+    setViewport(viewport);
+    const { user } = renderWithProviders(<Example />);
+    const opener = screen.getByRole("button", { name: "Redeem code" });
+
+    await user.click(opener);
+    const sheet = await screen.findByRole("dialog", { name: "Redeem code" });
+
+    await waitFor(() => expect(sheet.contains(document.activeElement)).toBe(true));
+    for (let press = 0; press < 5; press += 1) {
+      await user.tab();
+      expect(sheet.contains(document.activeElement)).toBe(true);
+    }
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(opener).toHaveFocus());
+  });
+
+  test("gives the focus back after the close button too, and after every opening anew", async () => {
+    setViewport(viewport);
+    const { user } = renderWithProviders(
+      <>
+        <button type="button">Another control</button>
+        <Example />
+      </>,
+    );
+    const opener = screen.getByRole("button", { name: "Redeem code" });
+
+    for (let opening = 0; opening < 2; opening += 1) {
+      await user.click(opener);
+      await user.click(await screen.findByRole("button", { name: "Close" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      await waitFor(() => expect(opener).toHaveFocus());
+      screen.getByRole("button", { name: "Another control" }).focus();
+    }
+  });
+});
+
+test("the bottom sheet takes the focus itself, so that no keyboard slides up; the dialog takes it to its first control", async () => {
+  const phone = renderWithProviders(<Example />);
+  await phone.user.click(screen.getByRole("button", { name: "Redeem code" }));
+  const sheet = await screen.findByRole("dialog");
+  await waitFor(() => expect(sheet).toHaveFocus());
+  expect(screen.getByLabelText("Code")).not.toHaveFocus();
+  phone.unmount();
+
+  setViewport("wide");
+  const wide = renderWithProviders(<Example />);
+  await wide.user.click(screen.getByRole("button", { name: "Redeem code" }));
+  await screen.findByRole("dialog");
+  await waitFor(() => expect(screen.getByLabelText("Code")).toHaveFocus());
+});
+
+test("turning the phone while the sheet is open keeps the focus in it, and it still goes back to the opener", async () => {
+  const { user } = renderWithProviders(<Example />);
+  const opener = screen.getByRole("button", { name: "Redeem code" });
+  await user.click(opener);
+  expect(await screen.findByRole("dialog")).toHaveAttribute("data-slot", "drawer-content");
+
+  act(() => setViewport("wide"));
+
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog).toHaveAttribute("data-slot", "dialog-content");
+  // After the bottom sheet has had its say about the focus, too.
+  await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
+  expect(dialog.contains(document.activeElement)).toBe(true);
+
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  await waitFor(() => expect(opener).toHaveFocus());
+});
+
+test("the blocks of the body keep their height: a short sheet scrolls instead of squeezing them", async () => {
+  const { user } = renderWithProviders(<Example />);
+  await user.click(screen.getByRole("button", { name: "Redeem code" }));
+  await screen.findByRole("dialog");
+
+  expect(document.querySelector("[data-slot=sheet-body]")).toHaveClass(
+    "overflow-y-auto",
+    "*:shrink-0",
+  );
 });
 
 test("the bottom sheet carries its handle; the dialog does not", async () => {

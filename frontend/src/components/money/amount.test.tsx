@@ -5,6 +5,7 @@ import { MINUS } from "@/lib/format";
 
 import { Amount, SignedAmount } from "./amount";
 import { CodeText } from "./code-text";
+import { Missing } from "./missing";
 
 const amount = () => document.querySelector("[data-slot=amount]")!;
 const icon = () => amount().querySelector("[data-slot=token-icon]");
@@ -103,5 +104,16 @@ describe("CodeText", () => {
     render(<CodeText value="4F7KQ2M9XAB3" />);
 
     expect(screen.getByText("4F7K-Q2M9-XAB3")).toHaveClass("type-code");
+  });
+});
+
+describe("Missing", () => {
+  test("is an en dash to the eye and 'none yet' to a screen reader", () => {
+    render(<Missing className="type-number" />);
+
+    const missing = document.querySelector("[data-slot=missing]")!;
+    expect(missing).toHaveClass("type-number");
+    expect(missing.querySelector("[aria-hidden]")).toHaveTextContent("\u2013");
+    expect(screen.getByText("none yet")).toHaveClass("sr-only");
   });
 });

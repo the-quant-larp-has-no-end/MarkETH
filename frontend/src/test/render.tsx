@@ -19,7 +19,8 @@ import * as fixtures from "./fixtures";
 /** The app's query client, except that a failed read is not asked again: tests do not wait. */
 export function createTestQueryClient(): QueryClient {
   const client = createQueryClient();
-  client.setDefaultOptions({ queries: { retry: false }, mutations: { retry: false } });
+  const defaults = client.getDefaultOptions();
+  client.setDefaultOptions({ ...defaults, queries: { ...defaults.queries, retry: false } });
   return client;
 }
 

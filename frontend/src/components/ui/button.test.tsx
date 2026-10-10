@@ -16,8 +16,23 @@ describe("Button", () => {
       "bg-primary",
       "text-primary-foreground",
       "w-full",
-      "md:w-auto",
+      "md:w-fit",
     );
+  });
+
+  test("from 768 px it is as wide as its label, also in a column that stretches its children", () => {
+    const { rerender } = render(<Button>Save</Button>);
+    // `w-fit`, not `w-auto`: an automatic width is what a flex column stretches.
+    expect(screen.getByRole("button")).toHaveClass("md:w-fit");
+    expect(screen.getByRole("button")).not.toHaveClass("md:w-auto");
+
+    rerender(<Button width="fit">Save</Button>);
+    expect(screen.getByRole("button")).toHaveClass("w-fit");
+    expect(screen.getByRole("button")).not.toHaveClass("w-full");
+
+    rerender(<Button width="full">Save</Button>);
+    expect(screen.getByRole("button")).toHaveClass("w-full");
+    expect(screen.getByRole("button").className).not.toMatch(/(^| )(md:)?w-fit( |$)/);
   });
 
   test.each([
@@ -50,7 +65,8 @@ describe("Button", () => {
       </Button>,
     );
     expect(screen.getByRole("button")).toHaveClass("size-11");
-    expect(screen.getByRole("button")).not.toHaveClass("w-full");
+    // Its size is its width: no width of its own may shrink the square.
+    expect(screen.getByRole("button").className).not.toMatch(/(^| )(md:)?w-(full|fit|auto)( |$)/);
   });
 
   test("does not submit a form unless it says so", () => {

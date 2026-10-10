@@ -145,4 +145,31 @@ describe("with a clock", () => {
     act(() => vi.advanceTimersByTime(1_100));
     expect(result.current).toBe("d");
   });
+
+  test("useThrottledValue counts from the last change it passed on, not from when it appeared", () => {
+    const { result, rerender } = renderHook(({ value }) => useThrottledValue(value, 10_000), {
+      initialProps: { value: "a" },
+    });
+    // Whatever was scheduled when the hook appeared has run by now.
+    act(() => vi.advanceTimersByTime(2_000));
+
+    rerender({ value: "b" });
+    act(() => vi.advanceTimersByTime(1));
+
+    expect(result.current).toBe("b");
+  });
+
+  test("useThrottledValue passes nothing on when the value is back where it was", () => {
+    const { result, rerender } = renderHook(({ value }) => useThrottledValue(value, 10_000), {
+      initialProps: { value: "a" },
+    });
+    rerender({ value: "b" });
+    act(() => vi.advanceTimersByTime(1));
+
+    rerender({ value: "c" });
+    rerender({ value: "b" });
+    act(() => vi.advanceTimersByTime(20_000));
+
+    expect(result.current).toBe("b");
+  });
 });

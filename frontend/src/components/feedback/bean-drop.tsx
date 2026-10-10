@@ -49,7 +49,8 @@ export function BeanDrop({ arrival, children, className }: BeanDropProps) {
   }, [falling, arrival]);
 
   return (
-    <span data-slot="bean-drop" className={cn("relative inline-flex", className)}>
+    // As wide as the figure and no wider, so the beans fall into it and not beside it.
+    <span data-slot="bean-drop" className={cn("relative inline-flex w-fit", className)}>
       {typeof children === "function" ? children(falling) : children}
       {falling && (
         <span

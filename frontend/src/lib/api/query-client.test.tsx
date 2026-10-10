@@ -1,9 +1,14 @@
-import { MutationObserver, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
+import {
+  MutationObserver,
+  onlineManager,
+  QueryClientProvider,
+  QueryObserver,
+} from "@tanstack/react-query";
 import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-import { config, me } from "@/test/fixtures";
+import { config, me, portfolio } from "@/test/fixtures";
 import { apiError, errorPage, type Handler, json, mockApi, noAnswer } from "@/test/http";
 import { createTestQueryClient } from "@/test/render";
 
@@ -66,6 +71,62 @@ describe("a write that failed", () => {
     await new MutationObserver(client, redeemCodeMutation).mutate("4F7K-Q2M9-XAB3").catch(() => {});
 
     expect(api.calls("POST /api/codes/redeem")).toHaveLength(1);
+  });
+});
+
+describe("while the browser says there is no connection", () => {
+  beforeEach(() => {
+    onlineManager.setOnline(false);
+  });
+  afterEach(() => {
+    onlineManager.setOnline(true);
+  });
+
+  test("a read goes out all the same and fails, so the screen can say so", async () => {
+    const api = mockApi({ "GET /api/me/positions": noAnswer });
+    const client = createTestQueryClient();
+
+    await expect(client.fetchQuery(positionsQuery)).rejects.toMatchObject({
+      kind: "network",
+      message: "No connection. Try again.",
+    });
+
+    expect(api.calls("GET /api/me/positions")).toHaveLength(1);
+  });
+
+  test("a read that failed is asked again when the connection is back", async () => {
+    const api = mockApi({ "GET /api/me/positions": noAnswer });
+    const client = createTestQueryClient();
+    // What the provider does for the app's client: it starts to follow the connection.
+    client.mount();
+    const observer = new QueryObserver(client, positionsQuery);
+    const stop = observer.subscribe(() => {});
+    await waitFor(() => expect(observer.getCurrentResult().error?.kind).toBe("network"));
+
+    api.on("GET /api/me/positions", json(200, portfolio()));
+    onlineManager.setOnline(true);
+
+    await waitFor(() => expect(observer.getCurrentResult().data).toEqual(portfolio()));
+    expect(api.calls("GET /api/me/positions")).toHaveLength(2);
+    stop();
+    client.unmount();
+  });
+
+  test("a write fails at once and is not sent later by itself", async () => {
+    const api = mockApi({ "POST /api/codes/redeem": noAnswer });
+    const client = createQueryClient();
+    client.mount();
+    const write = new MutationObserver(client, redeemCodeMutation);
+
+    await expect(write.mutate("4F7K-Q2M9-XAB3")).rejects.toMatchObject({ kind: "network" });
+    expect(write.getCurrentResult().isPaused).toBe(false);
+
+    api.on("POST /api/codes/redeem", json(200, { value_cr: "35", balance_cr: "275" }));
+    onlineManager.setOnline(true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(api.calls("POST /api/codes/redeem")).toHaveLength(1);
+    client.unmount();
   });
 });
 

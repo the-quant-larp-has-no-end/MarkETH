@@ -10,8 +10,27 @@ const DAY_MS = 86_400_000;
 
 type Wall = { year: number; month: number; day: number; hour: number; minute: number };
 
+/**
+ * The month as DESIGN.md §10 writes it: three letters, `14 Oct 2026`. They are written
+ * out here because the browser's own short names differ between versions ("Sep" in one,
+ * "Sept" in the next), and a date must read the same on every device.
+ */
+const MONTHS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+] as const;
+
 const wallFormatters = new Map<string, Intl.DateTimeFormat>();
-const monthFormatters = new Map<string, Intl.DateTimeFormat>();
 
 /** The date and time a clock on the wall shows at `instant` in `timeZone`. */
 function wallTime(instant: Date, timeZone: string): Wall {
@@ -35,13 +54,9 @@ function wallTime(instant: Date, timeZone: string): Wall {
   return wall;
 }
 
-function monthName(instant: Date, timeZone: string): string {
-  let formatter = monthFormatters.get(timeZone);
-  if (formatter === undefined) {
-    formatter = new Intl.DateTimeFormat(LOCALE, { timeZone, month: "short" });
-    monthFormatters.set(timeZone, formatter);
-  }
-  return formatter.format(instant);
+/** The name of a month of the calendar, 1 for January. */
+function monthName(month: number): string {
+  return MONTHS[month - 1] ?? String(month);
 }
 
 function pad(value: number): string {
@@ -58,7 +73,7 @@ export function formatDate(iso: string, timeZone: string): string {
   const instant = parse(iso);
   if (instant === null) return iso;
   const wall = wallTime(instant, timeZone);
-  return `${wall.day} ${monthName(instant, timeZone)} ${wall.year}`;
+  return `${wall.day} ${monthName(wall.month)} ${wall.year}`;
 }
 
 /** `18:00` */
@@ -85,8 +100,8 @@ export function formatDay(day: string): string {
   const [year, month, date] = [match[1]!, match[2]!, match[3]!].map((part) =>
     Number.parseInt(part, 10),
   ) as [number, number, number];
-  const instant = new Date(Date.UTC(year, month - 1, date));
-  return `${date} ${monthName(instant, "UTC")} ${year}`;
+  if (month < 1 || month > MONTHS.length) return day;
+  return `${date} ${monthName(month)} ${year}`;
 }
 
 /** Whole calendar days from `from` to `to`, counted on the calendar of `timeZone`. */

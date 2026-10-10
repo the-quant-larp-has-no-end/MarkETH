@@ -58,6 +58,7 @@ from app.models import (
     User,
 )
 from app.pricing import lmsr
+from app.repositories.market import MarketRepository
 from app.schemas.admin.markets import (
     ApproveMarketRequest,
     HaltMarketRequest,
@@ -121,6 +122,17 @@ TEXTS_OF_A_PROPOSAL: Final[tuple[str, ...]] = (
     "resolution_source",
 )
 
+BLOCKED_FOR_SECONDS: Final[float] = 0.3
+"""Long enough for a request to reach the lock it then waits for."""
+
+WAIT_SECONDS: Final[float] = 5.0
+"""How long a test waits for what should come at once, before it fails instead of
+hanging."""
+
+LINGER_SECONDS: Final[float] = 0.15
+"""How long a transaction is kept open by `linger_after`: many times what a parallel
+request needs to get a connection and reach the same statement."""
+
 type FlushRedis = Callable[[], Awaitable[None]]
 
 
@@ -171,6 +183,25 @@ def listed(
 
 def ids(answer: MarketListResponse) -> list[UUID]:
     return [item.id for item in answer.items]
+
+
+def linger_after(monkeypatch: pytest.MonkeyPatch, repository: type, query: str) -> None:
+    """Keep every transaction open for a moment after it ran `query` of `repository`.
+
+    Two requests sent at once overlap only if the first is still in its transaction
+    when the second gets as far. Left alone, the first is often done before the second
+    has its connection, and a missing lock would go unnoticed. With this, a second
+    request reaches the same point while the first lingers there, unless a lock keeps
+    it waiting.
+    """
+    original: Callable[..., Awaitable[Any]] = getattr(repository, query)
+
+    async def lingering(self: object, *args: Any, **kwargs: Any) -> Any:
+        answer = await original(self, *args, **kwargs)
+        await asyncio.sleep(LINGER_SECONDS)
+        return answer
+
+    monkeypatch.setattr(repository, query, lingering)
 
 
 async def sell(
@@ -518,23 +549,57 @@ async def test_midnight_in_utc_is_not_the_start_of_a_proposal_day(
 
 
 async def test_parallel_proposals_at_the_limit_admit_only_as_many_as_it_leaves(
-    container: Container, factory: Factory, clock: FrozenClock
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Each request counts the day's proposals before it inserts its own. Without the
-    lock on the user's proposals, all of them would count the same number."""
+    lock on the user's proposals, requests that overlap would all count the same
+    number, so each is kept in its transaction between the count and the insert."""
     alice = factory.identity(await factory.user())
+    bob = factory.identity(await factory.user())
     for _ in range(DAILY_LIMIT - 1):
         await container.markets.propose(alice, proposal(clock.now()))
+    linger_after(monkeypatch, MarketRepository, "count_created_by_since")
 
     answers = await asyncio.gather(
-        *(container.markets.propose(alice, proposal(clock.now())) for _ in range(4)),
+        *(container.markets.propose(alice, proposal(clock.now())) for _ in range(3)),
+        container.markets.propose(bob, proposal(clock.now())),
         return_exceptions=True,
     )
 
     taken = [answer for answer in answers if isinstance(answer, MarketDetailResponse)]
     refused = [answer for answer in answers if isinstance(answer, LimitExceededError)]
-    assert (len(taken), len(refused)) == (1, 3)
-    assert await count_rows(container.uow_factory, Market) == DAILY_LIMIT
+    # One of alice's three, and bob's: the lock is each user's own.
+    assert (len(taken), len(refused)) == (2, 2)
+    assert isinstance(answers[-1], MarketDetailResponse)
+    assert await count_rows(container.uow_factory, Market) == DAILY_LIMIT + 1
+
+
+async def test_a_proposal_waits_for_the_users_other_proposal_and_nobody_elses(
+    container: Container, factory: Factory, clock: FrozenClock
+) -> None:
+    """The lock that makes the count and the insert one step is the user's own. A
+    proposal is dated when it arrived, also when it had to wait."""
+    alice = await factory.user()
+    bob = factory.identity(await factory.user())
+    arrived_at = clock.now()
+
+    async with container.uow_factory() as another_proposal:
+        await another_proposal.advisory_lock(f"proposals:{alice.id}")
+        waiting = asyncio.create_task(
+            container.markets.propose(factory.identity(alice), proposal(arrived_at))
+        )
+        await container.markets.propose(bob, proposal(arrived_at))
+        await asyncio.sleep(BLOCKED_FOR_SECONDS)
+        assert not waiting.done()
+        clock.advance(timedelta(minutes=5))
+
+    answer = await asyncio.wait_for(waiting, WAIT_SECONDS)
+
+    assert answer.created_at == arrived_at
+    assert await count_rows(container.uow_factory, Market) == 2
 
 
 async def test_the_route_takes_a_proposal_and_answers_201_with_the_market(

@@ -14,11 +14,15 @@ declare module "@tanstack/react-query" {
 const QUERY_RETRIES = 2;
 
 /**
- * The query client of the app, with its three rules:
+ * The query client of the app, with its four rules:
  *
  * - A read is tried again only when trying again can help: no connection, or the API
  *   says it is temporarily unavailable. Everything else is an answer and is shown.
  * - A write is never sent again by itself (DESIGN.md §14).
+ * - Every request goes out when it is made, whatever the browser thinks of the
+ *   connection. A read that cannot get through fails and the screen says "No connection.
+ *   Try again."; it is asked again when the connection is back. A write that cannot get
+ *   through fails at once: it is never held back to be sent later, when nobody is looking.
  * - An answer that says the caller is not who the app thinks (`UNAUTHENTICATED`,
  *   `PROFILE_REQUIRED`, `FORBIDDEN`) makes the app ask `/me` again, wherever it came
  *   from. Start-up reads that answer and shows the profile set-up or the full-screen
@@ -41,8 +45,10 @@ export function createQueryClient(): QueryClient {
       queries: {
         retry: (failureCount, error) => error.retryable && failureCount < QUERY_RETRIES,
         retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 4000),
+        networkMode: "always",
+        refetchOnReconnect: true,
       },
-      mutations: { retry: false },
+      mutations: { retry: false, networkMode: "always" },
     },
     queryCache: new QueryCache({
       onError: (error, query) =>

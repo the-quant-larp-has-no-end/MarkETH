@@ -1,7 +1,7 @@
 "use client";
 
 import { Trophy, type TrophyPlace } from "@/components/brand";
-import { Amount } from "@/components/money";
+import { Amount, Missing } from "@/components/money";
 import type { LeaderboardEntry, LeaderboardSort } from "@/lib/api/schema";
 import { useConfig } from "@/lib/api/session";
 import { EN_DASH, formatCount, formatRate, formatRatio } from "@/lib/format";
@@ -38,14 +38,7 @@ export function LeaderboardFigure({
     sort === "win_rate"
       ? formatRate(entry.win_rate, price_display_decimals)
       : formatRatio(entry.avg_payout_ratio);
-  if (figure !== EN_DASH) return <span className={text}>{figure}</span>;
-
-  return (
-    <span className={text}>
-      <span aria-hidden>{EN_DASH}</span>
-      <span className="sr-only">none yet</span>
-    </span>
-  );
+  return figure === EN_DASH ? <Missing className={text} /> : <span className={text}>{figure}</span>;
 }
 
 function podiumPlace(rank: number): TrophyPlace | null {

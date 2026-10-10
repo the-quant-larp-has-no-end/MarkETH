@@ -2,7 +2,8 @@
 
 Reading a payload back fails with `KeyError` or `ValueError` and with nothing else: those
 two are what the relay skips a row for, so anything else would block the outbox on a row
-that can never be delivered.
+that can never be delivered. That holds for whatever the JSONB column gives back, an
+object or not.
 """
 
 import json
@@ -152,6 +153,47 @@ def test_a_payload_whose_instant_has_no_timezone_is_refused(naive: str) -> None:
 
     with pytest.raises(ValueError, match="timezone-aware"):
         quote_point_from_payload(payload)
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [None, True, 7, 7.5, "", "quote.updated", [], ["market_id", "ts"], [{"version": 7}]],
+    ids=repr,
+)
+def test_a_payload_that_is_no_json_object_is_refused_with_a_value_error(stored: Any) -> None:
+    """The column is JSONB: it stores `null`, a number, a text or a list as readily as an
+    object. Subscripting one of those would raise a `TypeError`, which the relay would
+    retry for ever."""
+    with pytest.raises(ValueError, match="must be a JSON object") as refused:
+        quote_point_from_payload(stored)
+
+    assert type(refused.value) is ValueError
+
+
+@pytest.mark.parametrize(
+    "beyond",
+    ["0001-01-01T00:00:00+14:00", "0001-01-01T00:00:00+00:01", "9999-12-31T23:59:59-14:00"],
+)
+def test_a_payload_whose_instant_has_no_day_in_utc_is_refused(beyond: str) -> None:
+    """Such an instant parses, and the history, which keys a point by its day in UTC,
+    could never store it. The parse says so, where the relay can tell that the row will
+    never be delivered."""
+    payload = quote_updated_payload(TRADE_POINT) | {"ts": beyond}
+
+    with pytest.raises(ValueError, match="no day in UTC") as refused:
+        quote_point_from_payload(payload)
+
+    assert type(refused.value) is ValueError
+
+
+@pytest.mark.parametrize(
+    "edge",
+    ["0001-01-01T00:00:00+00:00", "0001-01-01T14:00:00+14:00", "9999-12-31T23:59:59+00:00"],
+)
+def test_the_first_and_the_last_instant_that_have_a_day_in_utc_are_accepted(edge: str) -> None:
+    payload = quote_updated_payload(TRADE_POINT) | {"ts": edge}
+
+    assert quote_point_from_payload(payload).ts == datetime.fromisoformat(edge)
 
 
 def test_nothing_is_coerced_into_a_point() -> None:

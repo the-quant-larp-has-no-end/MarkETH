@@ -3,7 +3,7 @@
 import { useMutation } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
 
-import { ErrorBanner, InlineError, RetryCountdown } from "@/components/feedback";
+import { SubmitError } from "@/components/feedback";
 import { SelectField, TextField } from "@/components/form";
 import { Button } from "@/components/ui/button";
 import { placeError } from "@/lib/api/errors";
@@ -21,6 +21,11 @@ export type ProfileFormProps = {
   submitLabel: string;
   /** Keep the button disabled until something differs from `initial`. */
   requireChange?: boolean;
+  /**
+   * The button is as wide as the form at every width: the set-up screen, which is one
+   * narrow column like a dialog. Without it the button is full width on phones only.
+   */
+  wideSubmit?: boolean;
   /** Called with the API's answer once the profile is saved. */
   onSaved?: (saved: ProfileSavedResponse) => void;
 };
@@ -40,6 +45,7 @@ export function ProfileForm({
   initial,
   submitLabel,
   requireChange = false,
+  wideSubmit = false,
   onSaved,
 }: ProfileFormProps) {
   const config = useConfig();
@@ -122,19 +128,11 @@ export function ProfileForm({
         Other players can see your username, your degree, your tokens and your trading record.
       </p>
 
-      {save.error && placed?.form != null && (
-        <div className="flex flex-col gap-1">
-          {save.error.outcomeUnknown ? (
-            <ErrorBanner error={save.error} />
-          ) : (
-            <InlineError>{placed.form}</InlineError>
-          )}
-          <RetryCountdown error={save.error} />
-        </div>
-      )}
+      <SubmitError error={save.error} message={placed?.form} />
 
       <Button
         type="submit"
+        width={wideSubmit ? "full" : "responsive"}
         loading={save.isPending}
         disabled={!filled || (requireChange && !changed) || wait > 0}
       >

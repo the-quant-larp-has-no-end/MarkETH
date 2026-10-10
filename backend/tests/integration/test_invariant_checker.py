@@ -320,7 +320,7 @@ async def test_a_user_balance_below_zero_breaks_no_negative_user_balance(
 
 
 async def test_the_balance_of_any_user_counts_not_only_the_trader_s(
-    factory: Factory, market: Market, owner_engine: AsyncEngine
+    container: Container, factory: Factory, market: Market, owner_engine: AsyncEngine
 ) -> None:
     """Like the ledger, balances are checked as a whole."""
     stranger = await factory.user(balance_micro=MICRO)
@@ -332,6 +332,8 @@ async def test_the_balance_of_any_user_counts_not_only_the_trader_s(
         for traded in (market, elsewhere):
             assert await broken(uow_factory, traded) == ("no_negative_user_balance", {})
 
+    await assert_books_balance(container.uow_factory)
+
 
 async def test_a_user_balance_of_exactly_zero_passes(
     container: Container, factory: Factory, market: Market
@@ -342,6 +344,8 @@ async def test_a_user_balance_of_exactly_zero_passes(
 
     await check(container.uow_factory, market)
 
+    await assert_books_balance(container.uow_factory)
+
 
 async def test_an_account_that_may_be_below_zero_does_not_fail_the_third_check(
     container: Container, market: Market
@@ -350,6 +354,8 @@ async def test_an_account_that_may_be_below_zero_does_not_fail_the_third_check(
     assert await system_balance(container.uow_factory, AccountKind.VIS_ISSUANCE) < 0
 
     await check(container.uow_factory, market)
+
+    await assert_books_balance(container.uow_factory)
 
 
 # --- 4. The market could not lose more than its budget -------------------------------------
@@ -427,7 +433,7 @@ async def test_the_first_check_that_fails_is_the_one_reported(
 
 
 async def test_a_negative_user_balance_is_reported_before_a_broken_budget_and_after_the_rest(
-    alice: User, market: Market, owner_engine: AsyncEngine
+    container: Container, alice: User, market: Market, owner_engine: AsyncEngine
 ) -> None:
     async with without_the_user_balance_floor(owner_engine) as (connection, uow_factory):
         for statement in GIVE_AWAY:
@@ -444,6 +450,8 @@ async def test_a_negative_user_balance_is_reported_before_a_broken_budget_and_af
             {"market_id": market.id},
         )
         assert (await broken(uow_factory, market))[0] == "positions_match_market"
+
+    await assert_books_balance(container.uow_factory)
 
 
 async def test_the_checks_see_what_their_transaction_wrote_and_has_not_sent_yet(

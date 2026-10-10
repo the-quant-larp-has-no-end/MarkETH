@@ -6,7 +6,7 @@ import { navigation } from "@/test/navigation";
 import { renderWithProviders } from "@/test/render";
 
 import { MarketCard } from "./market-card";
-import { StatusBadge } from "./status-badge";
+import { StatusBadge, statusName } from "./status-badge";
 
 const QUESTION = "Will the Polybahn run without interruption during the exam session?";
 
@@ -166,5 +166,24 @@ describe("StatusBadge", () => {
     const { container } = renderWithProviders(<StatusBadge status="HALTED" />);
 
     expect(container.querySelector("svg")).toBeInTheDocument();
+  });
+
+  test("the word of each status is the one its badge shows", () => {
+    for (const status of [
+      "PROPOSED",
+      "REJECTED",
+      "OPEN",
+      "HALTED",
+      "CLOSED",
+      "RESOLVED",
+      "VOID",
+    ] as const) {
+      const { container, unmount } = renderWithProviders(<StatusBadge status={status} />);
+      expect(container).toHaveTextContent(statusName(status));
+      unmount();
+    }
+    expect(statusName("PROPOSED")).toBe("In review");
+    expect(statusName("HALTED")).toBe("Paused");
+    expect(statusName("VOID")).toBe("Voided");
   });
 });

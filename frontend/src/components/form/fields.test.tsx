@@ -6,6 +6,7 @@ import { config } from "@/test/fixtures";
 import { renderWithProviders } from "@/test/render";
 
 import { CodeInput, DateTimeField, SelectField, TextAreaField, TextField } from "./fields";
+import { revealFirstInvalid } from "./reveal-invalid";
 
 describe("TextField", () => {
   test("has its label above it and its help text as its description", () => {
@@ -192,5 +193,40 @@ describe("CodeInput", () => {
     await user.paste(" 4f7k q2m9 xab3 ");
 
     expect(field).toHaveValue("4F7K-Q2M9-XAB3");
+  });
+});
+
+describe("revealFirstInvalid", () => {
+  test("brings the first field the API refused into view and gives it the focus", () => {
+    const intoView = vi.spyOn(Element.prototype, "scrollIntoView");
+    renderWithProviders(
+      <form data-testid="form">
+        <TextField label="Question" value="" onChange={() => {}} />
+        <TextField label="Source" value="" onChange={() => {}} error="Name a source." />
+        <TextField label="Label" value="" onChange={() => {}} error="Too long." />
+      </form>,
+    );
+
+    revealFirstInvalid(screen.getByTestId("form"));
+
+    const refused = screen.getByLabelText("Source");
+    expect(refused).toHaveFocus();
+    expect(intoView).toHaveBeenCalledTimes(1);
+    expect(intoView.mock.contexts[0]).toBe(refused);
+  });
+
+  test("does nothing where nothing was refused, and nothing without a form", () => {
+    const intoView = vi.spyOn(Element.prototype, "scrollIntoView");
+    renderWithProviders(
+      <form data-testid="form">
+        <TextField label="Question" value="" onChange={() => {}} />
+      </form>,
+    );
+
+    revealFirstInvalid(screen.getByTestId("form"));
+    revealFirstInvalid(null);
+
+    expect(intoView).not.toHaveBeenCalled();
+    expect(document.body).toHaveFocus();
   });
 });

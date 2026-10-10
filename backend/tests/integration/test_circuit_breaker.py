@@ -49,7 +49,6 @@ from app.schemas.live import StatusEvent
 from app.schemas.trading import TradeRequest
 from app.services import UowFactory
 from app.services.audit import AuditAction, AuditService, AuditTarget
-from app.services.invariants import InvariantChecker
 from app.services.live_quotes import LiveEvent
 from app.services.trading import TradingService
 from tests.support.books import assert_books_balance, count_rows
@@ -270,11 +269,8 @@ def breaker_after(container: Container, before: Callable[[], Awaitable[object]])
     return factory
 
 
-def trading_service(
-    container: Container, uow_factory: UowFactory, invariants: InvariantChecker | None = None
-) -> TradingService:
-    """A `TradingService` wired like the container's, on other units of work and, if
-    one is given, another checker."""
+def trading_service(container: Container, uow_factory: UowFactory) -> TradingService:
+    """A `TradingService` wired like the container's, on other units of work."""
     return TradingService(
         uow_factory,
         container.settings,
@@ -282,27 +278,13 @@ def trading_service(
         container.market_view,
         container.quotes,
         container.ledger,
-        invariants or container.invariants,
+        container.invariants,
         container.audit,
         container.rate_limiter,
         container.fallback_rate_limiter,
         container.market_cache,
         container.live_quotes,
     )
-
-
-class CountingChecker(InvariantChecker):
-    """The real checks, which also say when a second trade has reached them."""
-
-    def __init__(self) -> None:
-        self.reached = 0
-        self.second_reached = asyncio.Event()
-
-    async def check(self, uow: UnitOfWork, market: Market) -> None:
-        self.reached += 1
-        if self.reached == 2:
-            self.second_reached.set()
-        await super().check(uow, market)
 
 
 # --- Who trades what ----------------------------------------------------------------------
@@ -372,7 +354,7 @@ async def test_a_trade_on_broken_books_is_rolled_back_halts_the_market_and_alert
     assert alert.context == alert_context(found, market, trader)
     assert (alert.created_at, alert.acked_by, alert.acked_at) == (now, None, None)
 
-    # Sent again under its key, the trade meets a market that no longer trades: the
+    # Sent again under its key, the trade meets a market that has stopped trading: the
     # breaker is not asked a second time.
     again = await post_trade(client, market, key)
     assert_error(again, 409, "MARKET_NOT_OPEN")
@@ -457,18 +439,17 @@ async def test_a_second_broken_trade_alerts_again_and_does_not_halt_the_market_a
 ) -> None:
     """Two trades at once on broken books. The second gets the market's row when the
     first was rolled back, before any breaker has halted anything, and runs into the
-    same check. Both breakers then want the row: one halts the market and puts it on
-    record, the other finds it halted and only leaves its alert."""
+    same check. Both breakers then want the row at the same moment: the one that gets
+    it halts the market and puts that on record, the other waits for the row, finds
+    the market halted and only leaves its alert."""
     alice = await factory.user(balance_micro=SIGNUP_GRANT)
     bob = await factory.user(balance_micro=SIGNUP_GRANT)
     await break_books(owner_engine, market, "positions_match_market")
     before = await untouched(container, factory, market, alice, bob)
-    checker = CountingChecker()
-    # The breaker of whichever trade fails first waits until the other trade has
-    # reached the checks, which it can only do while the market is still open.
-    trading = trading_service(
-        container, breaker_after(container, checker.second_reached.wait), checker
-    )
+    # Neither breaker begins before both trades were rolled back, so both trades met
+    # an open market, and the two breakers begin together.
+    both_rolled_back = asyncio.Barrier(2)
+    trading = trading_service(container, breaker_after(container, both_rolled_back.wait))
     request = TradeRequest.model_validate(BUY)
 
     async with asyncio.timeout(WAIT_SECONDS):
@@ -481,7 +462,6 @@ async def test_a_second_broken_trade_alerts_again_and_does_not_halt_the_market_a
         )
 
     assert [type(result) for result in results] == [ServiceUnavailableError] * 2
-    assert checker.reached == 2
     assert (await stored(container, market)).status is MarketStatus.HALTED
     (halt,) = await rows(container, AuditLogEntry)
     assert (halt.actor_id, halt.before, halt.after) == (

@@ -50,6 +50,9 @@ export function OutcomeButtons({
  * `aria-pressed`. The selected one is filled (`--yes` or `--no`, `--ink` label); the
  * other is `--background` with a `--muted-foreground` label.
  *
+ * `value` may be null: neither segment is on until one is chosen. That is for where an
+ * outcome must never be a default, as when a market is resolved.
+ *
  * `disabled` switches off both, or one: when selling, an outcome is offered only when
  * one of its sell presets is allowed.
  */
@@ -57,17 +60,25 @@ export function OutcomeToggle({
   value,
   onChange,
   disabled = false,
+  labelledBy,
+  describedBy,
   className,
 }: {
-  value: Outcome;
+  value: Outcome | null;
   onChange: (outcome: Outcome) => void;
   disabled?: boolean | Partial<Record<Outcome, boolean>>;
+  /** The id of a label that is on screen. Without one the group is named "Outcome". */
+  labelledBy?: string;
+  /** The id of what describes the group: an error under it. */
+  describedBy?: string;
   className?: string;
 }) {
   return (
     <div
       role="group"
-      aria-label="Outcome"
+      aria-label={labelledBy === undefined ? "Outcome" : undefined}
+      aria-labelledby={labelledBy}
+      aria-describedby={describedBy}
       data-slot="outcome-toggle"
       className={cn("grid grid-cols-2 overflow-hidden rounded-md bg-background", className)}
     >

@@ -18,6 +18,7 @@ import { EmptyState } from "./empty-state";
 import { InlineError } from "./inline-error";
 import { LoadMore } from "./load-more";
 import { QueryState } from "./query-state";
+import { SubmitError } from "./submit-error";
 
 describe("Banner", () => {
   test("a neutral banner is a status on --raised, with an icon", () => {
@@ -113,6 +114,76 @@ describe("InlineError", () => {
     expect(error).toHaveClass("text-no-text");
     expect(error).toHaveAttribute("id", "field-error");
     expect(error.querySelector("svg")).toBeInTheDocument();
+  });
+
+  test("a notice is announced like an error and keeps its icon, but is not red", () => {
+    render(
+      <InlineError tone="notice">
+        The price moved. Review the new quote and confirm again.
+      </InlineError>,
+    );
+
+    const notice = screen.getByRole("alert");
+    expect(notice).toHaveTextContent("The price moved.");
+    expect(notice).toHaveClass("text-foreground");
+    expect(notice).not.toHaveClass("text-no-text");
+    expect(notice.querySelector("svg")).toBeInTheDocument();
+  });
+});
+
+describe("SubmitError", () => {
+  test("shows an answer of the API that names no field inline, as sent", () => {
+    const error = toApiError(409, {
+      code: "LIMIT_EXCEEDED",
+      message: "You can propose 3 markets a day.",
+      details: {},
+    });
+    render(<SubmitError error={error} message={error.message} />);
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("You can propose 3 markets a day.");
+    expect(alert).toHaveAttribute("data-slot", "inline-error");
+  });
+
+  test("after RATE_LIMITED it counts down the wait the API named", () => {
+    const error = toApiError(429, {
+      code: "RATE_LIMITED",
+      message: "Too many attempts. Try again shortly.",
+      details: { retry_after_seconds: 30 },
+    });
+    render(<SubmitError error={error} message={error.message} />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Too many attempts. Try again shortly.");
+    expect(screen.getByText(/^Try again in \d+ s$/)).toBeInTheDocument();
+  });
+
+  test("no answer at all, and an error of the server, is the banner: nobody knows what became of the request", () => {
+    const { unmount } = render(
+      <SubmitError error={ApiError.network()} message="No connection. Try again." />,
+    );
+    expect(screen.getByRole("alert")).toHaveAttribute("data-slot", "alert");
+    expect(screen.getByRole("alert")).toHaveTextContent("No connection. Try again.");
+    unmount();
+
+    const down = ApiError.unavailable(502);
+    render(<SubmitError error={down} message={down.message} />);
+    expect(screen.getByRole("alert")).toHaveAttribute("data-slot", "alert");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "This is temporarily unavailable. Try again shortly.",
+    );
+  });
+
+  test("shows nothing without an error, and nothing when the error sits on a field", () => {
+    const { container, rerender } = render(<SubmitError error={null} message={undefined} />);
+    expect(container).toBeEmptyDOMElement();
+
+    const onField = toApiError(422, {
+      code: "VALIDATION_ERROR",
+      message: "The request is not valid.",
+      details: { field: "question" },
+    });
+    rerender(<SubmitError error={onField} message={null} />);
+    expect(container).toBeEmptyDOMElement();
   });
 });
 

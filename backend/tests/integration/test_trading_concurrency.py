@@ -339,7 +339,7 @@ async def test_trades_of_one_user_on_two_markets_at_once_do_not_deadlock(
     first, second = await factory.market(), await factory.market()
     trader = await factory.user(balance_micro=SIGNUP_GRANT)
     who = factory.identity(trader)
-    rounds = MAX_ORDERS // 2
+    rounds = (MAX_ORDERS - 2) // 2
 
     for _ in range(rounds):
         results = await at_once(
