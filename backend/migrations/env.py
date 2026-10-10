@@ -3,11 +3,10 @@
 The connection comes from `Settings.postgres.owner_url`. A caller that drives Alembic
 from Python (the test harness) may point it elsewhere by putting its own `Settings` into
 `config.attributes["settings"]`; the command line uses the repository's `.env`.
-The baseline revision reads the same object from there, so the revision and its
-connection can never disagree about which roles exist.
+A revision reads the same object from there (`app.models.revisions.app_role`), so it
+and its connection can never disagree about which roles exist.
 
-`Base.metadata` is what the baseline builds the tables from and what `alembic check`
-compares a database with.
+`Base.metadata` is what `alembic check` compares a database with.
 """
 
 import asyncio

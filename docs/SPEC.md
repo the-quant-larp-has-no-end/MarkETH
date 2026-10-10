@@ -242,7 +242,7 @@ Admins can halt an open market and resume it; a halted market is closed before i
 
 ## 7. Data model (PostgreSQL, Alembic)
 
-Postgres holds every balance, position and ledger entry; all amounts are BIGINT micro-units. The models in `backend/app/models/` are the schema: one Alembic revision builds every table from them (A.10).
+Postgres holds every balance, position and ledger entry; all amounts are BIGINT micro-units. The models in `backend/app/models/` are the schema, and the Alembic revisions of `backend/migrations/versions/` are how a database gets it: the baseline builds the schema as it was first deployed, and every change to a model since comes with a revision (A.10).
 
 | Table | Key columns |
 | --- | --- |
@@ -267,7 +267,7 @@ A user's net stake in a market is `cost_micro − proceeds_micro` summed over bo
 
 System accounts: `vis:issuance` (source of every granted, coded and adjusted credit, may go negative), `vis:mm_pnl` (takes the result of every settled market, may go negative), `vis:redemption_pending`, `vis:redeemed`, and `market:{id}`, one per market, which takes in costs and pays out proceeds and never goes below zero (A.7).
 
-Two Postgres roles work on the schema: the owner role builds it, the app role is what the API and the relay connect as. Each process connects through one async engine with a bounded pool (§9), and the engine keeps the values of a failed statement out of what it reports (A.10). A table or column is a change to the models. The schema has no upgrade path, so a database built from other models is refused and has to be wiped and rebuilt (A.10).
+Two Postgres roles work on the schema: the owner role builds it, the app role is what the API and the relay connect as. Each process connects through one async engine with a bounded pool (§9), and the engine keeps the values of a failed statement out of what it reports (A.10). A table or column is a change to the models and a revision that takes a database there, rows included; a database is never wiped to change its schema. A model that changed without a revision is refused before the API starts (A.10).
 
 ## 8. Trade transaction
 
@@ -384,7 +384,7 @@ The API answers 503 `SERVICE_UNAVAILABLE` when Postgres cannot serve a request: 
 
 ### The schema
 
-The schema has one revision. It leaves a fingerprint of what it built in the database, and `migrate` compares that fingerprint with the code's on every start. Where they differ it fails, and `api` and `relay` do not start: "The schema changed since this database was built: wipe and rebuild it (make reset)." A schema change therefore means a wipe, which deletes every balance (A.10).
+`migrate` takes the database through the revisions it has not seen, on every start, and the rows stay. Each revision leaves the fingerprint of the models it leads to in the database, and `migrate` then compares that fingerprint with the code's. Where they differ it fails, and `api` and `relay` do not start: "The models of this code are not the schema of this database, and no revision leads there: write one (make revision NAME=...)." (A.10).
 
 ### Deployment
 
@@ -734,8 +734,8 @@ Negative or zero inputs raise `ValueError`. So does a b too large for the precis
 
 - Compose has a one-shot `migrate` service (Alembic as the owner role). `api` and `relay` wait for it and for Postgres; neither waits for Redis or Scylla.
 - Two Postgres roles: the owner (`POSTGRES_USER`) builds the schema; the app role (`POSTGRES_APP_USER`) is created by the baseline revision if missing, gets SELECT, INSERT, UPDATE, DELETE on everything, and then loses UPDATE and DELETE on `journal_entries` and `postings`. On `accounts` it keeps only SELECT, INSERT of an account without a balance, and the right to lock a row; on `journal_entries` it cannot set `created_xid` (A.7).
-- **One revision, and a fingerprint.** The baseline revision creates every table straight from the models, then the four trigger functions with their triggers, the four system accounts and the app role's privileges. It has no successor: a change to a model is followed by a wipe and a rebuild, not by a second revision. Postgres does not say which models a database was built from, and `alembic check` cannot see a changed CHECK constraint or enum member. So the revision stores a fingerprint, a SHA-256 over the compiled DDL of the models and the hand-written SQL, as the comment of `alembic_version`, and `python -m scripts.check_schema` compares it with what the code computes. `migrate` runs that check after `alembic upgrade head` and `alembic check`, on every start.
-- **A schema change means a wipe**: `make reset` on a laptop, `make deploy-wipe` on the VM, which dumps the database first. A wipe deletes balances, so every change that reaches a model lands before real users hold any.
+- **Revisions, and a fingerprint.** The baseline revision, `0001`, is a record: the tables, the four trigger functions with their triggers, the four system accounts and the app role's privileges as the first deployed database was built with them, kept as text and never edited. A change to a model, a trigger or a privilege comes with a numbered revision that takes a database from the one before to it, rows included; `make revision NAME=...` writes its file. Postgres does not say which models a database matches, and `alembic check` cannot see a changed CHECK constraint or enum member. So every revision carries a fingerprint, a SHA-256 over the compiled DDL of the models and the hand-written SQL as they were when it was written, and stores it as the comment of `alembic_version`; `python -m scripts.check_schema` compares it with what the code computes. `migrate` runs that check after `alembic upgrade head` and `alembic check`, on every start. The tests hold the rest: the last revision carries the fingerprint of the models, the baseline still hashes to the fingerprint of the first deployed database, and a database taken through every revision has the columns, constraints, indexes, triggers and privileges of one built from the models.
+- **A schema change is a revision, never a wipe.** People hold balances in the deployed database, so nothing about its schema changes except through `alembic upgrade head`, which `make deploy` runs with the freshly built `migrate` image after it has dumped the database. A revision says what becomes of the rows that are there. `make reset` and `make deploy-wipe` delete data and are for a database nobody needs.
 - `docker compose up` merges `compose.override.yaml` and gives hot reload, the stores published on the loopback interface and the development identity (§3). `docker compose -f compose.yaml up --build` runs the images as deployed.
 - The relay creates the keyspace and table if missing, so a wiped Scylla heals itself.
 - **Statement values stay out of logs.** The database engine and the Alembic environment hide the parameters of a failed statement, so no address, code hash or amount of a request is written into a log by an error.

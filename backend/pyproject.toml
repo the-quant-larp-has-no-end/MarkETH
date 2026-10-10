@@ -46,6 +46,8 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # ETH writes some programme names with an en dash, and the catalogue keeps its labels.
 "app/core/degrees.py" = ["RUF001"]
+# The first deployed schema, kept as the text it was built from.
+"migrations/versions/0001_baseline.py" = ["E501"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app", "scripts", "tests"]

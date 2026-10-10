@@ -770,7 +770,8 @@ def test_the_overlay_publishes_its_extra_ports_on_the_loopback_interface_only() 
 
 
 def test_migrate_builds_the_schema_and_then_proves_it_is_the_one_of_this_code() -> None:
-    """One revision, no upgrade path: a database built from other models must stop here."""
+    """It takes the database through the revisions, and a database whose schema is still
+    not the one of the models, because no revision leads there, must stop here."""
     [chain] = [entry for entry in entries(STACK["migrate"], "command") if "alembic" in entry]
     steps = chain.split(" && ")
     assert steps[0] == "alembic upgrade head"
