@@ -474,7 +474,7 @@ Next.js with TypeScript, mobile-first; the frontend only shows numbers the serve
 | Markets | Cards with question, YES %, close date |
 | Market detail | Price, live chart, rules, deadline, own position, stake left |
 | Trade sheet | Bottom sheet: YES/NO toggle, the buy buttons, slider and number field, live quote (`QUOTE_DEBOUNCE_MS=300`) showing shares, average price and the probability after the trade, Confirm |
-| Portfolio | Open positions, value at current price, resolved results |
+| Portfolio | Open positions, when each was entered, value at current price, resolved results |
 | Wallet | Balance, ledger, "Redeem code" (typed or camera QR), getting a voucher for a product and its QR |
 | Leaderboard | The ranking by credits, win rate, trades or payout ratio, with its filters |
 | Propose market | Form with all required fields |

@@ -417,6 +417,7 @@ export function portfolioEntry(overrides: Partial<PortfolioEntry> = {}): Portfol
   return {
     market: marketSummary(),
     holdings: holdings({ shares: "91.645", value_cr: "50.221461" }),
+    entered_at: "2026-10-04T10:00:00Z",
     value_cr: "50.221461",
     cost_cr: "50",
     proceeds_cr: "0",
