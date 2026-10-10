@@ -102,6 +102,8 @@ PRESETS: Final[tuple[int, ...]] = tuple(BASE.pricing.stake_presets_micro)
 """TRADE_STAKE_PRESETS_CR in µCR: the buy buttons, in the order they are offered."""
 
 STAKE_STEP: Final[int] = BASE.pricing.stake_step_micro
+SHARE_SHORTCUTS: Final[tuple[int, ...]] = tuple(BASE.pricing.share_presets_micro)
+"""TRADE_SHARE_PRESETS in µshares: the shortcuts of a buy on the trade sheet."""
 """TRADE_STAKE_STEP_CR in µCR: what lies between two positions of the buy slider."""
 
 STAKE_LIMIT: Final[int] = BASE.pricing.max_stake_per_user_market_micro
@@ -2079,9 +2081,63 @@ async def test_the_sell_presets_are_half_and_all_of_each_holding_yes_first(
         NOTHING,
     ]
     assert [preset.allowed for preset in presets] == [True, True, False, False]
+    assert [preset.proceeds_cr > 0 for preset in presets] == [True, True, False, False]
     assert presets == container.market_view.sell_presets(
-        await positions_of(container, alice, market), True
+        await market_row(container, market.id), await positions_of(container, alice, market), True
     )
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_what_a_sell_shortcut_says_it_brings_in_is_the_amount_of_the_quote_of_that_sale(
+    client: httpx.AsyncClient, as_user: ActAs, container: Container, factory: Factory
+) -> None:
+    """`proceeds_cr` is the server's price of that sale on the rows of the read, so the
+    trade sheet shows what `GET /quote` would answer without asking it four times."""
+    alice = await factory.user(balance_micro=WALLET)
+    market = await factory.market()
+    await factory.position(alice, market, Outcome.YES, shares_micro=30 * MICRO + 1)
+    await factory.position(alice, market, Outcome.NO, shares_micro=12 * MICRO)
+    as_user(alice)
+
+    viewer = (await client.get(f"{MARKETS}/{market.id}")).json()["viewer"]
+
+    assert len(viewer["sell_presets"]) == 4
+    for preset in viewer["sell_presets"]:
+        assert preset["allowed"]
+        sale = {"side": "SELL", "outcome": preset["outcome"], "shares": preset["shares"]}
+        quoted = await client.get(f"{MARKETS}/{market.id}/quote", params=sale)
+        assert quoted.status_code == 200, quoted.text
+        assert quoted.json()["amount_cr"] == preset["proceeds_cr"]
+        assert quoted.json()["payout_cr"] == preset["shares"]
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_after_a_buy_the_range_of_both_outcomes_is_the_one_of_the_stake_that_is_left(
+    container: Container, factory: Factory
+) -> None:
+    """A buy of YES takes from the stake that is left and moves both prices. Each
+    slider then ends at the whole shares the rest pays for at the price of its own
+    outcome: fewer than before, and fewer of YES than of NO."""
+    view = container.market_view
+    alice = await factory.user(balance_micro=WALLET)
+    market = await factory.market()
+    fresh = await container.markets.detail(factory.identity(alice), market.id)
+    await factory.position(alice, market, Outcome.YES, shares_micro=100 * MICRO)
+    row = await market_row(container, market.id)
+    left = view.stake_left_micro(view.net_stake_micro(await positions_of(container, alice, market)))
+    assert 0 < left < STAKE_LIMIT
+
+    after = await container.markets.detail(factory.identity(alice), market.id)
+
+    assert after.viewer.stake_left_cr == to_cr(left)
+    assert after.viewer.buy == view.buy_entries(row, left, await factory.balance_micro(alice), True)
+    ends_before = [entry.slider.max for entry in fresh.viewer.buy if entry.slider is not None]
+    ends = [entry.slider.max for entry in after.viewer.buy if entry.slider is not None]
+    assert ends == [
+        view.most_shares_micro(row, outcome, left) // MICRO for outcome in (Outcome.YES, Outcome.NO)
+    ]
+    assert len(ends_before) == 2
+    assert ends[0] < ends[1] < ends_before[1] == ends_before[0]
     await assert_books_balance(container.uow_factory)
 
 
@@ -2158,12 +2214,21 @@ async def test_whether_the_viewer_may_trade_and_the_first_reason_why_not(
     block = (await container.markets.detail(factory.identity(alice), market.id)).viewer
 
     assert (block.can_trade, block.cannot_trade_reason) == (reason is None, reason)
+    assert [entry.outcome for entry in block.buy] == [Outcome.YES, Outcome.NO]
+    for entry in block.buy:
+        assert [preset.shares for preset in entry.presets] == [
+            to_cr(shares) for shares in SHARE_SHORTCUTS
+        ]
     if reason is None:
         assert block.buy_slider is not None
+        assert all(entry.slider is not None for entry in block.buy)
+        assert any(preset.allowed for entry in block.buy for preset in entry.presets)
     else:
         assert not any(preset.allowed for preset in block.stake_presets)
         assert not any(preset.allowed for preset in block.sell_presets)
         assert block.buy_slider is None
+        assert all(entry.slider is None for entry in block.buy)
+        assert not any(preset.allowed for entry in block.buy for preset in entry.presets)
 
 
 async def test_a_halted_market_offers_no_button_to_somebody_with_shares_tokens_and_stake_left(
@@ -2181,11 +2246,16 @@ async def test_a_halted_market_offers_no_button_to_somebody_with_shares_tokens_a
 
     assert any(preset.allowed for preset in trading.viewer.stake_presets)
     assert trading.viewer.buy_slider is not None
+    assert all(entry.slider is not None for entry in trading.viewer.buy)
     assert [preset.allowed for preset in trading.viewer.sell_presets[:2]] == [True, True]
+    assert [preset.proceeds_cr > 0 for preset in trading.viewer.sell_presets[:2]] == [True, True]
     assert paused.viewer.cannot_trade_reason is TradeBlockReason.MARKET_NOT_OPEN
     assert not any(preset.allowed for preset in paused.viewer.stake_presets)
     assert paused.viewer.buy_slider is None
+    assert all(entry.slider is None for entry in paused.viewer.buy)
+    assert not any(preset.allowed for entry in paused.viewer.buy for preset in entry.presets)
     assert not any(preset.allowed for preset in paused.viewer.sell_presets)
+    assert all(preset.proceeds_cr == NOTHING for preset in paused.viewer.sell_presets)
     # What is offered changed; what the viewer holds did not.
     assert [preset.shares for preset in paused.viewer.sell_presets] == [
         preset.shares for preset in trading.viewer.sell_presets
@@ -2352,12 +2422,31 @@ async def test_the_route_answers_a_market_with_the_viewers_side_and_amounts_as_s
     assert body["viewer"]["balance_cr"] == format_cr(WALLET - paid_micro)
     assert body["viewer"]["stake_left_cr"] == format_cr(STAKE_LIMIT - paid_micro)
     assert body["viewer"]["holdings"][0]["shares"] == "50"
+    row = await market_row(container, market.id)
+    state = lmsr.MarketState(q_yes=row.q_yes_micro, q_no=row.q_no_micro, b=row.b_micro)
+    half = lmsr.quote_sell_shares(state, Outcome.YES, 25 * MICRO, precision=PRECISION)
     assert body["viewer"]["sell_presets"][0] == {
         "outcome": "YES",
         "portion": "HALF",
         "shares": "25",
+        "proceeds_cr": format_cr(half.amount_micro),
         "allowed": True,
     }
+    # What can be bought of each outcome: the slider in whole shares as JSON integers,
+    # the shortcuts as strings like every number of shares.
+    offered = container.market_view.buy_entries(
+        row, STAKE_LIMIT - paid_micro, WALLET - paid_micro, True
+    )
+    assert body["viewer"]["buy"] == [entry.model_dump(mode="json") for entry in offered]
+    assert [entry["outcome"] for entry in body["viewer"]["buy"]] == ["YES", "NO"]
+    for entry in body["viewer"]["buy"]:
+        assert set(entry) == {"outcome", "slider", "presets"}
+        assert set(entry["slider"]) == {"min", "max", "step"}
+        assert all(type(value) is int for value in entry["slider"].values())
+        assert [preset["shares"] for preset in entry["presets"]] == [
+            format_cr(shares) for shares in SHARE_SHORTCUTS
+        ]
+        assert all(type(preset["allowed"]) is bool for preset in entry["presets"])
     assert (body["viewer"]["payout_cr"], body["viewer"]["refund_cr"]) == (None, None)
     # Whole credits as JSON integers: the stake that is left ends the slider.
     assert body["viewer"]["buy_slider"] == {
@@ -2489,8 +2578,18 @@ async def test_whatever_a_viewer_traded_their_side_is_what_market_view_makes_of_
     assert block.buy_slider == view.buy_slider(
         view.stake_left_micro(stake_micro), balance_micro, True
     )
-    assert block.sell_presets == view.sell_presets(rows, True)
+    row = await market_row(container, market.id)
+    assert block.buy == view.buy_entries(
+        row, view.stake_left_micro(stake_micro), balance_micro, True
+    )
+    assert block.sell_presets == view.sell_presets(row, rows, True)
     assert (block.can_trade, block.can_settle) == (True, False)
+    for entry in block.buy:
+        if entry.slider is not None:
+            assert 0 < entry.slider.min <= entry.slider.max
+        for shortcut in entry.presets:
+            within = entry.slider is not None and shortcut.shares <= entry.slider.max
+            assert shortcut.allowed == within, "the shortcuts are whole steps of the slider"
     for stake in block.stake_presets:
         if stake.allowed:
             assert stake.amount_cr <= block.balance_cr

@@ -1,6 +1,12 @@
 # The checks behind "finish with `make lint` and `make test` green" (CLAUDE.md), run on
-# every pull request and on main. The ScyllaDB tests are slow and stay deselected, as
+# every pull request and on main. Deploying is .github/workflows/deploy.yml. The ScyllaDB tests are slow and stay deselected, as
 # they are in a plain `uv run pytest`.
+#
+# The jobs run on the team's own runner, which is the VM that serves the app
+# (docs/SERVER_INFRASTRUCTURE.md): one runner, so one job at a time, beside the running
+# stack and on its Docker. No job starts, stops or reads that stack, and none needs a
+# secret: .example.env is a complete development environment. The runner's user has no
+# sudo, so a tool the VM lacks comes as an action or as an image.
 
 name: CI
 
@@ -23,7 +29,7 @@ env:
 jobs:
   backend:
     name: Backend
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 20
     defaults:
       run:
@@ -50,7 +56,7 @@ jobs:
 
   frontend:
     name: Frontend
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 20
     defaults:
       run:
@@ -76,15 +82,26 @@ jobs:
   # each of the three.
   stack:
     name: Stack
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - name: Create .env from the template
         run: cp .example.env .env
-      - run: shellcheck --shell=sh infra/deploy/backup.sh infra/deploy/check.sh infra/deploy/smoke.sh
+      # The VM has no shellcheck; its image reads the scripts from the checkout.
+      - name: shellcheck accepts the deployment scripts
+        run: |
+          docker run --rm --network none --volume "$PWD/infra/deploy:/mnt:ro" koalaman/shellcheck:v0.10.0 \
+            --shell=sh backup.sh check.sh smoke.sh
       - name: The deployment targets expand
         run: make --dry-run deploy
+      # The form .github/workflows/deploy.yml runs, on the VM itself.
+      - name: Deployed from the VM itself, no target connects anywhere
+        run: |
+          make --dry-run deploy DEPLOY_LOCAL=1 > "$RUNNER_TEMP/local-deploy.txt"
+          # shellcheck disable=SC2016  # the "$HOME" is the recipe's own text
+          grep --quiet -- '--chdir="$HOME" sh -c' "$RUNNER_TEMP/local-deploy.txt"
+          ! grep --word-regexp ssh "$RUNNER_TEMP/local-deploy.txt"
       - name: Both compose variants resolve
         run: |
           docker compose config --quiet
@@ -136,7 +153,7 @@ jobs:
   # regenerates both and fails when the commit does not already contain the result.
   contract:
     name: API contract
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7

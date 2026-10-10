@@ -1,12 +1,13 @@
-import Image from "next/image";
-
 import { cn } from "@/lib/utils";
 
+import { BrandImage } from "./brand-image";
+import type { BrandFile } from "./files";
+
 const PLACES = {
-  1: { src: "/brand/trophy-1.png", alt: "First place", rank: "1st" },
-  2: { src: "/brand/trophy-2.png", alt: "Second place", rank: "2nd" },
-  3: { src: "/brand/trophy-3.png", alt: "Third place", rank: "3rd" },
-} as const;
+  1: { file: "trophy-1", alt: "First place", rank: "1st" },
+  2: { file: "trophy-2", alt: "Second place", rank: "2nd" },
+  3: { file: "trophy-3", alt: "Third place", rank: "3rd" },
+} as const satisfies Record<number, { file: BrandFile; alt: string; rank: string }>;
 
 const SIZES = {
   24: "size-6",
@@ -37,20 +38,20 @@ export function Trophy({
   place: TrophyPlace;
   size: keyof typeof SIZES;
   /**
-   * Fetch the image at once instead of when it comes near the screen: the trophies of
-   * the podium, which are the largest thing the leaderboard opens with.
+   * Fetch the image ahead of the other images of the screen: the trophies of the podium,
+   * which are the largest thing the leaderboard opens with.
    */
   eager?: boolean;
   className?: string;
 }) {
-  const { src, alt } = PLACES[place];
+  const { file, alt } = PLACES[place];
   return (
-    <Image
-      src={src}
+    <BrandImage
+      name={file}
       alt={alt}
       width={256}
       height={256}
-      loading={eager ? "eager" : "lazy"}
+      first={eager}
       className={cn("shrink-0 pixelated", SIZES[size], className)}
     />
   );

@@ -1,4 +1,4 @@
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, test, vi } from "vitest";
 
@@ -330,4 +330,138 @@ test("a dialog that may go closes on a tap beside it", async () => {
   await user.click(document.querySelector("[data-slot=dialog-overlay]")!);
 
   await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+});
+
+/** A sheet that holds what opens a second one, as the filter sheet holds a picker. */
+function Stacked({ dialog }: { dialog?: boolean }) {
+  const [upper, setUpper] = useState(false);
+  return (
+    <ResponsiveSheet open onOpenChange={() => {}} title="Filter" dialog={dialog}>
+      <SheetBody>
+        <button type="button" onClick={() => setUpper(true)}>
+          Choose a programme
+        </button>
+      </SheetBody>
+      <ResponsiveSheet open={upper} onOpenChange={setUpper} title="Programme">
+        <SheetBody>
+          <p>The programmes</p>
+        </SheetBody>
+      </ResponsiveSheet>
+    </ResponsiveSheet>
+  );
+}
+
+describe("a sheet inside a sheet", () => {
+  test("below 768 px it is nested in the bottom sheet under it, which stays open when it closes", async () => {
+    const { user } = renderWithProviders(<Stacked />);
+    const under = await screen.findByRole("dialog", { name: "Filter" });
+
+    await user.click(screen.getByRole("button", { name: "Choose a programme" }));
+
+    const upper = await screen.findByRole("dialog", { name: "Programme" });
+    expect(upper).toHaveAttribute("data-slot", "drawer-content");
+    expect(screen.getByText("The programmes")).toBeInTheDocument();
+    // The upper sheet takes the focus to itself, as every bottom sheet does.
+    await waitFor(() => expect(upper).toHaveFocus());
+
+    await user.keyboard("{Escape}");
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Programme" })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("dialog", { name: "Filter" })).toBe(under);
+    // The sheet under it hears that the upper one is gone and stands at its full size.
+    expect(under.style.transform).toContain("scale(1)");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Choose a programme" })).toHaveFocus(),
+    );
+  });
+
+  test("the close cross of the upper sheet closes it alone", async () => {
+    const { user } = renderWithProviders(<Stacked />);
+    await screen.findByRole("dialog", { name: "Filter" });
+    await user.click(screen.getByRole("button", { name: "Choose a programme" }));
+    const upper = await screen.findByRole("dialog", { name: "Programme" });
+
+    await user.click(within(upper).getByRole("button", { name: "Close" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Programme" })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("dialog", { name: "Filter" })).toBeInTheDocument();
+  });
+
+  test("inside a dialog it is a bottom sheet of its own", async () => {
+    const { user } = renderWithProviders(<Stacked dialog />);
+    const under = await screen.findByRole("dialog", { name: "Filter" });
+    expect(under).toHaveAttribute("data-slot", "dialog-content");
+
+    await user.click(screen.getByRole("button", { name: "Choose a programme" }));
+
+    expect(await screen.findByRole("dialog", { name: "Programme" })).toHaveAttribute(
+      "data-slot",
+      "drawer-content",
+    );
+
+    await user.keyboard("{Escape}");
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Programme" })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("dialog", { name: "Filter" })).toBeInTheDocument();
+  });
+});
+
+/** A dialog that holds a combobox, as the filter sheet holds a picker from 768 px. */
+function WithList({ expanded }: { expanded: boolean }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <ResponsiveSheet open={open} onOpenChange={setOpen} title="Filter">
+      <SheetBody>
+        <input aria-label="Level" role="combobox" aria-expanded={expanded} aria-controls="levels" />
+      </SheetBody>
+    </ResponsiveSheet>
+  );
+}
+
+describe("a dialog that holds a picker whose list is open", () => {
+  test("Escape is the list's: the dialog stays", async () => {
+    setViewport("wide");
+    const { user } = renderWithProviders(<WithList expanded />);
+    await screen.findByRole("dialog", { name: "Filter" });
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Level" })).toHaveFocus());
+
+    await user.keyboard("{Escape}");
+
+    expect(screen.getByRole("dialog", { name: "Filter" })).toBeInTheDocument();
+  });
+
+  test("so is a tap beside the dialog", async () => {
+    setViewport("wide");
+    const { user } = renderWithProviders(<WithList expanded />);
+    await screen.findByRole("dialog", { name: "Filter" });
+
+    await user.click(document.querySelector("[data-slot=dialog-overlay]")!);
+
+    expect(screen.getByRole("dialog", { name: "Filter" })).toBeInTheDocument();
+  });
+
+  test("with the list closed, Escape and a tap beside the dialog close it", async () => {
+    setViewport("wide");
+    const first = renderWithProviders(<WithList expanded={false} />);
+    await screen.findByRole("dialog", { name: "Filter" });
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Level" })).toHaveFocus());
+
+    await first.user.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    first.unmount();
+
+    const second = renderWithProviders(<WithList expanded={false} />);
+    await screen.findByRole("dialog", { name: "Filter" });
+
+    await second.user.click(document.querySelector("[data-slot=dialog-overlay]")!);
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
 });

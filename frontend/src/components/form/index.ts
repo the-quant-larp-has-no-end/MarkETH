@@ -14,4 +14,5 @@ export {
   TextField,
   type TextFieldProps,
 } from "./fields";
+export { PickerField, type PickerFieldProps } from "./picker-field";
 export { revealFirstInvalid } from "./reveal-invalid";

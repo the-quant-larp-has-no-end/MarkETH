@@ -47,7 +47,7 @@ from app.core.errors import (
     TradeTooSmallError,
 )
 from app.core.identity import AuthenticatedUser
-from app.core.units import MICRO, format_cr, to_cr
+from app.core.units import MICRO, format_cr, format_shares, format_tokens, to_cr
 from app.db.base import Base
 from app.models import Market, Position, Trade, User
 from app.pricing import lmsr
@@ -194,6 +194,7 @@ def shown(view: MarketView, market: Market, quote: lmsr.TradeQuote) -> QuoteResp
         shares=to_cr(quote.shares_micro),
         amount_cr=to_cr(quote.amount_micro),
         average_price=view.average_price(quote.amount_micro, quote.shares_micro),
+        payout_cr=to_cr(quote.shares_micro),
         p_yes_before=p_yes_before,
         p_no_before=p_no_before,
         p_yes_after=p_yes_after,
@@ -281,6 +282,14 @@ async def everything(container: Container) -> dict[str, list[tuple[object, ...]]
             rows = await uow.session.execute(select(table).order_by(*table.primary_key.columns))
             found[table.name] = [tuple(row) for row in rows]
     return found
+
+
+async def stored(container: Container, market_id: UUID) -> Market:
+    """The market row as Postgres has it now."""
+    async with container.uow_factory() as uow:
+        market = await uow.markets.get(market_id)
+    assert market is not None
+    return market
 
 
 def assert_error(response: httpx.Response, status_code: int, code: str) -> dict[str, Any]:
@@ -440,9 +449,11 @@ def test_each_mode_is_priced_with_the_digits_of_pricing_decimal_precision(
 def test_a_trade_sized_by_an_amount_is_at_least_min_trade_cr(container: Container) -> None:
     market = market_at(YES_SOLD, NO_SOLD)
 
-    with pytest.raises(TradeTooSmallError):
+    with pytest.raises(TradeTooSmallError) as too_small:
         container.quotes.price(market, buy_for(Outcome.YES, MIN_TRADE_AMOUNT - 1))
 
+    assert too_small.value.message == "The smallest trade is 1 token."
+    assert too_small.value.message == f"The smallest trade is {format_tokens(MIN_TRADE_AMOUNT)}."
     at_the_minimum = container.quotes.price(market, buy_for(Outcome.YES, MIN_TRADE_AMOUNT))
     assert at_the_minimum.amount_micro == MIN_TRADE_AMOUNT
 
@@ -453,9 +464,11 @@ def test_a_trade_sized_by_shares_is_at_least_min_trade_shares(
 ) -> None:
     market = market_at(YES_SOLD, NO_SOLD)
 
-    with pytest.raises(TradeTooSmallError):
+    with pytest.raises(TradeTooSmallError) as too_small:
         container.quotes.price(market, sizing(Outcome.YES, MIN_TRADE_SHARES - 1))
 
+    assert too_small.value.message == "The smallest trade is 1 share."
+    assert too_small.value.message == f"The smallest trade is {format_shares(MIN_TRADE_SHARES)}."
     at_the_minimum = container.quotes.price(market, sizing(Outcome.YES, MIN_TRADE_SHARES))
     assert at_the_minimum.shares_micro == MIN_TRADE_SHARES
 
@@ -470,12 +483,14 @@ def test_each_way_of_sizing_a_trade_has_its_own_minimum(container: Container) ->
     market = market_at(YES_SOLD, NO_SOLD)
 
     assert quotes.price(market, buy_for(Outcome.YES, two_credits)).amount_micro == two_credits
-    with pytest.raises(TradeTooSmallError):
+    with pytest.raises(TradeTooSmallError) as below_the_amount:
         quotes.price(market, buy_for(Outcome.YES, two_credits - 1))
+    assert below_the_amount.value.message == "The smallest trade is 2 tokens."
     for sizing in (buy_shares, sell_shares):
         assert quotes.price(market, sizing(Outcome.YES, five_shares)).shares_micro == five_shares
-        with pytest.raises(TradeTooSmallError):
+        with pytest.raises(TradeTooSmallError) as below_the_shares:
             quotes.price(market, sizing(Outcome.YES, five_shares - 1))
+        assert below_the_shares.value.message == "The smallest trade is 5 shares."
 
 
 # --- price: no more than the market has sold ------------------------------------------------
@@ -706,8 +721,60 @@ def test_a_buy_is_checked_against_the_stake_limit_and_then_against_the_balance(
         "limit": Limit.MAX_STAKE_PER_USER_MARKET,
         "stake_limit_cr": to_cr(STAKE_LIMIT),
         "stake_left_cr": to_cr(left),
+        "required_cr": to_cr(left + 1),
     }
+    assert over_the_limit.value.message == (
+        "This costs 30.000001 tokens. You can still put 30 tokens into this market."
+    )
     assert too_poor.value.details == {"balance_cr": to_cr(left - 1), "required_cr": to_cr(left)}
+    assert too_poor.value.message == "This costs 30 tokens. You have 29.999999 tokens."
+
+
+def test_a_buy_with_nothing_left_of_the_stake_limit_is_told_that_the_limit_is_reached(
+    container: Container,
+) -> None:
+    """The sentence names the limit, because there is no amount left to name. The
+    details say what the buy costs all the same."""
+    buyer = uuid7()
+    market = market_at(YES_SOLD, NO_SOLD)
+    at_the_limit = [
+        holding(market, buyer, Outcome.YES, shares_micro=5 * MICRO, cost_micro=STAKE_LIMIT)
+    ]
+    smallest = container.quotes.price(market, buy_shares(Outcome.NO, MIN_TRADE_SHARES))
+
+    with pytest.raises(LimitExceededError) as refused:
+        container.quotes.check_buy(at_the_limit, WALLET, smallest)
+
+    assert refused.value.message == "You have reached the limit of 100 tokens in this market."
+    assert refused.value.message == (
+        f"You have reached the limit of {format_tokens(STAKE_LIMIT)} in this market."
+    )
+    assert refused.value.details == {
+        "limit": Limit.MAX_STAKE_PER_USER_MARKET,
+        "stake_limit_cr": to_cr(STAKE_LIMIT),
+        "stake_left_cr": to_cr(0),
+        "required_cr": to_cr(smallest.amount_micro),
+    }
+
+
+def test_a_quote_says_what_its_shares_pay(container: Container) -> None:
+    """A share pays one credit if its outcome comes true, so `payout_cr` is the shares
+    of the trade counted in credits: for a buy of shares, which costs what
+    `quote_buy_shares` says, for a buy for an amount and for a sell, where it is what
+    the seller gives up."""
+    market = market_at(YES_SOLD, NO_SOLD)
+    fifty = buy_shares(Outcome.NO, 50 * MICRO)
+
+    bought = container.quotes.to_response(market, container.quotes.price(market, fifty))
+
+    assert bought.amount_cr == to_cr(lmsr_quote(market, fifty).amount_micro)
+    assert (bought.shares, bought.payout_cr) == (to_cr(50 * MICRO), to_cr(50 * MICRO))
+    assert bought.model_dump(mode="json")["payout_cr"] == "50"
+    assert bought.amount_cr < bought.payout_cr, "a share costs less than it pays"
+    for size in (buy_for(Outcome.YES, 30 * MICRO), sell_shares(Outcome.YES, 25 * MICRO)):
+        quote = container.quotes.price(market, size)
+        response = container.quotes.to_response(market, quote)
+        assert response.payout_cr == response.shares == to_cr(quote.shares_micro)
 
 
 def test_a_gain_taken_out_of_a_market_can_be_staked_in_it_again(container: Container) -> None:
@@ -969,7 +1036,21 @@ async def test_a_typed_amount_above_the_stake_left_gets_from_the_quote_what_the_
             "limit": "MAX_STAKE_PER_USER_MARKET",
             "stake_limit_cr": format_cr(STAKE_LIMIT),
             "stake_left_cr": format_cr(left),
+            "required_cr": format_cr(too_much),
         }
+    told = await get_quote(client, market.id, buy_for(Outcome.NO, left + 1))
+    assert told.json()["message"] == (
+        "This costs 30.000001 tokens. You can still put 30 tokens into this market."
+    )
+    by_shares = buy_shares(Outcome.NO, 80 * MICRO)
+    cost = lmsr_quote(market, by_shares).amount_micro
+    assert left < cost, "eighty shares cost more than what is left"
+    details = await refused_alike(client, container, market.id, by_shares, 409, "LIMIT_EXCEEDED")
+    assert details["required_cr"] == format_cr(cost)
+    told = await get_quote(client, market.id, by_shares)
+    assert told.json()["message"] == (
+        f"This costs {format_tokens(cost)}. You can still put 30 tokens into this market."
+    )
 
     exactly = buy_for(Outcome.NO, left)
     quoted = await get_quote(client, market.id, exactly)
@@ -978,6 +1059,16 @@ async def test_a_typed_amount_above_the_stake_left_gets_from_the_quote_what_the_
     assert bought.status_code == 201, bought.text
     assert TradeResponse.model_validate(bought.json()).stake_left_cr == to_cr(0)
     assert quoted.json()["shares"] == bought.json()["shares"]
+    smallest = buy_shares(Outcome.NO, MIN_TRADE_SHARES)
+    details = await refused_alike(client, container, market.id, smallest, 409, "LIMIT_EXCEEDED")
+    assert (details["stake_left_cr"], details["required_cr"]) == (
+        "0",
+        format_cr(
+            container.quotes.price(await stored(container, market.id), smallest).amount_micro
+        ),
+    )
+    told = await get_quote(client, market.id, smallest)
+    assert told.json()["message"] == "You have reached the limit of 100 tokens in this market."
     await assert_books_balance(container.uow_factory)
 
 
@@ -996,6 +1087,8 @@ async def test_a_typed_amount_above_the_balance_gets_from_the_quote_what_the_tra
         client, container, market.id, buy_for(Outcome.YES, 21 * MICRO), 409, "INSUFFICIENT_BALANCE"
     )
     assert details == {"balance_cr": format_cr(balance), "required_cr": format_cr(21 * MICRO)}
+    told = await get_quote(client, market.id, buy_for(Outcome.YES, 21 * MICRO))
+    assert told.json()["message"] == "This costs 21 tokens. You have 20.5 tokens."
     one_micro_more = await refused_alike(
         client, container, market.id, buy_for(Outcome.YES, balance + 1), 409, "INSUFFICIENT_BALANCE"
     )
@@ -1008,6 +1101,8 @@ async def test_a_typed_amount_above_the_balance_gets_from_the_quote_what_the_tra
         client, container, market.id, by_shares, 409, "INSUFFICIENT_BALANCE"
     )
     assert details == {"balance_cr": format_cr(balance), "required_cr": format_cr(cost)}
+    told = await get_quote(client, market.id, by_shares)
+    assert told.json()["message"] == f"This costs {format_tokens(cost)}. You have 20.5 tokens."
 
     everything_they_have = buy_for(Outcome.YES, balance)
     quoted = await get_quote(client, market.id, everything_they_have)
@@ -1029,13 +1124,15 @@ async def test_a_size_below_the_minimum_gets_from_the_quote_what_the_trade_answe
     and the minimum itself is quoted."""
     as_user(holder)
 
-    for size in (
-        buy_for(Outcome.YES, MIN_TRADE_AMOUNT - 1),
-        buy_shares(Outcome.YES, MIN_TRADE_SHARES - 1),
-        sell_shares(Outcome.YES, MIN_TRADE_SHARES - 1),
+    for size, sentence in (
+        (buy_for(Outcome.YES, MIN_TRADE_AMOUNT - 1), "The smallest trade is 1 token."),
+        (buy_shares(Outcome.YES, MIN_TRADE_SHARES - 1), "The smallest trade is 1 share."),
+        (sell_shares(Outcome.YES, MIN_TRADE_SHARES - 1), "The smallest trade is 1 share."),
     ):
         details = await refused_alike(client, container, traded.id, size, 422, "TRADE_TOO_SMALL")
         assert details == {}
+        told = await get_quote(client, traded.id, size)
+        assert told.json()["message"] == sentence
 
     for size in (
         buy_for(Outcome.YES, MIN_TRADE_AMOUNT),
@@ -1214,6 +1311,51 @@ async def test_every_position_of_the_buy_slider_is_quoted_and_the_step_beyond_it
         )
         bought = await post_trade(client, market.id, buy_for(Outcome.NO, last))
         assert bought.status_code == 201, bought.text
+
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_every_position_of_the_slider_of_each_outcome_is_quoted_and_the_step_beyond_is_not(
+    client: httpx.AsyncClient, container: Container, factory: Factory, as_user: ActAs
+) -> None:
+    """`viewer.buy` of the market page, the quote and the trade are one rule, in shares
+    and per outcome. For somebody the stake limit stops and for somebody the balance
+    stops: the first and the last position of each slider are quoted and pay their
+    shares, one step past the last is refused for the reason that ended the slider
+    there, and the last position is a buy that executes."""
+    step = container.settings.pricing.share_step_micro
+    market = await factory.market()
+    staked = await factory.user(balance_micro=WALLET)
+    await factory.position(
+        staked, market, Outcome.YES, shares_micro=5 * MICRO, cost_micro=60 * MICRO + MICRO // 4
+    )
+    short = await factory.user(balance_micro=17 * MICRO + MICRO // 2)
+
+    for trader, stops_at in ((staked, "LIMIT_EXCEEDED"), (short, "INSUFFICIENT_BALANCE")):
+        as_user(trader)
+        detail = MarketDetailResponse.model_validate(
+            (await client.get(f"/api/markets/{market.id}")).json()
+        )
+        assert [entry.outcome for entry in detail.viewer.buy] == [Outcome.YES, Outcome.NO]
+        last = 0
+        for entry in detail.viewer.buy:
+            slider = entry.slider
+            assert slider is not None
+            assert slider.step * MICRO == step
+            first, last = slider.min * MICRO, slider.max * MICRO
+            assert first < last
+
+            for position in (first, last):
+                quoted = await get_quote(client, market.id, buy_shares(entry.outcome, position))
+                assert quoted.status_code == 200, quoted.text
+                assert quoted.json()["shares"] == format_cr(position)
+                assert quoted.json()["payout_cr"] == format_cr(position)
+            await refused_alike(
+                client, container, market.id, buy_shares(entry.outcome, last + step), 409, stops_at
+            )
+        bought = await post_trade(client, market.id, buy_shares(Outcome.NO, last))
+        assert bought.status_code == 201, bought.text
+        assert bought.json()["shares"] == format_cr(last)
 
     await assert_books_balance(container.uow_factory)
 

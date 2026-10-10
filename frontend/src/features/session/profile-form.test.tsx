@@ -1,8 +1,9 @@
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, test, vi } from "vitest";
 
 import { config, me, profileSaved } from "@/test/fixtures";
 import { apiError, deferred, json, mockApi, noAnswer, type Route } from "@/test/http";
+import { setViewport } from "@/test/media";
 import { renderWithProviders } from "@/test/render";
 
 import { ProfileForm } from "./profile-form";
@@ -15,16 +16,43 @@ const programme = () => screen.getByLabelText("Programme");
 const policy = () => screen.getByRole("checkbox", { name: "I accept the usage policy" });
 const submit = (name = "Create profile") => screen.getByRole("button", { name });
 
-function options(select: HTMLElement): string[] {
-  return Array.from(select.querySelectorAll("option"))
-    .filter((option) => !option.disabled)
-    .map((option) => option.textContent ?? "");
+type User = ReturnType<typeof renderWithProviders>["user"];
+type Picker = "Level" | "Programme";
+
+/** Opens a picker as a phone does: a tap on the field brings its sheet. */
+async function openPicker(user: User, picker: Picker) {
+  await user.click(screen.getByLabelText(picker));
+  return screen.findByRole("dialog", { name: picker });
 }
 
-async function fillIn(user: ReturnType<typeof renderWithProviders>["user"]) {
+/** What a picker offers, top to bottom. Leaves its sheet open. */
+async function offered(user: User, picker: Picker): Promise<(string | null)[]> {
+  const sheet = await openPicker(user, picker);
+  return within(sheet)
+    .getAllByRole("option")
+    .map((option) => option.textContent);
+}
+
+/** The bottom sheet takes a moment to slide away before it is gone. */
+async function closed(picker: Picker) {
+  await waitFor(
+    () => expect(screen.queryByRole("dialog", { name: picker })).not.toBeInTheDocument(),
+    { timeout: 3000 },
+  );
+}
+
+/** Chooses by typing: the picker's sheet, some letters in its search field, a tap on the option. */
+async function choose(user: User, picker: Picker, typed: string, option: string) {
+  const sheet = await openPicker(user, picker);
+  await user.type(within(sheet).getByRole("searchbox"), typed);
+  await user.click(within(sheet).getByRole("option", { name: option }));
+  await closed(picker);
+}
+
+async function fillIn(user: User) {
   await user.type(username(), "anna_m");
-  await user.selectOptions(level(), "Bachelor");
-  await user.selectOptions(programme(), "BSc Computer Science");
+  await choose(user, "Level", "bach", "Bachelor");
+  await choose(user, "Programme", "comp", "BSc Computer Science");
 }
 
 describe("the three fields", () => {
@@ -51,10 +79,26 @@ describe("the three fields", () => {
     expect(username()).toHaveValue("anna_mus");
   });
 
-  test("the levels are those of /config, shown by name", () => {
+  test("level and programme are pickers that say what to choose", () => {
     renderWithProviders(<ProfileForm submitLabel="Create profile" />);
 
-    expect(options(level())).toEqual(["Bachelor", "Master", "Doctorate", "Other"]);
+    expect(level()).toHaveAccessibleName("Level: Choose a level");
+    expect(programme()).toHaveAccessibleName("Programme: Choose a programme");
+    expect(level()).toHaveAttribute("name", "degree_level");
+    expect(programme()).toHaveAttribute("name", "degree_programme");
+  });
+
+  test("the levels are those of /config, shown by name, under a search field", async () => {
+    const { user } = renderWithProviders(<ProfileForm submitLabel="Create profile" />);
+
+    expect(await offered(user, "Level")).toEqual(["Bachelor", "Master", "Doctorate", "Other"]);
+    expect(screen.getByRole("searchbox", { name: "Search levels" })).toBeInTheDocument();
+
+    await user.type(screen.getByRole("searchbox", { name: "Search levels" }), "law");
+
+    expect(
+      within(screen.getByRole("dialog", { name: "Level" })).getByRole("status"),
+    ).toHaveTextContent("No level matches.");
   });
 
   test("the programmes follow the chosen level, and the field is disabled until a level is chosen", async () => {
@@ -62,10 +106,34 @@ describe("the three fields", () => {
 
     expect(programme()).toBeDisabled();
 
-    await user.selectOptions(level(), "Master");
+    await choose(user, "Level", "mast", "Master");
 
     expect(programme()).toBeEnabled();
-    expect(options(programme())).toEqual(["MSc Computer Science", "MSc Data Science"]);
+    expect(await offered(user, "Programme")).toEqual(["MSc Computer Science", "MSc Data Science"]);
+    expect(screen.getByRole("searchbox", { name: "Search programmes" })).toBeInTheDocument();
+
+    await user.type(screen.getByRole("searchbox", { name: "Search programmes" }), "law");
+
+    expect(
+      within(screen.getByRole("dialog", { name: "Programme" })).getByRole("status"),
+    ).toHaveTextContent("No programme matches.");
+  });
+
+  test("typing narrows the programmes to those that hold every part of what was typed", async () => {
+    const { user } = renderWithProviders(<ProfileForm submitLabel="Create profile" />);
+    await choose(user, "Level", "bach", "Bachelor");
+
+    const sheet = await openPicker(user, "Programme");
+    await user.type(within(sheet).getByRole("searchbox"), "bsc math");
+
+    expect(within(sheet).getAllByRole("option")).toHaveLength(1);
+    expect(within(sheet).getByRole("option", { name: "BSc Mathematics" })).toBeInTheDocument();
+
+    await user.keyboard("{Enter}");
+    await closed("Programme");
+
+    expect(programme()).toHaveValue("BSc Mathematics");
+    expect(programme()).toHaveAccessibleName("Programme: BSc Mathematics");
   });
 
   test("changing the level clears the programme", async () => {
@@ -73,10 +141,48 @@ describe("the three fields", () => {
     await fillIn(user);
     expect(programme()).toHaveValue("BSc Computer Science");
 
-    await user.selectOptions(level(), "Master");
+    await choose(user, "Level", "mast", "Master");
 
     expect(programme()).toHaveValue("");
+    expect(programme()).toHaveAccessibleName("Programme: Choose a programme");
     expect(submit()).toBeDisabled();
+  });
+
+  test("choosing the level that is chosen keeps the programme", async () => {
+    const { user } = renderWithProviders(<ProfileForm submitLabel="Create profile" />);
+    await fillIn(user);
+
+    await choose(user, "Level", "bach", "Bachelor");
+
+    expect(programme()).toHaveValue("BSc Computer Science");
+    expect(submit()).toBeEnabled();
+  });
+
+  test("from 768 px the degree is chosen in place, with the keyboard alone", async () => {
+    setViewport("wide");
+    const api = mockApi({ [SAVE]: json(200, profileSaved({ username: "anna_m" })) });
+    const { user } = renderWithProviders(<ProfileForm submitLabel="Create profile" />);
+
+    await user.type(username(), "anna_m");
+    await user.tab();
+    expect(screen.getByRole("combobox", { name: "Level" })).toHaveFocus();
+    await user.keyboard("bach{Enter}");
+    expect(level()).toHaveValue("Bachelor");
+
+    await user.tab();
+    expect(screen.getByRole("combobox", { name: "Programme" })).toHaveFocus();
+    await user.keyboard("math{Enter}");
+    expect(programme()).toHaveValue("BSc Mathematics");
+
+    // The list is closed: Enter is the form's again.
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => expect(api.calls(SAVE)).toHaveLength(1));
+    expect(api.lastCall(SAVE)?.body).toEqual({
+      username: "anna_m",
+      degree_level: "BACHELOR",
+      degree_programme: "BSc Mathematics",
+    });
   });
 
   test("the button is disabled until all three are filled", async () => {
@@ -85,9 +191,9 @@ describe("the three fields", () => {
     expect(submit()).toBeDisabled();
     await user.type(username(), "anna_m");
     expect(submit()).toBeDisabled();
-    await user.selectOptions(level(), "Bachelor");
+    await choose(user, "Level", "bach", "Bachelor");
     expect(submit()).toBeDisabled();
-    await user.selectOptions(programme(), "BSc Physics");
+    await choose(user, "Programme", "phys", "BSc Physics");
     expect(submit()).toBeEnabled();
   });
 
@@ -467,7 +573,7 @@ describe("on the Profile screen", () => {
       <ProfileForm initial={profile} submitLabel="Save" requireChange onSaved={onSaved} />,
     );
 
-    await user.selectOptions(programme(), "MSc Computer Science");
+    await choose(user, "Programme", "comp", "MSc Computer Science");
     await user.click(submit("Save"));
 
     await waitFor(() => expect(onSaved).toHaveBeenCalled());

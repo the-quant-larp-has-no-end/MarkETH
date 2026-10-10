@@ -96,6 +96,36 @@ describe("an amount is a string and stays one (DESIGN.md §10, golden rule 6)", 
   });
 });
 
+describe("a buy is a number of shares, and the server judges it (DESIGN.md §12, Shares entry)", () => {
+  /** The trade controls and the ticket: where a number of shares is typed, held and sent. */
+  const entry = code.filter((source) =>
+    /^(components\/market|features\/trade)\//.test(source.path),
+  );
+
+  test("what the shares field holds is never read as a number", () => {
+    expect(entry.length).toBeGreaterThan(10);
+    check(entry, {
+      why: "The text of the shares field is compared as a string and sent as it stands: no Number(), parseInt(), unary plus or valueAsNumber. Whether that many shares can be bought is the quote's answer.",
+      pattern:
+        /\b(Number|parseInt|BigInt)\(|\bNumber\.parse(Int|Float)\b|\bvalueAsNumber\b|(^|[=(,:?&|[{])\s*\+\s*[A-Za-z_$(]/,
+    });
+  });
+
+  test("nothing is called a stake entry", () => {
+    const STAKE_ENTRY = /stake[\s_-]?entr(y|ies)/i;
+
+    check(sources, {
+      why: "A buy is sized in shares: the control is the shares entry (SharesEntry, shares-entry.tsx).",
+      pattern: STAKE_ENTRY,
+      comments: true,
+      except: ["test/design-rules.test.ts"],
+    });
+    expect(sources.map((source) => source.path).filter((path) => STAKE_ENTRY.test(path))).toEqual(
+      [],
+    );
+  });
+});
+
 describe("only tokens and listed components (DESIGN.md §1, §4, §9)", () => {
   test("no raw colour outside the token file", () => {
     check(app, {

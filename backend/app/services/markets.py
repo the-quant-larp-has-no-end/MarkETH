@@ -351,13 +351,24 @@ class MarketService:
           `MARKET_NOT_OPEN` (effective status not OPEN), `OWN_MARKET` (`created_by ==
           viewer.id`); otherwise true and null. A suspended account never gets here:
           the guards of `app/api/deps.py` refuse it.
+        * `buy = MarketView.buy_entries(<the market>, <stake left>, <balance>,
+          can_trade)`: per outcome, YES then NO, the whole shares between which a buy
+          passes right now, in steps of `TRADE_SHARE_STEP`, and one shortcut per
+          `TRADE_SHARE_PRESETS` with whether it would pass. The market maker's price
+          of each outcome decides how many shares the stake left and the balance pay
+          for, so the client prices nothing (A.11).
         * `stake_presets = MarketView.stake_presets(<stake left>, <balance>,
           can_trade)`: one per `TRADE_STAKE_PRESETS_CR`, in that order.
         * `buy_slider = MarketView.buy_slider(<stake left>, <balance>, can_trade)`:
-          the whole credits between which a buy passes right now, in steps of
-          `TRADE_STAKE_STEP_CR`; null when the viewer cannot buy anything.
-        * `sell_presets = MarketView.sell_presets(<the positions>, can_trade)`: half
-          and all of each holding, so the client halves and compares nothing (A.11).
+          the whole credits between which a buy for a budget passes right now, in
+          steps of `TRADE_STAKE_STEP_CR`; null when the viewer cannot buy anything.
+        * `sell_presets = MarketView.sell_presets(<the market>, <the positions>,
+          can_trade)`: half and all of each holding, each with what it brings in at
+          the price of this read, so the client halves, prices and compares nothing
+          (A.11).
+
+        The pricing calls of `buy` and `sell_presets` run on the rows this read
+        found: at most one budget per outcome and one sale per sell shortcut.
         * `can_settle`: `viewer.is_admin and not trades.exists_for_user_market(
           viewer.id, market_id)`. It is the rule by which
           `MarketLifecycleService.resolve` and `void` refuse an admin who traded the
@@ -477,9 +488,10 @@ class MarketService:
             refund_cr=_optional_cr(self._view.refund_micro(positions, resolution)),
             stake_limit_cr=to_cr(self._view.stake_limit_micro),
             stake_left_cr=to_cr(stake_left_micro),
+            buy=self._view.buy_entries(market, stake_left_micro, balance_micro, can_trade),
             stake_presets=self._view.stake_presets(stake_left_micro, balance_micro, can_trade),
             buy_slider=self._view.buy_slider(stake_left_micro, balance_micro, can_trade),
-            sell_presets=self._view.sell_presets(positions, can_trade),
+            sell_presets=self._view.sell_presets(market, positions, can_trade),
             can_trade=can_trade,
             cannot_trade_reason=reason,
             can_settle=can_settle,

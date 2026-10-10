@@ -74,8 +74,37 @@ const to = (measure: string) => within(row(measure)).getByLabelText("To");
 const show = () => within(sheet()).getByRole("button", { name: "Show results" });
 const clearAll = () => within(sheet()).getByRole("button", { name: "Clear all" });
 
-function options(select: HTMLElement): string[] {
-  return Array.from(select.querySelectorAll("option")).map((option) => option.textContent ?? "");
+type Picker = "Level" | "Programme";
+
+/** Opens a picker of the filter sheet as a phone does: a sheet of its own, over the filter sheet. */
+async function openPicker(user: User, picker: Picker) {
+  await user.click(within(sheet()).getByLabelText(picker));
+  return screen.findByRole("dialog", { name: picker });
+}
+
+/** What a picker offers, top to bottom. Leaves its sheet open. */
+async function offered(user: User, picker: Picker): Promise<(string | null)[]> {
+  const list = await openPicker(user, picker);
+  return within(list)
+    .getAllByRole("option")
+    .map((option) => option.textContent);
+}
+
+/** The picker's sheet is gone, and the filter sheet under it is back. */
+async function pickerClosed(picker: Picker) {
+  await waitFor(
+    () => expect(screen.queryByRole("dialog", { name: picker })).not.toBeInTheDocument(),
+    { timeout: 3000 },
+  );
+  await screen.findByRole("dialog", { name: "Filter" });
+}
+
+/** Chooses by typing: the picker's sheet, some letters in its search field, a tap on the option. */
+async function choose(user: User, picker: Picker, typed: string, option: string) {
+  const list = await openPicker(user, picker);
+  await user.type(within(list).getByRole("searchbox"), typed);
+  await user.click(within(list).getByRole("option", { name: option }));
+  await pickerClosed(picker);
 }
 
 async function openSheet(user: User) {
@@ -104,13 +133,14 @@ beforeEach(() => {
 });
 
 describe("what the sheet offers", () => {
-  test("a Level and a Programme select from /config, then one group per measure with a From and a To field", async () => {
+  test("a Level and a Programme picker from /config, then one group per measure with a From and a To field", async () => {
     boardApi();
-    await renderOpen();
+    const { user } = await renderOpen();
 
     expect(within(sheet()).getByRole("heading", { name: "Filter" })).toBeInTheDocument();
     expect(within(sheet()).getByRole("button", { name: "Close" })).toBeEnabled();
-    expect(options(level())).toEqual(["Any level", "Bachelor", "Master", "Doctorate", "Other"]);
+    expect(level()).toHaveAccessibleName("Level: Any level");
+    expect(programme()).toHaveAccessibleName("Programme: Any programme");
     expect(level()).toHaveValue("");
     expect(programme()).toHaveValue("");
 
@@ -122,6 +152,15 @@ describe("what the sheet offers", () => {
       expect(within(group).getByLabelText("From")).toHaveValue("");
       expect(within(group).getByLabelText("To")).toHaveValue("");
     }
+
+    expect(await offered(user, "Level")).toEqual([
+      "Any level",
+      "Bachelor",
+      "Master",
+      "Doctorate",
+      "Other",
+    ]);
+    expect(screen.getByRole("searchbox", { name: "Search levels" })).toBeInTheDocument();
   });
 
   test("the two fields of a group stand side by side in equal columns, aligned at their tops", async () => {
@@ -178,33 +217,55 @@ describe("what the sheet offers", () => {
     expect(to("Payout")).toHaveAttribute("name", "max_avg_payout_ratio");
   });
 
-  test("the Programme select is disabled until a level is chosen, then holds the programmes of that level", async () => {
+  test("the Programme picker is disabled until a level is chosen, then holds the programmes of that level", async () => {
     boardApi();
     const { user } = await renderOpen();
 
     expect(programme()).toBeDisabled();
 
-    await user.selectOptions(level(), "Master");
+    await choose(user, "Level", "mast", "Master");
 
+    expect(level()).toHaveAccessibleName("Level: Master");
     expect(programme()).toBeEnabled();
-    expect(options(programme())).toEqual([
+    expect(await offered(user, "Programme")).toEqual([
       "Any programme",
       "MSc Computer Science",
       "MSc Data Science",
     ]);
+    expect(screen.getByRole("searchbox", { name: "Search programmes" })).toBeInTheDocument();
+  });
+
+  test("a picker's sheet lies over the filter sheet, and closing it leaves the filter sheet open with what was typed", async () => {
+    boardApi();
+    const { user } = await renderOpen();
+    await user.type(from("Trades"), "3");
+
+    const list = await openPicker(user, "Level");
+    expect(list).toHaveAttribute("data-slot", "drawer-content");
+    await user.type(within(list).getByRole("searchbox"), "law");
+    expect(within(list).getByRole("status")).toHaveTextContent("No level matches.");
+
+    await user.click(within(list).getByRole("button", { name: "Close" }));
+    await pickerClosed("Level");
+
+    expect(level()).toHaveValue("");
+    expect(from("Trades")).toHaveValue("3");
+    await waitFor(() => expect(level()).toHaveFocus());
   });
 
   test("changing the level clears the programme; a level can be set back to any", async () => {
     boardApi();
     const { user } = await renderOpen();
-    await user.selectOptions(level(), "Master");
-    await user.selectOptions(programme(), "MSc Data Science");
+    await choose(user, "Level", "mast", "Master");
+    await choose(user, "Programme", "data", "MSc Data Science");
 
-    await user.selectOptions(level(), "Bachelor");
+    await choose(user, "Level", "bach", "Bachelor");
     expect(programme()).toHaveValue("");
-    expect(options(programme())).toContain("BSc Physics");
+    expect(await offered(user, "Programme")).toContain("BSc Physics");
+    await user.keyboard("{Escape}");
+    await pickerClosed("Programme");
 
-    await user.selectOptions(level(), "Any level");
+    await choose(user, "Level", "any", "Any level");
     expect(level()).toHaveValue("");
     expect(programme()).toBeDisabled();
   });
@@ -253,8 +314,8 @@ describe("Show results", () => {
     const api = boardApi();
     const { user } = await renderOpen();
 
-    await user.selectOptions(level(), "Master");
-    await user.selectOptions(programme(), "MSc Data Science");
+    await choose(user, "Level", "mast", "Master");
+    await choose(user, "Programme", "data", "MSc Data Science");
     await user.type(from("Tokens"), "0100.50");
     await user.type(to("Tokens"), "12345678901234567890.123456");
     await user.type(from("Win rate"), "62.5");
@@ -312,8 +373,8 @@ describe("Show results", () => {
     boardApi();
     const { user } = await renderOpen();
 
-    await user.selectOptions(level(), "Bachelor");
-    await user.selectOptions(programme(), "BSc Computer Science");
+    await choose(user, "Level", "bach", "Bachelor");
+    await choose(user, "Programme", "comp", "BSc Computer Science");
     await user.type(from("Win rate"), "50");
     await user.click(show());
 
@@ -522,8 +583,8 @@ describe("a value the API rejects", () => {
     );
     const { user } = await renderOpen();
 
-    await user.selectOptions(level(), "Master");
-    await user.selectOptions(programme(), "MSc Data Science");
+    await choose(user, "Level", "mast", "Master");
+    await choose(user, "Programme", "data", "MSc Data Science");
     await user.type(from("Tokens"), "0.1234567");
     await user.type(from("Trades"), "3");
     await user.click(show());
@@ -789,7 +850,7 @@ describe("closing and clearing", () => {
   test("turning the phone across 768 px keeps what was typed, the sheet and the focus", async () => {
     boardApi();
     const { user } = await renderOpen();
-    await user.selectOptions(level(), "Master");
+    await choose(user, "Level", "mast", "Master");
     await user.type(from("Trades"), "3");
 
     // The bottom sheet gives way to the dialog, which mounts its content afresh.
@@ -797,7 +858,8 @@ describe("closing and clearing", () => {
 
     const dialog = await screen.findByRole("dialog", { name: "Filter" });
     expect(dialog).toHaveAttribute("data-slot", "dialog-content");
-    expect(level()).toHaveValue("MASTER");
+    // From 768 px the picker is a combobox in place, which shows the chosen label.
+    expect(level()).toHaveValue("Master");
     expect(from("Trades")).toHaveValue("3");
     // The sheet is still open: the focus stays inside it and is not handed back.
     await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true));
@@ -823,4 +885,105 @@ describe("closing and clearing", () => {
       expect(screen.getByRole("button", { name: "Filter, 1 set" })).toHaveFocus(),
     );
   });
+});
+
+describe("the pickers from 768 px", () => {
+  const listed = () =>
+    within(sheet())
+      .getAllByRole("option")
+      .map((option) => option.textContent);
+
+  test("level and programme are comboboxes in the dialog, and typing chooses", async () => {
+    setViewport("wide");
+    const api = boardApi();
+    const { user } = await renderOpen();
+
+    expect(level()).toHaveRole("combobox");
+    expect(level()).toHaveValue("Any level");
+    expect(programme()).toBeDisabled();
+
+    await user.click(level());
+    expect(listed()).toEqual(["Any level", "Bachelor", "Master", "Doctorate", "Other"]);
+    await user.keyboard("mast{Enter}");
+    expect(level()).toHaveValue("Master");
+
+    await user.click(programme());
+    await user.keyboard("msc data");
+    expect(listed()).toEqual(["MSc Data Science"]);
+    await user.keyboard("{Enter}");
+    expect(programme()).toHaveValue("MSc Data Science");
+    // One dialog: the list opened in place, not in a sheet of its own.
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+
+    await user.click(show());
+    await closed();
+
+    expect(sent(api.calls(BOARD).at(-1))).toEqual({
+      sort: "credits",
+      order: "desc",
+      degree_level: "MASTER",
+      degree_programme: "MSc Data Science",
+    });
+    expect(navigation.href).toBe(
+      "/leaderboard?degree_level=MASTER&degree_programme=MSc+Data+Science",
+    );
+  });
+
+  test("Escape closes an open list and puts the label back; the dialog and what was typed stay", async () => {
+    setViewport("wide");
+    boardApi();
+    const { user } = await renderOpen();
+    await user.type(from("Trades"), "3");
+
+    await user.click(level());
+    await user.keyboard("bach");
+    expect(listed()).toEqual(["Bachelor"]);
+
+    await user.keyboard("{Escape}");
+
+    expect(within(sheet()).queryByRole("listbox")).not.toBeInTheDocument();
+    expect(level()).toHaveValue("Any level");
+    expect(from("Trades")).toHaveValue("3");
+
+    // With the list closed, Escape is the dialog's.
+    await user.keyboard("{Escape}");
+    await closed();
+  });
+
+  test("a tap beside the dialog closes an open list and leaves the dialog", async () => {
+    setViewport("wide");
+    boardApi();
+    const { user } = await renderOpen();
+
+    await user.click(level());
+    await user.keyboard("bach");
+    await user.click(document.querySelector("[data-slot=dialog-overlay]")!);
+
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(level()).toHaveValue("Any level");
+
+    await user.click(document.querySelector("[data-slot=dialog-overlay]")!);
+    await closed();
+  });
+});
+
+test("a programme the address brought that its level does not offer is shown as its own text, as chosen", async () => {
+  boardApi();
+  const { user } = await renderOpen(
+    "/leaderboard?degree_level=MASTER&degree_programme=MSc+Astrophysics",
+  );
+
+  expect(programme()).toHaveAccessibleName("Programme: MSc Astrophysics");
+  expect(programme()).toHaveValue("MSc Astrophysics");
+
+  const list = await openPicker(user, "Programme");
+  expect(
+    within(list)
+      .getAllByRole("option")
+      .map((option) => option.textContent),
+  ).toEqual(["Any programme", "MSc Astrophysics", "MSc Computer Science", "MSc Data Science"]);
+  expect(within(list).getByRole("option", { name: "MSc Astrophysics" })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
 });

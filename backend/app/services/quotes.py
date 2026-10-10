@@ -9,6 +9,11 @@ The rules a trade is held to before it writes anything live here, once:
 * `price`: the LMSR figures of a size on a market row, and the smallest size;
 * `check_buy`: the stake limit and the balance of a buyer.
 
+Each refusal of the last two says its figures in a sentence for the screen: the
+smallest size of the mode, what the buy costs, what the stake limit leaves and what
+the account holds (`too_small_message`, `stake_limit_message`,
+`insufficient_balance_message`).
+
 `quote` applies them to the rows as they stand, without a lock. `TradingService`
 applies the same three to the rows it holds locked, with the slippage guard between
 the last two, so a trade is priced and judged exactly the way its quote was.
@@ -33,7 +38,7 @@ from app.core.errors import (
     TradeTooSmallError,
 )
 from app.core.identity import AuthenticatedUser
-from app.core.units import to_cr, to_micro
+from app.core.units import format_shares, format_tokens, to_cr, to_micro
 from app.models.market import Market
 from app.models.trading import Position
 from app.pricing import lmsr
@@ -47,6 +52,31 @@ OWN_MARKET_MESSAGE: Final[str] = "You proposed this market, so you cannot trade 
 """Message of the `ForbiddenError` a trade by the market's proposer gets, and a quote
 for one (A.4). `MarketViewer.cannot_trade_reason` says `OWN_MARKET` to that user
 beforehand."""
+
+
+def too_small_message(smallest: str) -> str:
+    """Message of the `TradeTooSmallError` of a size below the smallest of its mode.
+    `smallest` is that size as a sentence says it: `format_shares(MIN_TRADE_SHARES)`
+    for a size in shares, `format_tokens(MIN_TRADE_CR)` for a budget."""
+    return f"The smallest trade is {smallest}."
+
+
+def stake_limit_message(cost_micro: int, stake_left_micro: int, stake_limit_micro: int) -> str:
+    """Message of the `LimitExceededError` of a buy whose cost takes the net stake
+    above `MAX_STAKE_PER_USER_MARKET`: the cost and what may still be put in, or the
+    limit itself where nothing is left."""
+    if stake_left_micro == 0:
+        return f"You have reached the limit of {format_tokens(stake_limit_micro)} in this market."
+    return (
+        f"This costs {format_tokens(cost_micro)}. "
+        f"You can still put {format_tokens(stake_left_micro)} into this market."
+    )
+
+
+def insufficient_balance_message(cost_micro: int, balance_micro: int) -> str:
+    """Message of the `InsufficientBalanceError` of a buy that costs more than the
+    account holds."""
+    return f"This costs {format_tokens(cost_micro)}. You have {format_tokens(balance_micro)}."
 
 
 class QuoteService:
@@ -156,16 +186,17 @@ class QuoteService:
         `balance_micro` is what their account holds.
 
         * `Σ cost - Σ proceeds + quote.amount_micro > MarketView.stake_limit_micro`:
-          `LimitExceededError` (409) with `details={"limit":
-          Limit.MAX_STAKE_PER_USER_MARKET, "stake_limit_cr": to_cr(...),
-          "stake_left_cr": to_cr(...)}`, the stake left being the one before this
-          trade, `MarketView.stake_left_micro(MarketView.net_stake_micro(...))`. That
-          figure is never more than this check allows, so a buy for a stake preset
-          the market's detail marked allowed passes it, and so does a buy for any
-          position of its `buy_slider`.
+          `LimitExceededError` (409) with `stake_limit_message(...)` and
+          `details={"limit": Limit.MAX_STAKE_PER_USER_MARKET, "stake_limit_cr":
+          to_cr(...), "stake_left_cr": to_cr(...), "required_cr": to_cr(...)}`:
+          `required_cr` is the cost of this buy, and the stake left is the one before
+          it, `MarketView.stake_left_micro(MarketView.net_stake_micro(...))`. That
+          figure is never more than this check allows, so a buy whose cost it covers
+          passes: every size `MarketView.buy_entries` offers, and a buy for a stake
+          preset or a position of the `buy_slider` the market's detail marked allowed.
         * `balance_micro < quote.amount_micro`: `InsufficientBalanceError` (409) with
-          `details={"balance_cr": to_cr(...), "required_cr": to_cr(...)}`, the keys
-          `LedgerService` uses.
+          `insufficient_balance_message(...)` and `details={"balance_cr": to_cr(...),
+          "required_cr": to_cr(...)}`, the keys `LedgerService` uses.
 
         Sells are never limited. "The market's limits" of SPEC §8 are not checked
         here: the LMSR bounds what a market can lose, and the circuit breaker
@@ -177,18 +208,21 @@ class QuoteService:
         if cost_micro - proceeds_micro + quote.amount_micro > stake_limit_micro:
             stake_left_micro = self._view.stake_left_micro(self._view.net_stake_micro(positions))
             raise LimitExceededError(
+                stake_limit_message(quote.amount_micro, stake_left_micro, stake_limit_micro),
                 details={
                     "limit": Limit.MAX_STAKE_PER_USER_MARKET,
                     "stake_limit_cr": to_cr(stake_limit_micro),
                     "stake_left_cr": to_cr(stake_left_micro),
-                }
+                    "required_cr": to_cr(quote.amount_micro),
+                },
             )
         if balance_micro < quote.amount_micro:
             raise InsufficientBalanceError(
+                insufficient_balance_message(quote.amount_micro, balance_micro),
                 details={
                     "balance_cr": to_cr(balance_micro),
                     "required_cr": to_cr(quote.amount_micro),
-                }
+                },
             )
 
     def price(self, market: Market, size: TradeSize) -> TradeQuote:
@@ -198,13 +232,14 @@ class QuoteService:
         gets `precision=PRICING_DECIMAL_PRECISION`. `size` has passed the request
         model, so exactly one of `amount_cr` and `shares` is set and a sell has shares.
 
-        * BUY with `amount_cr`: below `MIN_TRADE_CR` raises `TradeTooSmallError` (422).
+        * BUY with `amount_cr`: below `MIN_TRADE_CR` raises `TradeTooSmallError` (422)
+          that names it in tokens, "The smallest trade is 1 token."
           `quote_buy_for_budget(state, outcome, to_micro(amount_cr))`. The quote costs
           exactly the budget and holds at least as many µshares as the budget has µCR
           (A.9), so there is no zero-share quote to reject and no branch for one.
-        * BUY with `shares`: below `MIN_TRADE_SHARES` raises `TradeTooSmallError`.
-          `quote_buy_shares(...)`.
-        * SELL with `shares`: below `MIN_TRADE_SHARES` raises `TradeTooSmallError`.
+        * BUY with `shares`: below `MIN_TRADE_SHARES` raises `TradeTooSmallError` that
+          names it in shares, "The smallest trade is 1 share." `quote_buy_shares(...)`.
+        * SELL with `shares`: below `MIN_TRADE_SHARES` raises the same error.
           More than the market has sold of that outcome (`q_yes_micro` or
           `q_no_micro`) raises `InsufficientSharesError` (409): nobody can hold them,
           and lmsr must not see a negative quantity. `quote_sell_shares(...)`. Its
@@ -224,14 +259,18 @@ class QuoteService:
         if size.amount_cr is not None:
             budget_micro = to_micro(size.amount_cr)
             if budget_micro < self._pricing.min_trade_micro:
-                raise TradeTooSmallError
+                raise TradeTooSmallError(
+                    too_small_message(format_tokens(self._pricing.min_trade_micro))
+                )
             return lmsr.quote_buy_for_budget(state, size.outcome, budget_micro, precision=precision)
 
         if size.shares is None:
             raise ValueError("a trade is sized by amount_cr or by shares; this one by neither")
         shares_micro = to_micro(size.shares)
         if shares_micro < self._pricing.min_trade_shares_micro:
-            raise TradeTooSmallError
+            raise TradeTooSmallError(
+                too_small_message(format_shares(self._pricing.min_trade_shares_micro))
+            )
         if size.side is TradeSide.BUY:
             return lmsr.quote_buy_shares(state, size.outcome, shares_micro, precision=precision)
 
@@ -244,10 +283,12 @@ class QuoteService:
         """A `TradeQuote` as the API shows it. No I/O.
 
         `shares` and `amount_cr` through `to_cr`; `average_price =
-        MarketView.average_price(amount_micro, shares_micro)`; the four probabilities
-        from `MarketView.probabilities` of `p_yes_before_micro` and
-        `p_yes_after_micro`; `quote_version = market.version`, read before the trade
-        changes it. `details.quote` of `QUOTE_STALE` is this, `model_dump(mode="json")`.
+        MarketView.average_price(amount_micro, shares_micro)`; `payout_cr` is the shares
+        counted in credits, because a share pays 1 CR if its outcome comes true, for a
+        buy and for a sell; the four probabilities from `MarketView.probabilities` of
+        `p_yes_before_micro` and `p_yes_after_micro`; `quote_version = market.version`,
+        read before the trade changes it. `details.quote` of `QUOTE_STALE` is this,
+        `model_dump(mode="json")`.
         """
         p_yes_before, p_no_before = self._view.probabilities(quote.p_yes_before_micro)
         p_yes_after, p_no_after = self._view.probabilities(quote.p_yes_after_micro)
@@ -258,6 +299,7 @@ class QuoteService:
             shares=to_cr(quote.shares_micro),
             amount_cr=to_cr(quote.amount_micro),
             average_price=self._view.average_price(quote.amount_micro, quote.shares_micro),
+            payout_cr=to_cr(quote.shares_micro),
             p_yes_before=p_yes_before,
             p_no_before=p_no_before,
             p_yes_after=p_yes_after,

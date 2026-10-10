@@ -19,6 +19,7 @@ from app.api.access import describe_access
 from app.api.errors import install_error_handlers
 from app.api.middleware import OriginCheckMiddleware
 from app.api.router import API_PREFIX, api_router
+from app.api.routes.live import EVENT_STREAM_MEDIA_TYPE, STREAM_PATH
 from app.container import Container
 from app.core.config import get_settings
 from app.core.logging import configure_logging
@@ -39,12 +40,27 @@ API_DESCRIPTION: Final[str] = (
 
 
 class _Api(FastAPI):
-    """FastAPI whose OpenAPI document also says who may call what (Appendix A.2)."""
+    """FastAPI whose OpenAPI document also says who may call what (Appendix A.2), and
+    whose event stream is documented as its events and nothing beside them."""
 
     def openapi(self) -> dict[str, Any]:
         document = super().openapi()
         describe_access(document)
+        _document_the_stream_as_its_events(document)
         return document
+
+
+def _document_the_stream_as_its_events(document: dict[str, Any]) -> None:
+    """Take the `type: string` out of the 200 schema of the event stream.
+
+    The framework writes it for every answer that is no JSON. Beside the union of
+    the event models it would say that the body of an event is a string and one
+    of the models at once; the union alone says what `data:` holds.
+    """
+    operation = document.get("paths", {}).get(f"{API_PREFIX}{STREAM_PATH}", {}).get("get")
+    if operation is not None:
+        events = operation["responses"]["200"]["content"][EVENT_STREAM_MEDIA_TYPE]
+        events["schema"].pop("type", None)
 
 
 def create_app(container: Container | None = None) -> FastAPI:

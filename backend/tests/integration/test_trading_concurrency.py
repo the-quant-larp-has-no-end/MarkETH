@@ -64,6 +64,9 @@ MIN_TRADE_AMOUNT: Final[int] = _SETTINGS.pricing.min_trade_micro
 SMALLEST_PRESET: Final[int] = min(_SETTINGS.pricing.stake_presets_micro)
 """The smallest buy button of the trade sheet (TRADE_STAKE_PRESETS_CR), in µCR."""
 
+SHORTCUT: Final[int] = min(_SETTINGS.pricing.share_presets_micro)
+"""The smallest shortcut of a buy on the trade sheet (TRADE_SHARE_PRESETS), in µshares."""
+
 MAX_ORDERS: Final[int] = _SETTINGS.risk.max_orders_per_minute
 """MAX_ORDERS_PER_MINUTE: trade requests one user may send per minute."""
 
@@ -88,6 +91,10 @@ Postgres itself breaks a deadlock after a second, by failing one of the two."""
 
 def buy(outcome: Outcome, amount_micro: int) -> TradeRequest:
     return TradeRequest(side=TradeSide.BUY, outcome=outcome, amount_cr=to_cr(amount_micro))
+
+
+def buy_shares(outcome: Outcome, shares_micro: int) -> TradeRequest:
+    return TradeRequest(side=TradeSide.BUY, outcome=outcome, shares=to_cr(shares_micro))
 
 
 def sell(outcome: Outcome, shares_micro: int) -> TradeRequest:
@@ -193,7 +200,8 @@ async def assert_the_breaker_tripped_for_nobody(container: Container) -> None:
 async def test_fifty_parallel_trades_on_one_market_end_consistent(
     container: Container, factory: Factory
 ) -> None:
-    """Fifty traders at once, buying YES, buying NO and selling YES. Every trade stands
+    """Fifty traders at once: buying YES for an amount, buying NO in shares as the
+    trade sheet does, and selling YES. Every trade stands
     exactly once, each was priced on what the one before it left, and nobody paid or
     received anything but the amount of their own trade."""
     view = container.market_view
@@ -205,7 +213,9 @@ async def test_fifty_parallel_trades_on_one_market_end_consistent(
         half = next(
             preset
             for preset in view.sell_presets(
-                await positions_of(container, seller, market), can_trade=True
+                await stored(container, market),
+                await positions_of(container, seller, market),
+                can_trade=True,
             )
             if (preset.outcome, preset.portion) == (Outcome.YES, SellPortion.HALF)
         )
@@ -216,8 +226,14 @@ async def test_fifty_parallel_trades_on_one_market_end_consistent(
     for outcome in Outcome:
         for _ in range(BUYERS_OF_EACH_OUTCOME):
             buyer = await factory.user(balance_micro=SMALLEST_PRESET)
-            plan.append((buyer, buy(outcome, SMALLEST_PRESET)))
+            sized = (
+                buy(outcome, SMALLEST_PRESET)
+                if outcome is Outcome.YES
+                else buy_shares(outcome, SHORTCUT)
+            )
+            plan.append((buyer, sized))
     assert len(plan) == PARALLEL_TRADES
+    assert SHORTCUT <= SMALLEST_PRESET, "a share costs less than a credit: the balance pays"
     before = await stored(container, market)
     balances = {user.id: await factory.balance_micro(user) for user, _ in plan}
     in_the_market = await market_balance(container, market)
@@ -264,14 +280,17 @@ async def test_fifty_parallel_trades_on_one_market_end_consistent(
 async def test_one_idempotency_key_sent_ten_times_at_once_gives_one_trade(
     client: httpx.AsyncClient, container: Container, factory: Factory, as_user: ActAs
 ) -> None:
-    """Through the route, as ten taps on Confirm. Each of the ten counts against the
-    rate limit, so the limit has to allow that many."""
+    """Through the route, as ten taps on Confirm of a buy of a shortcut's shares. Each
+    of the ten counts against the rate limit, so the limit has to allow that many."""
     assert MAX_ORDERS >= SAME_KEY_REQUESTS
     market = await factory.market()
     trader = await factory.user(balance_micro=SIGNUP_GRANT)
     as_user(trader)
     key = uuid7()
-    body = {"side": "BUY", "outcome": "YES", "amount_cr": format_cr(STAKE_LIMIT)}
+    body = {"side": "BUY", "outcome": "YES", "shares": format_cr(SHORTCUT)}
+    cost = lmsr.quote_buy_shares(
+        state_of(market), Outcome.YES, SHORTCUT, precision=PRECISION
+    ).amount_micro
 
     responses = await at_once(
         *(
@@ -286,10 +305,11 @@ async def test_one_idempotency_key_sent_ten_times_at_once_gives_one_trade(
     first = responses[0].json()
     assert all(response.json() == first for response in responses)
     (made,) = await trades_of(container, market)
-    assert (str(made.id), made.user_id, made.amount_micro) == (
+    assert (str(made.id), made.user_id, made.shares_micro, made.amount_micro) == (
         first["trade_id"],
         trader.id,
-        STAKE_LIMIT,
+        SHORTCUT,
+        cost,
     )
     bought = [
         entry
@@ -300,7 +320,7 @@ async def test_one_idempotency_key_sent_ten_times_at_once_gives_one_trade(
     assert await count_rows(container.uow_factory, OutboxEvent) == 1
     assert await count_rows(container.uow_factory, IdempotencyKey) == 1
     assert (await stored(container, market)).version == 1
-    assert await factory.balance_micro(trader) == SIGNUP_GRANT - STAKE_LIMIT
+    assert await factory.balance_micro(trader) == SIGNUP_GRANT - cost
     await assert_the_breaker_tripped_for_nobody(container)
     await assert_books_balance(container.uow_factory)
 

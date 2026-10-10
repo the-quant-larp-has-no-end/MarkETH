@@ -17,6 +17,15 @@ function Drawer({ ...props }: React.ComponentProps<typeof DrawerPrimitive.Root>)
   return <DrawerPrimitive.Root data-slot="drawer" {...props} />;
 }
 
+/**
+ * A bottom sheet that opens from inside another bottom sheet: the one under it steps
+ * back while this one is up, and stays open when this one closes. It stands inside the
+ * content of a `Drawer` and nowhere else.
+ */
+function DrawerNested({ ...props }: React.ComponentProps<typeof DrawerPrimitive.NestedRoot>) {
+  return <DrawerPrimitive.NestedRoot data-slot="drawer" {...props} />;
+}
+
 function DrawerTrigger({ ...props }: React.ComponentProps<typeof DrawerPrimitive.Trigger>) {
   return <DrawerPrimitive.Trigger data-slot="drawer-trigger" {...props} />;
 }
@@ -119,6 +128,7 @@ export {
   DrawerDescription,
   DrawerFooter,
   DrawerHeader,
+  DrawerNested,
   DrawerOverlay,
   DrawerPortal,
   DrawerTitle,

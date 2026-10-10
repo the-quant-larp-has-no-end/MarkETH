@@ -109,7 +109,12 @@ class QuoteResponse(ResponseModel):
     proceeds of a sell can be 0 when the shares are all but worthless."""
 
     average_price: Probability
-    """`amount_cr / shares`: credits per share, rounded like a probability."""
+    """`amount_cr / shares`: the price per share of this trade in credits, rounded like
+    a probability."""
+
+    payout_cr: CreditAmount
+    """What the shares of this trade pay if `outcome` comes true: 1 CR per share. For
+    a sell it is what the seller gives up."""
 
     p_yes_before: Probability
     p_no_before: Probability

@@ -11,13 +11,18 @@ all show markets. The rules they must agree on live here, once:
   valued, what a user's net stake in a market is and how much of the stake limit it
   leaves, what a settled market paid or gave back, what voiding a market would cost
   VIS;
-* which buy buttons of the trade sheet would be accepted, between which amounts the
-  slider of a buy runs, and how many shares its sell buttons stand for.
+* what a viewer can buy of each outcome on the trade sheet, in shares: where the
+  slider of a buy runs and which of its shortcuts would be accepted, at the market
+  maker's prices; and how many shares each sell shortcut stands for and what it
+  brings in;
+* which buy buttons for a budget would be accepted, and between which amounts the
+  slider of a buy for a budget runs.
 
 `MarketView` reads rows and settings and computes; it does no I/O. The frontend
 computes nothing (golden rule 6), so every price it shows went through this class.
 """
 
+import logging
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal
@@ -31,6 +36,8 @@ from app.models.market import Market, Resolution
 from app.models.trading import Position
 from app.pricing import lmsr
 from app.schemas.markets import (
+    BuyEntry,
+    BuyPreset,
     BuySlider,
     Holding,
     MarketSummary,
@@ -38,6 +45,8 @@ from app.schemas.markets import (
     SellPreset,
     StakePreset,
 )
+
+logger = logging.getLogger(__name__)
 
 EVEN_ODDS_MICRO: Final[int] = MICRO // 2
 """The price of a market that was never opened: it has no b yet, so no LMSR price."""
@@ -80,6 +89,8 @@ class MarketView:
         self._stake_limit_micro = settings.pricing.max_stake_per_user_market_micro
         self._stake_presets_micro = tuple(settings.pricing.stake_presets_micro)
         self._stake_step_micro = settings.pricing.stake_step_micro
+        self._share_presets_micro = tuple(settings.pricing.share_presets_micro)
+        self._share_step_micro = settings.pricing.share_step_micro
         self._min_trade_micro = settings.pricing.min_trade_micro
         self._min_trade_shares_micro = settings.pricing.min_trade_shares_micro
 
@@ -134,8 +145,7 @@ class MarketView:
         """The exact YES price in millionths, from the row's q and b."""
         if market.b_micro == 0:
             return EVEN_ODDS_MICRO
-        state = lmsr.MarketState(q_yes=market.q_yes_micro, q_no=market.q_no_micro, b=market.b_micro)
-        return lmsr.price_yes_micro(state, precision=self._precision)
+        return lmsr.price_yes_micro(_state(market), precision=self._precision)
 
     def probabilities(self, p_yes_micro: int) -> tuple[float, float]:
         """`(p_yes, p_no)` for display: YES rounded, NO its complement (A.2)."""
@@ -239,6 +249,94 @@ class MarketView:
             min=smallest_micro // MICRO, max=largest_micro // MICRO, step=step_micro // MICRO
         )
 
+    def most_shares_micro(self, market: Market, outcome: Outcome, budget_micro: int) -> int:
+        """The most µshares of `outcome` whose cost, rounded up, is at most
+        `budget_micro`: `lmsr.quote_buy_for_budget(state, outcome,
+        budget_micro).shares_micro`. 0 for a budget of nothing. The market has a b above
+        zero: the caller asks for a market that trades."""
+        if budget_micro <= 0:
+            return 0
+        quote = lmsr.quote_buy_for_budget(
+            _state(market), outcome, budget_micro, precision=self._precision
+        )
+        return quote.shares_micro
+
+    def buy_entries(
+        self, market: Market, stake_left_micro: int, balance_micro: int, can_trade: bool
+    ) -> list[BuyEntry]:
+        """What the viewer can buy of each outcome, YES then NO (A.11).
+
+        The budget is `min(stake_left_micro, balance_micro)`. Per outcome, `most` is 0
+        when `can_trade` is false or the budget is 0, and else
+        `most_shares_micro(market, outcome, budget)`. A viewer who may not trade or has
+        no budget causes no call of the pricing module, so a market without a b (a
+        proposal) is never handed to it; one read prices one budget per outcome and no
+        size of its own.
+
+        The slider: `step` is `TRADE_SHARE_STEP`; `min` is the smallest multiple of the
+        step, above zero, that is at least `MIN_TRADE_SHARES`; `max` is the largest
+        multiple of the step that is at most `most`; there is none when `max` would lie
+        below `min`. A shortcut, one per `TRADE_SHARE_PRESETS` in that order, is allowed
+        when `MIN_TRADE_SHARES <= shares <= most`.
+
+        A buy of at most `most` µshares costs at most the budget, because the cost
+        grows with the size and is rounded up either way. The budget is at most the
+        stake left and at most the balance, which is all `QuoteService.check_buy` asks
+        of a buy. So whatever an entry offers, the quote and the trade grant on the
+        same rows.
+
+        A budget quote whose rounding guard fails (`AssertionError` of the pricing
+        module) is no range for that outcome: no slider, no shortcut allowed, and one
+        error line in the log. The page of the market is read all the same, and the
+        quote and the trade of that budget keep failing loudly.
+        """
+        budget_micro = min(stake_left_micro, balance_micro)
+        step_micro = self._share_step_micro
+        steps_to_the_smallest_trade = -(-self._min_trade_shares_micro // step_micro)
+        smallest_micro = max(1, steps_to_the_smallest_trade) * step_micro
+        entries: list[BuyEntry] = []
+        for outcome in (Outcome.YES, Outcome.NO):
+            most_micro = self._most_or_none(market, outcome, budget_micro) if can_trade else 0
+            largest_micro = most_micro // step_micro * step_micro
+            slider = (
+                None
+                if largest_micro < smallest_micro
+                else BuySlider(
+                    min=smallest_micro // MICRO,
+                    max=largest_micro // MICRO,
+                    step=step_micro // MICRO,
+                )
+            )
+            presets = [
+                BuyPreset(
+                    shares=to_cr(shares_micro),
+                    allowed=self._min_trade_shares_micro <= shares_micro <= most_micro,
+                )
+                for shares_micro in self._share_presets_micro
+            ]
+            entries.append(BuyEntry(outcome=outcome, slider=slider, presets=presets))
+        return entries
+
+    def _most_or_none(self, market: Market, outcome: Outcome, budget_micro: int) -> int:
+        """`most_shares_micro`, and 0 with one error line in the log where the budget
+        quote fails its rounding guard: the read of a market answers without a range
+        for that outcome and does not fail."""
+        try:
+            return self.most_shares_micro(market, outcome, budget_micro)
+        except AssertionError as failure:
+            logger.error(
+                "No buy range of %s in market %s: the quote of a budget of %s µCR "
+                "failed at q_yes=%s q_no=%s b=%s (%s)",
+                outcome.value,
+                market.id,
+                budget_micro,
+                market.q_yes_micro,
+                market.q_no_micro,
+                market.b_micro,
+                failure,
+            )
+            return 0
+
     def payout_micro(
         self, positions: Sequence[Position], resolution: Resolution | None
     ) -> int | None:
@@ -328,14 +426,27 @@ class MarketView:
             )
         return holdings
 
-    def sell_presets(self, positions: Sequence[Position], can_trade: bool) -> list[SellPreset]:
-        """The sell buttons of the trade sheet: half and all of each holding (A.11).
+    def sell_presets(
+        self, market: Market, positions: Sequence[Position], can_trade: bool
+    ) -> list[SellPreset]:
+        """The sell shortcuts of the trade sheet: half and all of each holding, with
+        what each brings in (A.11).
 
         Always four entries, YES then NO, HALF then ALL. Half is rounded down to a whole
-        micro-share, so selling HALF and then ALL sells everything. A preset is allowed
-        when the viewer may trade (`can_trade`, as for the stake presets) and its size
-        is at least `MIN_TRADE_SHARES`; an outcome nobody holds gives two presets of
+        micro-share, so selling HALF and then ALL sells everything. A shortcut is
+        allowed when the viewer may trade (`can_trade`) and its size is above zero and
+        at least `MIN_TRADE_SHARES`; an outcome nobody holds gives two shortcuts of
         zero shares that are not allowed.
+
+        `proceeds_cr` is `lmsr.quote_sell_shares(state, outcome, size).amount_micro`
+        when the viewer may trade and the size is above zero, and 0 otherwise: the
+        `amount_cr` a quote of that sale gives on the same rows. A shortcut below the
+        smallest trade is not allowed and still says what it is worth. One read prices
+        each shortcut at most once, and nothing for a viewer who may not trade, so a
+        market without a b is never handed to the pricing module.
+
+        A holding larger than the market has sold of that outcome is a broken
+        database: `ValueError`, before the pricing module sees a negative quantity.
         """
         shares_by_outcome = {position.outcome: position.shares_micro for position in positions}
         presets: list[SellPreset] = []
@@ -343,14 +454,41 @@ class MarketView:
             held_micro = shares_by_outcome.get(outcome, 0)
             for portion in (SellPortion.HALF, SellPortion.ALL):
                 size_micro = held_micro // 2 if portion is SellPortion.HALF else held_micro
+                proceeds_micro = (
+                    self._sale_proceeds_micro(market, outcome, held_micro, size_micro)
+                    if can_trade and size_micro > 0
+                    else 0
+                )
                 presets.append(
                     SellPreset(
                         outcome=outcome,
                         portion=portion,
                         shares=to_cr(size_micro),
+                        proceeds_cr=to_cr(proceeds_micro),
                         allowed=can_trade
                         and size_micro > 0
                         and size_micro >= self._min_trade_shares_micro,
                     )
                 )
         return presets
+
+    def _sale_proceeds_micro(
+        self, market: Market, outcome: Outcome, held_micro: int, size_micro: int
+    ) -> int:
+        """What selling `size_micro` of a holding of `held_micro` µshares of `outcome`
+        brings in, rounded down."""
+        sold_micro = market.q_yes_micro if outcome is Outcome.YES else market.q_no_micro
+        if held_micro > sold_micro:
+            raise ValueError(
+                f"a holding of {held_micro} µshares of {outcome.value} in market {market.id}, "
+                f"which has sold {sold_micro}"
+            )
+        quote = lmsr.quote_sell_shares(
+            _state(market), outcome, size_micro, precision=self._precision
+        )
+        return quote.amount_micro
+
+
+def _state(market: Market) -> lmsr.MarketState:
+    """The quantities of a market row as the pricing module takes them."""
+    return lmsr.MarketState(q_yes=market.q_yes_micro, q_no=market.q_no_micro, b=market.b_micro)

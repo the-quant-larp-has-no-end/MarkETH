@@ -719,10 +719,12 @@ async def test_the_trades_of_every_demo_market_were_priced_one_after_another(
     await assert_books_balance(container.uow_factory)
 
 
-async def test_the_buys_cost_what_their_buttons_say_and_the_sale_returns_the_shares_of_its_buy(
+async def test_the_buys_are_the_shares_of_their_shortcuts_and_the_sale_returns_those_of_its_buy(
     seeded: str, container: Container
 ) -> None:
-    presets = container.settings.pricing.stake_presets_micro
+    """A buy of the demo is a shortcut of the trade sheet: a number of shares, which
+    cost less than as many credits."""
+    shortcuts = container.settings.pricing.share_presets_micro
     sales = 0
     for plan in OPENED:
         market = await market_of(container, plan)
@@ -731,7 +733,8 @@ async def test_the_buys_cost_what_their_buttons_say_and_the_sale_returns_the_sha
         for trade, step in zip(trades, plan.trades, strict=True):
             if isinstance(step, Buy):
                 assert trade.outcome is step.outcome
-                assert trade.amount_micro == presets[step.preset]
+                assert trade.shares_micro == shortcuts[step.preset]
+                assert 0 < trade.amount_micro < trade.shares_micro
             else:
                 assert isinstance(step, SellBack)
                 bought = trades[step.bought_in]

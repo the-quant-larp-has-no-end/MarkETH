@@ -43,6 +43,7 @@ from app.services.grants import GrantService
 from app.services.health import HealthService
 from app.services.history import HistoryService
 from app.services.leaderboard import LeaderboardService
+from app.services.live_hub import LiveHub
 from app.services.live_quotes import LiveQuoteService
 from app.services.market_lifecycle import MarketLifecycleService
 from app.services.markets import MarketService
@@ -103,6 +104,10 @@ def _history(container: ContainerDep) -> HistoryService:
     return container.history
 
 
+def _live_hub(container: ContainerDep) -> LiveHub:
+    return container.live
+
+
 def _live_quotes(container: ContainerDep) -> LiveQuoteService:
     return container.live_quotes
 
@@ -145,6 +150,7 @@ MarketLifecycleServiceDep = Annotated[MarketLifecycleService, Depends(_market_li
 QuoteServiceDep = Annotated[QuoteService, Depends(_quotes)]
 TradingServiceDep = Annotated[TradingService, Depends(_trading)]
 HistoryServiceDep = Annotated[HistoryService, Depends(_history)]
+LiveHubDep = Annotated[LiveHub, Depends(_live_hub)]
 LiveQuoteServiceDep = Annotated[LiveQuoteService, Depends(_live_quotes)]
 CodeServiceDep = Annotated[CodeService, Depends(_codes)]
 VoucherServiceDep = Annotated[VoucherService, Depends(_vouchers)]

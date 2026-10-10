@@ -112,6 +112,20 @@ class Portal:
             key=uuid7(),
         )
 
+    async def buy_shares(
+        self, who: User, market_id: UUID, outcome: str, shares_micro: int
+    ) -> TradeResponse:
+        """A buy as the trade sheet sends it: a number of shares."""
+        return await self.ok(
+            who,
+            "POST",
+            f"/markets/{market_id}/trades",
+            TradeResponse,
+            {"side": "BUY", "outcome": outcome, "shares": format_cr(shares_micro)},
+            status_code=201,
+            key=uuid7(),
+        )
+
 
 @pytest.fixture
 def portal(client: httpx.AsyncClient, portal_headers: PortalHeaders) -> Portal:
@@ -172,8 +186,10 @@ async def test_without_redis_a_market_goes_from_its_proposal_to_its_payout(
     clock.advance(MINUTE)
     first = await portal.buy(alice, market_id, "YES", 50 * MICRO)
     clock.advance(MINUTE)
-    await portal.buy(bob, market_id, "NO", 25 * MICRO)
+    in_shares = await portal.buy_shares(bob, market_id, "NO", 50 * MICRO)
+    assert (in_shares.shares, in_shares.amount_cr < in_shares.shares) == (to_cr(50 * MICRO), True)
     page = await portal.ok(alice, "GET", market, MarketDetailResponse)
+    assert [entry.slider is not None for entry in page.viewer.buy] == [True, True]
     (half,) = [
         preset
         for preset in page.viewer.sell_presets

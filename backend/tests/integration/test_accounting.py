@@ -1068,6 +1068,7 @@ async def test_a_trader_at_the_stake_limit_is_offered_no_buy_and_refused_one(
         "limit": Limit.MAX_STAKE_PER_USER_MARKET,
         "stake_limit_cr": format_cr(to_micro(page.viewer.stake_limit_cr)),
         "stake_left_cr": "0",
+        "required_cr": format_cr(to_micro(cheapest.amount_cr)),
     }
     assert await written(container) == before
     await assert_books_balance(container.uow_factory)

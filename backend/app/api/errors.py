@@ -11,10 +11,15 @@ Postgres or the pool could not let through for a moment takes the same road and 
 too: a lock that was not granted within `POSTGRES_LOCK_TIMEOUT_MS`, a transaction ended
 as the victim of a deadlock or for a concurrent update, and a pool with no free
 connection for `POSTGRES_POOL_TIMEOUT_SECONDS`.
+
+A request that does not match its schema is answered 422 with one entry per field, and
+with `MAX_ERRORS_LISTED` entries at most: a body of thousands of fields nobody asked for
+costs one short answer. A body the framework could not even decode is answered the same
+way, as a body that is no JSON, and never in the framework's own words.
 """
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
 from fastapi import FastAPI, Request
@@ -25,15 +30,23 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api.validation import sentence_of
 from app.core.errors import AppError, ErrorCode, ServiceUnavailableError
 from app.db import database
-from app.schemas.common import ErrorResponse
+from app.schemas.common import MAX_ERRORS_LISTED, ErrorResponse
 
 logger = logging.getLogger(__name__)
 
 VALIDATION_MESSAGE: Final[str] = "The request is not valid."
 INTERNAL_MESSAGE: Final[str] = "Something went wrong."
 
+UNDECODABLE_BODY_STATUS: Final[int] = 400
+"""The status with which the framework refuses a body it could not decode: a byte that
+is no UTF-8, a number too long to read. It raises nothing else with this status, and
+what a service refuses with 400 is an `AppError`."""
+
+_NOT_JSON: Final[Mapping[str, Any]] = {"type": "json_invalid", "loc": ("body",)}
+"""A body that is no JSON, as the framework reports one it could parse far enough to
+say so. A body it could not decode is reported to the client in the same way."""
+
 _HTTP_STATUS_CODES: Final[Mapping[int, ErrorCode]] = {
-    400: ErrorCode.VALIDATION_ERROR,
     401: ErrorCode.UNAUTHENTICATED,
     403: ErrorCode.FORBIDDEN,
     404: ErrorCode.NOT_FOUND,
@@ -82,18 +95,28 @@ async def _validation_error(request: Request, exc: Exception) -> JSONResponse:
     `msg` is a sentence for the person who filled the field in, never the framework's
     wording (`app/api/validation.py`); `loc` and `type` are the framework's. The
     rejected input is not echoed back, and neither is anything pydantic attaches that
-    might not be JSON.
+    might not be JSON. The first `MAX_ERRORS_LISTED` errors are listed and no more.
     """
     assert isinstance(exc, RequestValidationError)
-    errors = [
+    return _refused(exc.errors()[:MAX_ERRORS_LISTED])
+
+
+def _refused(errors: Sequence[Mapping[str, Any]]) -> JSONResponse:
+    """The 422 of a request that does not match its schema, from the errors as the
+    framework reports them."""
+    listed = [
         {"loc": list(error["loc"]), "msg": sentence_of(error), "type": error["type"]}
-        for error in exc.errors()
+        for error in errors
     ]
-    return error_response(422, ErrorCode.VALIDATION_ERROR, VALIDATION_MESSAGE, {"errors": errors})
+    return error_response(422, ErrorCode.VALIDATION_ERROR, VALIDATION_MESSAGE, {"errors": listed})
 
 
 async def _http_error(request: Request, exc: Exception) -> JSONResponse:
+    """An error the framework raises itself: an unknown route, a wrong method, a body it
+    could not decode. The last is answered like a body that is no JSON."""
     assert isinstance(exc, StarletteHTTPException)
+    if exc.status_code == UNDECODABLE_BODY_STATUS:
+        return _refused([_NOT_JSON])
     fallback = ErrorCode.INTERNAL_ERROR if exc.status_code >= 500 else ErrorCode.VALIDATION_ERROR
     code = _HTTP_STATUS_CODES.get(exc.status_code, fallback)
     return error_response(exc.status_code, code, str(exc.detail), headers=exc.headers)

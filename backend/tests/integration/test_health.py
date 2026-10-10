@@ -85,6 +85,8 @@ async def test_public_config_returns_the_values_of_the_example_env(
         "username_min_length": 3,
         "username_max_length": 20,
         "max_stake_per_market_cr": "100",
+        "share_presets": ["10", "50", "100"],
+        "share_step": "1",
         "stake_presets_cr": ["25", "50", "100"],
         "stake_step_cr": "1",
         "min_trade_cr": "1",
@@ -92,6 +94,9 @@ async def test_public_config_returns_the_values_of_the_example_env(
         "price_display_decimals": 1,
         "quote_debounce_ms": 300,
         "live_poll_fallback_seconds": 10,
+        "live_heartbeat_seconds": 15,
+        "live_announce_spread_ms": 1000,
+        "live_viewer_refresh_seconds": 5,
         "tiers": [
             {"tier": "TIGHT", "b_cr": "500", "max_loss_cr": loss_bound_cr(500)},
             {"tier": "DEFAULT", "b_cr": "1000", "max_loss_cr": loss_bound_cr(1000)},

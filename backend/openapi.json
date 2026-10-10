@@ -345,21 +345,101 @@
         "title": "BalanceAdjustmentResponse",
         "type": "object"
       },
+      "BeatEvent": {
+        "description": "`event: beat`. Nothing happened and the stream is alive: sent every\n`live_heartbeat_seconds` (from `/config`).",
+        "properties": {
+          "ts": {
+            "format": "date-time",
+            "title": "Ts",
+            "type": "string"
+          },
+          "type": {
+            "const": "beat",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "ts"
+        ],
+        "title": "BeatEvent",
+        "type": "object"
+      },
+      "BuyEntry": {
+        "description": "What the viewer can buy of one outcome right now (SPEC §4, A.11). The server\nworks it out with the market maker's prices, so the client prices and compares\nnothing.",
+        "properties": {
+          "outcome": {
+            "$ref": "#/components/schemas/Outcome"
+          },
+          "presets": {
+            "description": "One entry per shortcut, in the order of `share_presets` of `GET /config`.",
+            "items": {
+              "$ref": "#/components/schemas/BuyPreset"
+            },
+            "title": "Presets",
+            "type": "array"
+          },
+          "slider": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BuySlider"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the slider of a buy of `outcome` runs. Null when the viewer cannot buy a\nwhole step of it right now: they may not trade, or the stake left or the balance\ndoes not cover the smallest buy. A size typed beside the slider is judged by\n`GET /markets/{id}/quote`."
+          }
+        },
+        "required": [
+          "outcome",
+          "slider",
+          "presets"
+        ],
+        "title": "BuyEntry",
+        "type": "object"
+      },
+      "BuyPreset": {
+        "description": "One shortcut of a buy on the trade sheet (A.11).",
+        "properties": {
+          "allowed": {
+            "description": "Whether a buy of this many shares of the outcome would pass right now: the\nviewer may trade, the size is no smaller than the minimum trade, and its cost is\ncovered by the stake left and by the balance.",
+            "title": "Allowed",
+            "type": "boolean"
+          },
+          "shares": {
+            "description": "A whole number of shares, one entry of `share_presets` of `GET /config`. Send\nit as `shares` of a BUY, and as `shares` of its quote.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Shares",
+            "type": "string"
+          }
+        },
+        "required": [
+          "shares",
+          "allowed"
+        ],
+        "title": "BuyPreset",
+        "type": "object"
+      },
       "BuySlider": {
-        "description": "The slider and the number field of a buy on the trade sheet (A.11): the whole\ncredits between which the viewer can buy right now, and the step between two\npositions. JSON integers, as a range input takes them. Every multiple of `step`\nfrom `min` to `max` is a budget a buy passes with: send it as `amount_cr`.",
+        "description": "The slider of a buy on the trade sheet (A.11): the whole shares of one outcome\nbetween which the viewer can buy right now, and the step between two positions.\nJSON integers, as a range input takes them. Every multiple of `step` from `min`\nto `max` is a size a buy passes with: send it as `shares`.",
         "properties": {
           "max": {
-            "description": "The largest multiple of `step` that both the stake left and the balance cover.\nNever below `min`.",
+            "description": "The largest multiple of `step` whose cost the stake left and the balance both\ncover at the price of this answer. Never below `min`.",
             "title": "Max",
             "type": "integer"
           },
           "min": {
-            "description": "The smallest multiple of `step` that is a trade: at least `min_trade_cr`.",
+            "description": "The smallest multiple of `step` that is a trade: at least `min_trade_shares`.",
             "title": "Min",
             "type": "integer"
           },
           "step": {
-            "description": "`stake_step_cr` of `GET /config`.",
+            "description": "`share_step` of `GET /config`.",
             "title": "Step",
             "type": "integer"
           }
@@ -701,7 +781,7 @@
         "type": "string"
       },
       "ErrorResponse": {
-        "description": "The body of every non-2xx response (SPEC §10, Appendix A.2).\n\n`message` is written for the user and can be shown as it is. `details` is an\nobject, empty unless the code is one of these:\n\n* `VALIDATION_ERROR`. A request that does not match its schema: `errors`, a list\n  of `{loc, msg, type}`, one per field. `loc` ends with the name of the field,\n  `msg` is a sentence for the person who filled it in, to be shown under the\n  field as it is (\"Use at most 200 characters.\"), and `type` names the rule\n  that was broken. A rule a service checks: `field`, the name of the offending\n  field, and `message` is the sentence for it. A profile created without\n  `policy_accepted: true` is such a rule, and its `field` is `policy_accepted`;\n  so is a filter of the leaderboard whose `min_…` is above its `max_…`, with\n  the `min_…` as its `field`.\n* `FORBIDDEN`, when the portal's id is not an address MarkETH is open to:\n  `allowed_domains`, a list of the domains it is open to.\n* `PROFILE_REQUIRED`: `name` and `email`, who the portal says is calling. `name`\n  may be an empty string.\n* `USERNAME_TAKEN`: `field`, which is `username`.\n* `RATE_LIMITED`: `retry_after_seconds`, an integer, also sent as the\n  `Retry-After` header.\n* `QUOTE_STALE`: `quote`, a fresh `QuoteResponse` for the same trade.\n* `LIMIT_EXCEEDED`: `limit`, which names the limit: `MAX_STAKE_PER_USER_MARKET`,\n  `MAX_PROPOSALS_PER_USER_PER_DAY`, `MAX_OPEN_MARKETS`, `MAX_MARKET_BUDGET`,\n  `MAX_AGGREGATE_LOSS_BUDGET`, `MAX_CODE_ISSUANCE_PER_MONTH`,\n  `ONE_CODE_PER_USER` or `MAX_ADMIN_ADJUSTMENT_CR`. With\n  `MAX_STAKE_PER_USER_MARKET` also `stake_limit_cr` and `stake_left_cr`; with\n  `MAX_CODE_ISSUANCE_PER_MONTH` also `issued_cr`, `requested_cr` and `cap_cr`;\n  with `MAX_ADMIN_ADJUSTMENT_CR` also `requested_cr`, what the adjustment would\n  add, and `cap_cr`, the most one adjustment may add.\n* `INSUFFICIENT_BALANCE`: `balance_cr` and `required_cr`. Where an admin debits\n  somebody's balance, they are what that account holds and what the debit takes.\n* `SERVICE_UNAVAILABLE`, from `GET /health` only: `postgres`, `redis` and\n  `scylla`, each `up` or `down`.\n\nA quote is answered like its trade. `GET /markets/{id}/quote` gives a buy the\ncaller could not make the error the trade would get, with the same details:\n`LIMIT_EXCEEDED` with `MAX_STAKE_PER_USER_MARKET`, `stake_limit_cr` and\n`stake_left_cr` above the stake left, `INSUFFICIENT_BALANCE` with `balance_cr`\nand `required_cr` above the balance.\n\nAmounts in `details` are decimal strings like every `*_cr` field.",
+        "description": "The body of every non-2xx response (SPEC §10, Appendix A.2).\n\n`message` is written for the user and can be shown as it is. `details` is an\nobject, empty unless the code is one of these:\n\n* `VALIDATION_ERROR`. A request that does not match its schema: `errors`, a list\n  of `{loc, msg, type}`, one per field, the first 50 at most. `loc` ends with the\n  name of the field, `msg` is a sentence for the person who filled it in, to be\n  shown under the field as it is (\"Use at most 200 characters.\"), and `type`\n  names the rule that was broken. A body that is no JSON has one entry, whose\n  `loc` begins with `body` and whose `type` is `json_invalid`. A rule a service\n  checks: `field`, the name of the offending field, and `message` is the\n  sentence for it. A profile created without `policy_accepted: true` is such a\n  rule, and its `field` is `policy_accepted`; so is a filter of the leaderboard\n  whose `min_…` is above its `max_…`, with the `min_…` as its `field`.\n* `FORBIDDEN`, when the portal's id is not an address MarkETH is open to:\n  `allowed_domains`, a list of the domains it is open to.\n* `PROFILE_REQUIRED`: `name` and `email`, who the portal says is calling. `name`\n  may be an empty string.\n* `USERNAME_TAKEN`: `field`, which is `username`.\n* `RATE_LIMITED`: `retry_after_seconds`, an integer, also sent as the\n  `Retry-After` header.\n* `QUOTE_STALE`: `quote`, a fresh `QuoteResponse` for the same trade.\n* `LIMIT_EXCEEDED`: `limit`, which names the limit: `MAX_STAKE_PER_USER_MARKET`,\n  `MAX_PROPOSALS_PER_USER_PER_DAY`, `MAX_OPEN_MARKETS`, `MAX_MARKET_BUDGET`,\n  `MAX_AGGREGATE_LOSS_BUDGET`, `MAX_CODE_ISSUANCE_PER_MONTH`,\n  `ONE_CODE_PER_USER` or `MAX_ADMIN_ADJUSTMENT_CR`. With\n  `MAX_STAKE_PER_USER_MARKET` also `stake_limit_cr`, `stake_left_cr` and\n  `required_cr`, what the buy costs; with `MAX_CODE_ISSUANCE_PER_MONTH` also\n  `issued_cr`, `requested_cr` and `cap_cr`; with `MAX_ADMIN_ADJUSTMENT_CR` also\n  `requested_cr`, what the adjustment would add, and `cap_cr`, the most one\n  adjustment may add.\n* `INSUFFICIENT_BALANCE`: `balance_cr` and `required_cr`. Where an admin debits\n  somebody's balance, they are what that account holds and what the debit takes.\n* `SERVICE_UNAVAILABLE`, from `GET /health` only: `postgres`, `redis` and\n  `scylla`, each `up` or `down`.\n\nA quote is answered like its trade. `GET /markets/{id}/quote` gives a buy the\ncaller could not make the error the trade would get, with the same message and\ndetails: `LIMIT_EXCEEDED` with `MAX_STAKE_PER_USER_MARKET`, `stake_limit_cr`,\n`stake_left_cr` and `required_cr` above the stake left, `INSUFFICIENT_BALANCE`\nwith `balance_cr` and `required_cr` above the balance.\n\nAmounts in `details` are decimal strings like every `*_cr` field.",
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode"
@@ -905,6 +985,27 @@
         ],
         "title": "JournalKind",
         "type": "string"
+      },
+      "LeaderboardChangedEvent": {
+        "description": "`event: leaderboard.changed`. Something that moves the ranking happened; the\nleaderboard is read again.",
+        "properties": {
+          "ts": {
+            "format": "date-time",
+            "title": "Ts",
+            "type": "string"
+          },
+          "type": {
+            "const": "leaderboard.changed",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "ts"
+        ],
+        "title": "LeaderboardChangedEvent",
+        "type": "object"
       },
       "LeaderboardEntry": {
         "description": "One user on the leaderboard: a username and a degree, never an address or a real\nname.",
@@ -1398,6 +1499,61 @@
         "title": "MarketListResponse",
         "type": "object"
       },
+      "MarketQuoteEvent": {
+        "description": "`event: market.quote`. A trade moved the price of a market. It holds the numbers\n`GET /markets/{id}` reports for that `version`, and `ts` is the instant of the\ntrade: the `t` of the chart's point.",
+        "properties": {
+          "market_id": {
+            "format": "uuid",
+            "title": "Market Id",
+            "type": "string"
+          },
+          "p_no": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "P No",
+            "type": "number"
+          },
+          "p_yes": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "P Yes",
+            "type": "number"
+          },
+          "ts": {
+            "format": "date-time",
+            "title": "Ts",
+            "type": "string"
+          },
+          "type": {
+            "const": "market.quote",
+            "title": "Type",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "volume_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Volume Cr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "market_id",
+          "version",
+          "p_yes",
+          "p_no",
+          "volume_cr",
+          "ts"
+        ],
+        "title": "MarketQuoteEvent",
+        "type": "object"
+      },
       "MarketResolution": {
         "description": "How a market ended. For VOID, `evidence` is the reason VIS gave.",
         "properties": {
@@ -1436,6 +1592,43 @@
         ],
         "title": "MarketStatus",
         "type": "string"
+      },
+      "MarketStatusEvent": {
+        "description": "`event: market.status`. The status of a market changed: by an admin's action or\nby the circuit breaker.",
+        "properties": {
+          "market_id": {
+            "format": "uuid",
+            "title": "Market Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MarketStatus",
+            "description": "The effective status at `ts`."
+          },
+          "trading_open": {
+            "title": "Trading Open",
+            "type": "boolean"
+          },
+          "ts": {
+            "format": "date-time",
+            "title": "Ts",
+            "type": "string"
+          },
+          "type": {
+            "const": "market.status",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "market_id",
+          "status",
+          "trading_open",
+          "ts"
+        ],
+        "title": "MarketStatusEvent",
+        "type": "object"
       },
       "MarketSummary": {
         "description": "A market as a card: what the list, the portfolio and the detail header show.",
@@ -1544,6 +1737,14 @@
             "title": "Balance Cr",
             "type": "string"
           },
+          "buy": {
+            "description": "Always two entries, YES then NO.",
+            "items": {
+              "$ref": "#/components/schemas/BuyEntry"
+            },
+            "title": "Buy",
+            "type": "array"
+          },
           "buy_slider": {
             "anyOf": [
               {
@@ -1553,7 +1754,7 @@
                 "type": "null"
               }
             ],
-            "description": "Where the slider of a buy runs. Null when the viewer cannot buy anything right\nnow: they may not trade, or the stake left or the balance is below the smallest\nbuy. An amount typed in between two positions is judged by\n`GET /markets/{id}/quote`."
+            "description": "Where the slider of a buy by amount runs, counted in whole credits: every\nmultiple of `step` from `min` to `max` is a budget a buy passes with, sent as\n`amount_cr`, and `step` is `stake_step_cr` of `GET /config`. Null when the viewer\ncannot buy anything right now: they may not trade, or the stake left or the balance\nis below the smallest buy. An amount typed in between two positions is judged by\n`GET /markets/{id}/quote`."
           },
           "can_settle": {
             "description": "Whether the viewer is someone who may resolve or void this market: an admin who\nnever traded it (A.4). An admin who did trade it is answered 403 by both actions,\nand another admin has to settle it. This says who may settle, not when: which\nactions the market's status allows is SPEC §6. False for everybody who is no admin.",
@@ -1686,6 +1887,7 @@
           "refund_cr",
           "stake_limit_cr",
           "stake_left_cr",
+          "buy",
           "stake_presets",
           "buy_slider",
           "sell_presets",
@@ -1694,6 +1896,27 @@
           "can_settle"
         ],
         "title": "MarketViewer",
+        "type": "object"
+      },
+      "MeChangedEvent": {
+        "description": "`event: me.changed`. Something of the caller's own changed: a balance, a position,\na notice, the profile or the role. It carries no figure; what `GET /me` and the\nreads under it answer is read again.",
+        "properties": {
+          "ts": {
+            "format": "date-time",
+            "title": "Ts",
+            "type": "string"
+          },
+          "type": {
+            "const": "me.changed",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "ts"
+        ],
+        "title": "MeChangedEvent",
         "type": "object"
       },
       "MeResponse": {
@@ -2393,8 +2616,24 @@
             "title": "Degrees",
             "type": "array"
           },
+          "live_announce_spread_ms": {
+            "description": "Milliseconds over which the tabs that hear one announcement spread their reads:\neach waits a random time up to this before it reads. 0: every tab reads at once.",
+            "title": "Live Announce Spread Ms",
+            "type": "integer"
+          },
+          "live_heartbeat_seconds": {
+            "description": "Seconds between two beats of an open event stream. A tab that hears nothing for\ntwice as long calls its stream lost.",
+            "title": "Live Heartbeat Seconds",
+            "type": "integer"
+          },
           "live_poll_fallback_seconds": {
+            "description": "Seconds between two reads of what is on screen while a tab holds no event\nstream.",
             "title": "Live Poll Fallback Seconds",
+            "type": "integer"
+          },
+          "live_viewer_refresh_seconds": {
+            "description": "Seconds within which a tab whose viewer holds shares of the market on screen\nreads the market again after its price moved: once, after a random wait up to\nthis.",
+            "title": "Live Viewer Refresh Seconds",
             "type": "integer"
           },
           "long_text_max_length": {
@@ -2481,6 +2720,27 @@
             "title": "Quote Debounce Ms",
             "type": "integer"
           },
+          "share_presets": {
+            "description": "The shortcuts of a buy on the trade sheet, in shares: whole numbers. Which of\nthem a viewer can take for an outcome of a market is `MarketViewer.buy`.",
+            "items": {
+              "examples": [
+                "0.25"
+              ],
+              "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+              "type": "string"
+            },
+            "title": "Share Presets",
+            "type": "array"
+          },
+          "share_step": {
+            "description": "The step of the slider of a buy on the trade sheet: a whole number of shares.\nWhere the slider runs for one viewer and one outcome is `MarketViewer.buy`.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Share Step",
+            "type": "string"
+          },
           "short_text_max_length": {
             "description": "The longest `yes_definition`, `no_definition` and `resolution_source` of a\nproposal, and the longest reason or note an admin gives when rejecting, halting,\nresuming or closing a market.",
             "title": "Short Text Max Length",
@@ -2552,6 +2812,8 @@
           "username_max_length",
           "degrees",
           "max_stake_per_market_cr",
+          "share_presets",
+          "share_step",
           "stake_presets_cr",
           "stake_step_cr",
           "min_trade_cr",
@@ -2559,6 +2821,9 @@
           "price_display_decimals",
           "quote_debounce_ms",
           "live_poll_fallback_seconds",
+          "live_heartbeat_seconds",
+          "live_announce_spread_ms",
+          "live_viewer_refresh_seconds",
           "tiers",
           "max_market_budget_cr",
           "max_market_lifetime_days",
@@ -2649,7 +2914,7 @@
             "type": "string"
           },
           "average_price": {
-            "description": "`amount_cr / shares`: credits per share, rounded like a probability.",
+            "description": "`amount_cr / shares`: the price per share of this trade in credits, rounded like\na probability.",
             "maximum": 1.0,
             "minimum": 0.0,
             "title": "Average Price",
@@ -2687,6 +2952,15 @@
             "title": "P Yes Before",
             "type": "number"
           },
+          "payout_cr": {
+            "description": "What the shares of this trade pay if `outcome` comes true: 1 CR per share. For\na sell it is what the seller gives up.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Payout Cr",
+            "type": "string"
+          },
           "quote_version": {
             "description": "The market's `version` this quote was computed from.",
             "title": "Quote Version",
@@ -2711,6 +2985,7 @@
           "shares",
           "amount_cr",
           "average_price",
+          "payout_cr",
           "p_yes_before",
           "p_no_before",
           "p_yes_after",
@@ -2718,6 +2993,27 @@
           "quote_version"
         ],
         "title": "QuoteResponse",
+        "type": "object"
+      },
+      "ReadyEvent": {
+        "description": "`event: ready`. The stream is open: the last of what an opening stream gets. The\nstream carries nothing that happened before it, so a tab that hears it reads once\nwhat its topics cover.",
+        "properties": {
+          "ts": {
+            "format": "date-time",
+            "title": "Ts",
+            "type": "string"
+          },
+          "type": {
+            "const": "ready",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "ts"
+        ],
+        "title": "ReadyEvent",
         "type": "object"
       },
       "RedeemCodeRequest": {
@@ -3199,6 +3495,15 @@
           "portion": {
             "$ref": "#/components/schemas/SellPortion"
           },
+          "proceeds_cr": {
+            "description": "What selling `shares` of `outcome` would bring in at the price of this answer,\nrounded down: the `amount_cr` `GET /markets/{id}/quote` gives for that sale. 0\nwhen `shares` is 0 or the viewer may not trade.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Proceeds Cr",
+            "type": "string"
+          },
           "shares": {
             "description": "Send this as `shares` of a SELL of `outcome`, and as `shares` of its quote.",
             "examples": [
@@ -3213,6 +3518,7 @@
           "outcome",
           "portion",
           "shares",
+          "proceeds_cr",
           "allowed"
         ],
         "title": "SellPreset",
@@ -6544,6 +6850,96 @@
         "summary": "Own vouchers, pending and past",
         "tags": [
           "vouchers"
+        ]
+      }
+    },
+    "/api/stream": {
+      "get": {
+        "description": "Access: any registered user whose account is active.",
+        "operationId": "stream_live",
+        "parameters": [
+          {
+            "description": "The tab's own id, made once per page load: every stream of a page load names the\nsame one. A stream that opens ends the one its caller holds under the same `tab`,\nso a stream a browser left behind gives its place back.",
+            "in": "query",
+            "name": "tab",
+            "required": true,
+            "schema": {
+              "description": "The tab's own id, made once per page load: every stream of a page load names the\nsame one. A stream that opens ends the one its caller holds under the same `tab`,\nso a stream a browser left behind gives its place back.",
+              "pattern": "^[A-Za-z0-9_-]{8,36}$",
+              "title": "Tab",
+              "type": "string"
+            }
+          },
+          {
+            "description": "What the stream follows: the parameter is given once per topic. A topic named\ntwice counts once. How many a stream may follow is `LIVE_TOPICS_PER_STREAM`.",
+            "in": "query",
+            "name": "topic",
+            "required": false,
+            "schema": {
+              "description": "What the stream follows: the parameter is given once per topic. A topic named\ntwice counts once. How many a stream may follow is `LIVE_TOPICS_PER_STREAM`.",
+              "items": {
+                "maxLength": 64,
+                "pattern": "^(?:markets|leaderboard|(?:market|broadcast):[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})$",
+                "type": "string"
+              },
+              "maxItems": 32,
+              "title": "Topic",
+              "type": "array"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ReadyEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/BeatEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MarketQuoteEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MarketStatusEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/LeaderboardChangedEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MeChangedEvent"
+                    }
+                  ],
+                  "title": "Response 200 Stream Live"
+                }
+              }
+            },
+            "description": "An event stream. Each event is named by `event:` and carries the model of that name as JSON in `data:`. `ready` comes first, with a `retry:` line; `beat` says that the stream is alive."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "REGISTERED"
+            ]
+          }
+        ],
+        "summary": "Everything the app pushes (server-sent events)",
+        "tags": [
+          "live"
         ]
       }
     },

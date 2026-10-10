@@ -48,6 +48,9 @@ PRODUCTION_ENV: Final[str] = (REPO_ROOT / "infra" / "deploy" / "env.production")
 )
 MAKEFILE: Final[str] = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
 CHECK: Final[str] = (REPO_ROOT / "infra" / "deploy" / "check.sh").read_text(encoding="utf-8")
+DEPLOY_WORKFLOW: Final[str] = (REPO_ROOT / ".github" / "workflows" / "deploy.yml").read_text(
+    encoding="utf-8"
+)
 FRONTEND_PACKAGE: Final[str] = (REPO_ROOT / "frontend" / "package.json").read_text(encoding="utf-8")
 BACKEND_DOCKERFILE: Final[str] = (REPO_ROOT / "backend" / "Dockerfile").read_text(encoding="utf-8")
 PROXY: Final[str] = (PROXY_DIRECTORY / "default.conf.template").read_text(encoding="utf-8")
@@ -966,6 +969,52 @@ def test_make_e2e_runs_the_browser_suite_against_the_stack_that_is_up() -> None:
     assert tests == ["test-backend", "test-frontend"]
     for part in tests:
         assert "e2e" not in " ".join(make_target(part)[2]), part
+
+
+def test_the_vm_deploys_itself_without_a_connection_and_without_a_secret() -> None:
+    """SPEC A.10: the team's runner is the VM, and the Deploy workflow runs
+    `make deploy DEPLOY_LOCAL=1` on it. With that variable a command for the VM runs in
+    a shell of the machine make is on, started in the home directory as an SSH session
+    is, and the tree is mirrored into a directory of that machine; without it both go
+    over SSH. A machine answers its own address whatever its firewall says, so the
+    local form of `deploy-check` leaves the probe from outside alone, and the workflow
+    runs it in a second job, on a machine that is not the VM. The workflow reads no
+    secret: the VM's own file is on the disk the first job runs on."""
+    on_vm = re.search(r"^ON_VM = (.*)$", MAKEFILE, re.MULTILINE)
+    assert on_vm is not None
+    assert on_vm.group(1) == (
+        '$(if $(DEPLOY_LOCAL),env --chdir="$$HOME" sh -c,ssh -o BatchMode=yes $(DEPLOY_SSH_HOST))'
+    )
+    mirror = re.search(r"^MIRROR = (.*)$", MAKEFILE, re.MULTILINE)
+    assert mirror is not None
+    assert mirror.group(1) == (
+        '$(if $(DEPLOY_LOCAL),"$$HOME/$(DEPLOY_PATH)/",'
+        "--rsh='ssh -o BatchMode=yes' '$(DEPLOY_SSH_HOST):$(DEPLOY_PATH)/')"
+    )
+    assert make_target("deploy-sync")[2][1].endswith(" ./ $(MIRROR)")
+    for line in MAKEFILE.splitlines():
+        if line.startswith("\t"):
+            assert "ssh " not in line, line
+
+    probe = "\n".join(make_target("deploy-check")[2])
+    local, _, remote = probe.partition("else")
+    assert 'if [ -n "$(DEPLOY_LOCAL)" ]; then' in local
+    assert "check.sh outside" not in local
+    assert "check.sh outside $$endpoint" in remote
+
+    jobs = re.split(
+        r"^  (?=[a-z-]+:\n)", DEPLOY_WORKFLOW.partition("\njobs:\n")[2], flags=re.MULTILINE
+    )
+    by_name = {job.partition(":")[0]: job for job in jobs if job.strip()}
+    assert list(by_name) == ["deploy", "outside"]
+    assert "runs-on: self-hosted" in by_name["deploy"]
+    assert "run: make deploy DEPLOY_LOCAL=1" in by_name["deploy"]
+    assert "needs: deploy" in by_name["outside"]
+    assert "runs-on: self-hosted" not in by_name["outside"]
+    assert "sh infra/deploy/check.sh outside $ENDPOINT" in by_name["outside"]
+    assert "secrets." not in DEPLOY_WORKFLOW
+    triggers = DEPLOY_WORKFLOW.partition("\non:\n")[2].partition("\n\n")[0]
+    assert triggers.strip() == "workflow_dispatch:"
 
 
 # --- What the deployment check asks of the running stack -------------------------------------

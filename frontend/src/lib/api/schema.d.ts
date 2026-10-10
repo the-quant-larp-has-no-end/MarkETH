@@ -752,6 +752,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Everything the app pushes (server-sent events)
+         * @description Access: any registered user whose account is active.
+         */
+        get: operations["stream_live"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/vouchers": {
         parameters: {
             query?: never;
@@ -974,27 +994,85 @@ export interface components {
             user_id: string;
         };
         /**
+         * BeatEvent
+         * @description `event: beat`. Nothing happened and the stream is alive: sent every
+         *     `live_heartbeat_seconds` (from `/config`).
+         */
+        BeatEvent: {
+            /**
+             * Ts
+             * Format: date-time
+             */
+            ts: string;
+            /**
+             * Type
+             * @constant
+             */
+            type: "beat";
+        };
+        /**
+         * BuyEntry
+         * @description What the viewer can buy of one outcome right now (SPEC §4, A.11). The server
+         *     works it out with the market maker's prices, so the client prices and compares
+         *     nothing.
+         */
+        BuyEntry: {
+            outcome: components["schemas"]["Outcome"];
+            /**
+             * Presets
+             * @description One entry per shortcut, in the order of `share_presets` of `GET /config`.
+             */
+            presets: components["schemas"]["BuyPreset"][];
+            /**
+             * @description Where the slider of a buy of `outcome` runs. Null when the viewer cannot buy a
+             *     whole step of it right now: they may not trade, or the stake left or the balance
+             *     does not cover the smallest buy. A size typed beside the slider is judged by
+             *     `GET /markets/{id}/quote`.
+             */
+            slider: components["schemas"]["BuySlider"] | null;
+        };
+        /**
+         * BuyPreset
+         * @description One shortcut of a buy on the trade sheet (A.11).
+         */
+        BuyPreset: {
+            /**
+             * Allowed
+             * @description Whether a buy of this many shares of the outcome would pass right now: the
+             *     viewer may trade, the size is no smaller than the minimum trade, and its cost is
+             *     covered by the stake left and by the balance.
+             */
+            allowed: boolean;
+            /**
+             * Shares
+             * @description A whole number of shares, one entry of `share_presets` of `GET /config`. Send
+             *     it as `shares` of a BUY, and as `shares` of its quote.
+             * @example 0.25
+             */
+            shares: string;
+        };
+        /**
          * BuySlider
-         * @description The slider and the number field of a buy on the trade sheet (A.11): the whole
-         *     credits between which the viewer can buy right now, and the step between two
-         *     positions. JSON integers, as a range input takes them. Every multiple of `step`
-         *     from `min` to `max` is a budget a buy passes with: send it as `amount_cr`.
+         * @description The slider of a buy on the trade sheet (A.11): the whole shares of one outcome
+         *     between which the viewer can buy right now, and the step between two positions.
+         *     JSON integers, as a range input takes them. Every multiple of `step` from `min`
+         *     to `max` is a size a buy passes with: send it as `shares`.
          */
         BuySlider: {
             /**
              * Max
-             * @description The largest multiple of `step` that both the stake left and the balance cover.
-             *     Never below `min`.
+             * @description The largest multiple of `step` whose cost the stake left and the balance both
+             *     cover at the price of this answer. Never below `min`.
              */
             max: number;
             /**
              * Min
-             * @description The smallest multiple of `step` that is a trade: at least `min_trade_cr`.
+             * @description The smallest multiple of `step` that is a trade: at least `min_trade_shares`.
              */
             min: number;
             /**
              * Step
-             * @description `stake_step_cr` of `GET /config`.
+             * @description `share_step` of `GET /config`.
              */
             step: number;
         };
@@ -1181,14 +1259,15 @@ export interface components {
          *     object, empty unless the code is one of these:
          *
          *     * `VALIDATION_ERROR`. A request that does not match its schema: `errors`, a list
-         *       of `{loc, msg, type}`, one per field. `loc` ends with the name of the field,
-         *       `msg` is a sentence for the person who filled it in, to be shown under the
-         *       field as it is ("Use at most 200 characters."), and `type` names the rule
-         *       that was broken. A rule a service checks: `field`, the name of the offending
-         *       field, and `message` is the sentence for it. A profile created without
-         *       `policy_accepted: true` is such a rule, and its `field` is `policy_accepted`;
-         *       so is a filter of the leaderboard whose `min_…` is above its `max_…`, with
-         *       the `min_…` as its `field`.
+         *       of `{loc, msg, type}`, one per field, the first 50 at most. `loc` ends with the
+         *       name of the field, `msg` is a sentence for the person who filled it in, to be
+         *       shown under the field as it is ("Use at most 200 characters."), and `type`
+         *       names the rule that was broken. A body that is no JSON has one entry, whose
+         *       `loc` begins with `body` and whose `type` is `json_invalid`. A rule a service
+         *       checks: `field`, the name of the offending field, and `message` is the
+         *       sentence for it. A profile created without `policy_accepted: true` is such a
+         *       rule, and its `field` is `policy_accepted`; so is a filter of the leaderboard
+         *       whose `min_…` is above its `max_…`, with the `min_…` as its `field`.
          *     * `FORBIDDEN`, when the portal's id is not an address MarkETH is open to:
          *       `allowed_domains`, a list of the domains it is open to.
          *     * `PROFILE_REQUIRED`: `name` and `email`, who the portal says is calling. `name`
@@ -1201,20 +1280,21 @@ export interface components {
          *       `MAX_PROPOSALS_PER_USER_PER_DAY`, `MAX_OPEN_MARKETS`, `MAX_MARKET_BUDGET`,
          *       `MAX_AGGREGATE_LOSS_BUDGET`, `MAX_CODE_ISSUANCE_PER_MONTH`,
          *       `ONE_CODE_PER_USER` or `MAX_ADMIN_ADJUSTMENT_CR`. With
-         *       `MAX_STAKE_PER_USER_MARKET` also `stake_limit_cr` and `stake_left_cr`; with
-         *       `MAX_CODE_ISSUANCE_PER_MONTH` also `issued_cr`, `requested_cr` and `cap_cr`;
-         *       with `MAX_ADMIN_ADJUSTMENT_CR` also `requested_cr`, what the adjustment would
-         *       add, and `cap_cr`, the most one adjustment may add.
+         *       `MAX_STAKE_PER_USER_MARKET` also `stake_limit_cr`, `stake_left_cr` and
+         *       `required_cr`, what the buy costs; with `MAX_CODE_ISSUANCE_PER_MONTH` also
+         *       `issued_cr`, `requested_cr` and `cap_cr`; with `MAX_ADMIN_ADJUSTMENT_CR` also
+         *       `requested_cr`, what the adjustment would add, and `cap_cr`, the most one
+         *       adjustment may add.
          *     * `INSUFFICIENT_BALANCE`: `balance_cr` and `required_cr`. Where an admin debits
          *       somebody's balance, they are what that account holds and what the debit takes.
          *     * `SERVICE_UNAVAILABLE`, from `GET /health` only: `postgres`, `redis` and
          *       `scylla`, each `up` or `down`.
          *
          *     A quote is answered like its trade. `GET /markets/{id}/quote` gives a buy the
-         *     caller could not make the error the trade would get, with the same details:
-         *     `LIMIT_EXCEEDED` with `MAX_STAKE_PER_USER_MARKET`, `stake_limit_cr` and
-         *     `stake_left_cr` above the stake left, `INSUFFICIENT_BALANCE` with `balance_cr`
-         *     and `required_cr` above the balance.
+         *     caller could not make the error the trade would get, with the same message and
+         *     details: `LIMIT_EXCEEDED` with `MAX_STAKE_PER_USER_MARKET`, `stake_limit_cr`,
+         *     `stake_left_cr` and `required_cr` above the stake left, `INSUFFICIENT_BALANCE`
+         *     with `balance_cr` and `required_cr` above the balance.
          *
          *     Amounts in `details` are decimal strings like every `*_cr` field.
          */
@@ -1330,6 +1410,23 @@ export interface components {
          * @enum {string}
          */
         JournalKind: "SIGNUP_GRANT" | "MONTHLY_GRANT" | "CODE_REDEMPTION" | "TRADE_BUY" | "TRADE_SELL" | "MARKET_RESOLUTION" | "MARKET_VOID" | "VOUCHER_ISSUE" | "VOUCHER_REDEEM" | "VOUCHER_REFUND" | "ADMIN_ADJUSTMENT" | "STREAK_REWARD" | "STREAK_BONUS";
+        /**
+         * LeaderboardChangedEvent
+         * @description `event: leaderboard.changed`. Something that moves the ranking happened; the
+         *     leaderboard is read again.
+         */
+        LeaderboardChangedEvent: {
+            /**
+             * Ts
+             * Format: date-time
+             */
+            ts: string;
+            /**
+             * Type
+             * @constant
+             */
+            type: "leaderboard.changed";
+        };
         /**
          * LeaderboardEntry
          * @description One user on the leaderboard: a username and a degree, never an address or a real
@@ -1580,6 +1677,40 @@ export interface components {
             items: components["schemas"]["MarketSummary"][];
         };
         /**
+         * MarketQuoteEvent
+         * @description `event: market.quote`. A trade moved the price of a market. It holds the numbers
+         *     `GET /markets/{id}` reports for that `version`, and `ts` is the instant of the
+         *     trade: the `t` of the chart's point.
+         */
+        MarketQuoteEvent: {
+            /**
+             * Market Id
+             * Format: uuid
+             */
+            market_id: string;
+            /** P No */
+            p_no: number;
+            /** P Yes */
+            p_yes: number;
+            /**
+             * Ts
+             * Format: date-time
+             */
+            ts: string;
+            /**
+             * Type
+             * @constant
+             */
+            type: "market.quote";
+            /** Version */
+            version: number;
+            /**
+             * Volume Cr
+             * @example 0.25
+             */
+            volume_cr: string;
+        };
+        /**
          * MarketResolution
          * @description How a market ended. For VOID, `evidence` is the reason VIS gave.
          */
@@ -1601,6 +1732,32 @@ export interface components {
          * @enum {string}
          */
         MarketStatus: "PROPOSED" | "REJECTED" | "OPEN" | "HALTED" | "CLOSED" | "RESOLVED" | "VOID" | "EXPIRED";
+        /**
+         * MarketStatusEvent
+         * @description `event: market.status`. The status of a market changed: by an admin's action or
+         *     by the circuit breaker.
+         */
+        MarketStatusEvent: {
+            /**
+             * Market Id
+             * Format: uuid
+             */
+            market_id: string;
+            /** @description The effective status at `ts`. */
+            status: components["schemas"]["MarketStatus"];
+            /** Trading Open */
+            trading_open: boolean;
+            /**
+             * Ts
+             * Format: date-time
+             */
+            ts: string;
+            /**
+             * Type
+             * @constant
+             */
+            type: "market.status";
+        };
         /**
          * MarketSummary
          * @description A market as a card: what the list, the portfolio and the detail header show.
@@ -1670,9 +1827,16 @@ export interface components {
              */
             balance_cr: string;
             /**
-             * @description Where the slider of a buy runs. Null when the viewer cannot buy anything right
-             *     now: they may not trade, or the stake left or the balance is below the smallest
-             *     buy. An amount typed in between two positions is judged by
+             * Buy
+             * @description Always two entries, YES then NO.
+             */
+            buy: components["schemas"]["BuyEntry"][];
+            /**
+             * @description Where the slider of a buy by amount runs, counted in whole credits: every
+             *     multiple of `step` from `min` to `max` is a budget a buy passes with, sent as
+             *     `amount_cr`, and `step` is `stake_step_cr` of `GET /config`. Null when the viewer
+             *     cannot buy anything right now: they may not trade, or the stake left or the balance
+             *     is below the smallest buy. An amount typed in between two positions is judged by
              *     `GET /markets/{id}/quote`.
              */
             buy_slider: components["schemas"]["BuySlider"] | null;
@@ -1744,6 +1908,24 @@ export interface components {
              * @description One entry per buy button, in the order of `stake_presets_cr` of `GET /config`.
              */
             stake_presets: components["schemas"]["StakePreset"][];
+        };
+        /**
+         * MeChangedEvent
+         * @description `event: me.changed`. Something of the caller's own changed: a balance, a position,
+         *     a notice, the profile or the role. It carries no figure; what `GET /me` and the
+         *     reads under it answer is read again.
+         */
+        MeChangedEvent: {
+            /**
+             * Ts
+             * Format: date-time
+             */
+            ts: string;
+            /**
+             * Type
+             * @constant
+             */
+            type: "me.changed";
         };
         /**
          * MeResponse
@@ -2204,8 +2386,31 @@ export interface components {
              * @description Every level, in the order to offer them.
              */
             degrees: components["schemas"]["DegreeLevelOption"][];
-            /** Live Poll Fallback Seconds */
+            /**
+             * Live Announce Spread Ms
+             * @description Milliseconds over which the tabs that hear one announcement spread their reads:
+             *     each waits a random time up to this before it reads. 0: every tab reads at once.
+             */
+            live_announce_spread_ms: number;
+            /**
+             * Live Heartbeat Seconds
+             * @description Seconds between two beats of an open event stream. A tab that hears nothing for
+             *     twice as long calls its stream lost.
+             */
+            live_heartbeat_seconds: number;
+            /**
+             * Live Poll Fallback Seconds
+             * @description Seconds between two reads of what is on screen while a tab holds no event
+             *     stream.
+             */
             live_poll_fallback_seconds: number;
+            /**
+             * Live Viewer Refresh Seconds
+             * @description Seconds within which a tab whose viewer holds shares of the market on screen
+             *     reads the market again after its price moved: once, after a random wait up to
+             *     this.
+             */
+            live_viewer_refresh_seconds: number;
             /**
              * Long Text Max Length
              * @description The longest `resolution_criteria` of a proposal, and the longest evidence or
@@ -2263,6 +2468,19 @@ export interface components {
             question_min_length: number;
             /** Quote Debounce Ms */
             quote_debounce_ms: number;
+            /**
+             * Share Presets
+             * @description The shortcuts of a buy on the trade sheet, in shares: whole numbers. Which of
+             *     them a viewer can take for an outcome of a market is `MarketViewer.buy`.
+             */
+            share_presets: string[];
+            /**
+             * Share Step
+             * @description The step of the slider of a buy on the trade sheet: a whole number of shares.
+             *     Where the slider runs for one viewer and one outcome is `MarketViewer.buy`.
+             * @example 0.25
+             */
+            share_step: string;
             /**
              * Short Text Max Length
              * @description The longest `yes_definition`, `no_definition` and `resolution_source` of a
@@ -2358,7 +2576,8 @@ export interface components {
             amount_cr: string;
             /**
              * Average Price
-             * @description `amount_cr / shares`: credits per share, rounded like a probability.
+             * @description `amount_cr / shares`: the price per share of this trade in credits, rounded like
+             *     a probability.
              */
             average_price: number;
             /**
@@ -2376,6 +2595,13 @@ export interface components {
             /** P Yes Before */
             p_yes_before: number;
             /**
+             * Payout Cr
+             * @description What the shares of this trade pay if `outcome` comes true: 1 CR per share. For
+             *     a sell it is what the seller gives up.
+             * @example 0.25
+             */
+            payout_cr: string;
+            /**
              * Quote Version
              * @description The market's `version` this quote was computed from.
              */
@@ -2386,6 +2612,24 @@ export interface components {
              */
             shares: string;
             side: components["schemas"]["TradeSide"];
+        };
+        /**
+         * ReadyEvent
+         * @description `event: ready`. The stream is open: the last of what an opening stream gets. The
+         *     stream carries nothing that happened before it, so a tab that hears it reads once
+         *     what its topics cover.
+         */
+        ReadyEvent: {
+            /**
+             * Ts
+             * Format: date-time
+             */
+            ts: string;
+            /**
+             * Type
+             * @constant
+             */
+            type: "ready";
         };
         /**
          * RedeemCodeRequest
@@ -2679,6 +2923,14 @@ export interface components {
             allowed: boolean;
             outcome: components["schemas"]["Outcome"];
             portion: components["schemas"]["SellPortion"];
+            /**
+             * Proceeds Cr
+             * @description What selling `shares` of `outcome` would bring in at the price of this answer,
+             *     rounded down: the `amount_cr` `GET /markets/{id}/quote` gives for that sale. 0
+             *     when `shares` is 0 or the viewer may not trade.
+             * @example 0.25
+             */
+            proceeds_cr: string;
             /**
              * Shares
              * @description Send this as `shares` of a SELL of `outcome`, and as `shares` of its quote.
@@ -3193,6 +3445,9 @@ export type AlertItem = components['schemas']['AlertItem'];
 export type AlertSeverity = components['schemas']['AlertSeverity'];
 export type ApproveMarketRequest = components['schemas']['ApproveMarketRequest'];
 export type BalanceAdjustmentResponse = components['schemas']['BalanceAdjustmentResponse'];
+export type BeatEvent = components['schemas']['BeatEvent'];
+export type BuyEntry = components['schemas']['BuyEntry'];
+export type BuyPreset = components['schemas']['BuyPreset'];
 export type BuySlider = components['schemas']['BuySlider'];
 export type CloseMarketRequest = components['schemas']['CloseMarketRequest'];
 export type CodeBatchCodesResponse = components['schemas']['CodeBatchCodesResponse'];
@@ -3215,6 +3470,7 @@ export type HistorySource = components['schemas']['HistorySource'];
 export type Holding = components['schemas']['Holding'];
 export type IssueVoucherRequest = components['schemas']['IssueVoucherRequest'];
 export type JournalKind = components['schemas']['JournalKind'];
+export type LeaderboardChangedEvent = components['schemas']['LeaderboardChangedEvent'];
 export type LeaderboardEntry = components['schemas']['LeaderboardEntry'];
 export type LeaderboardResponse = components['schemas']['LeaderboardResponse'];
 export type LeaderboardSort = components['schemas']['LeaderboardSort'];
@@ -3222,11 +3478,14 @@ export type LedgerItem = components['schemas']['LedgerItem'];
 export type LedgerListResponse = components['schemas']['LedgerListResponse'];
 export type MarketDetailResponse = components['schemas']['MarketDetailResponse'];
 export type MarketListResponse = components['schemas']['MarketListResponse'];
+export type MarketQuoteEvent = components['schemas']['MarketQuoteEvent'];
 export type MarketResolution = components['schemas']['MarketResolution'];
 export type MarketStatus = components['schemas']['MarketStatus'];
+export type MarketStatusEvent = components['schemas']['MarketStatusEvent'];
 export type MarketSummary = components['schemas']['MarketSummary'];
 export type MarketTier = components['schemas']['MarketTier'];
 export type MarketViewer = components['schemas']['MarketViewer'];
+export type MeChangedEvent = components['schemas']['MeChangedEvent'];
 export type MeResponse = components['schemas']['MeResponse'];
 export type MonthlyGrantRunResponse = components['schemas']['MonthlyGrantRunResponse'];
 export type NoticeItem = components['schemas']['NoticeItem'];
@@ -3242,6 +3501,7 @@ export type ProposeMarketRequest = components['schemas']['ProposeMarketRequest']
 export type PublicConfigResponse = components['schemas']['PublicConfigResponse'];
 export type QuoteEvent = components['schemas']['QuoteEvent'];
 export type QuoteResponse = components['schemas']['QuoteResponse'];
+export type ReadyEvent = components['schemas']['ReadyEvent'];
 export type RedeemCodeRequest = components['schemas']['RedeemCodeRequest'];
 export type RedeemCodeResponse = components['schemas']['RedeemCodeResponse'];
 export type RedeemVoucherRequest = components['schemas']['RedeemVoucherRequest'];
@@ -4587,6 +4847,47 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VoucherListResponse"];
+                };
+            };
+            /** @description Any error: `code` says which, `message` is for the user. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    stream_live: {
+        parameters: {
+            query: {
+                /**
+                 * @description The tab's own id, made once per page load: every stream of a page load names the
+                 *     same one. A stream that opens ends the one its caller holds under the same `tab`,
+                 *     so a stream a browser left behind gives its place back.
+                 */
+                tab: string;
+                /**
+                 * @description What the stream follows: the parameter is given once per topic. A topic named
+                 *     twice counts once. How many a stream may follow is `LIVE_TOPICS_PER_STREAM`.
+                 */
+                topic?: string[];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description An event stream. Each event is named by `event:` and carries the model of that name as JSON in `data:`. `ready` comes first, with a `retry:` line; `beat` says that the stream is alive. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": components["schemas"]["ReadyEvent"] | components["schemas"]["BeatEvent"] | components["schemas"]["MarketQuoteEvent"] | components["schemas"]["MarketStatusEvent"] | components["schemas"]["LeaderboardChangedEvent"] | components["schemas"]["MeChangedEvent"];
                 };
             };
             /** @description Any error: `code` says which, `message` is for the user. */

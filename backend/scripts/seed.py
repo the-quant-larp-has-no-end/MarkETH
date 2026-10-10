@@ -16,9 +16,10 @@ What it leaves behind:
 * Ten markets, one in every state a screen has to show: open in each of the three
   tiers, one paused, one closed, one resolved, one voided, one still proposed, one
   proposal that expires and one rejected. The students propose them, the desk picks
-  the tier each is opened with, the students trade them with the buy buttons of the
-  trade sheet (`TRADE_STAKE_PRESETS_CR`), and one of them sells again before the
-  resolution. Each approval tells the proposer with a notice, as every approval does.
+  the tier each is opened with, the students buy with the shortcuts of the trade
+  sheet (`TRADE_SHARE_PRESETS`, a number of shares each), and one of them sells
+  again before the resolution. Each approval tells the proposer with a notice, as
+  every approval does.
 * The proposal that expires is proposed like the others, with a deadline that is
   `EXPIRES_AFTER` away, and nobody decides on it. The run that makes it leaves it
   PROPOSED; from its deadline on the application reports it EXPIRED, and a later run
@@ -148,14 +149,18 @@ class Person:
 
 @dataclass(frozen=True, slots=True)
 class Buy:
-    """A student taps a buy button of the trade sheet."""
+    """A student taps a shortcut of the trade sheet: a buy of that many shares.
+
+    In every market the shares one student buys add up, as a number, to at most
+    `MAX_STAKE_PER_USER_MARKET`. A share costs less than one credit, so a plan that
+    keeps this rule cannot meet the stake limit, whatever the prices."""
 
     student: int
     """Who, as an index into `STUDENTS`."""
 
     outcome: Outcome
     preset: int
-    """Which button, as an index into `TRADE_STAKE_PRESETS_CR`; the last one when there
+    """Which shortcut, as an index into `TRADE_SHARE_PRESETS`; the last one when there
     are fewer."""
 
 
@@ -637,7 +642,7 @@ class _Seed:
         for place, step in enumerate(plan.trades):
             if isinstance(step, Buy):
                 request = TradeRequest(
-                    side=TradeSide.BUY, outcome=step.outcome, amount_cr=self._preset(step.preset)
+                    side=TradeSide.BUY, outcome=step.outcome, shares=self._shortcut(step.preset)
                 )
             else:
                 bought = executed[step.bought_in]
@@ -648,10 +653,10 @@ class _Seed:
             trader = self._students[step.student]
             executed.append(await self._trading.trade(trader, market_id, key, request))
 
-    def _preset(self, place: int) -> Decimal:
-        """The amount of a buy button, in CR."""
-        presets = self._settings.pricing.stake_presets_micro
-        return to_cr(presets[min(place, len(presets) - 1)])
+    def _shortcut(self, place: int) -> Decimal:
+        """The shares of a shortcut of the trade sheet."""
+        shortcuts = self._settings.pricing.share_presets_micro
+        return to_cr(shortcuts[min(place, len(shortcuts) - 1)])
 
     async def _voucher(self, place: int, plan: DemoVoucher, desk: AuthenticatedUser) -> None:
         """Step 4: one voucher, and its scan when the plan has one."""

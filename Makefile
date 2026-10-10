@@ -7,7 +7,9 @@
 # (`make e2e`) starts nothing: it drives Chrome against the stack that is up.
 #
 # The deploy-* targets act on the VM named in .env (DEPLOY_SSH_HOST, DEPLOY_PATH) over
-# SSH; docs/SERVER_INFRASTRUCTURE.md §14 walks through them.
+# SSH, or with DEPLOY_LOCAL=1 on the machine make runs on, which is how the VM deploys
+# itself (.github/workflows/deploy.yml); docs/SERVER_INFRASTRUCTURE.md §14 walks through
+# them.
 #
 # Kept to what GNU Make 3.81 understands, the version macOS ships.
 
@@ -102,6 +104,11 @@ cqlsh: ## ScyllaDB shell
 # The VM runs compose.yaml alone, from a mirror of this tree under its home directory.
 # Images are built there (the laptop has another CPU architecture), and its .env is
 # rendered there, so no secret ever leaves it.
+#
+# DEPLOY_LOCAL=1 on the make command line is for a make that runs on the VM itself, as
+# the deploy workflow's does on the team's runner: every command below then runs in a
+# shell of this machine, started in the home directory as an SSH session is, and the
+# tree is mirrored from this directory into the one beside it. Nothing connects anywhere.
 
 deploy_setting = $(shell sed -n 's/^$(1)=//p' .env)
 DEPLOY_SSH_HOST = $(call deploy_setting,DEPLOY_SSH_HOST)
@@ -114,7 +121,12 @@ VM_OWN_ENV = $$HOME/$(DEPLOY_PATH).env
 # The organizers' template, the other project that publishes the port the portal
 # forwards to. It is stopped and started, its files are never touched.
 TEMPLATE_PATH := template
-ON_VM = ssh -o BatchMode=yes $(DEPLOY_SSH_HOST)
+# The local form changes directory inside `env`, so that a script a target hands over on
+# standard input is still read from this tree.
+ON_VM = $(if $(DEPLOY_LOCAL),env --chdir="$$HOME" sh -c,ssh -o BatchMode=yes $(DEPLOY_SSH_HOST))
+# Where the tree is mirrored to, as rsync is told, and the VM as the targets name it.
+MIRROR = $(if $(DEPLOY_LOCAL),"$$HOME/$(DEPLOY_PATH)/",--rsh='ssh -o BatchMode=yes' '$(DEPLOY_SSH_HOST):$(DEPLOY_PATH)/')
+VM = $(if $(DEPLOY_LOCAL),this machine,$(DEPLOY_SSH_HOST))
 VM_COMPOSE = cd $(DEPLOY_PATH) && docker compose -f compose.yaml
 # ADMIN_EMAILS=... given to make names the bootstrap admins on the VM; left out, the VM
 # keeps the ones it has. Every other admin and every barista is appointed in the admin
@@ -124,7 +136,7 @@ BOOTSTRAP_ADMINS = $(if $(findstring command line,$(origin ADMIN_EMAILS)),--admi
 # The sync deletes whatever the VM's directory holds beyond this tree, so the directory
 # must be one of its own: a plain name, not the home directory, not the template.
 deploy-guard:
-	@case "$(DEPLOY_SSH_HOST)" in \
+	@case "$(DEPLOY_LOCAL)$(DEPLOY_SSH_HOST)" in \
 		"") echo "Set DEPLOY_SSH_HOST in .env (see .example.env)."; exit 1;; \
 	esac
 	@case "$(DEPLOY_PATH)" in \
@@ -146,59 +158,64 @@ deploy: deploy-guard ## Back up, mirror the tree to the VM, build, migrate, swit
 	@$(MAKE) --no-print-directory deploy-check
 
 deploy-backup: deploy-guard ## Dump the VM's database beside the tree, if there is one
-	@echo "==> $(DEPLOY_SSH_HOST): dump the database into ~/$(DEPLOY_PATH)-backups, if a database exists"
+	@echo "==> $(VM): dump the database into ~/$(DEPLOY_PATH)-backups, if a database exists"
 	$(ON_VM) 'sh -s -- $(DEPLOY_PATH) $(DATABASE_VOLUME)' < infra/deploy/backup.sh
 
 deploy-sync: deploy-guard ## Make ~/DEPLOY_PATH on the VM a mirror of this tree
-	@echo "==> $(DEPLOY_SSH_HOST): make ~/$(DEPLOY_PATH) a mirror of this tree; whatever else is in it is deleted"
-	rsync --archive --compress --delete --rsh='ssh -o BatchMode=yes' \
-		--exclude-from=infra/deploy/rsync-exclude ./ '$(DEPLOY_SSH_HOST):$(DEPLOY_PATH)/'
+	@echo "==> $(VM): make ~/$(DEPLOY_PATH) a mirror of this tree; whatever else is in it is deleted"
+	rsync --archive --compress --delete --exclude-from=infra/deploy/rsync-exclude ./ $(MIRROR)
 	$(ON_VM) 'rm -rf $(DEPLOY_PATH)/compose.override.yaml $(DEPLOY_PATH)/infra/nginx/dev'
 
 deploy-env: deploy-guard ## Render the VM's .env there: [ADMIN_EMAILS=<id>,<id>] names the bootstrap admins
-	@echo "==> $(DEPLOY_SSH_HOST): render ~/$(DEPLOY_PATH)/.env from .example.env, infra/deploy/env.production and ~/$(DEPLOY_PATH).env"
+	@echo "==> $(VM): render ~/$(DEPLOY_PATH)/.env from .example.env, infra/deploy/env.production and ~/$(DEPLOY_PATH).env"
 	$(ON_VM) 'cd $(DEPLOY_PATH)/backend && python3 -B -m scripts.production_env \
 		--example ../.example.env --production ../infra/deploy/env.production \
 		--own "$(VM_OWN_ENV)" --output ../.env --postgres-volume $(DATABASE_VOLUME) $(BOOTSTRAP_ADMINS)'
 	$(ON_VM) '$(VM_COMPOSE) config --quiet'
 
 deploy-build: deploy-guard ## Build the images on the VM; the ones in use stay tagged "previous"
-	@echo "==> $(DEPLOY_SSH_HOST): tag the images in use as 'previous', then build the images of this tree"
+	@echo "==> $(VM): tag the images in use as 'previous', then build the images of this tree"
 	$(ON_VM) '$(VM_COMPOSE) config --images | grep "^$(STACK)-" | while read -r image; do \
 		if docker image inspect "$$image" > /dev/null 2>&1; then docker tag "$$image" "$${image%%:*}:previous"; fi; \
 		done'
 	$(ON_VM) '$(VM_COMPOSE) build'
 
 deploy-pull: deploy-guard ## Pull the store and proxy images on the VM
-	@echo "==> $(DEPLOY_SSH_HOST): pull the images this stack does not build"
+	@echo "==> $(VM): pull the images this stack does not build"
 	$(ON_VM) '$(VM_COMPOSE) pull --ignore-buildable'
 
 deploy-migrate: deploy-guard ## Build or verify the schema on the VM with the image just built
-	@echo "==> $(DEPLOY_SSH_HOST): run the migrate image once; a failure stops the deployment here, with whatever served before still serving"
+	@echo "==> $(VM): run the migrate image once; a failure stops the deployment here, with whatever served before still serving"
 	$(ON_VM) '$(VM_COMPOSE) run --rm migrate'
 
 deploy-stop-template: deploy-guard ## Stop the organizers' template on the VM; its files stay
-	@echo "==> $(DEPLOY_SSH_HOST): docker compose down of ~/$(TEMPLATE_PATH), which frees the published port; its files and images stay"
+	@echo "==> $(VM): docker compose down of ~/$(TEMPLATE_PATH), which frees the published port; its files and images stay"
 	$(ON_VM) 'if [ -f $(TEMPLATE_PATH)/docker-compose.yml ]; then cd $(TEMPLATE_PATH) && docker compose down; \
 		else echo "No template project in ~/$(TEMPLATE_PATH)."; fi'
 
 deploy-up: deploy-guard ## Start the stack on the VM and load the proxy configuration
-	@echo "==> $(DEPLOY_SSH_HOST): start the stack and wait until it is healthy, then recreate nginx so it reads the proxy files of this tree"
+	@echo "==> $(VM): start the stack and wait until it is healthy, then recreate nginx so it reads the proxy files of this tree"
 	$(ON_VM) '$(VM_COMPOSE) up --detach --wait --no-build --remove-orphans'
 	$(ON_VM) '$(VM_COMPOSE) up --detach --wait --no-build --no-deps --force-recreate nginx'
 
+# A machine answers its own address whatever its firewall says, so with DEPLOY_LOCAL the
+# probe from outside is left to another machine: the deploy workflow's second job.
 deploy-check: deploy-guard ## Check the stack on the VM, and from here that its port is closed
-	@echo "==> $(DEPLOY_SSH_HOST): check the running stack (infra/deploy/check.sh); no data is changed"
+	@echo "==> $(VM): check the running stack (infra/deploy/check.sh); no data is changed"
 	$(ON_VM) 'cd $(DEPLOY_PATH) && sh infra/deploy/check.sh'
-	@echo "==> from this machine: the VM's public address must not answer on the published port"
-	@endpoint=$$($(ON_VM) 'cd $(DEPLOY_PATH) && sh infra/deploy/check.sh public-endpoint') \
-		&& sh infra/deploy/check.sh outside $$endpoint
+	@if [ -n "$(DEPLOY_LOCAL)" ]; then \
+		echo "==> not probed from here: this is the VM. Its public address must not answer on the published port from another machine"; \
+	else \
+		echo "==> from this machine: the VM's public address must not answer on the published port"; \
+		endpoint=$$($(ON_VM) 'cd $(DEPLOY_PATH) && sh infra/deploy/check.sh public-endpoint') \
+			&& sh infra/deploy/check.sh outside $$endpoint; \
+	fi
 
 deploy-smoke: deploy-guard ## Walk an empty database on the VM from sign-up to a redeemed voucher: CONFIRM=smoke
 	@test "$(CONFIRM)" = "smoke" || { \
 		echo "This registers made-up people and the first bootstrap admin, makes one of the made-up people a barista and writes a market, a trade, a voucher and a code into the VM's database."; \
 		echo "Run it on an empty database and wipe it afterwards: make deploy-smoke CONFIRM=smoke"; exit 1; }
-	@echo "==> $(DEPLOY_SSH_HOST): walk the stack through infra/deploy/smoke.sh; this writes test data"
+	@echo "==> $(VM): walk the stack through infra/deploy/smoke.sh; this writes test data"
 	$(ON_VM) 'cd $(DEPLOY_PATH) && sh infra/deploy/smoke.sh'
 
 deploy-wipe: deploy-guard ## Dump, then delete every database on the VM: CONFIRM=wipe
@@ -206,19 +223,19 @@ deploy-wipe: deploy-guard ## Dump, then delete every database on the VM: CONFIRM
 		echo "This stops the stack on the VM and deletes every user, balance, market, trade and voucher."; \
 		echo "A dump is taken first. Run: make deploy-wipe CONFIRM=wipe"; exit 1; }
 	@$(MAKE) --no-print-directory deploy-backup
-	@echo "==> $(DEPLOY_SSH_HOST): stop the stack and delete its volumes"
+	@echo "==> $(VM): stop the stack and delete its volumes"
 	$(ON_VM) '$(VM_COMPOSE) down --volumes --remove-orphans'
 	@echo "The VM serves nothing now. Start it empty with: make deploy"
 
 deploy-rollback: deploy-guard ## Stop MarkETH on the VM (its data stays) and start the template again
-	@echo "==> $(DEPLOY_SSH_HOST): stop the MarkETH containers (volumes stay), then start ~/$(TEMPLATE_PATH)"
+	@echo "==> $(VM): stop the MarkETH containers (volumes stay), then start ~/$(TEMPLATE_PATH)"
 	$(ON_VM) 'if [ -f $(DEPLOY_PATH)/compose.yaml ]; then $(VM_COMPOSE) stop; fi'
 	$(ON_VM) 'cd $(TEMPLATE_PATH) && docker compose up --detach'
 
 deploy-status: deploy-guard ## Containers, memory and disk on the VM
-	@echo "==> $(DEPLOY_SSH_HOST): containers, memory and disk"
+	@echo "==> $(VM): containers, memory and disk"
 	$(ON_VM) '$(VM_COMPOSE) ps --all; docker stats --no-stream --format "table {{.Name}}\t{{.MemUsage}}\t{{.MemPerc}}\t{{.CPUPerc}}"; free -m; df -h /'
 
 deploy-logs: deploy-guard ## Tail the logs of the stack on the VM
-	@echo "==> $(DEPLOY_SSH_HOST): follow the logs of every service (Ctrl-C to leave)"
+	@echo "==> $(VM): follow the logs of every service (Ctrl-C to leave)"
 	$(ON_VM) '$(VM_COMPOSE) logs --follow --tail=100'

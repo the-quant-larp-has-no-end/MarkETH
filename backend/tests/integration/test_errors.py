@@ -37,6 +37,7 @@ from app.core.units import to_cr
 from app.db import database as database_errors
 from app.db.database import Database
 from app.main import create_app
+from app.schemas.common import MAX_ERRORS_LISTED
 from app.schemas.markets import Holding
 from app.services.codes import ADMIN_REDEEM_MESSAGE, OWN_BATCH_MESSAGE
 from app.services.market_lifecycle import SELF_DEALING_MESSAGE
@@ -277,6 +278,62 @@ async def test_a_body_that_is_not_json_is_422_whoever_sent_it(
         )
         details = assert_error(response, 422, "VALIDATION_ERROR")
         assert details["errors"][0]["loc"][0] == "body"
+        assert details["errors"][0]["msg"] == "The request is not valid JSON."
+
+
+UNDECODABLE_BODIES: Final[dict[str, bytes]] = {
+    "a byte that is no UTF-8": b'{"code": "\xff"}',
+    "a number too long to read": b"9" * 5000,
+}
+"""Bodies the framework cannot decode at all, so it never gets as far as calling one
+of them invalid JSON."""
+
+
+@pytest.mark.parametrize("body", UNDECODABLE_BODIES.values(), ids=UNDECODABLE_BODIES.keys())
+async def test_a_body_that_cannot_be_decoded_is_422_like_one_that_is_no_json(
+    client: httpx.AsyncClient, as_user: ActAs, body: bytes
+) -> None:
+    """The framework gives up on such a body with a status and a sentence of its own.
+    The client is answered as for any body that is no JSON, whoever is calling."""
+    for who in (None, NEWCOMER, someone(UserRole.USER)):
+        as_user(who)
+        response = await client.post(
+            "/api/codes/redeem", content=body, headers={"Content-Type": "application/json"}
+        )
+
+        details = assert_error(response, 422, "VALIDATION_ERROR")
+        assert response.json()["message"] == "The request is not valid."
+        assert details == {
+            "errors": [
+                {"loc": ["body"], "msg": "The request is not valid JSON.", "type": "json_invalid"}
+            ]
+        }
+        assert "parsing the body" not in response.text
+
+
+async def test_a_request_refused_on_thousands_of_fields_is_told_the_first_fifty(
+    client: httpx.AsyncClient, as_user: ActAs
+) -> None:
+    """A body made of fields nobody asked for is not answered with a line for each:
+    the answer lists the first `MAX_ERRORS_LISTED` and stays a few kilobytes."""
+    as_user(someone(UserRole.USER))
+    unknown = {f"field_{number}": number for number in range(5000)}
+
+    response = await client.post("/api/codes/redeem", json=unknown)
+
+    errors = assert_error(response, 422, "VALIDATION_ERROR")["errors"]
+    assert len(errors) == MAX_ERRORS_LISTED == 50
+    # What the form has to hear comes first: the field it left out.
+    assert errors[0] == {"loc": ["body", "code"], "msg": "This is required.", "type": "missing"}
+    assert [error["loc"] for error in errors[1:]] == [
+        ["body", f"field_{number}"] for number in range(MAX_ERRORS_LISTED - 1)
+    ]
+    assert len(response.content) < 8_000
+
+    # A request with fewer mistakes than that is told every one of them.
+    fewer = {f"field_{number}": number for number in range(MAX_ERRORS_LISTED - 2)}
+    told = assert_error(await client.post("/api/codes/redeem", json=fewer), 422, "VALIDATION_ERROR")
+    assert len(told["errors"]) == MAX_ERRORS_LISTED - 1
 
 
 async def test_a_json_float_is_not_an_amount(client: httpx.AsyncClient, as_user: ActAs) -> None:
@@ -427,7 +484,7 @@ async def test_every_route_that_is_not_public_answers_401_when_the_portal_names_
     client: httpx.AsyncClient, app: FastAPI
 ) -> None:
     routes = protected(app)
-    assert len(routes) == 40, "every operation but /health and /config"
+    assert len(routes) == 41, "every operation but /health and /config"
     assert PROFILE_OPERATION in routes
     for method, path in routes:
         response = await client.request(method, concrete(path))
@@ -692,7 +749,7 @@ async def test_every_member_route_answers_403_profile_required_to_an_identity_wi
 ) -> None:
     as_user(NEWCOMER)
     routes = member_operations(app)
-    assert len(routes) == 39, "every protected operation but the one that saves a profile"
+    assert len(routes) == 40, "every protected operation but the one that saves a profile"
     for method, path in routes:
         response = await client.request(method, concrete(path))
         details = assert_error(response, 403, "PROFILE_REQUIRED")
@@ -771,10 +828,34 @@ async def test_the_guard_of_the_stream_runs_before_the_stream_subscribes(
     assert_error(await client.get(stream), 403, "FORBIDDEN")
 
 
+async def test_the_guard_of_the_event_stream_runs_before_the_hub_opens_a_stream(
+    client: httpx.AsyncClient,
+    container: Container,
+    as_user: ActAs,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stream is opened by a dependency of the route. A caller the guard turns away
+    must not get as far as the hub: such a caller ends nobody's stream and takes no place
+    of `LIVE_MAX_STREAMS`."""
+
+    class NoStreams:
+        def open(self, *asked: object) -> object:
+            raise AssertionError("a refused caller reached the hub")
+
+    monkeypatch.setattr(container, "live", NoStreams())
+    stream = "/api/stream?tab=tab-0123&topic=markets"
+
+    assert_error(await client.get(stream), 401, "UNAUTHENTICATED")
+    as_user(NEWCOMER)
+    assert_error(await client.get(stream), 403, "PROFILE_REQUIRED")
+    as_user(someone(UserRole.USER, UserStatus.SUSPENDED))
+    assert_error(await client.get(stream), 403, "FORBIDDEN")
+
+
 async def test_every_route_that_asks_for_no_role_lets_a_registered_user_through(
     client: httpx.AsyncClient, app: FastAPI, factory: Factory, as_user: ActAs
 ) -> None:
-    """Nineteen operations are open to every registered user. No guard may turn a plain
+    """Twenty operations are open to every registered user. No guard may turn a plain
     user away from one of them; what the service then answers is not the point here."""
     as_user(await factory.user())
     routes = [
@@ -782,8 +863,9 @@ async def test_every_route_that_asks_for_no_role_lets_a_registered_user_through(
         for method, path in member_operations(app)
         if not path.startswith(("/api/admin/", "/api/barista/"))
     ]
-    assert len(routes) == 19
+    assert len(routes) == 20
     assert ("GET", "/api/leaderboard") in routes
+    assert ("GET", "/api/stream") in routes
     assert ("POST", "/api/me/notices/{notice_id}/seen") in routes
     for method, path in routes:
         response = await client.request(method, concrete(path))

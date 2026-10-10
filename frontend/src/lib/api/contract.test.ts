@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, test } from "vitest";
@@ -14,9 +14,26 @@ const CONTRACT = join(FRONTEND, "../backend/openapi.json");
 const read = (path: string) => readFileSync(join(FRONTEND, path), "utf8");
 
 type Parameter = { name: string; in: string; required?: boolean };
-type Operation = { path: string; method: string; operationId: string; parameters: Parameter[] };
+type Operation = {
+  path: string;
+  method: string;
+  operationId: string;
+  parameters: Parameter[];
+  /** The operation answers with an event stream. */
+  stream: boolean;
+};
 type Contract = {
-  paths: Record<string, Record<string, { operationId?: string; parameters?: Parameter[] }>>;
+  paths: Record<
+    string,
+    Record<
+      string,
+      {
+        operationId?: string;
+        parameters?: Parameter[];
+        responses?: Record<string, { content?: Record<string, unknown> }>;
+      }
+    >
+  >;
   components: { schemas: Record<string, unknown> };
 };
 
@@ -30,13 +47,36 @@ function load(): { contract: Contract; operations: Operation[] } {
       method,
       operationId: item[method]?.operationId ?? "",
       parameters: item[method]?.parameters ?? [],
+      stream: "text/event-stream" in (item[method]?.responses?.["200"]?.content ?? {}),
     })),
   );
   return { contract, operations };
 }
 
-/** Operations no screen calls (DESIGN.md §13), and the stream, which is an EventSource. */
-const NOT_CALLED = new Set(["get_health", "run_monthly_grants", "stream_market"]);
+/**
+ * Operations the app does not call through the client: the two no screen calls
+ * (DESIGN.md §13), and the event streams, which `lib/live` opens as an `EventSource`.
+ */
+const NOT_CALLED = new Set(["get_health", "run_monthly_grants", "stream_live", "stream_market"]);
+
+/** The code of the app: every file under `src/` but the tests, their helpers and the generated types. */
+function appFiles(): { path: string; text: string }[] {
+  return (readdirSync(join(FRONTEND, "src"), { recursive: true }) as string[])
+    .map((name) => `src/${name.split("\\").join("/")}`)
+    .filter((path) => /\.tsx?$/.test(path))
+    .filter((path) => !/\.test\.tsx?$/.test(path) && !path.startsWith("src/test/"))
+    .filter((path) => path !== "src/lib/api/schema.d.ts")
+    .map((path) => ({ path, text: read(path) }));
+}
+
+/** A path of the contract as code writes it: `{market_id}` stands there as `${...}`. */
+function addressOf(path: string): RegExp {
+  const written = path
+    .split(/\{[^}]+\}/)
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("\\$\\{[^}]*\\}");
+  return new RegExp(`${written}(?![\\w/-])`);
+}
 
 // The contract lies beside the frontend in the repository; an image build has only frontend/.
 describe.skipIf(!existsSync(CONTRACT))("the generated types match backend/openapi.json", () => {
@@ -71,7 +111,6 @@ describe.skipIf(!existsSync(CONTRACT))("the generated types match backend/openap
 describe.skipIf(!existsSync(CONTRACT))("lib/api covers the contract", () => {
   const queries = read("src/lib/api/queries.ts");
   const mutations = read("src/lib/api/mutations.ts");
-  const stream = read("src/lib/live/market-stream.ts");
 
   test("every read has its query", () => {
     const { operations } = load();
@@ -142,12 +181,23 @@ describe.skipIf(!existsSync(CONTRACT))("lib/api covers the contract", () => {
     expect(mutations).not.toContain("newUuid");
   });
 
-  test("the stream is followed by the live helper, at the contract's path", () => {
+  test("an event stream is opened, not called: one file of lib/live names its path, and no other file does", () => {
     const { operations } = load();
-    const path = operations.find((operation) => operation.operationId === "stream_market")?.path;
+    const streams = operations.filter((operation) => operation.stream);
+    const app = appFiles();
 
-    expect(path).toBe("/api/markets/{market_id}/stream");
-    expect(stream).toContain("/api/markets/${encodeURIComponent(marketId)}/stream");
+    expect(streams.length).toBeGreaterThan(0);
+    for (const stream of streams) {
+      const named = `${stream.operationId} at ${stream.path}`;
+      expect(stream.method, named).toBe("get");
+      expect(NOT_CALLED.has(stream.operationId), named).toBe(true);
+      expect(queries, named).not.toContain(`api.GET("${stream.path}"`);
+
+      const address = addressOf(stream.path);
+      const naming = app.filter((file) => address.test(file.text)).map((file) => file.path);
+      expect(naming, named).toHaveLength(1);
+      expect(naming[0], named).toMatch(/^src\/lib\/live\//);
+    }
   });
 
   test("no query sets a page size: a list is as long as the API makes it", () => {

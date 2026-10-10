@@ -1,4 +1,3 @@
-import Image from "next/image";
 import {
   AlarmClockIcon,
   CableCarIcon,
@@ -10,14 +9,18 @@ import {
 
 import { cn } from "@/lib/utils";
 
+import { BrandImage } from "./brand-image";
+import type { BrandFile } from "./files";
+
 type Slot = {
   /** What stands in the slot until the pixel art is drawn: a 32 px lucide icon. */
   standIn: LucideIcon;
   /**
-   * The drawing, once it exists in `public/brand/pixel/`: its file, and the side of its
-   * pixel grid (16 or 24), so that it is shown at a whole multiple of that grid.
+   * The drawing, once it exists in `public/brand/pixel/`: its name in `./files`, where
+   * the file is imported, and the side of its pixel grid (16 or 24), so that it is shown
+   * at a whole multiple of that grid.
    */
-  art: { src: string; grid: 16 | 24 } | null;
+  art: { file: BrandFile; grid: 16 | 24 } | null;
 };
 
 /**
@@ -54,8 +57,8 @@ export function Illustration({ name, className }: { name: IllustrationName; clas
   if (slot.art !== null) {
     const side = SHOWN[slot.art.grid];
     return (
-      <Image
-        src={slot.art.src}
+      <BrandImage
+        name={slot.art.file}
         alt=""
         aria-hidden
         width={side}
