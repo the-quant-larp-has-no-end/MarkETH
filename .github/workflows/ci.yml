@@ -1,6 +1,7 @@
 # The checks behind "finish with `make lint` and `make test` green" (CLAUDE.md), run on
-# every pull request and on main. Deploying is .github/workflows/deploy.yml. The ScyllaDB tests are slow and stay deselected, as
-# they are in a plain `uv run pytest`.
+# every update of main. A pull request starts none: the runner is one machine, and its
+# time goes to what main holds. Deploying is .github/workflows/deploy.yml. The ScyllaDB
+# tests are slow and stay deselected, as they are in a plain `uv run pytest`.
 #
 # The jobs run on the team's own runner, which is the VM that serves the app
 # (docs/SERVER_INFRASTRUCTURE.md): one runner, so one job at a time, beside the running
@@ -11,7 +12,6 @@
 name: CI
 
 on:
-  pull_request:
   push:
     branches: [main]
 
