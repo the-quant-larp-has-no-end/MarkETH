@@ -24,16 +24,28 @@ const logoLinkClasses = "-ml-2 inline-flex h-11 shrink-0 items-center rounded-md
 /**
  * The top bar before the app knows who is looking (DESIGN.md §13, Start-up): the logo
  * and nothing on its right. With `href` the logo is a link: on the usage policy of a
- * visitor without a profile it leads to the profile set-up.
+ * visitor without a profile it leads to the profile set-up. With `back` that link is one
+ * step back in the history: the set-up is where the visitor came from, at the address it
+ * was opened with.
  */
-export function BareTopBar({ href }: { href?: string }) {
+export function BareTopBar({ href, back = false }: { href?: string; back?: boolean }) {
+  const router = useRouter();
+
   return (
     <header data-slot="top-bar" className={barClasses}>
       <div className={rowClasses}>
         {href === undefined ? (
           <Logo />
         ) : (
-          <Link href={href} className={logoLinkClasses}>
+          <Link
+            href={href}
+            className={logoLinkClasses}
+            onClick={(event) => {
+              if (!back) return;
+              event.preventDefault();
+              router.back();
+            }}
+          >
             <Logo />
           </Link>
         )}

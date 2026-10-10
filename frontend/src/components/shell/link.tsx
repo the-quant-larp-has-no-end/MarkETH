@@ -37,20 +37,11 @@ export function Link({ children, ...props }: ComponentProps<typeof NextLink>) {
 /**
  * A link that is text (DESIGN.md §12): inside a sentence, or a line of its own such as
  * "Usage policy". `--foreground`, underlined, in the text style of its line, with a
- * target 44 px tall. Green and red are never used for a link.
- *
- * With `newTab` it opens beside the page, which then keeps what was typed into it: the
- * usage policy from a form. Say so near the link for a screen reader (`aria-describedby`).
+ * target 44 px tall. Green and red are never used for a link. It stays in the tab it is in.
  */
-export function TextLink({
-  className,
-  newTab = false,
-  children,
-  ...props
-}: ComponentProps<typeof NextLink> & { newTab?: boolean }) {
+export function TextLink({ className, children, ...props }: ComponentProps<typeof NextLink>) {
   return (
     <Link
-      {...(newTab ? { target: "_blank", rel: "noopener" } : {})}
       {...props}
       data-slot="text-link"
       className={cn(

@@ -596,7 +596,7 @@ Height 48 px (56 px for the trade Confirm), `--radius-md`, `label` text style, f
 
 ### Text link
 
-A link that is text: inside a sentence ("I accept the usage policy") or a line of its own ("Read the usage policy", "Usage policy"). `--foreground`, underlined, in the text style of the line it stands in, with a target 44 px tall. It is never green or red (§4). A link that opens in a tab of its own says so to a screen reader (§15).
+A link that is text: inside a sentence ("I accept the usage policy") or a line of its own ("Read the usage policy", "Usage policy"). `--foreground`, underlined, in the text style of the line it stands in, with a target 44 px tall. It is never green or red (§4). It opens in the tab it is in.
 
 ### Outcome buttons and toggle
 
@@ -876,7 +876,7 @@ Shown in place of the route while `/me` answers `PROFILE_REQUIRED`: the first vi
    - **Level** (`degree_level`): a picker (§12) of the levels in `/config` `degrees`, each shown by its `name` and sent as its `level`, with the placeholder "Choose a level".
    - **Programme** (`degree_programme`): a picker of the `programmes` of the chosen level, with the placeholder "Choose a programme", disabled until a level is chosen. Changing the level clears it.
 4. One sentence in `body-sm` `--muted-foreground`: "Other players can see your username, your degree, your tokens and your trading record."
-5. A checkbox (§12), not ticked: "I accept the usage policy". The words "usage policy" are a link to `/policy`. It opens in a tab of its own, so the fields keep what was typed. This is a line of the form, not a banner and not a popup.
+5. A checkbox (§12), not ticked: "I accept the usage policy". The words "usage policy" are a link to `/policy`. It opens in the same tab, and the set-up keeps what was entered: the fields and the box stand as they were left for whoever comes back, at the address the set-up was opened with. What was entered is held in memory, not in browser storage: a reload forgets it. This is a line of the form, not a banner and not a popup.
 6. A primary "Create profile" button, disabled until all three fields are filled and the box is ticked. It sends `PUT /me/profile` with the three fields and `policy_accepted: true`.
 7. A footer, below the form: the main-building dome and under it, in `body-sm` `--muted-foreground`, "Pick a name for the leaderboard. The podium remembers."
 
@@ -898,7 +898,7 @@ States as on the set-up screen. Success shows the toast "Profile saved" and stay
 
 The rules of MarkETH on one page of plain text. Whoever creates a profile accepts it, and whoever proposes a market accepts it again with that proposal: both requests carry `policy_accepted: true`. Four places link to it: the checkbox of the profile set-up, the checkbox of the propose form, the card of the Profile screen and the footer of the Wallet.
 
-1. Top bar with a back arrow and the title "Usage policy". No tab is active. A visitor without a profile gets the frame of the boot screen in its place: the top bar with the logo and nothing on its right, no tab bar, and the title as a heading above the text. There the logo leads to the profile set-up.
+1. Top bar with a back arrow and the title "Usage policy". No tab is active. A visitor without a profile gets the frame of the boot screen in its place: the top bar with the logo and nothing on its right, no tab bar, and the title as a heading above the text. There the logo leads to the profile set-up: for a visitor who came from the set-up it is one step back, to the address the set-up stood at.
 2. The text below, in a column of at most 720 px. A heading is set in `h3`, a paragraph in `body` and `--foreground`, a list as a plain bulleted list. 24 px separate two sections, 8 px a heading and its text.
 
 The page asks the API for nothing: its figures are fields of the `/config` that start-up read, written below as placeholders. A noun after a placeholder follows its number, as "tokens" does (§10). There is no illustration, no campus line and no button on the page. It is read, and left with the back arrow.
@@ -1238,7 +1238,7 @@ An inner screen with the title "Propose a market". A single-column form, one fie
 - Each text field shows its character limit from `/config`: `question_min_length` to `question_max_length` for the question, `short_text_max_length` for the two definitions and the source, `long_text_max_length` for how it is decided.
 - The two times are entered and shown in the `/config` `timezone` and sent as ISO 8601 with their offset. Their limits (`max_market_lifetime_days`, `max_resolution_delay_days`) are stated in help text from `/config`.
 - Under the fields, two notes in `body-sm` `--muted-foreground`: "You cannot trade a market you propose." and "You can propose {max_proposals_per_day} markets a day."
-- Then a checkbox (§12), not ticked: "I accept the usage policy". The words "usage policy" are a link to `/policy`. It opens in a tab of its own, so the form keeps what was typed. What a market may and may not be about is said there, and nowhere on this form. The policy is accepted anew with every proposal: the box is empty whenever the form is.
+- Then a checkbox (§12), not ticked: "I accept the usage policy". The words "usage policy" are a link to `/policy`. It opens in the same tab, and the form keeps what was entered: the fields and the box stand as they were left for whoever comes back to `/propose`, until the proposal is sent. What was entered is held in memory, not in browser storage: a reload forgets it. What a market may and may not be about is said there, and nowhere on this form. The policy is accepted anew with every proposal: the box is empty whenever the form is, and a proposal that was sent empties both.
 - Primary "Submit for review", disabled until every field is filled and the box is ticked. It sends `POST /markets` with the seven fields and `policy_accepted: true`. Validation errors from the API are placed on their fields using `details`, one that names `policy_accepted` under the checkbox; `LIMIT_EXCEEDED` shows the API's `message` above the button.
 - **Success** shows the toast "Proposal sent. VIS reviews it before it opens." (§12). There is no dialog: the form is empty again, its box unticked, and the proposal stands at the top of the list below, where its status shows.
 - Below the form, **My proposals** from `GET /me/proposals`: the question, a status badge and, when rejected, `rejection_reason`, and nothing else about the market. A proposal that was not decided before its `close_at` reads "Expired", with the line "It was not reviewed before its closing time." The badge of a proposal that was resolved names its outcome ("Resolved YES", "Resolved NO") from `outcome` of the row. A proposal whose `status` is none of PROPOSED, REJECTED and EXPIRED is a link to its market. With none: the blackboard illustration and "No proposals yet."
@@ -1461,7 +1461,7 @@ Every button that posts is disabled from tap until response. Destructive admin a
 - **Receipt banner:** it takes the focus when it appears, without scrolling the page, and is read as one sentence: "Bought 50 YES shares for 25.312468 tokens, 0.506 tokens per share". The next Tab reaches Buy / Sell.
 - **Picker:** from 768 px a combobox named by its label, whose list is a listbox with the chosen option marked selected; below 768 px a button named "{label}: {chosen label}" or "{label}: {placeholder}" that opens a dialog titled by the label, with a search field named "Search levels" or "Search programmes". A change of the query is told once in a polite region: "{n} results", "1 result" or the sentence for no match (§12).
 - **Close cross:** a button named "Close" in every sheet and every dialog, reachable with the keyboard. The Escape key does what it does. It is disabled while a request the surface sent is out (§12).
-- **Checkbox:** named by its whole text ("I accept the usage policy"). The link inside it is a stop of its own, named "usage policy", and says that it opens in another tab.
+- **Checkbox:** named by its whole text ("I accept the usage policy"). The link inside it is a stop of its own, named "usage policy".
 - **Barista results:** each of the three full-screen results is announced when it appears. "Redeemed a moment ago at this bar" is read with its time, so that a barista who does not look hears that nothing was redeemed twice.
 - **Podium:** read as a list of three in the order first, second, third. A name that is cut on screen is read whole, and an empty place is hidden from a screen reader.
 - **Leaderboard rows:** a row of the ranking, a filled place of the podium and the pinned row are each a `button` with `aria-haspopup="dialog"`, named by what it shows; it opens the statistics of its player (§13).

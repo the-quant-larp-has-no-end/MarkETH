@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { marketDetail, proposal, TODAY } from "@/test/fixtures";
 import { deferred, json, mockApi, noAnswer, type Route } from "@/test/http";
-import { renderWithProviders } from "@/test/render";
+import { createTestQueryClient, renderWithProviders } from "@/test/render";
 
 import { ProposeScreen } from "./propose-screen";
 
@@ -92,6 +92,25 @@ describe("Propose market", () => {
     expect(policy()).not.toBeChecked();
     expect(submit()).toBeDisabled();
     expect(api.calls(PROPOSE)).toHaveLength(1);
+  });
+
+  test("keeps what was entered while the screen is away: after a look at the usage policy it is all still there", async () => {
+    mockApi({ [PROPOSALS]: json(200, { items: [] }) });
+    // The page's query client outlives the screen.
+    const client = createTestQueryClient();
+    const first = renderWithProviders(<ProposeScreen />, { client });
+    await fillIn(first.user);
+    expect(screen.getByRole("link", { name: "usage policy" })).toHaveAttribute("href", "/policy");
+
+    first.unmount();
+    renderWithProviders(<ProposeScreen />, { client });
+
+    expect(field("Question")).toHaveValue(QUESTION);
+    expect(field("Source")).toHaveValue("ethz.ch gastronomy");
+    expect(field("Trading closes")).toHaveValue("2026-12-11T18:00");
+    expect(field("Decided by")).toHaveValue("2026-12-18T18:00");
+    expect(policy()).toBeChecked();
+    expect(submit()).toBeEnabled();
   });
 
   test("the proposal stands at the top of the list at once, before the list has been read again", async () => {

@@ -23,14 +23,15 @@ export function PolicyScreen() {
  * does not stand in front of, because the policy is read before it is accepted. It
  * stands on the frame of the boot screen: the top bar with the logo and nothing on its
  * right, no tab bar, and the title as a heading above the text. The logo leads to the
- * profile set-up.
+ * profile set-up: with `fromSetup`, one step back to the set-up the visitor came from,
+ * which stands at the address that was opened and holds what was typed.
  *
  * Start-up shows it in place of the route. It uses the tunables and nothing of a profile.
  */
-export function PolicyForVisitor() {
+export function PolicyForVisitor({ fromSetup = false }: { fromSetup?: boolean }) {
   return (
     <div data-slot="policy-visitor" className="flex min-h-dvh flex-col">
-      <BareTopBar href="/" />
+      <BareTopBar href="/" back={fromSetup} />
       <main className="mx-auto flex w-full flex-1 flex-col gap-6 px-4 pt-4 pb-6 md:max-w-[45rem]">
         <h1 className="type-h1">Usage policy</h1>
         <PolicyText />
