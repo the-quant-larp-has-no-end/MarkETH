@@ -26,6 +26,7 @@ dev = [
     "ruff>=0.16",
     "mypy>=2.4",
     "import-linter>=2.3",
+    "pytest-xdist>=3.8",
 ]
 
 [tool.uv]

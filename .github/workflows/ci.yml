@@ -51,8 +51,9 @@ jobs:
       - run: uv run mypy
       - run: uv run lint-imports
       # The integration tests start Postgres and Redis through Testcontainers, on the
-      # runner's Docker.
-      - run: uv run pytest
+      # runner's Docker: one pair for each of the three processes that share the tests.
+      # The VM has four vCPUs, and the fourth stays with the stack it serves.
+      - run: uv run pytest --numprocesses 3
 
   frontend:
     name: Frontend
