@@ -737,6 +737,7 @@ async def test_a_registered_caller_is_the_row_with_the_role_it_has_in_effect(
                 email=row.email,
                 name=row.name,
                 username=row.username,
+                degree_programme=row.degree_programme,
                 role=role,
                 status=UserStatus.ACTIVE,
             ),

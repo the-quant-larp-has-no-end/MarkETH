@@ -1911,6 +1911,7 @@ async def test_without_postgres_a_trade_is_answered_503(
             email="trader@ethz.ch",
             name="Trader",
             username="trader",
+            degree_programme="BSc Computer Science",
             role=UserRole.USER,
             status=UserStatus.ACTIVE,
         )

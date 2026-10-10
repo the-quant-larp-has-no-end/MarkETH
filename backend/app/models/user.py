@@ -14,6 +14,10 @@ instant the profile was created: no profile exists without it.
 
 A username is lower case and unique. It has one spelling, so `neo` is one name and the
 database needs no rule about case to keep it that way.
+
+`degree_changed_at` is the instant of the latest save that changed `degree_programme`.
+It is NULL while the programme is the one the profile was created with, so the first
+change waits for nothing (`PROGRAMME_CHANGE_COOLDOWN_DAYS`).
 """
 
 from datetime import datetime
@@ -48,3 +52,4 @@ class User(Base):
     status: Mapped[UserStatus] = mapped_column(enum_column(UserStatus, "status"))
     policy_accepted_at: Mapped[datetime]
     created_at: Mapped[datetime]
+    degree_changed_at: Mapped[datetime | None]

@@ -1,4 +1,4 @@
-"""Rules a table definition cannot state: three trigger functions and their triggers
+"""Rules a table definition cannot state: four trigger functions and their triggers
 (SPEC §1, §5, §7, Appendix A.7, A.8).
 
 * `postings_entry_balanced`: a journal entry nets to zero at commit, or the transaction
@@ -6,6 +6,8 @@
 * `postings_apply`: every posting moves the balance of its account, and only the
   transaction that created an entry may add postings to it.
 * `markets_liquidity_fixed_while_open`: the budget and b of an OPEN market cannot change.
+* `markets_audience_fixed`: the audience of a market cannot change, whatever its status
+  and whoever asks.
 
 The baseline revision (`migrations/versions/0001_baseline.py`) runs `TRIGGER_STATEMENTS`
 right after it has created the tables from the models. `app.models.fingerprint` hashes
@@ -146,6 +148,32 @@ BEFORE UPDATE OF b_micro, budget_micro ON markets
 FOR EACH ROW EXECUTE FUNCTION keep_open_market_liquidity()
 """
 
+# Whom a market is for is decided when it is proposed. The trigger fires for every
+# UPDATE that names the column and lets through the one that sets it to what it is. It
+# holds for the owner role as for the app role: no privilege stands in for it.
+CREATE_AUDIENCE_FUNCTION: Final[str] = """
+CREATE FUNCTION keep_market_audience() RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog, public, pg_temp
+AS $$
+BEGIN
+    IF NEW.audience_programme IS DISTINCT FROM OLD.audience_programme THEN
+        RAISE EXCEPTION 'market %: the audience of a market cannot change', OLD.id
+            USING ERRCODE = 'check_violation',
+                  TABLE = 'markets',
+                  CONSTRAINT = 'markets_audience_fixed';
+    END IF;
+    RETURN NEW;
+END;
+$$
+"""
+
+CREATE_AUDIENCE_TRIGGER: Final[str] = """
+CREATE TRIGGER markets_audience_fixed
+BEFORE UPDATE OF audience_programme ON markets
+FOR EACH ROW EXECUTE FUNCTION keep_market_audience()
+"""
+
 TRIGGER_STATEMENTS: Final[tuple[str, ...]] = (
     CREATE_BALANCE_FUNCTION,
     CREATE_BALANCE_TRIGGER,
@@ -153,6 +181,8 @@ TRIGGER_STATEMENTS: Final[tuple[str, ...]] = (
     CREATE_APPLY_TRIGGER,
     CREATE_LIQUIDITY_FUNCTION,
     CREATE_LIQUIDITY_TRIGGER,
+    CREATE_AUDIENCE_FUNCTION,
+    CREATE_AUDIENCE_TRIGGER,
 )
 """In the order the baseline runs them: each function before the trigger that calls it."""
 
@@ -160,6 +190,7 @@ TRIGGER_FUNCTIONS: Final[tuple[str, ...]] = (
     "assert_journal_entry_balanced",
     "apply_posting",
     "keep_open_market_liquidity",
+    "keep_market_audience",
 )
 """What remains once the tables are dropped: a trigger goes with its table, the function
 it calls does not."""

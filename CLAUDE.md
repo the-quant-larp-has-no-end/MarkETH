@@ -27,6 +27,7 @@ Run from the repository root. `make` alone lists them.
 | `make up` / `make down` / `make logs` | Start, stop, tail the stack (app at http://localhost:8080, who is calling at http://localhost:8080/__dev/identity) |
 | `make migrate` / `make seed` | Build the schema and check that it is the one of this code / load demo data |
 | `make test` | Backend and frontend tests (`make test-backend`, `make test-frontend`, `make test-scylla`) |
+| `make e2e` | The browser suite of `frontend/e2e/`, in Chrome against the stack that is up and seeded |
 | `make lint` / `make fmt` | Check / fix style, types and architecture rules |
 | `make api-client` | Export `backend/openapi.json` and regenerate the frontend's API types |
 | `make psql` / `make redis-cli` / `make cqlsh` | Shells into the data stores |

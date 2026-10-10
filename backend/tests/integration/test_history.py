@@ -408,6 +408,7 @@ async def test_with_postgres_unreachable_there_is_no_chart_whatever_scylla_holds
             email="member@ethz.ch",
             name="Member",
             username="member",
+            degree_programme="BSc Computer Science",
             role=UserRole.USER,
             status=UserStatus.ACTIVE,
         )

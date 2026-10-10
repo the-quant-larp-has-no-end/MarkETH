@@ -131,6 +131,11 @@ class JournalKind(StrEnum):
     VOUCHER_REDEEM = "VOUCHER_REDEEM"
     VOUCHER_REFUND = "VOUCHER_REFUND"
     ADMIN_ADJUSTMENT = "ADMIN_ADJUSTMENT"
+    STREAK_REWARD = "STREAK_REWARD"
+    """The tokens of one counted day of a streak, from `vis:issuance` to the user."""
+
+    STREAK_BONUS = "STREAK_BONUS"
+    """The bonus of a milestone a streak reached, from `vis:issuance` to the user."""
 
 
 class CodeStatus(StrEnum):
@@ -160,6 +165,36 @@ class NoticeKind(StrEnum):
 
     PROPOSAL_APPROVED = "PROPOSAL_APPROVED"
     """An admin approved a market the user proposed: it is open."""
+
+
+class BroadcastStatus(StrEnum):
+    """Where a broadcast stands (`broadcasts.status`). A row holds every one of the five.
+
+    A proposer's broadcast is REQUESTED until an admin approves or refuses it; an
+    admin's own starts LIVE. REQUESTED, APPROVED and LIVE are open: a market has at
+    most one open broadcast."""
+
+    REQUESTED = "REQUESTED"
+    APPROVED = "APPROVED"
+    REFUSED = "REFUSED"
+    LIVE = "LIVE"
+    ENDED = "ENDED"
+
+
+class BroadcastEndReason(StrEnum):
+    """Why a broadcast ended (`broadcasts.end_reason`)."""
+
+    BROADCASTER = "BROADCASTER"
+    """Its broadcaster ended it."""
+
+    ADMIN = "ADMIN"
+    """An admin ended it."""
+
+    STALLED = "STALLED"
+    """No piece arrived for `BROADCAST_STALL_SECONDS`."""
+
+    TIME_LIMIT = "TIME_LIMIT"
+    """It ran for `BROADCAST_MAX_MINUTES`."""
 
 
 class LeaderboardSort(StrEnum):

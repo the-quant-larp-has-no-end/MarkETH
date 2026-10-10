@@ -1009,6 +1009,7 @@ async def test_with_postgres_unreachable_the_page_and_an_acknowledgement_are_503
             email="admin@ethz.ch",
             name="Admin",
             username="admin0",
+            degree_programme="BSc Computer Science",
             role=UserRole.ADMIN,
             status=UserStatus.ACTIVE,
         )

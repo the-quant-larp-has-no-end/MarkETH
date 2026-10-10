@@ -6,15 +6,23 @@ The market row is the lock every trade takes first (SPEC §8). It carries the LM
 SPEC §5: budget and b are immutable while a market is OPEN. A trigger
 (`app.models.triggers`) rejects such an UPDATE; changing them means halting the market
 first.
+
+`audience_programme` says whom a market is for: NULL for everybody, or the label of the
+one degree programme whose members see and trade it. It is the proposer's own
+`users.degree_programme` at the moment of the proposal and never changes after that: a
+second trigger refuses every UPDATE that would change it, from any role. The database
+does not check the label against the catalogue of programmes, which is code
+(`app.core.degrees`).
 """
 
 from datetime import datetime
 from typing import Final
 from uuid import UUID, uuid7
 
-from sqlalchemy import CheckConstraint, ForeignKey, Index, Text
+from sqlalchemy import CheckConstraint, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.core.degrees import PROGRAMME_MAX_LENGTH
 from app.core.enums import STORED_MARKET_STATUSES, MarketStatus, MarketTier, ResolutionOutcome
 from app.db.base import Base, enum_column
 
@@ -40,8 +48,12 @@ class Market(Base):
         CheckConstraint("q_no_micro >= 0", name="q_no_non_negative"),
         CheckConstraint("version >= 0", name="version_non_negative"),
         CheckConstraint("volume_micro >= 0", name="volume_non_negative"),
+        # A public market says NULL, never an empty label.
+        CheckConstraint("audience_programme <> ''", name="audience_programme_not_blank"),
         Index(None, "status", "close_at"),
         Index(None, "created_by", "created_at"),
+        # The list of one programme.
+        Index(None, "audience_programme", "status", "close_at"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid7)
@@ -63,6 +75,7 @@ class Market(Base):
     close_at: Mapped[datetime]
     resolve_by: Mapped[datetime]
     created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
+    audience_programme: Mapped[str | None] = mapped_column(String(PROGRAMME_MAX_LENGTH))
     approved_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
     rejection_reason: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime]

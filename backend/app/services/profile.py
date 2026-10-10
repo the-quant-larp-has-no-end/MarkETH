@@ -110,7 +110,8 @@ class ProfileService:
 
         After the commit the answer is built the way `GET /me` builds it:
         `AccountService.me(AuthenticatedUser(id=user.id, email=user.email,
-        name=user.name, username=user.username, role=identity.role,
+        name=user.name, username=user.username,
+        degree_programme=user.degree_programme, role=identity.role,
         status=user.status))`, returned as a `ProfileSavedResponse` with
         `signup_granted`. The role is the identity's: the one this request was
         let in with. That read is a transaction of its own. If Postgres is lost
@@ -188,6 +189,7 @@ class ProfileService:
                 email=user.email,
                 name=user.name,
                 username=user.username,
+                degree_programme=user.degree_programme,
                 role=identity.role,
                 status=user.status,
             )

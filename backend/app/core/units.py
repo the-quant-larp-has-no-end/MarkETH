@@ -87,6 +87,21 @@ def format_tokens(value_micro: int) -> str:
     return f"{sign}{int(whole):,}{point}{fraction} {word}"
 
 
+def format_shares(value_micro: int) -> str:
+    """A number of shares as a sentence on screen says it: "1 share", "0.5 shares",
+    "1,250 shares". The figure is the whole number, its digits before the point grouped
+    in threes.
+
+    For the message of an error that names a size in shares. A number of shares a
+    client formats itself travels as `format_cr`: shares have the scale of credits.
+    """
+    text = format_cr(value_micro)
+    sign = "-" if text.startswith("-") else ""
+    whole, point, fraction = text.removeprefix("-").partition(".")
+    word = "share" if text == "1" else "shares"
+    return f"{sign}{int(whole):,}{point}{fraction} {word}"
+
+
 def ceil_micro(value: Decimal) -> int:
     """Round a fractional micro amount up. Used for costs: the trader pays the dust."""
     return int(value.to_integral_value(rounding=ROUND_CEILING))

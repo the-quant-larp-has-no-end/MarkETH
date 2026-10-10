@@ -138,13 +138,14 @@ map $http_sec_fetch_mode $foreign_request {
 }
 
 # --- Limits: the second layer behind the API's own (SPEC §9) -------------------------
-# Counted per signed-in user, so that visitors who share an address (a lecture hall, a
-# Wi-Fi) do not share a bucket. A request that names nobody, which the API refuses
-# anyway, is counted by client address; so is one whose id is longer than the 255 bytes
-# a connection limit accepts as a key.
-map $http_x_user_id $caller {
+# Counted per caller, so that visitors who share an address (a lecture hall, a Wi-Fi) do
+# not share a bucket. The caller is $api_caller, the id under which this proxy hands a
+# request to the API: the server block below sets it to the id the portal names. A
+# request that names nobody, which the API refuses anyway, is counted by client address;
+# so is one whose id is longer than the 255 bytes a connection limit accepts as a key.
+map $api_caller $caller {
     default         $binary_remote_addr;
-    "~^.{1,255}$"   $http_x_user_id;
+    "~^.{1,255}$"   $api_caller;
 }
 limit_req_zone  $caller zone=api_per_caller:10m rate=${NGINX_RATE_LIMIT};
 limit_req_status 429;
@@ -190,7 +191,11 @@ log_format marketh escape=json
     '"portal_cookie":$portal_cookie}';
 
 server {
-    listen 80 default_server;
+    # `reuseport` gives every worker process a listening socket of its own, and the
+    # kernel spreads the connections that arrive over them. On one shared socket, the
+    # connections of a room that arrive one by one mostly end up with the same worker,
+    # and a worker takes no more than its `worker_connections`.
+    listen 80 default_server reuseport;
     server_name _;
     server_tokens off;
     access_log /var/log/nginx/access.log marketh;
@@ -240,6 +245,11 @@ server {
     # reach the API exactly as they arrived, a repeated line included, and the API
     # refuses a request without them.
     #
+    # $api_caller is that caller as the limits count them (the map $caller above): the
+    # id the portal sent. It is set here, before the line that includes the file of a
+    # laptop, which sets it again to the caller that file names.
+    set $api_caller $http_x_user_id;
+
     # On a laptop nobody signs in. compose.override.yaml mounts infra/nginx/dev, which is
     # rendered into the directory below and names the caller instead. compose.yaml
     # mounts nothing there, so in the deployed stack this line includes no file.

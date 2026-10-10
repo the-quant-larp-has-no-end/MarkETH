@@ -35,6 +35,14 @@ class AuditAction(StrEnum):
     USER_REINSTATE = "user.reinstate"
     USER_SET_ROLE = "user.set_role"
     USER_ADJUST_BALANCE = "user.adjust_balance"
+    QUESTION_ANSWER = "question.answer"
+    QUESTION_REMOVE = "question.remove"
+    CHAT_MESSAGE_REMOVE = "chat_message.remove"
+    CHAT_MESSAGE_REMOVE_OF_USER = "chat_message.remove_of_user"
+    BROADCAST_APPROVE = "broadcast.approve"
+    BROADCAST_REFUSE = "broadcast.refuse"
+    BROADCAST_START = "broadcast.start"
+    BROADCAST_END = "broadcast.end"
 
 
 class AuditTarget(StrEnum):
@@ -45,6 +53,9 @@ class AuditTarget(StrEnum):
     ALERT = "alert"
     GRANTS = "grants"
     USER = "user"
+    QUESTION = "question"
+    CHAT_MESSAGE = "chat_message"
+    BROADCAST = "broadcast"
 
 
 class AuditService:

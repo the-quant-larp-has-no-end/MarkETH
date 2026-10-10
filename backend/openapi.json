@@ -899,7 +899,9 @@
           "VOUCHER_ISSUE",
           "VOUCHER_REDEEM",
           "VOUCHER_REFUND",
-          "ADMIN_ADJUSTMENT"
+          "ADMIN_ADJUSTMENT",
+          "STREAK_REWARD",
+          "STREAK_BONUS"
         ],
         "title": "JournalKind",
         "type": "string"

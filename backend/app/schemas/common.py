@@ -324,6 +324,21 @@ class Limit(StrEnum):
     MAX_ADMIN_ADJUSTMENT_CR = "MAX_ADMIN_ADJUSTMENT_CR"
     """An admin's adjustment would add more to a balance than one adjustment may."""
 
+    PROGRAMME_CHANGE_COOLDOWN_DAYS = "PROGRAMME_CHANGE_COOLDOWN_DAYS"
+    """The degree programme of the profile changed fewer days ago than a change waits."""
+
+    DISCUSSION_MAX_WAITING_PER_USER = "DISCUSSION_MAX_WAITING_PER_USER"
+    """The user has that many questions waiting for an answer in the market."""
+
+    DISCUSSION_MAX_QUESTIONS_PER_MARKET = "DISCUSSION_MAX_QUESTIONS_PER_MARKET"
+    """The market holds as many questions as one market may."""
+
+    MAX_LIVE_BROADCASTS = "MAX_LIVE_BROADCASTS"
+    """As many live streams run as may run at once."""
+
+    MAX_BROADCAST_REQUESTS_PER_USER_PER_DAY = "MAX_BROADCAST_REQUESTS_PER_USER_PER_DAY"
+    """The user asked to go live as often today as one user may."""
+
 
 class ErrorResponse(ResponseModel):
     """The body of every non-2xx response (SPEC §10, Appendix A.2).

@@ -15,6 +15,7 @@ from app.core.units import (
     display_probability,
     floor_micro,
     format_cr,
+    format_shares,
     format_tokens,
     probability_to_micro,
     to_cr,
@@ -203,6 +204,37 @@ def test_format_tokens_is_the_amount_of_format_cr_and_names_no_credit(micro: int
     whole = figure.removeprefix("-").partition(".")[0]
     assert all(len(group) == 3 for group in whole.split(",")[1:])
     assert 1 <= len(whole.split(",")[0]) <= 3
+
+
+@pytest.mark.parametrize(
+    ("micro", "said"),
+    [
+        (0, "0 shares"),
+        (1, "0.000001 shares"),
+        (500_000, "0.5 shares"),
+        (1_000_000, "1 share"),
+        (1_000_001, "1.000001 shares"),
+        (2_000_000, "2 shares"),
+        (10_000_000, "10 shares"),
+        (1_250_000_000, "1,250 shares"),
+        (1_234_567_890_000, "1,234,567.89 shares"),
+        (-1_000_000, "-1 shares"),
+    ],
+)
+def test_format_shares_says_a_number_of_shares_as_a_sentence_on_screen_does(
+    micro: int, said: str
+) -> None:
+    """The whole figure, grouped in threes before the point, and "share" for exactly one."""
+    assert format_shares(micro) == said
+
+
+@given(st.integers(min_value=-BIGINT_MAX, max_value=BIGINT_MAX))
+def test_format_shares_is_the_figure_of_format_tokens_with_the_word_for_a_share(micro: int) -> None:
+    figure, word = format_shares(micro).split(" ")
+
+    assert figure == format_tokens(micro).split(" ")[0]
+    assert figure.replace(",", "") == format_cr(micro)
+    assert word == ("share" if micro == MICRO else "shares")
 
 
 @pytest.mark.parametrize(

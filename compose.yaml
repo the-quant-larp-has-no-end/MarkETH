@@ -60,6 +60,10 @@ x-needs-schema: &needs-schema
 # Each service has a hard memory limit from .env: the VM has 7.6 GiB and no swap, and a
 # leak should restart one container instead of starving the host.
 #
+# nginx and api also have their limit of open files from .env, the two containers whose
+# open connections grow with the number of people in the room. Without the line a
+# container has whatever the Docker daemon of its host hands out.
+#
 # Each service also names its networks (they are at the end of this file): nginx is on
 # both, the web app on `edge` alone, everything else on `core` alone.
 services:
@@ -69,6 +73,12 @@ services:
     image: nginx:1.30-alpine
     restart: unless-stopped
     mem_limit: ${NGINX_MEMORY_LIMIT:?}
+    # A request the proxy passes on is two connections it holds, one to the client and
+    # one upstream, and an open event stream holds its two for as long as it lasts.
+    ulimits:
+      nofile:
+        soft: ${NGINX_NOFILE_LIMIT:?}
+        hard: ${NGINX_NOFILE_LIMIT:?}
     logging: *logging
     networks:
       - edge
@@ -156,6 +166,12 @@ services:
       - "${API_SHUTDOWN_TIMEOUT_SECONDS:?}"
     restart: unless-stopped
     mem_limit: ${API_MEMORY_LIMIT:?}
+    # One process serves the API, and every open event stream is a socket it holds,
+    # beside its connections to Postgres and the requests in flight.
+    ulimits:
+      nofile:
+        soft: ${API_NOFILE_LIMIT:?}
+        hard: ${API_NOFILE_LIMIT:?}
     networks:
       - core
     depends_on: *needs-schema

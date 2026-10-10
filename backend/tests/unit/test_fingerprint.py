@@ -18,11 +18,14 @@ from typing import Final
 import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from sqlalchemy import Column, Index, MetaData, Text, literal_column
+from sqlalchemy import Column, Index, MetaData, Text, literal_column, make_url
+from sqlalchemy.schema import CreateTable
 
 from app.core.enums import JournalKind
 from app.db.base import Base
-from app.models.fingerprint import HAND_WRITTEN_STATEMENTS, schema_fingerprint
+from app.models.fingerprint import DIALECT, HAND_WRITTEN_STATEMENTS, schema_fingerprint
+from app.models.privileges import APP_ROLE_PRIVILEGES, TABLE_PRIVILEGES
+from app.models.triggers import CREATE_AUDIENCE_FUNCTION, CREATE_AUDIENCE_TRIGGER
 from tests.support.schema import check_constraint, enum_check_expression, with_one_more_member
 
 BACKEND_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
@@ -127,3 +130,114 @@ def test_two_statements_cannot_pass_for_two_others_that_read_the_same_end_to_end
     no_tables = MetaData()
 
     assert schema_fingerprint(no_tables, ["ab", "c"]) != schema_fingerprint(no_tables, ["a", "bc"])
+
+
+# --- Audiences, streaks, questions, broadcasts and chat messages ----------------------
+
+RULES_OF_FIVE_TABLES: Final[list[tuple[str, str]]] = [
+    ("markets", "ck_markets_audience_programme_not_blank"),
+    ("journal_entries", "ck_journal_entries_kind"),
+    ("streaks", "ck_streaks_current_days_positive"),
+    ("streaks", "ck_streaks_longest_not_below_current"),
+    ("questions", "ck_questions_text_length"),
+    ("questions", "ck_questions_answer_length"),
+    ("questions", "ck_questions_answered_whole"),
+    ("questions", "ck_questions_removed_whole"),
+    ("broadcasts", "ck_broadcasts_status"),
+    ("broadcasts", "ck_broadcasts_end_reason"),
+    ("broadcasts", "ck_broadcasts_decided_together"),
+    ("broadcasts", "ck_broadcasts_requested_is_undecided"),
+    ("broadcasts", "ck_broadcasts_refusal_has_reason"),
+    ("broadcasts", "ck_broadcasts_live_has_started"),
+    ("broadcasts", "ck_broadcasts_ended_is_complete"),
+    ("broadcasts", "ck_broadcasts_resumed_has_started"),
+    ("chat_messages", "ck_chat_messages_text_length"),
+]
+
+INDEXES_OF_FIVE_TABLES: Final[list[str]] = [
+    "ix_markets_audience_programme_status_close_at",
+    "ix_trades_user_id_created_at",
+    "ix_questions_market_id_id",
+    "uq_broadcasts_market_open",
+    "ix_broadcasts_open",
+    "ix_broadcasts_market_id_requested_at",
+    "ix_broadcasts_broadcaster_id_requested_at",
+    "ix_chat_messages_broadcast_id_id",
+]
+
+PRIVILEGES_TAKEN_BACK: Final[tuple[str, ...]] = (
+    "REVOKE DELETE ON questions FROM %I",
+    "REVOKE UPDATE ON chat_messages FROM %I",
+    "REVOKE DELETE ON broadcasts FROM %I",
+)
+
+
+@pytest.mark.parametrize(("table", "name"), RULES_OF_FIVE_TABLES)
+def test_each_rule_of_an_audience_a_streak_a_question_a_broadcast_and_a_chat_message_counts(
+    monkeypatch: pytest.MonkeyPatch, table: str, name: str
+) -> None:
+    unchanged = schema_fingerprint()
+
+    monkeypatch.setattr(check_constraint(table, name), "sqltext", literal_column("true"))
+
+    assert schema_fingerprint() != unchanged
+
+
+@pytest.mark.parametrize("name", INDEXES_OF_FIVE_TABLES)
+def test_each_index_of_those_tables_counts(name: str) -> None:
+    models = MetaData(naming_convention=Base.metadata.naming_convention)
+    for table in Base.metadata.tables.values():
+        table.to_metadata(models)
+    unchanged = schema_fingerprint(models)
+
+    dropped = [
+        (table, index)
+        for table in models.tables.values()
+        for index in table.indexes
+        if index.name == name
+    ]
+    assert len(dropped) == 1, name
+    table, index = dropped[0]
+    table.indexes.remove(index)
+
+    assert schema_fingerprint(models) != unchanged
+
+
+@pytest.mark.parametrize(
+    ("table", "column"),
+    [
+        ("markets", "audience_programme"),
+        ("users", "degree_changed_at"),
+        ("broadcasts", "resumed_from"),
+        ("chat_messages", "broadcast_id"),
+        ("chat_messages", "from_vis"),
+        ("streaks", "last_day"),
+        ("questions", "removed_at"),
+    ],
+)
+def test_the_tables_are_fingerprinted_with_the_columns_the_models_give_them(
+    table: str, column: str
+) -> None:
+    """The fingerprint is taken over the CREATE TABLE statements of the models, and a
+    column of a model is a line of one."""
+    dialect = make_url(DIALECT).get_dialect()()
+    ddl = str(CreateTable(Base.metadata.tables[table]).compile(dialect=dialect))
+
+    assert f"\n\t{column} " in ddl
+
+
+def test_the_trigger_that_fixes_an_audience_and_the_three_revokes_are_hand_written_statements() -> (
+    None
+):
+    statements = list(HAND_WRITTEN_STATEMENTS)
+
+    assert statements.index(CREATE_AUDIENCE_FUNCTION) + 1 == statements.index(
+        CREATE_AUDIENCE_TRIGGER
+    )
+    # What is granted on every table comes first, then what is taken back table by table.
+    granted = APP_ROLE_PRIVILEGES.index(
+        f"GRANT {TABLE_PRIVILEGES} ON ALL TABLES IN SCHEMA public TO %I"
+    )
+    for statement in PRIVILEGES_TAKEN_BACK:
+        assert statement in statements
+        assert APP_ROLE_PRIVILEGES.index(statement) > granted

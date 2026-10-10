@@ -1032,9 +1032,12 @@ async def test_the_ledger_lists_every_movement_on_the_balance_newest_first_under
         (JournalKind.TRADE_BUY, to_cr(-bought_micro), "Bought shares"),
         (JournalKind.SIGNUP_GRANT, to_cr(STARTING), "Welcome tokens"),
     ]
-    # Every way a balance can move is among them; a scan at the bar is not one of them.
+    # Every way a balance can move is among them, except the three no step above books:
+    # a scan at the bar, and the tokens and the bonus of a streak.
     assert {item.kind for item in page.items} == set(LEDGER_DESCRIPTIONS) - {
-        JournalKind.VOUCHER_REDEEM
+        JournalKind.VOUCHER_REDEEM,
+        JournalKind.STREAK_REWARD,
+        JournalKind.STREAK_BONUS,
     }
     assert [item.created_at for item in page.items] == [
         moments[9],

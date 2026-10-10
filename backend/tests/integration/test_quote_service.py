@@ -171,6 +171,7 @@ def caller(user_id: UUID) -> AuthenticatedUser:
         email=f"{user_id.hex}@ethz.ch",
         name="Tina Trader",
         username="tina",
+        degree_programme="BSc Computer Science",
         role=UserRole.USER,
         status=UserStatus.ACTIVE,
     )

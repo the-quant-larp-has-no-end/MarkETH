@@ -5,7 +5,7 @@ frozen clock to exercise expiry, monthly grants and market deadlines determinist
 """
 
 from calendar import monthrange
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -66,3 +66,13 @@ def start_of_month(instant: datetime, timezone: ZoneInfo) -> datetime:
 def start_of_day(instant: datetime, timezone: ZoneInfo) -> datetime:
     local = instant.astimezone(timezone)
     return local.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def day_start(day: date, timezone: ZoneInfo) -> datetime:
+    """The first instant of the calendar day `day` on the calendar of `timezone`, in UTC.
+
+    A day ends where the next one starts: `day_start(day + timedelta(days=1), timezone)`.
+    That is 23 hours after its start on the day the clocks go forward and 25 on the day
+    they go back.
+    """
+    return datetime.combine(day, time.min, tzinfo=timezone).astimezone(UTC)

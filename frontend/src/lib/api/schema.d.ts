@@ -1329,7 +1329,7 @@ export interface components {
          * @description Why a journal entry exists. One value per way credits can move.
          * @enum {string}
          */
-        JournalKind: "SIGNUP_GRANT" | "MONTHLY_GRANT" | "CODE_REDEMPTION" | "TRADE_BUY" | "TRADE_SELL" | "MARKET_RESOLUTION" | "MARKET_VOID" | "VOUCHER_ISSUE" | "VOUCHER_REDEEM" | "VOUCHER_REFUND" | "ADMIN_ADJUSTMENT";
+        JournalKind: "SIGNUP_GRANT" | "MONTHLY_GRANT" | "CODE_REDEMPTION" | "TRADE_BUY" | "TRADE_SELL" | "MARKET_RESOLUTION" | "MARKET_VOID" | "VOUCHER_ISSUE" | "VOUCHER_REDEEM" | "VOUCHER_REFUND" | "ADMIN_ADJUSTMENT" | "STREAK_REWARD" | "STREAK_BONUS";
         /**
          * LeaderboardEntry
          * @description One user on the leaderboard: a username and a degree, never an address or a real

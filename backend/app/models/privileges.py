@@ -50,6 +50,12 @@ APP_ROLE_PRIVILEGES: Final[tuple[str, ...]] = (
     f"GRANT INSERT ({ACCOUNT_COLUMNS_THE_APP_SETS}), UPDATE (id) ON accounts TO %I",
     "REVOKE INSERT ON journal_entries FROM %I",
     f"GRANT INSERT ({ENTRY_COLUMNS_THE_APP_SETS}) ON journal_entries TO %I",
+    # A question is marked removed and never erased.
+    "REVOKE DELETE ON questions FROM %I",
+    # A chat message is never edited: its row exists exactly while it can be read.
+    "REVOKE UPDATE ON chat_messages FROM %I",
+    # A broadcast stays: what was asked, decided and ended is the record of it.
+    "REVOKE DELETE ON broadcasts FROM %I",
 )
 """Each takes the role. The order matters: what is granted on every table comes first,
 then what is taken back table by table."""

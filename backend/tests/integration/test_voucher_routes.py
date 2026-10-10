@@ -46,6 +46,7 @@ def someone(role: UserRole = UserRole.USER) -> AuthenticatedUser:
         email=f"{name}@ethz.ch",
         name=name.capitalize(),
         username=name,
+        degree_programme="BSc Computer Science",
         role=role,
         status=UserStatus.ACTIVE,
     )

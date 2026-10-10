@@ -20,7 +20,8 @@ from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
-from pathlib import Path
+from itertools import pairwise
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Final, Literal, Self
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -38,6 +39,13 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from app.core.enums import MarketTier
 from app.core.identity import USERNAME_PATTERN, USERNAME_STORED_MAX_LENGTH, portal_address
+from app.core.live import TOPICS_HARD_MAX
+from app.core.text import (
+    ANSWER_STORED_MAX_LENGTH,
+    CHAT_BACKLOG_MAX,
+    CHAT_MESSAGE_STORED_MAX_LENGTH,
+    QUESTION_STORED_MAX_LENGTH,
+)
 from app.core.units import MICRO, PrecisionError, to_micro
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[3]
@@ -61,6 +69,14 @@ INFRA_ONLY_VARIABLES: Final[frozenset[str]] = frozenset(
         "CONTAINER_LOG_MAX_SIZE",
         "CONTAINER_LOG_MAX_FILES",
         "API_SHUTDOWN_TIMEOUT_SECONDS",
+        "API_NOFILE_LIMIT",
+        "NGINX_NOFILE_LIMIT",
+        "MEDIA_MEMORY_LIMIT",
+        "MEDIA_CPUS",
+        "MEDIA_PIDS_LIMIT",
+        "MEDIA_HLS_TMPFS_SIZE",
+        "MEDIA_FFMPEG_THREADS",
+        "MEDIA_X264_PRESET",
         "SCYLLA_SMP",
         "SCYLLA_MEMORY",
         "NGINX_CLIENT_MAX_BODY_SIZE",
@@ -68,6 +84,7 @@ INFRA_ONLY_VARIABLES: Final[frozenset[str]] = frozenset(
         "NGINX_RATE_LIMIT_BURST",
         "NGINX_SSE_READ_TIMEOUT",
         "NGINX_SSE_STREAMS_PER_CALLER",
+        "NGINX_BROADCAST_UPLOADS_PER_CALLER",
         "NGINX_CONTENT_SECURITY_POLICY",
         "DEV_USER_ID",
         "DEV_USER_NAME",
@@ -75,7 +92,8 @@ INFRA_ONLY_VARIABLES: Final[frozenset[str]] = frozenset(
         "DEPLOY_PATH",
     }
 )
-"""Variables in `.env` that only Compose, nginx and the Makefile read, never the Python code."""
+"""Variables in `.env` that only Compose, nginx, the media box and the Makefile read, never
+the Python code of the API."""
 
 _IDENTIFIER = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 _HEADER_NAME = re.compile(r"[A-Za-z0-9]+(-[A-Za-z0-9]+)*")
@@ -93,6 +111,18 @@ PRODUCT_ID_MAX_LENGTH: Final[int] = 64
 PRODUCT_NAME_MAX_LENGTH: Final[int] = 100
 """Longest name of a product, which is also the width of `vouchers.product_name`."""
 
+MILESTONE_MAX_DAYS: Final[int] = 9999
+"""The longest streak `STREAK_MILESTONES` may name: the bound of a format, four digits."""
+
+BADGE_NAME_MAX_LENGTH: Final[int] = 20
+"""Longest name of a badge in `BADGE_LEVELS`. A badge is a word or two."""
+
+BADGE_MAX_WINS: Final[int] = 1_000_000
+"""The most wins an entry of `BADGE_LEVELS` may start at."""
+
+SHARE_PRESETS_MAX: Final[int] = 4
+"""The most shortcuts `TRADE_SHARE_PRESETS` may name: what one row of the trade sheet holds."""
+
 
 @dataclass(frozen=True, slots=True)
 class VoucherProduct:
@@ -107,6 +137,31 @@ class VoucherProduct:
 
     price_micro: int
     """µCR a voucher for it takes. Above zero."""
+
+
+@dataclass(frozen=True, slots=True)
+class StreakMilestone:
+    """One entry of `STREAK_MILESTONES`: a bonus for a streak of a length."""
+
+    days: int
+    """The length a streak has to have, in days. From 2 to `MILESTONE_MAX_DAYS`."""
+
+    bonus_micro: int
+    """µCR booked once per player, the first time their streak is that long. Above zero."""
+
+
+@dataclass(frozen=True, slots=True)
+class BadgeLevel:
+    """One entry of `BADGE_LEVELS`: the badge of a player with that many wins."""
+
+    level: int
+    """Its position in the list, from 1."""
+
+    name: str
+    """As written in `.env`, and shown as it is."""
+
+    wins: int
+    """The wins it starts at. 0 for the first entry."""
 
 
 def _csv_items(value: str) -> list[str]:
@@ -188,6 +243,73 @@ def _products(value: object) -> object:
     return products
 
 
+def _whole_number(text: str, what: str) -> int:
+    """`text` as a whole number written in ASCII digits and nothing else."""
+    if not (text.isascii() and text.isdigit()):
+        raise ValueError(f"{what} is not a whole number: {text!r}")
+    return int(text)
+
+
+def _milestones(value: object) -> object:
+    """Parse `days:bonus,days:bonus` into milestones. An empty text is no milestone.
+
+    Days are whole numbers from 2 to `MILESTONE_MAX_DAYS` in strictly ascending order,
+    which also refuses a repeat. A bonus is a CR amount above zero.
+    """
+    if not isinstance(value, str):
+        return value
+    milestones: list[StreakMilestone] = []
+    for item in _csv_items(value):
+        days_text, separator, bonus = item.partition(":")
+        if not separator or ":" in bonus:
+            raise ValueError(f"expected days:bonus, got {item!r}")
+        days = _whole_number(days_text.strip(), f"the days of {item!r}")
+        if not 2 <= days <= MILESTONE_MAX_DAYS:
+            raise ValueError(f"the days of {item!r} must be from 2 to {MILESTONE_MAX_DAYS}")
+        try:
+            bonus_micro = _cr_to_micro(bonus)
+        except ValueError as exc:
+            raise ValueError(f"the bonus of {item!r} is {exc}") from exc
+        if bonus_micro <= 0:
+            raise ValueError(f"the bonus of {item!r} must be above zero")
+        if milestones and days <= milestones[-1].days:
+            raise ValueError(f"the days of {item!r} must be above those of the entry before it")
+        milestones.append(StreakMilestone(days=days, bonus_micro=bonus_micro))
+    return tuple(milestones)
+
+
+def _badge_levels(value: object) -> object:
+    """Parse `Name:wins,Name:wins` into badges, in the order written.
+
+    The wins are what follows the last colon, so a name may hold one. The first entry
+    starts at 0 wins, so every player has a badge, and the wins ascend strictly. Two
+    names that differ only in case are refused: on screen they are one word.
+    """
+    if not isinstance(value, str):
+        return value
+    levels: list[BadgeLevel] = []
+    for item in _csv_items(value):
+        name, separator, wins_text = item.rpartition(":")
+        name = name.strip()
+        if not separator or not name:
+            raise ValueError(f"expected Name:wins, got {item!r}")
+        if len(name) > BADGE_NAME_MAX_LENGTH:
+            raise ValueError(f"the name {name!r} is longer than {BADGE_NAME_MAX_LENGTH}")
+        if any(unicodedata.category(character) == "Cc" for character in name):
+            raise ValueError(f"the name {name!r} holds a control character")
+        wins = _whole_number(wins_text.strip(), f"the wins of {name!r}")
+        if wins > BADGE_MAX_WINS:
+            raise ValueError(f"the wins of {name!r} must be at most {BADGE_MAX_WINS}")
+        if any(level.name.casefold() == name.casefold() for level in levels):
+            raise ValueError(f"{name!r} is the name of another badge")
+        if not levels and wins != 0:
+            raise ValueError(f"the first badge, {name!r}, must start at 0 wins")
+        if levels and wins <= levels[-1].wins:
+            raise ValueError(f"the wins of {name!r} must be above those of the entry before it")
+        levels.append(BadgeLevel(level=len(levels) + 1, name=name, wins=wins))
+    return tuple(levels)
+
+
 CsvList = Annotated[list[str], NoDecode, BeforeValidator(_split_csv)]
 CreditMicro = Annotated[int, BeforeValidator(_cr_to_micro), Field(ge=0)]
 CreditMicroList = Annotated[list[int], NoDecode, BeforeValidator(_cr_list_to_micro)]
@@ -196,6 +318,10 @@ HeaderName = Annotated[str, BeforeValidator(_header_name)]
 PositiveInt = Annotated[int, Field(gt=0)]
 VoucherProductList = Annotated[
     tuple[VoucherProduct, ...], NoDecode, BeforeValidator(_products), Field(min_length=1)
+]
+StreakMilestoneList = Annotated[tuple[StreakMilestone, ...], NoDecode, BeforeValidator(_milestones)]
+BadgeLevelList = Annotated[
+    tuple[BadgeLevel, ...], NoDecode, BeforeValidator(_badge_levels), Field(min_length=1)
 ]
 
 
@@ -271,11 +397,33 @@ class RedisSettings(_Section):
     db: int = Field(validation_alias="REDIS_DB", ge=0)
     timeout_ms: PositiveInt = Field(validation_alias="REDIS_TIMEOUT_MS")
     market_cache_ttl_seconds: PositiveInt = Field(validation_alias="MARKET_CACHE_TTL_SECONDS")
-    sse_heartbeat_seconds: PositiveInt = Field(validation_alias="SSE_HEARTBEAT_SECONDS")
 
     @property
     def timeout_seconds(self) -> float:
         return self.timeout_ms / 1000
+
+
+class LiveSettings(_Section):
+    """What bounds an event stream: the answer in which the API pushes events to a tab."""
+
+    heartbeat_seconds: PositiveInt = Field(validation_alias="SSE_HEARTBEAT_SECONDS")
+    max_streams: PositiveInt = Field(validation_alias="LIVE_MAX_STREAMS")
+    stream_max_seconds: PositiveInt = Field(validation_alias="LIVE_STREAM_MAX_SECONDS")
+    retry_ms: PositiveInt = Field(validation_alias="LIVE_RETRY_MS")
+    topics_per_stream: int = Field(
+        validation_alias="LIVE_TOPICS_PER_STREAM", ge=1, le=TOPICS_HARD_MAX
+    )
+    queue_events: PositiveInt = Field(validation_alias="LIVE_QUEUE_EVENTS")
+    event_max_bytes: int = Field(validation_alias="LIVE_EVENT_MAX_BYTES", ge=512)
+    leaderboard_refresh_seconds: PositiveInt = Field(validation_alias="LEADERBOARD_REFRESH_SECONDS")
+
+    @model_validator(mode="after")
+    def _a_stream_outlives_two_beats(self) -> Self:
+        # A tab calls its stream lost after two missed beats: a stream that is ended
+        # sooner than that would never be seen alive.
+        if self.stream_max_seconds <= 2 * self.heartbeat_seconds:
+            raise ValueError("LIVE_STREAM_MAX_SECONDS must be above twice SSE_HEARTBEAT_SECONDS")
+        return self
 
 
 class ScyllaSettings(_Section):
@@ -318,6 +466,10 @@ class IdentitySettings(_Section):
     )
     reserved_usernames: CsvList = Field(validation_alias="RESERVED_USERNAMES")
     upkeep_interval_seconds: PositiveInt = Field(validation_alias="UPKEEP_INTERVAL_SECONDS")
+    # 0: a programme changes as often as its owner likes.
+    programme_change_cooldown_days: int = Field(
+        validation_alias="PROGRAMME_CHANGE_COOLDOWN_DAYS", ge=0, le=365
+    )
 
     @field_validator("allowed_email_domains")
     @classmethod
@@ -366,10 +518,42 @@ class IdentitySettings(_Section):
     def upkeep_interval(self) -> timedelta:
         return timedelta(seconds=self.upkeep_interval_seconds)
 
+    @property
+    def programme_change_cooldown(self) -> timedelta:
+        return timedelta(days=self.programme_change_cooldown_days)
+
 
 class GrantSettings(_Section):
     signup_grant_micro: CreditMicro = Field(validation_alias="SIGNUP_GRANT_CR")
     monthly_grant_micro: CreditMicro = Field(validation_alias="MONTHLY_GRANT_CR")
+
+
+class StreakSettings(_Section):
+    daily_reward_micro: CreditMicro = Field(validation_alias="STREAK_DAILY_REWARD_CR")
+    # In ascending order of their days.
+    milestones: StreakMilestoneList = Field(validation_alias="STREAK_MILESTONES")
+    lock_timeout_ms: PositiveInt = Field(validation_alias="STREAK_LOCK_TIMEOUT_MS")
+
+    def milestone(self, days: int) -> StreakMilestone | None:
+        """The milestone a streak of exactly `days` days reaches, or None."""
+        for milestone in self.milestones:
+            if milestone.days == days:
+                return milestone
+        return None
+
+
+class BadgeSettings(_Section):
+    # In ascending order of their wins; the first one starts at 0.
+    levels: BadgeLevelList = Field(validation_alias="BADGE_LEVELS")
+
+    def level_for(self, wins: int) -> BadgeLevel:
+        """The badge of a player with `wins` wins: the last entry they have reached."""
+        reached = [level for level in self.levels if level.wins <= wins]
+        return reached[-1] if reached else self.levels[0]
+
+    def next_after(self, level: BadgeLevel) -> BadgeLevel | None:
+        """The entry after `level`, or None when it is the last one."""
+        return self.levels[level.level] if level.level < len(self.levels) else None
 
 
 class CodeSettings(_Section):
@@ -441,6 +625,9 @@ class PricingSettings(_Section):
     min_trade_shares_micro: CreditMicro = Field(validation_alias="MIN_TRADE_SHARES")
     stake_presets_micro: CreditMicroList = Field(validation_alias="TRADE_STAKE_PRESETS_CR")
     stake_step_micro: CreditMicro = Field(validation_alias="TRADE_STAKE_STEP_CR")
+    # µshares: shares have the scale of credits.
+    share_presets_micro: CreditMicroList = Field(validation_alias="TRADE_SHARE_PRESETS")
+    share_step_micro: CreditMicro = Field(validation_alias="TRADE_SHARE_STEP")
     price_display_decimals: int = Field(validation_alias="PRICE_DISPLAY_DECIMALS", ge=0, le=4)
 
     @field_validator("stake_step_micro")
@@ -449,6 +636,25 @@ class PricingSettings(_Section):
         # The slider of the trade sheet counts in whole credits (`MarketViewer.buy_slider`).
         if value <= 0 or value % MICRO:
             raise ValueError("TRADE_STAKE_STEP_CR must be a whole number of CR above zero")
+        return value
+
+    @field_validator("share_presets_micro")
+    @classmethod
+    def _whole_shares_ascending(cls, value: list[int]) -> list[int]:
+        whole = all(preset > 0 and preset % MICRO == 0 for preset in value)
+        ascending = all(low < high for low, high in pairwise(value))
+        if not (1 <= len(value) <= SHARE_PRESETS_MAX and whole and ascending):
+            raise ValueError(
+                "TRADE_SHARE_PRESETS must be one to four whole numbers of shares above "
+                "zero, in ascending order"
+            )
+        return value
+
+    @field_validator("share_step_micro")
+    @classmethod
+    def _whole_shares(cls, value: int) -> int:
+        if value <= 0 or value % MICRO:
+            raise ValueError("TRADE_SHARE_STEP must be a whole number of shares above zero")
         return value
 
     def tier_b_micro(self, tier: MarketTier) -> int:
@@ -490,9 +696,164 @@ class LifecycleSettings(_Section):
         return timedelta(days=self.max_resolution_delay_days)
 
 
+class DiscussionSettings(_Section):
+    """The questions and answers of a market."""
+
+    question_min_length: int = Field(validation_alias="DISCUSSION_QUESTION_MIN_LENGTH", ge=1)
+    question_max_length: int = Field(
+        validation_alias="DISCUSSION_QUESTION_MAX_LENGTH", ge=1, le=QUESTION_STORED_MAX_LENGTH
+    )
+    answer_max_length: int = Field(
+        validation_alias="DISCUSSION_ANSWER_MAX_LENGTH", ge=1, le=ANSWER_STORED_MAX_LENGTH
+    )
+    max_questions_per_market: PositiveInt = Field(
+        validation_alias="DISCUSSION_MAX_QUESTIONS_PER_MARKET"
+    )
+    max_waiting_per_user: PositiveInt = Field(validation_alias="DISCUSSION_MAX_WAITING_PER_USER")
+    question_limit_per_user: PositiveInt = Field(
+        validation_alias="DISCUSSION_QUESTION_LIMIT_PER_USER"
+    )
+    question_limit_per_user_window_seconds: PositiveInt = Field(
+        validation_alias="DISCUSSION_QUESTION_LIMIT_PER_USER_WINDOW_SECONDS"
+    )
+
+    @model_validator(mode="after")
+    def _consistent(self) -> Self:
+        if self.question_max_length < self.question_min_length:
+            raise ValueError(
+                "DISCUSSION_QUESTION_MAX_LENGTH must not be below DISCUSSION_QUESTION_MIN_LENGTH"
+            )
+        if self.max_waiting_per_user > self.max_questions_per_market:
+            raise ValueError(
+                "DISCUSSION_MAX_WAITING_PER_USER must not be above "
+                "DISCUSSION_MAX_QUESTIONS_PER_MARKET"
+            )
+        return self
+
+
+class ChatSettings(_Section):
+    """The live chat beside a market's live stream."""
+
+    message_max_length: int = Field(
+        validation_alias="CHAT_MESSAGE_MAX_LENGTH", ge=1, le=CHAT_MESSAGE_STORED_MAX_LENGTH
+    )
+    message_limit_per_user: PositiveInt = Field(validation_alias="CHAT_MESSAGE_LIMIT_PER_USER")
+    message_limit_per_user_window_seconds: PositiveInt = Field(
+        validation_alias="CHAT_MESSAGE_LIMIT_PER_USER_WINDOW_SECONDS"
+    )
+    room_message_limit: PositiveInt = Field(validation_alias="CHAT_ROOM_MESSAGE_LIMIT")
+    room_message_limit_window_seconds: PositiveInt = Field(
+        validation_alias="CHAT_ROOM_MESSAGE_LIMIT_WINDOW_SECONDS"
+    )
+    backlog_size: int = Field(validation_alias="CHAT_BACKLOG_SIZE", ge=1, le=CHAT_BACKLOG_MAX)
+
+
+BYTES_PER_KBIT_SECOND: Final[int] = 125
+"""Bytes one second of a stream of 1 kbit/s holds."""
+
+
+class BroadcastSettings(_Section):
+    """A market's live video. A field is its variable's name in lower case without the
+    prefix `BROADCAST_`."""
+
+    max_live: int = Field(validation_alias="BROADCAST_MAX_LIVE", ge=1)
+    requests_per_user_per_day: int = Field(
+        validation_alias="BROADCAST_REQUESTS_PER_USER_PER_DAY", ge=1
+    )
+    max_minutes: int = Field(validation_alias="BROADCAST_MAX_MINUTES", ge=1)
+    stall_seconds: int = Field(validation_alias="BROADCAST_STALL_SECONDS", ge=10)
+    max_viewers: int = Field(validation_alias="BROADCAST_MAX_VIEWERS", ge=1)
+    access_cache_seconds: int = Field(
+        validation_alias="BROADCAST_ACCESS_CACHE_SECONDS", ge=1, le=60
+    )
+    chunk_ms: int = Field(validation_alias="BROADCAST_CHUNK_MS", ge=250, le=5000)
+    chunk_max_bytes: PositiveInt = Field(validation_alias="BROADCAST_CHUNK_MAX_BYTES")
+    upload_backlog_seconds: int = Field(validation_alias="BROADCAST_UPLOAD_BACKLOG_SECONDS", ge=2)
+    upload_timeout_ms: int = Field(validation_alias="BROADCAST_UPLOAD_TIMEOUT_MS", ge=1000)
+    upload_retry_ms: int = Field(validation_alias="BROADCAST_UPLOAD_RETRY_MS", ge=100)
+    restart_window_ms: int = Field(validation_alias="BROADCAST_RESTART_WINDOW_MS", ge=1000)
+    wait_notice_ms: int = Field(validation_alias="BROADCAST_WAIT_NOTICE_MS", ge=1000)
+    player_retry_ms: int = Field(validation_alias="BROADCAST_PLAYER_RETRY_MS", ge=100)
+    capture_video_kbps: PositiveInt = Field(validation_alias="BROADCAST_CAPTURE_VIDEO_KBPS")
+    input_max_width: int = Field(validation_alias="BROADCAST_INPUT_MAX_WIDTH", ge=640, le=3840)
+    input_max_height: int = Field(validation_alias="BROADCAST_INPUT_MAX_HEIGHT", ge=360, le=2160)
+    video_height: int = Field(validation_alias="BROADCAST_VIDEO_HEIGHT", ge=240, le=1080)
+    video_fps: int = Field(validation_alias="BROADCAST_VIDEO_FPS", ge=10, le=30)
+    video_kbps: int = Field(validation_alias="BROADCAST_VIDEO_KBPS", ge=200, le=4000)
+    audio_kbps: int = Field(validation_alias="BROADCAST_AUDIO_KBPS", ge=32, le=192)
+    hls_segment_seconds: int = Field(validation_alias="BROADCAST_HLS_SEGMENT_SECONDS", ge=1, le=6)
+    hls_playlist_segments: int = Field(
+        validation_alias="BROADCAST_HLS_PLAYLIST_SEGMENTS", ge=3, le=20
+    )
+    media_socket: str = Field(validation_alias="BROADCAST_MEDIA_SOCKET")
+    media_timeout_ms: int = Field(validation_alias="BROADCAST_MEDIA_TIMEOUT_MS", ge=100)
+
+    @field_validator("input_max_width", "input_max_height", "video_height")
+    @classmethod
+    def _even(cls, value: int) -> int:
+        # The encoder halves both sides of a picture for its colour planes.
+        if value % 2:
+            raise ValueError("must be an even number of pixels")
+        return value
+
+    @field_validator("media_socket")
+    @classmethod
+    def _absolute_path(cls, value: str) -> str:
+        if not PurePosixPath(value).is_absolute() or value.endswith("/"):
+            raise ValueError("must be the absolute path of a socket")
+        return value
+
+    @model_validator(mode="after")
+    def _consistent(self) -> Self:
+        if self.stall_seconds <= self.upload_backlog_seconds:
+            raise ValueError(
+                "BROADCAST_STALL_SECONDS must be above BROADCAST_UPLOAD_BACKLOG_SECONDS"
+            )
+        if self.access_cache_seconds >= self.stall_seconds:
+            raise ValueError("BROADCAST_ACCESS_CACHE_SECONDS must be below BROADCAST_STALL_SECONDS")
+        if self.capture_video_kbps < self.video_kbps:
+            raise ValueError("BROADCAST_CAPTURE_VIDEO_KBPS must not be below BROADCAST_VIDEO_KBPS")
+        # A piece of BROADCAST_CHUNK_MS at the capture rates, with as much room again:
+        # a recorder does not cut its pieces to the millisecond. Compared in thousandths
+        # of a byte, so that nothing is rounded.
+        two_pieces_bytes_per_mille = 2 * self.capture_bytes_per_second * self.chunk_ms
+        if self.chunk_max_bytes * 1000 < two_pieces_bytes_per_mille:
+            raise ValueError(
+                "BROADCAST_CHUNK_MAX_BYTES must be at least twice what one piece holds: "
+                "(BROADCAST_CAPTURE_VIDEO_KBPS + BROADCAST_AUDIO_KBPS) x 125 x "
+                f"BROADCAST_CHUNK_MS / 1000, which makes {-(-two_pieces_bytes_per_mille // 1000)} "
+                "bytes"
+            )
+        return self
+
+    @property
+    def capture_bytes_per_second(self) -> int:
+        """Bytes a studio records per second, picture and sound together."""
+        return (self.capture_video_kbps + self.audio_kbps) * BYTES_PER_KBIT_SECOND
+
+    @property
+    def heartbeat_interval(self) -> timedelta:
+        """How long after a stored `last_chunk_at` the next piece moves it again: a
+        quarter of `BROADCAST_STALL_SECONDS`, so a running broadcast never looks stalled."""
+        return timedelta(seconds=self.stall_seconds) / 4
+
+    @property
+    def seat_seconds(self) -> int:
+        """How long a viewer holds a place without asking again: as long as nginx
+        remembers the admission, and as long as a playlist's segments play."""
+        return self.access_cache_seconds + self.hls_segment_seconds * self.hls_playlist_segments
+
+    @property
+    def upload_backlog_bytes(self) -> int:
+        """Bytes of video a studio queues while its connection is slow."""
+        return self.upload_backlog_seconds * self.capture_bytes_per_second
+
+
 class UiSettings(_Section):
     quote_debounce_ms: PositiveInt = Field(validation_alias="QUOTE_DEBOUNCE_MS")
     live_poll_fallback_seconds: PositiveInt = Field(validation_alias="LIVE_POLL_FALLBACK_SECONDS")
+    live_announce_spread_ms: int = Field(validation_alias="LIVE_ANNOUNCE_SPREAD_MS", ge=0)
+    live_viewer_refresh_seconds: PositiveInt = Field(validation_alias="LIVE_VIEWER_REFRESH_SECONDS")
 
 
 class Settings(BaseModel):
@@ -503,15 +864,35 @@ class Settings(BaseModel):
     app: AppSettings
     postgres: PostgresSettings
     redis: RedisSettings
+    live: LiveSettings
     scylla: ScyllaSettings
     identity: IdentitySettings
     grants: GrantSettings
+    streaks: StreakSettings
+    badges: BadgeSettings
     codes: CodeSettings
     vouchers: VoucherSettings
     pricing: PricingSettings
     risk: RiskSettings
     lifecycle: LifecycleSettings
+    discussion: DiscussionSettings
+    chat: ChatSettings
+    broadcast: BroadcastSettings
     ui: UiSettings
+
+    @model_validator(mode="after")
+    def _sections_agree(self) -> Self:
+        """The rules that hold between two sections, checked once all have loaded."""
+        # A character is at most four bytes of UTF-8, and 512 bytes hold the rest of
+        # the event around the longest message a chat stores.
+        if self.live.event_max_bytes < 4 * self.chat.message_max_length + 512:
+            raise ValueError(
+                "LIVE_EVENT_MAX_BYTES must be at least 4 x CHAT_MESSAGE_MAX_LENGTH + 512"
+            )
+        # The streak step of a trade gives up sooner than the trade itself would.
+        if self.streaks.lock_timeout_ms > self.postgres.lock_timeout_ms:
+            raise ValueError("STREAK_LOCK_TIMEOUT_MS must not be above POSTGRES_LOCK_TIMEOUT_MS")
+        return self
 
     @classmethod
     def load(cls, env_file: Path | None = DEFAULT_ENV_FILE) -> Settings:
@@ -520,14 +901,20 @@ class Settings(BaseModel):
             app=AppSettings(_env_file=env_file),
             postgres=PostgresSettings(_env_file=env_file),
             redis=RedisSettings(_env_file=env_file),
+            live=LiveSettings(_env_file=env_file),
             scylla=ScyllaSettings(_env_file=env_file),
             identity=IdentitySettings(_env_file=env_file),
             grants=GrantSettings(_env_file=env_file),
+            streaks=StreakSettings(_env_file=env_file),
+            badges=BadgeSettings(_env_file=env_file),
             codes=CodeSettings(_env_file=env_file),
             vouchers=VoucherSettings(_env_file=env_file),
             pricing=PricingSettings(_env_file=env_file),
             risk=RiskSettings(_env_file=env_file),
             lifecycle=LifecycleSettings(_env_file=env_file),
+            discussion=DiscussionSettings(_env_file=env_file),
+            chat=ChatSettings(_env_file=env_file),
+            broadcast=BroadcastSettings(_env_file=env_file),
             ui=UiSettings(_env_file=env_file),
         )
 

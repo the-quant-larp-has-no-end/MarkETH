@@ -94,6 +94,7 @@ def identity_of(user: User, role: UserRole) -> AuthenticatedUser:
         email=user.email,
         name=user.name,
         username=user.username,
+        degree_programme=user.degree_programme,
         role=role,
         status=user.status,
     )

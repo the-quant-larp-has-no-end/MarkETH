@@ -1009,6 +1009,20 @@ def test_a_leaderboard_row_names_nobody_and_carries_rates_as_nullable_numbers(
     assert entry["degree_level"] == {"$ref": "#/components/schemas/DegreeLevel"}
 
 
+LIMITS_NO_OPERATION_REFUSES_WITH: Final[frozenset[Limit]] = frozenset(
+    {
+        Limit.PROGRAMME_CHANGE_COOLDOWN_DAYS,
+        Limit.DISCUSSION_MAX_WAITING_PER_USER,
+        Limit.DISCUSSION_MAX_QUESTIONS_PER_MARKET,
+        Limit.MAX_LIVE_BROADCASTS,
+        Limit.MAX_BROADCAST_REQUESTS_PER_USER_PER_DAY,
+    }
+)
+"""Members of `Limit` that no operation answers with, so `ErrorResponse` does not describe
+them. The test below fails for a member the description names: whoever adds the refusal
+describes it there and takes the name out of this set."""
+
+
 def test_the_error_schema_says_what_details_carries(schemas: dict[str, dict[str, Any]]) -> None:
     """`details` is a free object; its keys per code are in the description."""
     description = schemas["ErrorResponse"]["description"]
@@ -1044,8 +1058,10 @@ def test_the_error_schema_says_what_details_carries(schemas: dict[str, dict[str,
         "required_cr",
     ):
         assert f"`{key}`" in description, key
+    # A limit is named exactly if an operation refuses with it.
     for limit in Limit:
-        assert f"`{limit.value}`" in description, limit
+        named = f"`{limit.value}`" in description
+        assert named == (limit not in LIMITS_NO_OPERATION_REFUSES_WITH), limit
 
 
 def test_the_redeem_request_says_that_the_client_sends_the_bare_code(
@@ -1848,6 +1864,7 @@ def offline_app(offline_container: Container) -> FastAPI:
         email="viewer@ethz.ch",
         name="Vera Viewer",
         username="viewer",
+        degree_programme="BSc Computer Science",
         role=UserRole.USER,
         status=UserStatus.ACTIVE,
     )

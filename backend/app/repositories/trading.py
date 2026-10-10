@@ -53,6 +53,29 @@ class PositionRepository(BaseRepository[Position]):
         )
         return (await self._session.scalars(statement)).all()
 
+    async def exists_for_user_market(self, user_id: UUID, market_id: UUID) -> bool:
+        """Whether a user holds a position row in a market, whatever its shares.
+
+        The first buy of an outcome inserts the row and nothing deletes it, so this is
+        true for everybody who ever bought there, also after they sold everything.
+        """
+        statement = select(
+            exists().where(Position.user_id == user_id, Position.market_id == market_id)
+        )
+        return (await self._session.execute(statement)).scalar_one()
+
+    async def market_ids_of_user(self, user_id: UUID, *, among: Collection[UUID]) -> set[UUID]:
+        """The markets of `among` a user holds a position row in, in one query. None
+        is asked for an empty `among`."""
+        if not among:
+            return set()
+        statement = (
+            select(Position.market_id)
+            .where(Position.user_id == user_id, Position.market_id.in_(among))
+            .distinct()
+        )
+        return set((await self._session.scalars(statement)).all())
+
     async def sum_shares_by_outcome(self, market_id: UUID) -> dict[Outcome, int]:
         """Shares held per outcome; must equal the market's q (SPEC §5 circuit breaker)."""
         statement = (

@@ -32,8 +32,13 @@
 #  10. With APP_ENV=production: the development identity files are absent, the running
 #      proxy has no trace of them, and nginx is the only container with a published
 #      port, bound to the one address .env names.
+#  14. The running nginx and api have the limits of open files .env names
+#      (NGINX_NOFILE_LIMIT, API_NOFILE_LIMIT), and one process serves the API: what the
+#      API keeps in its own memory, such as the orders it counts per user while Redis
+#      is away (SPEC A.4), is kept once.
 #
-# Needs curl, jq and docker. Check 7 runs node inside the web container.
+# Needs curl, jq and docker. Check 7 runs node inside the web container, check 14 python
+# inside the api container.
 
 set -eu
 
@@ -98,6 +103,12 @@ from_the_web_app() {
         || fail "could not ask the proxy for $1 from inside the web container"
     STATUS=$(head -n 1 "$WORK/inside")
     tail -n +2 "$WORK/inside" > "$WORK/body"
+}
+
+# open_files_of <file>: "<soft> <hard>", the limit of open files in what a process says
+# about itself in /proc/<pid>/limits.
+open_files_of() {
+    sed -n 's/^Max open files  *\([^ ][^ ]*\)  *\([^ ][^ ]*\) .*/\1 \2/p' "$1"
 }
 
 # The `code` of the API's error body, or nothing.
@@ -305,37 +316,85 @@ passed "another caller from the same address is not limited"
 
 # 10. Production only ----------------------------------------------------------------
 
-if [ "$APP_ENV" != "production" ]; then
+if [ "$APP_ENV" = "production" ]; then
+    [ ! -e compose.override.yaml ] || fail "compose.override.yaml exists in a production tree"
+    [ ! -e infra/nginx/dev ] || fail "infra/nginx/dev exists in a production tree"
+    passed "the development overlay and its identity files are absent"
+
+    docker compose -f compose.yaml exec -T nginx nginx -T < /dev/null > "$WORK/nginx.conf" 2> /dev/null \
+        || fail "could not read the configuration of the running nginx"
+    if grep -n -i -E 'dev_user|__dev' "$WORK/nginx.conf" >&2; then
+        fail "the running nginx configuration names a development identity (lines above)"
+    fi
+    passed "the running proxy has no development identity"
+
+    proxy=$(docker compose -f compose.yaml ps --quiet nginx < /dev/null) || fail "could not ask Compose for the nginx container"
+    [ -n "$proxy" ] || fail "no nginx container is running"
+    # The project the running stack belongs to, as Compose labelled its containers.
+    PROJECT=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' "$proxy" < /dev/null) \
+        || fail "could not read the Compose project of the nginx container"
+    [ -n "$PROJECT" ] || fail "the nginx container carries no Compose project"
+    # Every address the port is bound to. The probe from outside asks the public IPv4
+    # address, so a second binding, on IPv6, would be a way in that nothing looks at.
+    published=$(docker port "$proxy" 80/tcp < /dev/null | tr '\n' ' ') || true
+    published=${published% }
+    [ "$published" = "$BIND:$PORT" ] || fail "nginx is published on '$published', not on $BIND:$PORT alone"
+    others=$(docker ps --filter "label=com.docker.compose.project=$PROJECT" \
+        --format '{{.Label "com.docker.compose.service"}} {{.Ports}}' | grep -e '->' | grep -v '^nginx ' || true)
+    [ -z "$others" ] || fail "containers other than nginx publish a port: $others"
+    passed "nginx on $published is the only published port of the stack"
+else
     echo "skipped the checks of a production tree (APP_ENV=$APP_ENV)"
-    echo "All checks passed."
-    exit 0
 fi
 
-[ ! -e compose.override.yaml ] || fail "compose.override.yaml exists in a production tree"
-[ ! -e infra/nginx/dev ] || fail "infra/nginx/dev exists in a production tree"
-passed "the development overlay and its identity files are absent"
+# 14. Open files, and the one API process ---------------------------------------------
+# A limit is read from the process it holds for, in /proc. For nginx that is process 1,
+# the master, whose limit every worker has. For the API it is whatever holds a
+# listening socket in the api container: the python below prints one line per such
+# process, "<pid> <soft> <hard>". One line is one process that serves the API. A command
+# with `--workers`, or a reloader, shows as several: the socket is theirs together.
 
-docker compose -f compose.yaml exec -T nginx nginx -T < /dev/null > "$WORK/nginx.conf" 2> /dev/null \
-    || fail "could not read the configuration of the running nginx"
-if grep -n -i -E 'dev_user|__dev' "$WORK/nginx.conf" >&2; then
-    fail "the running nginx configuration names a development identity (lines above)"
-fi
-passed "the running proxy has no development identity"
+NGINX_FILES=$(setting NGINX_NOFILE_LIMIT)
+API_FILES=$(setting API_NOFILE_LIMIT)
+[ -n "$NGINX_FILES" ] || fail ".env has no NGINX_NOFILE_LIMIT"
+[ -n "$API_FILES" ] || fail ".env has no API_NOFILE_LIMIT"
 
-proxy=$(docker compose -f compose.yaml ps --quiet nginx < /dev/null) || fail "could not ask Compose for the nginx container"
-[ -n "$proxy" ] || fail "no nginx container is running"
-# The project the running stack belongs to, as Compose labelled its containers.
-PROJECT=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' "$proxy" < /dev/null) \
-    || fail "could not read the Compose project of the nginx container"
-[ -n "$PROJECT" ] || fail "the nginx container carries no Compose project"
-# Every address the port is bound to. The probe from outside asks the public IPv4
-# address, so a second binding, on IPv6, would be a way in that nothing looks at.
-published=$(docker port "$proxy" 80/tcp < /dev/null | tr '\n' ' ') || true
-published=${published% }
-[ "$published" = "$BIND:$PORT" ] || fail "nginx is published on '$published', not on $BIND:$PORT alone"
-others=$(docker ps --filter "label=com.docker.compose.project=$PROJECT" \
-    --format '{{.Label "com.docker.compose.service"}} {{.Ports}}' | grep -e '->' | grep -v '^nginx ' || true)
-[ -z "$others" ] || fail "containers other than nginx publish a port: $others"
-passed "nginx on $published is the only published port of the stack"
+docker compose -f compose.yaml exec -T nginx cat /proc/1/limits < /dev/null > "$WORK/limits" \
+    || fail "could not read the limits of the running nginx"
+found=$(open_files_of "$WORK/limits")
+[ "$found" = "$NGINX_FILES $NGINX_FILES" ] \
+    || fail "nginx runs with a limit of open files of '$found' (soft, hard), not NGINX_NOFILE_LIMIT=$NGINX_FILES"
+passed "nginx may hold $NGINX_FILES files open (NGINX_NOFILE_LIMIT)"
+
+docker compose -f compose.yaml exec -T api python -c '
+import os
+
+listening = set()
+for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+    try:
+        with open(table) as rows:
+            sockets = [row.split() for row in rows][1:]
+    except OSError:
+        continue
+    listening |= {"socket:[%s]" % socket[9] for socket in sockets if socket[3] == "0A"}
+
+for pid in sorted((name for name in os.listdir("/proc") if name.isdigit()), key=int):
+    try:
+        held = {os.readlink("/proc/%s/fd/%s" % (pid, fd)) for fd in os.listdir("/proc/%s/fd" % pid)}
+        if not held & listening:
+            continue
+        with open("/proc/%s/limits" % pid) as limits:
+            files = [line.split()[3:5] for line in limits if line.startswith("Max open files")]
+        print(pid, *files[0])
+    except OSError:
+        continue
+' < /dev/null > "$WORK/serving" || fail "could not ask the api container which of its processes listen"
+serving=$(grep -c . "$WORK/serving" || true)
+[ "$serving" = "1" ] \
+    || fail "$serving processes of the api container hold its listening socket, not one: $(tr '\n' ';' < "$WORK/serving")"
+read -r pid soft hard < "$WORK/serving"
+[ "$soft $hard" = "$API_FILES $API_FILES" ] \
+    || fail "the API (process $pid) runs with a limit of open files of '$soft $hard' (soft, hard), not API_NOFILE_LIMIT=$API_FILES"
+passed "one process serves the API, and it may hold $API_FILES files open (API_NOFILE_LIMIT)"
 
 echo "All checks passed."

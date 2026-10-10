@@ -35,6 +35,7 @@ from app.services.invariants import InvariantChecker
 from app.services.leaderboard import LeaderboardService
 from app.services.ledger import LedgerService
 from app.services.live_quotes import LiveQuoteService
+from app.services.market_access import MarketAccess
 from app.services.market_lifecycle import MarketLifecycleService
 from app.services.market_view import MarketView
 from app.services.markets import MarketService
@@ -76,6 +77,7 @@ class Container:
         # Services, in dependency order.
         uow_factory = self.uow_factory
         self.market_view = MarketView(settings)
+        self.market_access = MarketAccess()
         self.ledger = LedgerService()
         self.audit = AuditService(clock)
         self.email_policy = EmailPolicy(settings)

@@ -48,6 +48,8 @@ LEDGER_DESCRIPTIONS: Final[Mapping[JournalKind, str]] = {
     JournalKind.VOUCHER_REDEEM: "Voucher redeemed",
     JournalKind.VOUCHER_REFUND: "Voucher expired, refunded",
     JournalKind.ADMIN_ADJUSTMENT: "Adjustment by VIS",
+    JournalKind.STREAK_REWARD: "Streak tokens",
+    JournalKind.STREAK_BONUS: "Streak bonus",
 }
 """What a ledger line is called, by the kind of its journal entry. A line about a
 voucher also says what the voucher is for: `ledger_description` puts the two together."""

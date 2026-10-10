@@ -56,6 +56,12 @@ runs through the outage, on the same clean database:
 
 For an adapter on its own: `redis_client`, `unreachable_redis`, `scylla_client`.
 
+A streak that books tokens. The tests run with `STREAK_DAILY_REWARD_CR=0` and no
+milestone, so that a trade moves the credits of the trade and nothing else
+(tests/support/settings.py). A test of what a streak books says so:
+
+    @pytest.mark.streak_rewards  `container` runs with the streak values of `.example.env`
+
 Two Docker Desktop quirks are absorbed here, once, for every container fixture in the
 suite: where the reaper finds the Docker socket, and a race while it starts.
 """
@@ -113,7 +119,11 @@ from tests.support.factories import (
     portal_headers_of,
 )
 from tests.support.network import SwitchableProxy
-from tests.support.settings import load_base_settings
+from tests.support.settings import (
+    STREAK_REWARDS_MARKER,
+    example_streak_settings,
+    load_base_settings,
+)
 
 if sys.platform == "darwin":
     # On macOS Docker runs in a VM. The socket the client talks to on the host (under the
@@ -164,8 +174,9 @@ def _start_reaper() -> None:
 
 @pytest.fixture(scope="session")
 def base_settings() -> Settings:
-    """The committed `.example.env` with APP_ENV=test and the bootstrap admins of the
-    tests, of which there are two. Nothing runs behind its hosts.
+    """The committed `.example.env` with APP_ENV=test, the bootstrap admins of the
+    tests, of which there are two, and a streak that books nothing. Nothing runs behind
+    its hosts.
 
     For tests that need tunables but no services; it never starts Docker.
     """
@@ -354,11 +365,15 @@ def _without_postgres(settings: Settings) -> Settings:
 
 @pytest.fixture
 def container_settings(request: pytest.FixtureRequest, settings: Settings) -> Settings:
-    """What `container` is built from: `settings`, minus what the test declares down.
+    """What `container` is built from: `settings`, minus what the test declares down,
+    and with the streak values of `.example.env` for a test marked `streak_rewards`.
 
-    See "A dependency that fails" in the module docstring.
+    See "A dependency that fails" and "A streak that books tokens" in the module
+    docstring.
     """
     chosen = settings
+    if request.node.get_closest_marker(STREAK_REWARDS_MARKER) is not None:
+        chosen = chosen.model_copy(update={"streaks": example_streak_settings()})
     if request.node.get_closest_marker("redis_down") is not None:
         chosen = _without_redis(chosen)
     if request.node.get_closest_marker("postgres_down") is not None:

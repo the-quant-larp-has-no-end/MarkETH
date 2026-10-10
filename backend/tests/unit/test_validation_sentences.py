@@ -661,6 +661,7 @@ ADMIN: Final[AuthenticatedUser] = AuthenticatedUser(
     email="admin@ethz.ch",
     name="Ada Admin",
     username="ada",
+    degree_programme="BSc Computer Science",
     role=UserRole.ADMIN,
     status=UserStatus.ACTIVE,
 )

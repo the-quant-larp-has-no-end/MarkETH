@@ -3,7 +3,8 @@
 #
 # The stack runs in Docker (compose.yaml plus compose.override.yaml, both fed by .env).
 # Tests, linters and the API client generator run on the host through uv and npm; the
-# integration tests start their own databases with Testcontainers.
+# integration tests start their own databases with Testcontainers. The browser suite
+# (`make e2e`) starts nothing: it drives Chrome against the stack that is up.
 #
 # The deploy-* targets act on the VM named in .env (DEPLOY_SSH_HOST, DEPLOY_PATH) over
 # SSH; docs/SERVER_INFRASTRUCTURE.md §14 walks through them.
@@ -20,14 +21,14 @@ BACKEND := cd backend &&
 FRONTEND := cd frontend && { cmp -s package-lock.json node_modules/.installed-lock \
 	|| { npm ci && cp package-lock.json node_modules/.installed-lock; }; } &&
 
-.PHONY: help up down logs migrate seed test test-backend test-frontend test-scylla \
+.PHONY: help up down logs migrate seed test test-backend test-frontend test-scylla e2e \
         lint fmt api-client psql redis-cli cqlsh reset \
         deploy deploy-guard deploy-backup deploy-sync deploy-env deploy-build deploy-pull \
         deploy-migrate deploy-stop-template deploy-up deploy-check deploy-smoke deploy-wipe \
         deploy-rollback deploy-status deploy-logs
 
 help: ## List these commands
-	@awk 'BEGIN { FS = ":.*## " } /^[a-z-]+:.*## / { printf "  make %-21s %s\n", $$1, $$2 }' Makefile
+	@awk 'BEGIN { FS = ":.*## " } /^[a-z0-9-]+:.*## / { printf "  make %-21s %s\n", $$1, $$2 }' Makefile
 
 # --- Stack --------------------------------------------------------------------
 
@@ -64,6 +65,12 @@ test-scylla: ## The slow ScyllaDB tests
 
 test-frontend: ## Frontend tests
 	$(FRONTEND) npm test
+
+# No part of `make test`: it needs the stack. Where that stack is, and how the suite
+# names a person to it, is the runner's to read from its environment (E2E_BASE_URL,
+# E2E_IDENTITY; frontend/e2e/support/runner.ts lists what it reads).
+e2e: ## The browser suite, in Chrome against the stack that is up
+	$(FRONTEND) npm run e2e
 
 # --- Code quality -------------------------------------------------------------
 

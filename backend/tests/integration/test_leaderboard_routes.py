@@ -36,6 +36,7 @@ def someone() -> AuthenticatedUser:
         email="trinity@ethz.ch",
         name="Trinity",
         username="trinity",
+        degree_programme="BSc Computer Science",
         role=UserRole.USER,
         status=UserStatus.ACTIVE,
     )

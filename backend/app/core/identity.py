@@ -126,6 +126,10 @@ class AuthenticatedUser:
     email: str
     name: str
     username: str
+    degree_programme: str
+    """`users.degree_programme` as the request read it: the label a market for one
+    programme is compared with, character for character."""
+
     role: UserRole
     status: UserStatus
 

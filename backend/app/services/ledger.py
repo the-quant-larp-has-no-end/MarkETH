@@ -12,7 +12,7 @@ idempotency key (the `*_key` functions, one per row of Appendix A.8).
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from uuid import UUID
 
@@ -43,6 +43,9 @@ class LedgerRef(StrEnum):
 
     USER = "user"
     """ADMIN_ADJUSTMENT: `users.id`, the user whose balance an admin adjusted."""
+
+    STREAK = "streak"
+    """STREAK_REWARD and STREAK_BONUS: `streaks.user_id`, the user whose streak booked it."""
 
 
 def signup_grant_key(user_id: UUID) -> str:
@@ -87,6 +90,17 @@ def admin_adjustment_key(actor_id: UUID, idempotency_key: UUID) -> str:
     of their request: one admin cannot book two adjustments under one key, whoever
     the adjustments are for."""
     return f"adjustment:{actor_id}:{idempotency_key}"
+
+
+def streak_reward_key(user_id: UUID, day: date) -> str:
+    """`day` is the counted day on the calendar of `APP_TIMEZONE`: a day books its
+    tokens once, whatever becomes of the `streaks` row."""
+    return f"streak:{user_id}:{day.isoformat()}"
+
+
+def streak_bonus_key(user_id: UUID, days: int) -> str:
+    """`days` is the length of the milestone: a player gets its bonus once."""
+    return f"streak:{user_id}:bonus:{days}"
 
 
 @dataclass(frozen=True, slots=True)

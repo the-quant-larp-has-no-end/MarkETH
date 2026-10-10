@@ -49,8 +49,9 @@ class IdentityService:
            row unless the address is a bootstrap admin. After that transaction has
            ended, `await upkeep.run_if_due(row)`. Then return
            `Caller(PortalIdentity(email, user_name, role), AuthenticatedUser(id=row.id,
-           email=row.email, name=row.name, username=row.username, role=role,
-           status=row.status))`. The identity carries the name the portal sends now,
+           email=row.email, name=row.name, username=row.username,
+           degree_programme=row.degree_programme, role=role, status=row.status))`.
+           The identity carries the name the portal sends now,
            the user the name the profile kept.
 
         The role of a row is what an admin last set, read with this request. An address
@@ -81,6 +82,7 @@ class IdentityService:
                 email=row.email,
                 name=row.name,
                 username=row.username,
+                degree_programme=row.degree_programme,
                 role=role,
                 status=row.status,
             ),

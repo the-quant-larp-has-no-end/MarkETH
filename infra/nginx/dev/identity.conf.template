@@ -35,3 +35,9 @@ location = /__dev/identity/current {
     default_type text/plain;
     return 200 "$dev_user_id\n$dev_user_name\n";
 }
+
+# The limits of the proxy count per caller as it names them to the API. The server block
+# sets $api_caller to the id a request brought, before it includes this file; here the
+# caller is the one named above, so two people on one laptop do not share a bucket and a
+# request cannot pick its bucket with a header.
+set $api_caller $dev_user_id;

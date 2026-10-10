@@ -6,16 +6,18 @@ mattered: who may tell the API who is calling and who is told, which service can
 which, that the web app's container gets no answer from the API through the proxy, who
 is handed the owner role's password, that the deployed stack carries nothing of the
 development one, what the proxy and the API write into their logs, that ScyllaDB is
-given a container it starts in, and that every value still comes from `.env`.
+given a container it starts in, that the proxy and the one API process may hold the
+connections of a full room, and that every value still comes from `.env`.
 
 The compose files are read as text, the way they are written: two spaces per level, a
 comment always on a line of its own. The nginx files are parsed into their directives.
 
-One test, the last of the file, asks nginx itself: `nginx -t` on each configuration as
-the stack renders it, in a container of the stack's image that has no network and
-starts no server. Where Docker does not run it is skipped; every other test needs
-nothing but the files. The `Stack` job of `.github/workflows/ci.yml` asks nginx the same
-about what Compose resolves.
+Two tests, the last of the file, ask the image of the proxy itself: `nginx -t` on each
+configuration as the stack renders it, and how many connections its own `nginx.conf`
+gives a worker, each in a container of the stack's image that has no network and starts
+no server. Where Docker does not run they are skipped; every other test needs nothing
+but the files. The `Stack` job of `.github/workflows/ci.yml` asks nginx the same about
+what Compose resolves.
 """
 
 import ipaddress
@@ -45,6 +47,8 @@ PRODUCTION_ENV: Final[str] = (REPO_ROOT / "infra" / "deploy" / "env.production")
     encoding="utf-8"
 )
 MAKEFILE: Final[str] = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
+CHECK: Final[str] = (REPO_ROOT / "infra" / "deploy" / "check.sh").read_text(encoding="utf-8")
+FRONTEND_PACKAGE: Final[str] = (REPO_ROOT / "frontend" / "package.json").read_text(encoding="utf-8")
 BACKEND_DOCKERFILE: Final[str] = (REPO_ROOT / "backend" / "Dockerfile").read_text(encoding="utf-8")
 PROXY: Final[str] = (PROXY_DIRECTORY / "default.conf.template").read_text(encoding="utf-8")
 IDENTITY: Final[str] = (DEVELOPMENT_DIRECTORY / "identity.conf.template").read_text(
@@ -360,19 +364,25 @@ def located(peers: Directive, address: str) -> str:
     return value
 
 
-def looked_up(variable: str, headers: Mapping[str, str]) -> str:
+def looked_up(
+    variable: str, headers: Mapping[str, str], known: Mapping[str, str] | None = None
+) -> str:
     """What the maps of the proxy make of `variable` for a request with these headers.
 
     A header the request does not carry is the empty string, as it is for nginx. A map
     is read the way nginx reads one: a source value that is written out wins, whatever
     its case, then the first regular expression that matches, then `default`. A result
-    that is a variable is looked up in turn.
+    that is a variable is looked up in turn. `known` holds the variables that have a
+    value before a map is read: what the `set` lines of the server block assigned, and
+    what nginx itself knows about the connection.
     """
+    if known is not None and variable in known:
+        return known[variable]
     sent = {request_variable(name): value for name, value in headers.items()}
     if variable.startswith("$http_"):
         return sent.get(variable, "")
     rules = maps_to(variable)
-    source = looked_up(rules.arguments[0], headers)
+    source = looked_up(rules.arguments[0], headers, known)
     written_out = {
         rule.name.lower(): rule.arguments[0]
         for rule in rules.block
@@ -386,7 +396,48 @@ def looked_up(variable: str, headers: Mapping[str, str]) -> str:
             (rule.arguments[0] for rule in patterns if re.search(rule.name[1:], source)),
             fallback,
         )
-    return looked_up(result, headers) if result.startswith("$") else result
+    return looked_up(result, headers, known) if result.startswith("$") else result
+
+
+API_CALLER: Final[str] = "$api_caller"
+"""The caller as the proxy hands them to the API: the id the portal sent, and on a laptop
+the caller the development file names. The limits of the proxy count by it."""
+
+
+def set_by_the_server(
+    request: Mapping[str, str], development: Iterable[Directive] = ()
+) -> dict[str, str]:
+    """The variables of a request once it has passed the `set` lines of the server block.
+
+    nginx runs them in the order they stand in, before it picks a location. `request`
+    holds what the request brought, by nginx variable (`$http_x_user_id`,
+    `$cookie_dev_user_id`); a variable nothing gave a value is the empty string.
+    `development` is the development file as the image renders it, which stands where
+    the server block includes it; without it the line includes nothing, as in the
+    deployed stack. The one condition the two files put around a `set` at this level is
+    `if ($variable = "")`.
+    """
+    variables = dict(request)
+    included = tuple(development)
+
+    def value_of(word: str) -> str:
+        return variables.get(word, "") if word.startswith("$") else word
+
+    def run(directives: Iterable[Directive]) -> None:
+        for directive in directives:
+            if directive.name == "set":
+                variable, value = directive.arguments
+                variables[variable] = value_of(value)
+            elif directive.name == "if":
+                opening, equals, compared, closing = directive.arguments
+                assert (equals, compared, closing) == ("=", "", ")"), directive.arguments
+                if value_of(opening.removeprefix("(")) == "":
+                    run(directive.block)
+            elif directive.name == "include":
+                run(included)
+
+    run(SERVER.block)
+    return variables
 
 
 def answer_of(location: Directive) -> tuple[int, dict[str, object]]:
@@ -483,11 +534,34 @@ def test_every_variable_compose_reads_is_in_the_example_env_and_has_no_default(
         assert rest == ":?", f"${{{name}{rest}}} is not ${{{name}:?}}"
 
 
+READ_BY_NO_FILE: Final[frozenset[str]] = frozenset(
+    {
+        "MEDIA_MEMORY_LIMIT",
+        "MEDIA_CPUS",
+        "MEDIA_PIDS_LIMIT",
+        "MEDIA_HLS_TMPFS_SIZE",
+        "MEDIA_FFMPEG_THREADS",
+        "MEDIA_X264_PRESET",
+        "NGINX_BROADCAST_UPLOADS_PER_CALLER",
+    }
+)
+"""Settings of live video in `.example.env` that are for Compose and nginx alone and that
+no file of the stack reads: the stack has no service that turns what a broadcaster sends
+into video, and the proxy no location that takes it. A name leaves this set with the
+line that reads it; the test below fails for a member that something reads."""
+
+
 def test_every_infra_only_variable_is_read_by_compose_or_by_the_makefile() -> None:
     read_by_compose = {name for name, _ in references(COMPOSE) + references(OVERRIDE)}
-    for name in sorted(INFRA_ONLY_VARIABLES):
-        read = name in read_by_compose or re.search(rf"\b{name}\b", MAKEFILE) is not None
-        assert read, f"{name} is in .example.env and nothing reads it"
+
+    def read(name: str) -> bool:
+        return name in read_by_compose or re.search(rf"\b{name}\b", MAKEFILE) is not None
+
+    for name in sorted(INFRA_ONLY_VARIABLES - READ_BY_NO_FILE):
+        assert read(name), f"{name} is in .example.env and nothing reads it"
+    for name in sorted(READ_BY_NO_FILE):
+        assert name in EXAMPLE, f"{name} is no key of .example.env"
+        assert not read(name), f"{name} is read by a file: it leaves READ_BY_NO_FILE"
 
 
 def test_every_service_has_a_memory_limit_from_the_env() -> None:
@@ -543,6 +617,127 @@ def test_the_scylla_container_leaves_room_for_the_memory_scylla_is_told_to_use(
         f"aside and {ROOM_FOR_THE_KERNEL // MIB} MiB for what the kernel keeps free. "
         "ScyllaDB might not start"
     )
+
+
+NOFILE_LIMITS: Final[dict[str, str]] = {
+    "nginx": "NGINX_NOFILE_LIMIT",
+    "api": "API_NOFILE_LIMIT",
+}
+"""The services whose open connections grow with the number of people in the room, each
+with the variable of `.env` that is its limit of open files."""
+
+NOFILE: Final[re.Pattern[str]] = re.compile(
+    r"^    ulimits:\n"
+    r"      nofile:\n"
+    r"        soft: (\S+)\n"
+    r"        hard: (\S+)\n"
+    r"(?!      )",
+    re.MULTILINE,
+)
+"""The one limit a service sets under `ulimits`: soft and hard, and nothing after them."""
+
+
+def test_nginx_and_the_api_have_their_limit_of_open_files_from_the_env() -> None:
+    """Soft and hard are the same variable, so the limit a process starts with is the
+    limit it has. No other service sets one, the shared block of the backend services
+    included: the relay and `migrate` hold a handful of connections each. The overlay
+    changes neither."""
+    limited = {name for name, service in STACK.items() if "ulimits" in service}
+    assert limited == set(NOFILE_LIMITS)
+    for name, variable in NOFILE_LIMITS.items():
+        assert STACK[name].count("ulimits") == 1, name
+        [(soft, hard)] = NOFILE.findall(STACK[name])
+        assert soft == hard == f"${{{variable}:?}}", name
+    assert "ulimits" not in anchor_of(COMPOSE, "backend")
+    assert "ulimits" not in code_of(OVERRIDE)
+
+
+@pytest.mark.parametrize("environment", [EXAMPLE, DEPLOYED], ids=["example", "production"])
+def test_the_limits_of_open_files_cover_a_full_room(environment: Mapping[str, str]) -> None:
+    """The API holds one socket per open event stream and its connections to Postgres.
+    nginx is given twice the connections of a full room: two per open event stream, one
+    per viewer of a live stream (the test below holds the same figure to what one
+    worker takes). Each rule adds 256 files for everything else. They hold for
+    `.example.env` and for what `infra/deploy/env.production` makes of it."""
+    streams = int(environment["LIVE_MAX_STREAMS"])
+    viewers = int(environment["BROADCAST_MAX_VIEWERS"])
+    pool = int(environment["POSTGRES_POOL_SIZE"]) + int(environment["POSTGRES_MAX_OVERFLOW"])
+
+    for_the_api = streams + pool + 256
+    assert int(environment["API_NOFILE_LIMIT"]) >= for_the_api, (
+        f"API_NOFILE_LIMIT={environment['API_NOFILE_LIMIT']} is below {for_the_api}: "
+        "LIVE_MAX_STREAMS + POSTGRES_POOL_SIZE + POSTGRES_MAX_OVERFLOW + 256"
+    )
+    for_nginx = 2 * (2 * streams + viewers) + 256
+    assert int(environment["NGINX_NOFILE_LIMIT"]) >= for_nginx, (
+        f"NGINX_NOFILE_LIMIT={environment['NGINX_NOFILE_LIMIT']} is below {for_nginx}: "
+        "4 x LIVE_MAX_STREAMS + 2 x BROADCAST_MAX_VIEWERS + 256"
+    )
+
+
+NGINX_IMAGE: Final[str] = "nginx:1.30-alpine"
+WORKER_CONNECTIONS: Final[int] = 1024
+"""`worker_connections` in the `nginx.conf` of `NGINX_IMAGE`: the connections one worker
+process of the proxy holds, to clients and upstream together. The stack mounts no
+`nginx.conf` of its own (it renders into `conf.d` alone), so the figure of the image is
+the figure its workers run with. The two belong together: another image is another
+figure, and the last test of this file reads it from the image."""
+
+
+@pytest.mark.parametrize("environment", [EXAMPLE, DEPLOYED], ids=["example", "production"])
+def test_one_worker_of_the_proxy_has_the_connections_of_a_full_room(
+    environment: Mapping[str, str],
+) -> None:
+    """An open event stream is two connections of the proxy, a viewer of a live stream
+    one. However the kernel spreads a room over the workers, the whole room fits one of
+    them with an eighth of its connections to spare. `LIVE_MAX_STREAMS` is raised only
+    as far as this holds."""
+    assert scalar(STACK["nginx"], "image") == NGINX_IMAGE
+    streams = int(environment["LIVE_MAX_STREAMS"])
+    viewers = int(environment["BROADCAST_MAX_VIEWERS"])
+    needed = 2 * streams + viewers
+    within = WORKER_CONNECTIONS * 7 // 8
+    assert needed <= within, (
+        f"2 x LIVE_MAX_STREAMS + BROADCAST_MAX_VIEWERS is {needed}, above {within}: seven "
+        f"eighths of the {WORKER_CONNECTIONS} connections of one worker of {NGINX_IMAGE}"
+    )
+
+
+def test_every_worker_of_the_proxy_listens_on_a_socket_of_its_own() -> None:
+    """`reuseport`: the kernel hands each connection that arrives to one worker's own
+    socket. On a socket the workers share, connections that arrive one by one mostly go
+    to the same worker, which takes no more than its `worker_connections` while the
+    others idle. The server has the one `listen`, and the development file adds none."""
+    assert [listen.arguments for listen in named(PROXY_TREE, "listen")] == [
+        ("80", "default_server", "reuseport")
+    ]
+    assert SERVER.inner("listen") == [("80", "default_server", "reuseport")]
+    assert named(IDENTITY_TREE, "listen") == []
+
+
+UVICORN_WORKER_VARIABLES: Final[tuple[str, ...]] = ("WEB_CONCURRENCY", "UVICORN_WORKERS")
+"""The variables from which uvicorn takes a number of worker processes when its command
+names none. The API receives the whole of `.env`, so neither is a key of it."""
+
+
+def test_one_process_serves_the_api() -> None:
+    """What the API keeps in its own memory is kept once, such as the orders it counts
+    per user while Redis is away (SPEC A.4): a second process would count on its own.
+    So the command names no `--workers`, deployed and reloading alike, nothing in `.env`
+    asks uvicorn for workers, no service is run in several copies, and no service but
+    `api` runs the application. `infra/deploy/check.sh` counts the processes that
+    listen in the running container (check 14)."""
+    for command in (entries(STACK["api"], "command"), entries(OVERLAY["api"], "command")):
+        assert command[:2] == ["uvicorn", "app.main:create_app"]
+        assert not any(word.startswith("--workers") for word in command), command
+    for variable in UVICORN_WORKER_VARIABLES:
+        assert variable not in EXAMPLE, variable
+        assert variable not in code_of(COMPOSE) + code_of(OVERRIDE), variable
+    for services in (STACK, OVERLAY):
+        assert [name for name, service in services.items() if "app.main" in service] == ["api"]
+    for compose in (COMPOSE, OVERRIDE):
+        for word in ("replicas", "scale:", "deploy:"):
+            assert word not in code_of(compose), word
 
 
 def test_every_service_rotates_its_log() -> None:
@@ -730,6 +925,88 @@ def test_the_suite_runs_the_images_and_the_scylla_flags_of_the_stack() -> None:
     for name, _ in REFERENCE.findall(flags):
         flags = flags.replace(f"${{{name}:?}}", EXAMPLE[name])
     assert flags == SCYLLA_COMMAND
+
+
+# --- The commands of the Makefile ---------------------------------------------------------
+
+
+def make_target(name: str) -> tuple[list[str], str, list[str]]:
+    """What a target of the Makefile needs, what `make` says about it and its recipe."""
+    found = re.search(
+        rf"^{re.escape(name)}:(?P<needs>[^#\n]*)(?:## (?P<says>.*))?\n(?P<recipe>(?:\t.*\n)*)",
+        MAKEFILE,
+        re.MULTILINE,
+    )
+    assert found is not None, name
+    recipe = [line.removeprefix("\t") for line in found["recipe"].splitlines()]
+    return found["needs"].split(), found["says"] or "", recipe
+
+
+def test_make_e2e_runs_the_browser_suite_against_the_stack_that_is_up() -> None:
+    """The target runs the script `e2e` of the frontend and nothing else: it needs no
+    other target, so it starts, builds and seeds no stack, and where the stack is and
+    how a person is named to it is the runner's to read from its environment. It is no
+    part of `make test`, which needs no stack. `make` alone lists it, which takes a
+    pattern that knows a digit in a name."""
+    needs, says, recipe = make_target("e2e")
+    assert needs == []
+    assert recipe == ["$(FRONTEND) npm run e2e"]
+    assert "e2e" in json.loads(FRONTEND_PACKAGE)["scripts"], "frontend/package.json"
+
+    phony = re.search(r"^\.PHONY:((?:.*\\\n)*.*)$", MAKEFILE, re.MULTILINE)
+    assert phony is not None
+    assert "e2e" in phony.group(1).replace("\\", " ").split()
+
+    assert says
+    listed_by_make = re.search(r"/\^(\[[^\]]+\]\+):\.\*## /", MAKEFILE)
+    assert listed_by_make is not None
+    assert re.fullmatch(listed_by_make.group(1), "e2e")
+
+    tests, _, _ = make_target("test")
+    assert tests == ["test-backend", "test-frontend"]
+    for part in tests:
+        assert "e2e" not in " ".join(make_target(part)[2]), part
+
+
+# --- What the deployment check asks of the running stack -------------------------------------
+
+CHECK_HEADING: Final[re.Pattern[str]] = re.compile(r"^# (\d+)\. .*-{3,}$", re.MULTILINE)
+"""The line a numbered check of `infra/deploy/check.sh` begins with."""
+
+
+def checks_of(script: str) -> dict[int, str]:
+    """Number to text of the checks of `check.sh`, each from its heading to the next."""
+    pieces = CHECK_HEADING.split(script)
+    return {int(number): body for number, body in zip(pieces[1::2], pieces[2::2], strict=True)}
+
+
+def test_the_deployment_check_reads_the_open_files_and_counts_the_processes_of_the_api() -> None:
+    """Check 14 of `infra/deploy/check.sh`: the running nginx and api have the limits of
+    open files `.env` names, the two variables `compose.yaml` sets them from, and one
+    process serves the API. It reads each limit from the process it holds for and
+    counts the processes of the api container that hold a listening socket.
+
+    It is the last check and runs for every tree: the checks of a production tree
+    before it end the script nowhere, whatever `APP_ENV` is. The header of the script
+    lists it."""
+    checks = checks_of(CHECK)
+    assert list(checks) == sorted(checks)
+    number, check = list(checks.items())[-1]
+    assert number == 14
+    assert re.search(r"^# {1,2}14\. ", CHECK, re.MULTILINE), "the list at the top of the script"
+
+    for service, variable in NOFILE_LIMITS.items():
+        assert f"$(setting {variable})" in check, variable
+        assert f"exec -T {service} " in check, service
+    assert "exec -T nginx cat /proc/1/limits" in check
+    assert "exec -T api python -c" in check
+    assert '[ "$serving" = "1" ]' in check
+    assert "/proc/net/tcp" in check
+
+    assert code_of(CHECK).rstrip().endswith('echo "All checks passed."')
+    production_only = checks[10]
+    assert 'if [ "$APP_ENV" = "production" ]; then' in production_only
+    assert "exit" not in code_of(production_only)
 
 
 # --- How the proxy configuration gets into the container ------------------------------
@@ -1013,16 +1290,26 @@ def test_address_and_scheme_are_believed_from_the_same_private_peers_only() -> N
     assert upstream_scheme == "$client_scheme"
 
 
-def test_the_outer_limits_count_per_signed_in_user() -> None:
-    """Visitors behind one address must not share a bucket. A request that names nobody
-    is counted by its address."""
+def test_the_outer_limits_count_per_caller_as_the_proxy_names_them() -> None:
+    """Visitors behind one address must not share a bucket, so both limits are keyed on
+    the caller: `$api_caller`, with the address for a request that names nobody. No map
+    of the proxy reads the identity header itself, so nothing is counted by what a
+    request says where the proxy names the caller."""
     [callers] = [
         directive
         for directive in PROXY_TREE
-        if directive.name == "map" and directive.arguments[0] == request_variable(ID_HEADER)
+        if directive.name == "map" and directive.arguments[0] == API_CALLER
     ]
     caller = callers.arguments[1]
     assert callers.inner("default") == [("$binary_remote_addr",)]
+    [named_caller] = [rule for rule in callers.block if rule.name != "default"]
+    assert named_caller.name.startswith("~")
+    assert named_caller.arguments == (API_CALLER,)
+    assert [
+        directive
+        for directive in PROXY_TREE
+        if directive.name == "map" and directive.arguments[0] == request_variable(ID_HEADER)
+    ] == []
     [requests] = named(PROXY_TREE, "limit_req_zone")
     [streams] = named(PROXY_TREE, "limit_conn_zone")
     assert requests.arguments[0] == caller
@@ -1033,6 +1320,97 @@ def test_the_outer_limits_count_per_signed_in_user() -> None:
         [(zone, burst, _)] = location.inner("limit_req")
         assert zone == requests.arguments[1].split(":")[0], location.arguments
         assert burst == "burst=${NGINX_RATE_LIMIT_BURST}", location.arguments
+
+
+def test_each_file_of_the_proxy_says_once_who_the_caller_of_the_limits_is() -> None:
+    """The server block sets `$api_caller` to the id the portal sent, in a line of its
+    own level before the one that includes the development file. That file ends with
+    the line that sets it again, to the variable it sends the API as the caller's id.
+    nginx runs the `set` lines of a server block in their order, so on a laptop the
+    last one holds, and in the deployed stack, which includes no file, the first."""
+    assigning = [
+        position
+        for position, directive in enumerate(SERVER.block)
+        if directive.name == "set" and directive.arguments[0] == API_CALLER
+    ]
+    [position] = assigning
+    assert SERVER.block[position].arguments == (API_CALLER, request_variable(ID_HEADER))
+    [including] = [
+        position for position, directive in enumerate(SERVER.block) if directive.name == "include"
+    ]
+    assert position < including
+    in_the_proxy = [
+        directive
+        for directive in all_of(PROXY_TREE)
+        if directive.name == "set" and directive.arguments[0] == API_CALLER
+    ]
+    assert len(in_the_proxy) == 1, "none inside a location or a condition"
+
+    last = IDENTITY_TREE[-1]
+    [sent_as_the_id] = [
+        directive.arguments[1]
+        for directive in IDENTITY_TREE
+        if directive.name == "proxy_set_header" and directive.arguments[0] == ID_HEADER
+    ]
+    assert (last.name, last.arguments) == ("set", (API_CALLER, sent_as_the_id))
+    in_the_development_file = [
+        directive
+        for directive in all_of(IDENTITY_TREE)
+        if directive.name == "set" and directive.arguments[0] == API_CALLER
+    ]
+    assert in_the_development_file == [last]
+
+
+CLIENT_ADDRESS: Final[str] = "<the address of the client>"
+"""What stands for `$binary_remote_addr` where a test asks for the bucket of a request."""
+
+
+def bucket_of(request: Mapping[str, str], development: Iterable[Directive] = ()) -> str:
+    """The key under which the proxy counts a request against its limits: `$caller`, for
+    what the request brought (by nginx variable) and for the file the server block
+    includes."""
+    known = set_by_the_server(request, development) | {"$binary_remote_addr": CLIENT_ADDRESS}
+    return looked_up("$caller", {}, known)
+
+
+def test_the_deployed_proxy_counts_a_request_under_the_id_the_portal_sent() -> None:
+    """One bucket per id, and the address for a request that names nobody or whose id
+    is longer than the 255 bytes a connection limit accepts as a key. A cookie of the
+    development stand-in names nobody here."""
+    header = request_variable(ID_HEADER)
+    assert bucket_of({header: "ab12cd@ethz.ch"}) == "ab12cd@ethz.ch"
+    assert bucket_of({header: "ef34gh@ethz.ch"}) == "ef34gh@ethz.ch"
+    assert bucket_of({header: "a" * 255}) == "a" * 255
+    assert bucket_of({header: "a" * 256}) == CLIENT_ADDRESS
+    assert bucket_of({}) == CLIENT_ADDRESS
+    assert bucket_of({"$cookie_dev_user_id": "ab12cd@ethz.ch"}) == CLIENT_ADDRESS
+
+
+def test_the_development_proxy_counts_a_request_under_the_caller_it_names() -> None:
+    """On a laptop a browser sends no identity header: the proxy names the caller from
+    a cookie, or from `DEV_USER_ID`. Counted by the header, every window of every
+    person would share the one bucket of the laptop's address. Counted by the caller,
+    two people have a bucket each, and it is the id the API is told. An identity header
+    a request brings picks no bucket, as it names nobody to the API."""
+    development = parse(rendered(IDENTITY, handed_to_nginx(OVERLAY["nginx"], EXAMPLE)))
+    header = request_variable(ID_HEADER)
+    cookie = "$cookie_dev_user_id"
+    assert bucket_of({cookie: "anna@ethz.ch"}, development) == "anna@ethz.ch"
+    assert bucket_of({cookie: "ben@ethz.ch"}, development) == "ben@ethz.ch"
+    assert bucket_of({cookie: "anna@ethz.ch", header: "ben@ethz.ch"}, development) == (
+        "anna@ethz.ch"
+    )
+    assert bucket_of({}, development) == EXAMPLE["DEV_USER_ID"]
+    assert bucket_of({header: "ben@ethz.ch"}, development) == EXAMPLE["DEV_USER_ID"]
+
+    [sent_as_the_id] = [
+        directive.arguments[1]
+        for directive in development
+        if directive.name == "proxy_set_header" and directive.arguments[0] == ID_HEADER
+    ]
+    for request in ({cookie: "anna@ethz.ch"}, {}, {header: "ben@ethz.ch"}):
+        variables = set_by_the_server(request, development)
+        assert variables[API_CALLER] == variables[sent_as_the_id], request
 
 
 SITE: Final[str] = "Sec-Fetch-Site"
@@ -1306,6 +1684,25 @@ DOCKER_ITSELF_FAILED: Final[int] = 125
 daemon, or no image and no way to fetch one. What nginx says comes with its own status."""
 
 
+def run_without_network(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+    """`docker run --rm --network none <arguments>`: a container that reaches nothing,
+    publishes nothing and is removed when its command has ended. Without Docker, or
+    where Docker cannot run the container, the test that asks is skipped."""
+    docker = shutil.which("docker")
+    if docker is None:
+        pytest.skip("Docker is not installed: the image was not asked")
+    command = [docker, "run", "--rm", "--network", "none", *arguments]
+    try:
+        asked = subprocess.run(
+            command, capture_output=True, text=True, timeout=NGINX_TEST_SECONDS, check=False
+        )
+    except subprocess.TimeoutExpired:
+        pytest.skip(f"Docker did not answer within {NGINX_TEST_SECONDS} seconds")
+    if asked.returncode == DOCKER_ITSELF_FAILED:
+        pytest.skip(f"Docker could not run the image: {asked.stderr.strip()[-200:]}")
+    return asked
+
+
 @pytest.mark.parametrize(
     ("environment", "with_the_overlay"),
     [(EXAMPLE, False), (DEPLOYED, False), (EXAMPLE, True)],
@@ -1324,30 +1721,41 @@ def test_nginx_accepts_the_configuration_as_the_stack_renders_it(
     The container has no network, publishes nothing and is removed when nginx has
     answered. Without Docker the test is skipped.
     """
-    docker = shutil.which("docker")
-    if docker is None:
-        pytest.skip("Docker is not installed: nginx was not asked")
-
     handed = handed_to_nginx(STACK["nginx"], environment)
     mounts = mounts_of(STACK["nginx"])
     if with_the_overlay:
         handed |= handed_to_nginx(OVERLAY["nginx"], environment)
         mounts |= mounts_of(OVERLAY["nginx"])
-    command = [docker, "run", "--rm", "--network", "none"]
+    arguments: list[str] = []
     for name, value in sorted(handed.items()):
-        command += ["--env", f"{name}={value}"]
+        arguments += ["--env", f"{name}={value}"]
     for source, target in mounts.items():
-        command += ["--volume", f"{(REPO_ROOT / source).resolve()}:{target}:ro"]
-    command += [scalar(STACK["nginx"], "image"), "nginx", "-t"]
+        arguments += ["--volume", f"{(REPO_ROOT / source).resolve()}:{target}:ro"]
+    arguments += [scalar(STACK["nginx"], "image"), "nginx", "-t"]
 
-    try:
-        asked = subprocess.run(
-            command, capture_output=True, text=True, timeout=NGINX_TEST_SECONDS, check=False
-        )
-    except subprocess.TimeoutExpired:
-        pytest.skip(f"Docker did not answer within {NGINX_TEST_SECONDS} seconds")
-    if asked.returncode == DOCKER_ITSELF_FAILED:
-        pytest.skip(f"Docker could not run the nginx image: {asked.stderr.strip()[-200:]}")
+    asked = run_without_network(arguments)
 
     assert asked.returncode == 0, asked.stderr
     assert "test is successful" in asked.stderr
+
+
+def test_the_image_of_the_proxy_gives_a_worker_the_connections_the_stack_counts_on() -> None:
+    """`WORKER_CONNECTIONS` is a figure of the image: the `nginx.conf` it ships, which
+    is the one the stack runs, because the stack renders into `conf.d` alone. The image
+    is asked for that file. It gives a worker that many connections, starts one worker
+    per CPU, and loads what lies in `conf.d` inside its `http` block, where the proxy's
+    maps and zones belong.
+
+    Without Docker the test is skipped.
+    """
+    asked = run_without_network([NGINX_IMAGE, "cat", "/etc/nginx/nginx.conf"])
+
+    assert asked.returncode == 0, asked.stderr
+    shipped = parse(asked.stdout)
+    assert [d.arguments for d in named(shipped, "worker_connections")] == [
+        (str(WORKER_CONNECTIONS),)
+    ]
+    assert [d.arguments for d in named(shipped, "worker_processes")] == [("auto",)]
+    assert named(shipped, "worker_rlimit_nofile") == [], "a worker has the limit of its container"
+    [http] = [directive for directive in shipped if directive.name == "http"]
+    assert http.inner("include")[-1] == (f"{LOADED_BY_THE_IMAGE}/*.conf",)

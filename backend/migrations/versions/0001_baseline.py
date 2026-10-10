@@ -10,7 +10,7 @@ database that was built from other models.
 `upgrade` builds an empty database in five steps:
 
 1. the tables, constraints and indexes, straight from `app.models`;
-2. the three trigger functions and their triggers (`app.models.triggers`);
+2. the four trigger functions and their triggers (`app.models.triggers`);
 3. the four VIS_* system accounts (SPEC §7);
 4. the app role and what it may do: everything except what the ledger keeps to the
    database (`app.models.privileges`);

@@ -12,6 +12,7 @@
     "lint": "eslint .",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run",
+    "e2e": "playwright test",
     "generate:api": "openapi-typescript ../backend/openapi.json --output src/lib/api/schema.d.ts --root-types --root-types-no-schema-prefix"
   },
   "dependencies": {

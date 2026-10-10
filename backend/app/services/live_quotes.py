@@ -57,7 +57,7 @@ class LiveQuoteService:
         bus: QuoteBus,
     ) -> None:
         self._uow_factory = uow_factory
-        self._heartbeat_seconds = settings.redis.sse_heartbeat_seconds
+        self._heartbeat_seconds = settings.live.heartbeat_seconds
         self._clock = clock
         self._view = view
         self._bus = bus

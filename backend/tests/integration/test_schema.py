@@ -9,7 +9,7 @@ test harness the other integration tests stand on.
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from typing import Any, Final
 from uuid import UUID, uuid7
 
@@ -27,6 +27,8 @@ from app.core.enums import (
     SYSTEM_ACCOUNT_KINDS,
     AccountKind,
     AlertSeverity,
+    BroadcastEndReason,
+    BroadcastStatus,
     CodeStatus,
     DegreeLevel,
     JournalKind,
@@ -42,12 +44,19 @@ from app.core.enums import (
     VoucherStatus,
 )
 from app.core.security import sha256_hex
+from app.core.text import (
+    ANSWER_STORED_MAX_LENGTH,
+    CHAT_MESSAGE_STORED_MAX_LENGTH,
+    QUESTION_STORED_MAX_LENGTH,
+)
 from app.db.base import Base
 from app.db.database import Database
 from app.models import (
     Account,
     Alert,
     AuditLogEntry,
+    Broadcast,
+    ChatMessage,
     Code,
     CodeBatch,
     Grant,
@@ -57,12 +66,15 @@ from app.models import (
     Notice,
     Position,
     Posting,
+    Question,
     Resolution,
+    Streak,
     Trade,
     User,
     Voucher,
 )
 from app.models.fingerprint import schema_fingerprint
+from app.models.triggers import TRIGGER_FUNCTIONS, TRIGGER_STATEMENTS
 from app.repositories.unit_of_work import UnitOfWork
 from scripts import check_schema
 from scripts.check_schema import stored_fingerprint
@@ -590,6 +602,11 @@ async def test_app_role_holds_exactly_these_privileges(
         "journal_entries": {"SELECT"},
         "postings": {"SELECT", "INSERT"},
         "alembic_version": {"SELECT"},
+        # A question is never erased, a chat message never edited, a broadcast never
+        # erased.
+        "questions": {"SELECT", "INSERT", "UPDATE"},
+        "chat_messages": {"SELECT", "INSERT", "DELETE"},
+        "broadcasts": {"SELECT", "INSERT", "UPDATE"},
     }
     on_columns = {
         ("accounts", "INSERT"): {"id", "kind", "owner_id", "market_id"},
@@ -2212,3 +2229,805 @@ async def test_reset_database_leaves_only_the_system_accounts(
         assert await uow.accounts.total_balance() == 0
         event = await uow.outbox.add(OutboxTopic.QUOTE_UPDATED, {"version": 0}, NOW)
         assert event.id == 1
+
+
+# --- Audiences, streaks, questions, broadcasts and chat messages ----------------------
+
+PROGRAMME: Final[str] = "BSc Computer Science"
+OTHER_PROGRAMME: Final[str] = "MSc Data Science"
+
+
+def _question(world: World, **overrides: Any) -> Question:
+    values: dict[str, Any] = {
+        "market_id": world.market.id,
+        "asked_by": world.user.id,
+        "text": "Which menu counts, the one at noon?",
+        "created_at": NOW,
+    }
+    return Question(**(values | overrides))
+
+
+def _broadcast(world: World, status: BroadcastStatus, **overrides: Any) -> Broadcast:
+    """A broadcast of the world's market as a row of `status` reads when nothing is
+    left out: decided unless it is REQUESTED, started once it is LIVE, ended once it
+    is ENDED."""
+    values: dict[str, Any] = {
+        "id": uuid7(),
+        "market_id": world.market.id,
+        "broadcaster_id": world.user.id,
+        "status": status,
+        "requested_at": NOW,
+    }
+    if status is not BroadcastStatus.REQUESTED:
+        values |= {"decided_by": world.admin.id, "decided_at": NOW}
+    if status is BroadcastStatus.REFUSED:
+        values |= {"refusal_reason": "Not this week."}
+    if status in (BroadcastStatus.LIVE, BroadcastStatus.ENDED):
+        values |= {"started_at": NOW, "last_chunk_at": NOW}
+    if status is BroadcastStatus.ENDED:
+        values |= {"ended_at": NOW + DAY, "end_reason": BroadcastEndReason.STALLED}
+    return Broadcast(**(values | overrides))
+
+
+def _chat_message(world: World, broadcast: Broadcast, **overrides: Any) -> ChatMessage:
+    values: dict[str, Any] = {
+        "market_id": world.market.id,
+        "broadcast_id": broadcast.id,
+        "user_id": world.user.id,
+        "text": "Hopp!",
+        "from_vis": False,
+        "created_at": NOW,
+    }
+    return ChatMessage(**(values | overrides))
+
+
+def _streak(world: World, **overrides: Any) -> Streak:
+    values: dict[str, Any] = {
+        "user_id": world.user.id,
+        "current_days": 3,
+        "longest_days": 5,
+        "last_day": date(2026, 10, 9),
+        "updated_at": NOW,
+    }
+    return Streak(**(values | overrides))
+
+
+def _resumed(world: World, status: BroadcastStatus) -> list[Base]:
+    """An ended broadcast, and one of `status` that runs on its approval."""
+    ended = _broadcast(world, BroadcastStatus.ENDED)
+    return [ended, _broadcast(world, status, resumed_from=ended.id)]
+
+
+COLUMNS_OF_THE_ROUND: Final[dict[str, dict[str, tuple[str, bool]]]] = {
+    "streaks": {
+        "user_id": ("uuid", False),
+        "current_days": ("bigint", False),
+        "longest_days": ("bigint", False),
+        "last_day": ("date", False),
+        "updated_at": ("timestamp with time zone", False),
+    },
+    "questions": {
+        "id": ("uuid", False),
+        "market_id": ("uuid", False),
+        "asked_by": ("uuid", False),
+        "text": ("text", False),
+        "created_at": ("timestamp with time zone", False),
+        "answer_text": ("text", True),
+        "answered_by": ("uuid", True),
+        "answered_at": ("timestamp with time zone", True),
+        "removed_by": ("uuid", True),
+        "removed_at": ("timestamp with time zone", True),
+    },
+    "broadcasts": {
+        "id": ("uuid", False),
+        "market_id": ("uuid", False),
+        "broadcaster_id": ("uuid", False),
+        "status": ("character varying(32)", False),
+        "requested_at": ("timestamp with time zone", False),
+        "decided_by": ("uuid", True),
+        "decided_at": ("timestamp with time zone", True),
+        "refusal_reason": ("text", True),
+        "resumed_from": ("uuid", True),
+        "started_at": ("timestamp with time zone", True),
+        "on_air_at": ("timestamp with time zone", True),
+        "last_chunk_at": ("timestamp with time zone", True),
+        "ended_at": ("timestamp with time zone", True),
+        "ended_by": ("uuid", True),
+        "end_reason": ("character varying(32)", True),
+    },
+    "chat_messages": {
+        "id": ("uuid", False),
+        "market_id": ("uuid", False),
+        "broadcast_id": ("uuid", False),
+        "user_id": ("uuid", False),
+        "text": ("text", False),
+        "from_vis": ("boolean", False),
+        "created_at": ("timestamp with time zone", False),
+    },
+}
+"""Every column of the four tables: its type as Postgres spells it, and whether it
+takes NULL."""
+
+ADDED_COLUMNS: Final[dict[tuple[str, str], tuple[str, bool]]] = {
+    ("markets", "audience_programme"): ("character varying(100)", True),
+    ("users", "degree_changed_at"): ("timestamp with time zone", True),
+}
+
+CHECKS_OF_THE_ROUND: Final[frozenset[str]] = frozenset(
+    {
+        "ck_markets_audience_programme_not_blank",
+        "ck_streaks_current_days_positive",
+        "ck_streaks_longest_not_below_current",
+        "ck_questions_text_length",
+        "ck_questions_answer_length",
+        "ck_questions_answered_whole",
+        "ck_questions_removed_whole",
+        "ck_broadcasts_status",
+        "ck_broadcasts_end_reason",
+        "ck_broadcasts_decided_together",
+        "ck_broadcasts_requested_is_undecided",
+        "ck_broadcasts_refusal_has_reason",
+        "ck_broadcasts_live_has_started",
+        "ck_broadcasts_ended_is_complete",
+        "ck_broadcasts_resumed_has_started",
+        "ck_chat_messages_text_length",
+    }
+)
+
+OPEN_BROADCASTS: Final[str] = (
+    "WHERE ((status)::text = ANY ((ARRAY['REQUESTED'::character varying,"
+    " 'APPROVED'::character varying, 'LIVE'::character varying])::text[]))"
+)
+"""The condition of the two partial indexes of `broadcasts`, as Postgres writes it back."""
+
+INDEXES_OF_THE_ROUND: Final[dict[str, str]] = {
+    "ix_markets_audience_programme_status_close_at": (
+        "CREATE INDEX ix_markets_audience_programme_status_close_at ON public.markets"
+        " USING btree (audience_programme, status, close_at)"
+    ),
+    "ix_trades_user_id_created_at": (
+        "CREATE INDEX ix_trades_user_id_created_at ON public.trades"
+        " USING btree (user_id, created_at)"
+    ),
+    "ix_questions_market_id_id": (
+        "CREATE INDEX ix_questions_market_id_id ON public.questions USING btree (market_id, id)"
+    ),
+    "uq_broadcasts_market_open": (
+        "CREATE UNIQUE INDEX uq_broadcasts_market_open ON public.broadcasts"
+        f" USING btree (market_id) {OPEN_BROADCASTS}"
+    ),
+    "ix_broadcasts_open": (
+        "CREATE INDEX ix_broadcasts_open ON public.broadcasts"
+        f" USING btree (status, requested_at) {OPEN_BROADCASTS}"
+    ),
+    "ix_broadcasts_market_id_requested_at": (
+        "CREATE INDEX ix_broadcasts_market_id_requested_at ON public.broadcasts"
+        " USING btree (market_id, requested_at)"
+    ),
+    "ix_broadcasts_broadcaster_id_requested_at": (
+        "CREATE INDEX ix_broadcasts_broadcaster_id_requested_at ON public.broadcasts"
+        " USING btree (broadcaster_id, requested_at)"
+    ),
+    "ix_chat_messages_broadcast_id_id": (
+        "CREATE INDEX ix_chat_messages_broadcast_id_id ON public.chat_messages"
+        " USING btree (broadcast_id, id)"
+    ),
+}
+
+FOREIGN_KEYS_OF_THE_ROUND: Final[dict[str, str]] = {
+    "fk_streaks_user_id_users": "users",
+    "fk_questions_market_id_markets": "markets",
+    "fk_questions_asked_by_users": "users",
+    "fk_questions_answered_by_users": "users",
+    "fk_questions_removed_by_users": "users",
+    "fk_broadcasts_market_id_markets": "markets",
+    "fk_broadcasts_broadcaster_id_users": "users",
+    "fk_broadcasts_decided_by_users": "users",
+    "fk_broadcasts_resumed_from_broadcasts": "broadcasts",
+    "fk_broadcasts_ended_by_users": "users",
+    "fk_chat_messages_market_id_markets": "markets",
+    "fk_chat_messages_broadcast_id_broadcasts": "broadcasts",
+    "fk_chat_messages_user_id_users": "users",
+}
+"""Each foreign key of the four tables and the table it points at."""
+
+
+async def test_the_columns_of_the_four_tables_and_the_two_added_columns_exist(
+    owner_engine: AsyncEngine,
+) -> None:
+    async with owner_engine.connect() as connection:
+        rows = await connection.execute(
+            text(
+                "SELECT c.relname, a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull"
+                " FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid"
+                " WHERE c.relnamespace = 'public'::regnamespace AND c.relkind = 'r'"
+                " AND a.attnum > 0 AND NOT a.attisdropped"
+            )
+        )
+        actual: dict[str, dict[str, tuple[str, bool]]] = {}
+        for table, column, type_name, not_null in rows:
+            actual.setdefault(table, {})[column] = (type_name, not not_null)
+
+    for table, columns in COLUMNS_OF_THE_ROUND.items():
+        assert actual[table] == columns, table
+    for (table, column), definition in ADDED_COLUMNS.items():
+        assert actual[table][column] == definition, (table, column)
+
+
+async def test_the_keys_checks_and_indexes_of_the_round_exist(owner_engine: AsyncEngine) -> None:
+    async def pairs(statement: str) -> dict[str, str]:
+        found: dict[str, str] = {}
+        for name, value in await connection.execute(text(statement)):
+            found[name] = value
+        return found
+
+    async with owner_engine.connect() as connection:
+        checks = set(
+            await connection.scalars(
+                text(
+                    "SELECT conname FROM pg_constraint"
+                    " WHERE contype = 'c' AND connamespace = 'public'::regnamespace"
+                )
+            )
+        )
+        indexes = await pairs(
+            "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public'"
+        )
+        foreign_keys = await pairs(
+            "SELECT conname, confrelid::regclass::text FROM pg_constraint"
+            " WHERE contype = 'f' AND connamespace = 'public'::regnamespace"
+        )
+        primary_keys = await pairs(
+            "SELECT conrelid::regclass::text, pg_get_constraintdef(oid) FROM pg_constraint"
+            " WHERE contype = 'p' AND connamespace = 'public'::regnamespace"
+        )
+
+    assert checks >= CHECKS_OF_THE_ROUND
+    for name, definition in INDEXES_OF_THE_ROUND.items():
+        assert indexes.get(name) == definition, name
+    for name, target in FOREIGN_KEYS_OF_THE_ROUND.items():
+        assert foreign_keys.get(name) == target, name
+    assert primary_keys["streaks"] == "PRIMARY KEY (user_id)"
+    for table in ("questions", "broadcasts", "chat_messages"):
+        assert primary_keys[table] == "PRIMARY KEY (id)", table
+
+
+async def test_the_journal_takes_the_two_kinds_a_streak_books(
+    uow_factory: UowFactory, owner_engine: AsyncEngine, world: World
+) -> None:
+    async with owner_engine.connect() as connection:
+        listed = await connection.scalar(
+            text(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint"
+                " WHERE conname = 'ck_journal_entries_kind'"
+            )
+        )
+    assert listed is not None
+    assert all(f"'{kind.value}'" in listed for kind in JournalKind)
+    assert {"STREAK_REWARD", "STREAK_BONUS"} <= {kind.value for kind in JournalKind}
+
+    async with uow_factory() as uow:
+        issuance = await uow.accounts.get_system_account(AccountKind.VIS_ISSUANCE)
+        for kind in (JournalKind.STREAK_REWARD, JournalKind.STREAK_BONUS):
+            entry = await uow.journal.add_entry(_entry(f"streak:{kind.value}", kind))
+            await uow.journal.add_postings(
+                [
+                    Posting(entry_id=entry.id, account_id=issuance.id, amount_micro=-2 * CR),
+                    Posting(
+                        entry_id=entry.id, account_id=world.user_account.id, amount_micro=2 * CR
+                    ),
+                ]
+            )
+
+    async with uow_factory() as uow:
+        account = await uow.accounts.get(world.user_account.id)
+        assert account is not None
+        assert account.balance_micro == 4 * CR
+
+
+async def test_the_trigger_that_fixes_an_audience_is_the_fourth_and_exists(
+    owner_engine: AsyncEngine,
+) -> None:
+    assert TRIGGER_FUNCTIONS[3] == "keep_market_audience"
+    assert "CREATE FUNCTION keep_market_audience()" in TRIGGER_STATEMENTS[6]
+    assert "CREATE TRIGGER markets_audience_fixed" in TRIGGER_STATEMENTS[7]
+    assert len(TRIGGER_STATEMENTS) == 8
+
+    async with owner_engine.connect() as connection:
+        definition = await connection.scalar(
+            text(
+                "SELECT pg_get_triggerdef(t.oid) FROM pg_trigger t"
+                " WHERE t.tgname = 'markets_audience_fixed' AND NOT t.tgisinternal"
+            )
+        )
+    assert definition == (
+        "CREATE TRIGGER markets_audience_fixed BEFORE UPDATE OF audience_programme"
+        " ON public.markets FOR EACH ROW EXECUTE FUNCTION keep_market_audience()"
+    )
+
+
+@pytest.mark.parametrize("role", ["owner", "app"])
+@pytest.mark.parametrize(
+    ("stored", "written"),
+    [(None, PROGRAMME), (PROGRAMME, None), (PROGRAMME, OTHER_PROGRAMME)],
+    ids=["public-to-a-programme", "a-programme-to-public", "one-programme-to-another"],
+)
+async def test_no_role_changes_the_audience_of_a_market(
+    uow_factory: UowFactory,
+    owner_engine: AsyncEngine,
+    database: Database,
+    world: World,
+    role: str,
+    stored: str | None,
+    written: str | None,
+) -> None:
+    """The audience of a market is decided when it is proposed. The trigger refuses
+    the change from the owner role as from the app role, whatever the status."""
+    engine = owner_engine if role == "owner" else database.engine
+    async with uow_factory() as uow:
+        market = await uow.markets.add(_market(world.user.id, audience_programme=stored))
+
+    async def write(programme: str | None) -> None:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE markets SET audience_programme = :programme WHERE id = :id"),
+                {"programme": programme, "id": market.id},
+            )
+
+    with pytest.raises(IntegrityError, match="the audience of a market cannot change") as refused:
+        await write(written)
+    assert "markets_audience_fixed" in str(refused.value.orig.__cause__.constraint_name)  # type: ignore[union-attr]
+
+    # Setting it to what it is changes nothing, and passes.
+    await write(stored)
+
+    async with owner_engine.connect() as connection:
+        kept = await connection.scalar(
+            text("SELECT audience_programme FROM markets WHERE id = :id"), {"id": market.id}
+        )
+    assert kept == stored
+
+
+async def test_the_application_cannot_change_an_audience_either_and_other_columns_still_change(
+    uow_factory: UowFactory, world: World
+) -> None:
+    async with uow_factory() as uow:
+        private = await uow.markets.add(_market(world.user.id, audience_programme=PROGRAMME))
+
+    async def change() -> None:
+        async with uow_factory() as uow:
+            market = await uow.markets.get_for_update(private.id)
+            assert market is not None
+            market.audience_programme = None
+
+    with pytest.raises(IntegrityError, match="the audience of a market cannot change"):
+        await change()
+
+    async with uow_factory() as uow:
+        market = await uow.markets.get_for_update(private.id)
+        assert market is not None
+        market.status = MarketStatus.HALTED
+
+    async with uow_factory() as uow:
+        market = await uow.markets.get(private.id)
+        assert market is not None
+        assert (market.status, market.audience_programme) == (MarketStatus.HALTED, PROGRAMME)
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "DELETE FROM questions",
+        "TRUNCATE questions",
+        "DELETE FROM broadcasts",
+        "TRUNCATE broadcasts CASCADE",
+        "UPDATE chat_messages SET text = 'rewritten'",
+        "UPDATE chat_messages SET from_vis = true",
+    ],
+)
+async def test_the_app_role_erases_no_question_and_no_broadcast_and_edits_no_chat_message(
+    uow_factory: UowFactory, database: Database, world: World, statement: str
+) -> None:
+    broadcast = _broadcast(world, BroadcastStatus.LIVE)
+    await _insert(uow_factory, [_question(world), broadcast, _chat_message(world, broadcast)])
+
+    async def run_statement() -> None:
+        async with database.engine.begin() as connection:
+            await connection.execute(text(statement))
+
+    with pytest.raises(ProgrammingError, match="permission denied"):
+        await run_statement()
+
+    async with uow_factory() as uow:
+        counts = [
+            await uow.session.scalar(select(func.count()).select_from(model))
+            for model in (Question, Broadcast, ChatMessage)
+        ]
+        message = (await uow.session.scalars(select(ChatMessage))).one()
+    assert counts == [1, 1, 1]
+    assert (message.text, message.from_vis) == ("Hopp!", False)
+
+
+async def test_the_app_role_writes_what_the_four_tables_are_for(
+    uow_factory: UowFactory, database: Database, settings: Settings, world: World
+) -> None:
+    """It answers and removes a question, moves a broadcast on, posts and deletes a
+    chat message, and counts, moves and deletes a streak."""
+    broadcast = _broadcast(world, BroadcastStatus.REQUESTED)
+    question = _question(world)
+    await _insert(uow_factory, [question, broadcast, _streak(world)])
+
+    async with uow_factory() as uow:
+        assert await uow.session.scalar(text("SELECT current_user")) == settings.postgres.app_user
+        asked = await uow.session.get(Question, question.id, with_for_update={"key_share": True})
+        assert asked is not None
+        asked.answer_text, asked.answered_by, asked.answered_at = "Yes.", world.admin.id, NOW
+        asked.removed_by, asked.removed_at = world.admin.id, NOW + DAY
+        running = await uow.session.get(
+            Broadcast, broadcast.id, with_for_update={"key_share": True}
+        )
+        assert running is not None
+        running.status = BroadcastStatus.LIVE
+        running.decided_by, running.decided_at = world.admin.id, NOW
+        running.started_at, running.last_chunk_at = NOW, NOW
+        streak = await uow.session.get(Streak, world.user.id, with_for_update={"key_share": True})
+        assert streak is not None
+        streak.current_days, streak.last_day = 4, date(2026, 10, 10)
+        message = _chat_message(world, broadcast)
+        uow.session.add(message)
+        await uow.flush()
+
+    async with uow_factory() as uow:
+        stored = await uow.session.get(ChatMessage, message.id)
+        assert stored is not None
+        await uow.session.delete(stored)
+        streak = await uow.session.get(Streak, world.user.id)
+        assert streak is not None
+        assert (streak.current_days, streak.longest_days) == (4, 5)
+        await uow.session.delete(streak)
+
+    async with uow_factory() as uow:
+        assert await uow.session.scalar(select(func.count()).select_from(ChatMessage)) == 0
+        assert await uow.session.scalar(select(func.count()).select_from(Streak)) == 0
+        kept = await uow.session.get(Question, question.id)
+        assert kept is not None
+        assert (kept.answer_text, kept.removed_by) == ("Yes.", world.admin.id)
+
+
+REJECTED_ROWS_OF_THE_ROUND: Final = [
+    pytest.param(
+        lambda w: [_market(w.user.id, audience_programme="")],
+        "ck_markets_audience_programme_not_blank",
+        id="market-for-a-programme-without-a-name",
+    ),
+    pytest.param(
+        lambda w: [_market(w.user.id, audience_programme="x" * 101)],
+        "value too long for type character varying\\(100\\)",
+        id="market-for-a-programme-longer-than-a-label",
+    ),
+    pytest.param(
+        lambda w: [_streak(w, current_days=0, longest_days=0)],
+        "ck_streaks_current_days_positive",
+        id="streak-of-no-day",
+    ),
+    pytest.param(
+        lambda w: [_streak(w, current_days=6, longest_days=5)],
+        "ck_streaks_longest_not_below_current",
+        id="streak-longer-than-its-longest",
+    ),
+    pytest.param(
+        lambda w: [_streak(w, user_id=uuid7())],
+        "fk_streaks_user_id_users",
+        id="streak-of-nobody",
+    ),
+    pytest.param(
+        lambda w: [_question(w, text="")],
+        "ck_questions_text_length",
+        id="question-without-text",
+    ),
+    pytest.param(
+        lambda w: [_question(w, text="x" * (QUESTION_STORED_MAX_LENGTH + 1))],
+        "ck_questions_text_length",
+        id="question-longer-than-the-column-takes",
+    ),
+    pytest.param(
+        lambda w: [_question(w, answer_text="", answered_by=w.admin.id, answered_at=NOW)],
+        "ck_questions_answer_length",
+        id="answer-without-text",
+    ),
+    pytest.param(
+        lambda w: [
+            _question(
+                w,
+                answer_text="x" * (ANSWER_STORED_MAX_LENGTH + 1),
+                answered_by=w.admin.id,
+                answered_at=NOW,
+            )
+        ],
+        "ck_questions_answer_length",
+        id="answer-longer-than-the-column-takes",
+    ),
+    pytest.param(
+        lambda w: [_question(w, answer_text="Yes.", answered_at=NOW)],
+        "ck_questions_answered_whole",
+        id="answer-of-nobody",
+    ),
+    pytest.param(
+        lambda w: [_question(w, answer_text="Yes.", answered_by=w.admin.id)],
+        "ck_questions_answered_whole",
+        id="answer-without-its-instant",
+    ),
+    pytest.param(
+        lambda w: [_question(w, answered_by=w.admin.id, answered_at=NOW)],
+        "ck_questions_answered_whole",
+        id="answerer-without-an-answer",
+    ),
+    pytest.param(
+        lambda w: [_question(w, removed_by=w.admin.id)],
+        "ck_questions_removed_whole",
+        id="removal-without-its-instant",
+    ),
+    pytest.param(
+        lambda w: [_question(w, removed_at=NOW)],
+        "ck_questions_removed_whole",
+        id="removal-by-nobody",
+    ),
+    pytest.param(
+        lambda w: [_question(w, market_id=uuid7())],
+        "fk_questions_market_id_markets",
+        id="question-about-no-market",
+    ),
+    pytest.param(
+        lambda w: [_broadcast(w, BroadcastStatus.REQUESTED, decided_by=w.admin.id)],
+        "ck_broadcasts_decided_together",
+        id="broadcast-decided-by-somebody-at-no-instant",
+    ),
+    pytest.param(
+        lambda w: [_broadcast(w, BroadcastStatus.REQUESTED, decided_by=w.admin.id, decided_at=NOW)],
+        "ck_broadcasts_requested_is_undecided",
+        id="requested-broadcast-that-is-decided",
+    ),
+    pytest.param(
+        lambda w: [_broadcast(w, BroadcastStatus.APPROVED, decided_by=None, decided_at=None)],
+        "ck_broadcasts_requested_is_undecided",
+        id="approved-broadcast-nobody-decided",
+    ),
+    pytest.param(
+        lambda w: [_broadcast(w, BroadcastStatus.REFUSED, refusal_reason=None)],
+        "ck_broadcasts_refusal_has_reason",
+        id="refusal-without-a-reason",
+    ),
+    pytest.param(
+        lambda w: [_broadcast(w, BroadcastStatus.APPROVED, refusal_reason="Not this week.")],
+        "ck_broadcasts_refusal_has_reason",
+        id="reason-without-a-refusal",
+    ),
+    pytest.param(
+        lambda w: [_broadcast(w, BroadcastStatus.LIVE, started_at=None)],
+        "ck_broadcasts_live_has_started",
+        id="live-broadcast-that-never-started",
+    ),
+    pytest.param(
+        lambda w: [_broadcast(w, BroadcastStatus.LIVE, last_chunk_at=None)],
+        "ck_broadcasts_live_has_started",
+        id="live-broadcast-without-a-latest-piece",
+    ),
+    pytest.param(
+        lambda w: [_broadcast(w, BroadcastStatus.ENDED, started_at=None)],
+        "ck_broadcasts_live_has_started",
+        id="ended-broadcast-that-never-started",
+    ),
+    pytest.param(
+        lambda w: [_broadcast(w, BroadcastStatus.ENDED, ended_at=None)],
+        "ck_broadcasts_ended_is_complete",
+        id="ended-broadcast-without-its-instant",
+    ),
+    pytest.param(
+        lambda w: [_broadcast(w, BroadcastStatus.ENDED, end_reason=None)],
+        "ck_broadcasts_ended_is_complete",
+        id="ended-broadcast-without-a-reason",
+    ),
+    pytest.param(
+        lambda w: [_broadcast(w, BroadcastStatus.LIVE, ended_at=NOW)],
+        "ck_broadcasts_ended_is_complete",
+        id="live-broadcast-with-an-end",
+    ),
+    pytest.param(
+        lambda w: _resumed(w, BroadcastStatus.APPROVED),
+        "ck_broadcasts_resumed_has_started",
+        id="approved-broadcast-that-resumes-another",
+    ),
+    pytest.param(
+        lambda w: [_broadcast(w, BroadcastStatus.LIVE, resumed_from=uuid7())],
+        "fk_broadcasts_resumed_from_broadcasts",
+        id="broadcast-that-resumes-none",
+    ),
+    pytest.param(
+        lambda w: [_broadcast(w, BroadcastStatus.REQUESTED, market_id=uuid7())],
+        "fk_broadcasts_market_id_markets",
+        id="broadcast-of-no-market",
+    ),
+    pytest.param(
+        lambda w: [_broadcast(w, BroadcastStatus.REQUESTED), _broadcast(w, BroadcastStatus.LIVE)],
+        "uq_broadcasts_market_open",
+        id="second-open-broadcast-requested-then-live",
+    ),
+    pytest.param(
+        lambda w: [
+            _broadcast(w, BroadcastStatus.APPROVED),
+            _broadcast(w, BroadcastStatus.REQUESTED),
+        ],
+        "uq_broadcasts_market_open",
+        id="second-open-broadcast-approved-then-requested",
+    ),
+    pytest.param(
+        lambda w: [_broadcast(w, BroadcastStatus.LIVE), _broadcast(w, BroadcastStatus.LIVE)],
+        "uq_broadcasts_market_open",
+        id="second-open-broadcast-two-live",
+    ),
+]
+
+
+@pytest.mark.parametrize(("rows", "constraint"), REJECTED_ROWS_OF_THE_ROUND)
+async def test_database_rejects_a_row_of_the_round(
+    uow_factory: UowFactory,
+    world: World,
+    rows: Callable[[World], Sequence[Base]],
+    constraint: str,
+) -> None:
+    with pytest.raises(DBAPIError, match=constraint):
+        await _insert(uow_factory, rows(world))
+
+
+@pytest.mark.parametrize(
+    ("text_of_message", "accepted"),
+    [
+        ("", False),
+        ("x", True),
+        ("x" * CHAT_MESSAGE_STORED_MAX_LENGTH, True),
+        ("x" * (CHAT_MESSAGE_STORED_MAX_LENGTH + 1), False),
+    ],
+    ids=["empty", "one-character", "the-longest", "one-too-long"],
+)
+async def test_a_chat_message_holds_one_to_five_hundred_characters(
+    uow_factory: UowFactory, world: World, text_of_message: str, accepted: bool
+) -> None:
+    broadcast = _broadcast(world, BroadcastStatus.LIVE)
+    rows = [broadcast, _chat_message(world, broadcast, text=text_of_message)]
+
+    if accepted:
+        await _insert(uow_factory, rows)
+    else:
+        with pytest.raises(IntegrityError, match="ck_chat_messages_text_length"):
+            await _insert(uow_factory, rows)
+
+
+async def test_a_chat_message_needs_its_broadcast_and_a_broadcast_with_messages_stays(
+    uow_factory: UowFactory, owner_engine: AsyncEngine, world: World
+) -> None:
+    broadcast = _broadcast(world, BroadcastStatus.LIVE)
+    with pytest.raises(IntegrityError, match="fk_chat_messages_broadcast_id_broadcasts"):
+        await _insert(uow_factory, [_chat_message(world, broadcast)])
+
+    await _insert(uow_factory, [broadcast, _chat_message(world, broadcast)])
+
+    async def erase_as_owner() -> None:
+        async with owner_engine.begin() as connection:
+            await connection.execute(text("DELETE FROM broadcasts"))
+
+    with pytest.raises(IntegrityError, match="fk_chat_messages_broadcast_id_broadcasts"):
+        await erase_as_owner()
+
+
+@pytest.mark.parametrize("closed", [BroadcastStatus.REFUSED, BroadcastStatus.ENDED])
+async def test_a_market_has_one_open_broadcast_and_any_number_that_are_over(
+    uow_factory: UowFactory, world: World, closed: BroadcastStatus
+) -> None:
+    ended = _broadcast(world, BroadcastStatus.ENDED)
+    await _insert(
+        uow_factory,
+        [
+            _broadcast(world, closed),
+            _broadcast(world, closed),
+            ended,
+            # It runs on the approval of the ended one, and is the one open broadcast.
+            _broadcast(world, BroadcastStatus.LIVE, resumed_from=ended.id),
+        ],
+    )
+
+    with pytest.raises(IntegrityError, match="uq_broadcasts_market_open"):
+        await _insert(uow_factory, [_broadcast(world, BroadcastStatus.REQUESTED)])
+
+    # Another market has an open broadcast of its own.
+    async with uow_factory() as uow:
+        other = await uow.markets.add(_market(world.user.id))
+    await _insert(uow_factory, [_broadcast(world, BroadcastStatus.REQUESTED, market_id=other.id)])
+
+
+@pytest.mark.parametrize(
+    ("column", "value", "of_status"),
+    [("status", "PAUSED", "APPROVED"), ("end_reason", "BORED", "ENDED")],
+)
+async def test_a_broadcast_keeps_only_the_statuses_and_the_end_reasons_the_enums_name(
+    uow_factory: UowFactory,
+    owner_engine: AsyncEngine,
+    world: World,
+    column: str,
+    value: str,
+    of_status: str,
+) -> None:
+    """Each value is written to a row on which it breaks no other rule: an approved
+    broadcast is decided and neither refused nor started, an ended one has a reason."""
+    await _insert(
+        uow_factory,
+        [_broadcast(world, BroadcastStatus.APPROVED), _broadcast(world, BroadcastStatus.ENDED)],
+    )
+
+    async def write() -> None:
+        async with owner_engine.begin() as connection:
+            await connection.execute(
+                text(f"UPDATE broadcasts SET {column} = :value WHERE status = :of_status"),
+                {"value": value, "of_status": of_status},
+            )
+
+    with pytest.raises(IntegrityError, match=f"ck_broadcasts_{column}"):
+        await write()
+
+    async with owner_engine.connect() as connection:
+        listed = {
+            name: str(
+                await connection.scalar(
+                    text(
+                        "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = :name"
+                    ),
+                    {"name": name},
+                )
+            )
+            for name in ("ck_broadcasts_status", "ck_broadcasts_end_reason")
+        }
+    assert all(f"'{status.value}'" in listed["ck_broadcasts_status"] for status in BroadcastStatus)
+    assert all(
+        f"'{reason.value}'" in listed["ck_broadcasts_end_reason"] for reason in BroadcastEndReason
+    )
+
+
+async def test_the_two_reads_of_positions_say_where_a_user_holds_a_row(
+    uow_factory: UowFactory, world: World
+) -> None:
+    """A holder is found by a position row, whatever its shares: the first buy of an
+    outcome inserts it and nothing deletes it."""
+    async with uow_factory() as uow:
+        second = await uow.markets.add(_market(world.user.id))
+        third = await uow.markets.add(_market(world.user.id))
+        await uow.positions.add(
+            Position(user_id=world.user.id, market_id=world.market.id, outcome=Outcome.YES)
+        )
+        await uow.positions.add(
+            Position(user_id=world.user.id, market_id=world.market.id, outcome=Outcome.NO)
+        )
+        await uow.positions.add(
+            Position(
+                user_id=world.user.id, market_id=second.id, outcome=Outcome.NO, shares_micro=CR
+            )
+        )
+        await uow.positions.add(
+            Position(user_id=world.admin.id, market_id=third.id, outcome=Outcome.YES)
+        )
+
+    async with uow_factory() as uow:
+        assert await uow.positions.exists_for_user_market(world.user.id, world.market.id)
+        assert await uow.positions.exists_for_user_market(world.user.id, second.id)
+        assert not await uow.positions.exists_for_user_market(world.user.id, third.id)
+        assert not await uow.positions.exists_for_user_market(world.admin.id, world.market.id)
+        assert not await uow.positions.exists_for_user_market(world.user.id, uuid7())
+
+        everything = [world.market.id, second.id, third.id]
+        assert await uow.positions.market_ids_of_user(world.user.id, among=everything) == {
+            world.market.id,
+            second.id,
+        }
+        assert await uow.positions.market_ids_of_user(world.user.id, among=[third.id]) == set()
+        assert await uow.positions.market_ids_of_user(world.admin.id, among=everything) == {
+            third.id
+        }
+        assert await uow.positions.market_ids_of_user(world.user.id, among=[]) == set()
