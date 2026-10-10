@@ -315,7 +315,8 @@
   }
 }
 
-/* Paper is the one light surface (DESIGN.md §13, the printable QR sheet). */
+/* Paper is the one light surface (DESIGN.md §13, the printable QR sheet): the page is
+   paper and ink, and the cards on it bring the colours of the app. */
 @media print {
   :root {
     color-scheme: light;

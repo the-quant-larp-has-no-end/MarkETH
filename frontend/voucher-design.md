@@ -18,13 +18,13 @@ Make each code feel like a considered MarkETH campus token slip: crisp, compact,
 
 ## Printable code sheet
 
-- A4 portrait, 12 mm margins. The print stylesheet contains only the sheet—no app header, tabs, dialogs, background fills, or browser UI.
-- Paper is the one light surface: `--ink` text and QR modules on unprinted paper. Do not rely on print background colours.
-- Header: `logo-lockup-dark.png` at 10 mm high on the left; batch label and “Valid until” date/time aligned on the right. Add one fine ink rule below the header to separate it from the cards.
+- A4 portrait, 12 mm margins. The print stylesheet contains only the sheet—no app header, tabs, dialogs or browser UI.
+- The page is paper: `--ink` on unprinted paper. The cards on it are the app on paper, in the palette defined at the start: `--card` navy surfaces, `--foreground` text, `--raised` for the value pill, `--muted-foreground` for metadata. The sheet sets `print-color-adjust: exact` so the fills print without the “Background graphics” option.
+- Header: `logo-lockup-dark.png` at 10 mm high on the left; batch label and “Valid until” date/time aligned on the right. One fine ink rule below the header separates it from the cards.
 - Use a fixed **three-column grid**: 58 mm per card, 6 mm gutters, in API order. Do not stretch two cards across the page when a batch has fewer than three codes.
-- Within each card, centre a 40 mm QR for `redeem_url`, then the full code in Barlow code style, then the bean icon and `value_cr`. Make the value easy to spot without overpowering the QR; keep labels and metadata smaller and restrained.
-- Use thin dashed ink hairlines only as cut guides between cards; no thick enclosing borders, shadows, rounded coloured panels, or ornamental ticket notches. Keep card spacing generous enough to cut and handle easily.
-- Never split a card or row across pages. Preserve a four-module QR quiet zone and enough contrast for ordinary office printers. Verify the result in print preview and on an actual-size A4 export.
+- A card is a `--card` surface with `--radius-lg`, built from the app’s own components. Top line, as the app’s top bar: `logo-lockup.png` on the left and `value_cr` in the balance pill (bean on its disc and the figure) on the right. Then a centred 40 mm QR for `redeem_url` on the `#FAFAFF` tile of `DESIGN.md`, then the full code in Barlow code style, then “Valid until” small and muted. A card that is cut out still says what it is.
+- Use thin dashed ink hairlines only as cut guides between cards; no outlines, shadows, gradients or ornamental ticket notches. Keep card spacing generous enough to cut and handle easily.
+- Never split a card or row across pages. Preserve a four-module QR quiet zone inside the light tile, and never invert or tint the QR. Verify the result in print preview and on an actual-size A4 export.
 
 ## Avoid
 

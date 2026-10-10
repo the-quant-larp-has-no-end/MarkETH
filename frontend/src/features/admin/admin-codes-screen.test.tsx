@@ -870,7 +870,7 @@ describe("Print QR sheet", () => {
     const rules = paper.querySelector("style")!.textContent!;
     expect(rules).toContain("@page { size: A4 portrait; margin: 12mm; }");
     expect(rules).toMatch(
-      /@media print \{\s*body > :not\(\[data-slot="print-sheet"\]\) \{ display: none !important; \}\s*\}/,
+      /@media print \{\s*body > :not\(\[data-slot="print-sheet"\]\) \{ display: none !important; \}/,
     );
   });
 
@@ -881,7 +881,8 @@ describe("Print QR sheet", () => {
 
     const paper = sheet()!;
     // The sheet is for paper alone: while the dialog is open, a screen reader is kept off it.
-    expect(within(paper).getByRole("img", { name: "MarkETH", hidden: true })).toHaveAttribute(
+    const head = paper.querySelector<HTMLElement>("header")!;
+    expect(within(head).getByRole("img", { name: "MarkETH", hidden: true })).toHaveAttribute(
       "src",
       expect.stringContaining("logo-lockup-dark.png"),
     );
@@ -908,10 +909,11 @@ describe("Print QR sheet", () => {
         "12.5 tokens",
       ],
     ]);
-    // A quiet zone of four modules around every QR, and no tile behind it.
+    // A quiet zone of four modules around every QR, on the light tile of a navy card.
     for (const card of cards()) {
+      expect(card).toHaveClass("bg-card");
       expect(card.querySelector("svg")).toHaveAttribute("data-margin", "4");
-      expect(card.querySelector("[class*=bg-]")).toBeNull();
+      expect(card.querySelector("svg")!.parentElement).toHaveClass("bg-foreground", "text-ink");
     }
   });
 

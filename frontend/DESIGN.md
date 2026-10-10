@@ -101,8 +101,8 @@ The originals are kept, untouched, in `frontend/design/`. The files the app serv
 
 | File in `frontend/public/brand/` | What it is | Use |
 | --- | --- | --- |
-| `logo-lockup.png` | Logo with name in `#FAFAFF`, transparent, 716 x 168 px | Top bar (28 px tall), profile set-up and the full-screen message (48 px tall) |
-| `logo-lockup-dark.png` | Logo with name in `--ink`, transparent | The printable QR sheet only |
+| `logo-lockup.png` | Logo with name in `#FAFAFF`, transparent, 716 x 168 px | Top bar (28 px tall), profile set-up and the full-screen message (48 px tall), the cards of the printable QR sheet (5 mm tall) |
+| `logo-lockup-dark.png` | Logo with name in `--ink`, transparent | The head of the printable QR sheet only |
 | `logo-mark.png` | Logo in `#FAFAFF`, transparent, 320 x 320 px | Where only a square fits, for example a narrow header beside a back arrow |
 | `logo-mark-dark.png` | Logo in `--ink`, transparent | The printable QR sheet only |
 | `icon-512.png`, `icon-192.png` | `#FAFAFF` logo on `#1E2749`, square | Web manifest (home-screen icon) |
@@ -792,7 +792,7 @@ The tables of the admin area, and the ranking of the Leaderboard from 768 px, bu
 
 ### QR code and scanner
 
-- **QR code:** always `--ink` modules on a `#FAFAFF` tile with `--radius-lg`, at least 240 px and at most 288 px wide. The tile is the quiet zone a camera needs: four of the code's own modules of light on every side, counted in modules so that it holds at every width, and no other padding. The print sheet keeps the same four modules on paper (§13). A dark-themed QR does not scan reliably. The code is repeated as text below it. Showing a voucher raises the screen brightness hint ("Turn up your brightness") instead of trying to control it.
+- **QR code:** always `--ink` modules on a `#FAFAFF` tile with `--radius-lg`, at least 240 px and at most 288 px wide. The tile is the quiet zone a camera needs: four of the code's own modules of light on every side, counted in modules so that it holds at every width, and no other padding. The print sheet shows the same tile, 40 mm wide, on its cards (§13). A dark-themed QR does not scan reliably. The code is repeated as text below it. Showing a voucher raises the screen brightness hint ("Turn up your brightness") instead of trying to control it.
 - **Scanner:** a full-width camera view with a square guide in `--foreground` corners. It reports what it read once and pauses until the screen asks for the next scan. It always has a visible typed alternative ("Type the code instead"; on the Barista screen "Type the voucher code"), and a clear message when camera permission is refused. The camera needs HTTPS (SPEC A.10). Whatever decodes the picture is served by the app itself: the Content-Security-Policy allows no remote script, wasm file or worker.
 
 ### Feedback
@@ -1317,12 +1317,19 @@ For role ADMIN; anyone else sees the "not found" screen. Four tabs under the top
 
 States: every table has skeleton rows while loading and a banner with "Try again" on error. An empty table is one plain sentence: "No proposals waiting.", "No markets.", "No batches yet.", "No alerts.", and "No users match." for a search or a filter that leaves nobody. The risk page refetches on focus; nothing on it is live.
 
-**The print sheet** is the one light surface in the product, because it is paper. It is laid out for A4, upright, with 12 mm margins, and it is all that reaches the paper: the top bar, the tabs, the tables and the dialog are not printed.
+**The print sheet** is laid out for A4, upright, with 12 mm margins, and it is all that reaches the paper: the top bar, the tabs, the tables and the dialog are not printed. The page is paper, the one light surface in the product, and the code cards on it are pieces of the app: the palette of §4, the type of §5 and the components of §12, and nothing drawn for the sheet alone. `voucher-design.md` states the look this section specifies.
 
-- `--ink` on unprinted paper, and no fill anywhere, so the sheet does not depend on whether the browser prints backgrounds. On paper the tile of a QR code is the paper itself: `--ink` modules with a quiet zone of four modules around them.
-- At the top of the first page: `logo-lockup-dark.png`, 10 mm tall, at the left; at the right the batch's `label` and "Valid until" with `expires_at`.
-- Under it the cards, three to a row and 6 mm apart, in the order of the codes. A card is 58 mm wide and holds, centred and one under another: the QR code of the code's `redeem_url`, 40 mm wide; the code in code style (§10); the token icon with `value_cr`. Dashed hairlines in `--ink` between the cards show where to cut.
-- A card is never divided between two pages: a row that does not fit moves to the next page whole.
+- **The page** is unprinted paper with `--ink` on it. At the top of the first page: `logo-lockup-dark.png`, 10 mm tall, at the left; at the right, on two lines that end at the right edge, the batch's `label` in `label` and "Valid until" with `expires_at` in `caption`. A 1 px line in `--ink` across the sheet, 4 mm under the two, parts the head from the cards, which begin 6 mm under it.
+- **The grid.** Three columns of 58 mm, 6 mm apart, in the order of the codes. The columns are fixed: a row that holds one or two cards leaves the rest of it empty, and no card is stretched.
+- **A card** is a `--card` surface with `--radius-lg` and 3 mm of padding, its text in `--foreground`. It holds, 3 mm apart:
+  1. A top line like the top bar of the app: `logo-lockup.png`, 5 mm tall, at the left, and at the right `value_cr` as the balance pill shows a balance: the token icon on its disc and the figure, on a `--raised` pill.
+  2. The QR code of the code's `redeem_url`, centred, on its `#FAFAFF` tile with `--radius-lg`, 40 mm wide: the QR of §12, with `--ink` modules and the quiet zone of four modules, at the width paper needs.
+  3. The code in code style (§10) at the size of `number`, and under it "Valid until" with `expires_at` in `caption` and `--muted-foreground`, both centred.
+
+  A card that is cut out says by itself what it is, whose it is, what it is for and until when.
+- A card has no outline, no shadow, no gradient and no notch. Dashed hairlines in `--ink` in the middle of the gaps between the cards show where to cut.
+- The sheet asks the browser to keep its fills (`print-color-adjust: exact`), so a card is navy on paper whether or not "Background graphics" is ticked in the print dialog.
+- A card is never divided between two pages: a row that does not fit moves to the next page whole. A4 takes three rows on a page.
 - The sheet is made in the browser from the codes in the dialog. Nothing is sent anywhere to print it.
 
 ### Barista (`/barista`)
