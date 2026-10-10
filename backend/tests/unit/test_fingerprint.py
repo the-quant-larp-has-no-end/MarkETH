@@ -1,48 +1,163 @@
-"""The schema fingerprint changes with everything a database is built from (SPEC §7, A.10).
+"""The schema fingerprint changes with everything a database is made of, and the revisions
+lead to the one of the models (SPEC §7, A.10).
 
-The schema has one revision and no upgrade path, so a database must be wiped when a
-model changes. `alembic check` does not see every such change: it does not compare CHECK
-constraints, and an enum column is a VARCHAR with one. The fingerprint is what does.
+A database is changed by the revisions of `migrations/versions/` alone, so a change to a
+model has to come with one. `alembic check` does not see every such change: it does not
+compare CHECK constraints, and an enum column is a VARCHAR with one. The fingerprint is
+what does: the last revision carries the one of the models, or these tests fail.
 
 A model is "edited" here by giving one of its CHECK constraints another expression for
 the length of a test (`tests/support/schema.py`); nothing is written to a model.
 """
 
+import ast
+import inspect
 import os
 import re
+import shutil
 import subprocess
 import sys
+import textwrap
+from collections.abc import Callable
 from pathlib import Path
 from typing import Final
 
 import pytest
+from alembic import command
 from alembic.config import Config
-from alembic.script import ScriptDirectory
+from alembic.script import Script, ScriptDirectory
 from sqlalchemy import Column, Index, MetaData, Text, literal_column, make_url
 from sqlalchemy.schema import CreateTable
 
 from app.core.enums import JournalKind
 from app.db.base import Base
-from app.models.fingerprint import DIALECT, HAND_WRITTEN_STATEMENTS, schema_fingerprint
+from app.models.fingerprint import (
+    DIALECT,
+    HAND_WRITTEN_STATEMENTS,
+    fingerprint_of,
+    schema_fingerprint,
+)
 from app.models.privileges import APP_ROLE_PRIVILEGES, TABLE_PRIVILEGES
 from app.models.triggers import CREATE_AUDIENCE_FUNCTION, CREATE_AUDIENCE_TRIGGER
 from tests.support.schema import check_constraint, enum_check_expression, with_one_more_member
 
 BACKEND_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 
+FIRST_DEPLOYED_FINGERPRINT: Final[str] = (
+    "c2e6fb70beaae04aa33addb36ed64ab0197aad751823402851f14312ea2ea7a0"
+)
+"""What the database behind the portal carried on 10 Oct 2026, built by revision 0001."""
+
 PRINT_FINGERPRINT: Final[str] = (
     "from app.models.fingerprint import schema_fingerprint; print(schema_fingerprint())"
 )
 
 
-def test_the_schema_has_exactly_one_revision() -> None:
-    """What the fingerprint rests on: a changed model is answered by a rebuilt database,
-    never by a second revision that alters an existing one."""
-    revisions = ScriptDirectory.from_config(Config(BACKEND_ROOT / "alembic.ini")).walk_revisions()
+def revisions() -> list[Script]:
+    """The revisions of `migrations/versions/`, the baseline first."""
+    scripts = ScriptDirectory.from_config(Config(BACKEND_ROOT / "alembic.ini"))
+    return list(reversed(list(scripts.walk_revisions())))
 
-    assert [(revision.revision, revision.down_revision) for revision in revisions] == [
-        ("0001", None)
+
+def statements_of(function: Callable[[], None]) -> list[str]:
+    """The statements of a revision's `upgrade` or `downgrade`, each as its source."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+    definition = tree.body[0]
+    assert isinstance(definition, ast.FunctionDef)
+    return [ast.unparse(statement) for statement in definition.body]
+
+
+def test_the_revisions_are_one_line_numbered_from_the_baseline() -> None:
+    """A database takes them in one order, which their numbers and file names show."""
+    line = revisions()
+
+    assert [revision.revision for revision in line] == [
+        f"{number:04d}" for number in range(1, len(line) + 1)
     ]
+    assert [revision.down_revision for revision in line] == [
+        None,
+        *(revision.revision for revision in line[:-1]),
+    ]
+    for revision in line:
+        assert Path(revision.path).name.startswith(f"{revision.revision}_")
+
+
+def test_the_last_revision_leads_to_the_models_of_this_code() -> None:
+    """Where this fails, a model, a trigger or a privilege changed and no revision came
+    with it: `make revision NAME=...` writes the file, with the fingerprint of the
+    models as they are now. Without it `scripts.check_schema` refuses every database
+    there is, the deployed one first."""
+    assert schema_fingerprint() == revisions()[-1].module.FINGERPRINT
+
+
+def test_every_revision_leaves_its_fingerprint_and_takes_the_one_before_back() -> None:
+    """`upgrade` ends by storing the fingerprint of the revision, `downgrade` by storing
+    the one of the revision before, so the comment of `alembic_version` always names the
+    schema the database has."""
+    baseline, *later = revisions()
+    assert statements_of(baseline.module.upgrade)[-1] == "store_fingerprint(FINGERPRINT)"
+
+    before = baseline
+    for revision in later:
+        assert re.fullmatch(r"[0-9a-f]{64}", revision.module.FINGERPRINT), revision.revision
+        assert revision.module.PREVIOUS_FINGERPRINT == before.module.FINGERPRINT
+        assert statements_of(revision.module.upgrade)[-1] == "store_fingerprint(FINGERPRINT)"
+        assert (
+            statements_of(revision.module.downgrade)[-1]
+            == "store_fingerprint(PREVIOUS_FINGERPRINT)"
+        )
+        before = revision
+
+
+def test_the_baseline_is_the_schema_as_it_was_first_deployed() -> None:
+    """The baseline is a record: the statements of the first deployed database, as text.
+    Its fingerprint is the one that database carries, and the statements still hash to
+    it, so no later edit to a model, and no edit to the file, has reached them.
+
+    SQLAlchemy ends a line of a CREATE TABLE with a blank after the comma; the file is
+    kept without those blanks, and they are put back for the hash."""
+    baseline = revisions()[0].module
+    tables = [
+        statement.replace(",\n", ", \n")
+        for name in sorted(baseline.TABLES)
+        for statement in baseline.TABLES[name]
+    ]
+    rest = [
+        *baseline.TRIGGERS,
+        baseline.CREATE_APP_ROLE,
+        baseline.GRANT_CONNECT,
+        *baseline.APP_ROLE_PRIVILEGES,
+    ]
+
+    assert baseline.FINGERPRINT == FIRST_DEPLOYED_FINGERPRINT
+    assert fingerprint_of([*tables, *rest]) == FIRST_DEPLOYED_FINGERPRINT
+
+
+def test_a_new_revision_is_written_with_the_fingerprints_and_the_next_number(
+    tmp_path: Path,
+) -> None:
+    """`make revision NAME=...`: the file follows the last revision and carries the
+    fingerprint of the models as they are, and the one of the revision before for the
+    way back. Unchanged, it is a revision that alters nothing and says so."""
+    shutil.copytree(
+        BACKEND_ROOT / "migrations", tmp_path / "migrations", ignore=lambda *_: ["__pycache__"]
+    )
+    config = Config(BACKEND_ROOT / "alembic.ini")
+    config.set_main_option("script_location", str(tmp_path / "migrations"))
+    last = revisions()[-1]
+    number = f"{int(last.revision) + 1:04d}"
+
+    written = command.revision(config, message="add a nickname", rev_id=number)
+
+    assert isinstance(written, Script)
+    assert Path(written.path).name == f"{number}_add_a_nickname.py"
+    assert written.down_revision == last.revision
+    assert schema_fingerprint() == written.module.FINGERPRINT
+    assert written.module.PREVIOUS_FINGERPRINT == last.module.FINGERPRINT
+    assert statements_of(written.module.upgrade) == ["store_fingerprint(FINGERPRINT)"]
+    assert statements_of(written.module.downgrade) == ["store_fingerprint(PREVIOUS_FINGERPRINT)"]
+    makefile = (BACKEND_ROOT.parent / "Makefile").read_text(encoding="utf-8")
+    assert "uv run alembic revision --rev-id" in makefile
 
 
 def test_the_fingerprint_is_a_sha256_hex_digest() -> None:
@@ -51,8 +166,8 @@ def test_the_fingerprint_is_a_sha256_hex_digest() -> None:
 
 @pytest.mark.parametrize("hash_seed", ["0", "1", "4242"])
 def test_another_process_computes_the_same_fingerprint(hash_seed: str) -> None:
-    """The baseline revision stores it in one process and every later start computes it
-    in another, where sets are walked in another order."""
+    """A revision is written with it in one process and every later start computes it in
+    another, where sets are walked in another order."""
     printed = subprocess.run(
         [sys.executable, "-c", PRINT_FINGERPRINT],
         cwd=BACKEND_ROOT,

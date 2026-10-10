@@ -1,0 +1,69 @@
+# `make deploy`, run by the VM on itself (SPEC A.10, docs/SERVER_INFRASTRUCTURE.md §14).
+#
+# The team's runner is the VM that serves the app, so the first job is the deployment
+# with nothing to connect to: `DEPLOY_LOCAL=1` has the Makefile run every step in a shell
+# of the runner. The workflow holds no secret and reads none. The two Postgres passwords
+# and the bootstrap admins are in the VM's own file, ~/marketh.env, where the first
+# deployment from a laptop put them; `deploy-env` reads that file from the disk it is on.
+# Naming other bootstrap admins stays a laptop's `make deploy ADMIN_EMAILS=...`.
+#
+# A machine answers its own address whatever its firewall says, so the last check of a
+# deployment, that the published port is closed to the internet, is the second job's, on
+# a machine of GitHub's.
+#
+# Started by hand: Actions, "Deploy", "Run workflow", or `gh workflow run deploy.yml`.
+
+name: Deploy
+
+on:
+  workflow_dispatch:
+
+# One deployment at a time, and one that started runs to its end.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy on the VM
+    runs-on: self-hosted
+    timeout-minutes: 30
+    outputs:
+      endpoint: ${{ steps.endpoint.outputs.endpoint }}
+    steps:
+      - uses: actions/checkout@v7
+      # The Makefile reads DEPLOY_PATH from .env. This file names the directory and is
+      # never copied there: the sync leaves every .env out, and the VM renders its own.
+      - name: Create .env from the template
+        run: cp .example.env .env
+      - name: Back up, mirror this tree, build, migrate, switch over, check
+        run: make deploy DEPLOY_LOCAL=1
+      # "<address> <port>", as the deployed tree's check.sh reads them from the VM.
+      - name: Name the published port for the probe from outside
+        id: endpoint
+        run: |
+          deployed="$HOME/$(sed -n 's/^DEPLOY_PATH=//p' .env)"
+          echo "endpoint=$(sh "$deployed/infra/deploy/check.sh" public-endpoint)" >> "$GITHUB_OUTPUT"
+
+  # Whoever reaches the published port can act as anyone (SPEC A.10), so a deployment
+  # is not green until the VM's public address stays silent there.
+  outside:
+    name: The port is closed to the internet
+    needs: deploy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      # check.sh wants a .env beside it; the probe reads nothing from it.
+      - name: Create .env from the template
+        run: cp .example.env .env
+      - name: The VM's public address does not answer on the published port
+        env:
+          ENDPOINT: ${{ needs.deploy.outputs.endpoint }}
+        run: |
+          # Two words, the address and the port.
+          # shellcheck disable=SC2086
+          sh infra/deploy/check.sh outside $ENDPOINT

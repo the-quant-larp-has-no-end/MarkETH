@@ -26,7 +26,8 @@ Run from the repository root. `make` alone lists them.
 | Command | Does |
 | --- | --- |
 | `make up` / `make down` / `make logs` | Start, stop, tail the stack (app at http://localhost:8080, who is calling at http://localhost:8080/__dev/identity) |
-| `make migrate` / `make seed` | Build the schema and check that it is the one of this code / load demo data |
+| `make migrate` / `make seed` | Take the database to the schema of this code and check it / load demo data |
+| `make revision NAME="..."` | Write the file of a new schema revision, after the models are edited |
 | `make test` | Backend and frontend tests (`make test-backend`, `make test-frontend`, `make test-scylla`) |
 | `make e2e` | The browser suite of `frontend/e2e/`, in Chrome against the stack that is up and seeded |
 | `make lint` / `make fmt` | Check / fix style, types and architecture rules |
@@ -65,7 +66,7 @@ Two things follow from where the app runs (SPEC §3):
 | Add or change an endpoint | `backend/app/api/routes/`, with its schemas in `backend/app/schemas/`; then `make api-client` |
 | Add a business rule | A class in `backend/app/services/` |
 | Add a query | The matching class in `backend/app/repositories/` |
-| Add a table or column | `backend/app/models/`. The single baseline revision builds the schema from the models, so a changed schema needs a wiped database (`make reset`); the fingerprint check of `make migrate` says so |
+| Add a table or column | `backend/app/models/`, then `make revision NAME="..."` and the steps in the file it writes under `backend/migrations/versions/`. A database is changed by revisions alone and never wiped for its schema; `0001_baseline.py` is a record and is not edited |
 | Change pricing maths | `backend/app/pricing/lmsr.py` only |
 | Add a setting | `.env`, `.example.env`, `backend/app/core/config.py` |
 | Add a product or change what one takes | `VOUCHER_PRODUCTS` in `.env` and `.example.env` |

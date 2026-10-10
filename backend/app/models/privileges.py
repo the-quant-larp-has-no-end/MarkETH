@@ -1,17 +1,18 @@
 """What the app role may do (SPEC §7, Appendix A.7, A.10).
 
 The API and the relay connect as the app role; the owner role builds the schema and does
-nothing else. The baseline revision (`migrations/versions/0001_baseline.py`) runs these
-statements once every table exists, and `app.models.fingerprint` hashes them, so an edit
-here asks for a rebuilt database.
+nothing else. The baseline revision (`migrations/versions/0001_baseline.py`) holds these
+statements as they were first deployed, and `app.models.fingerprint` hashes them, so an
+edit here asks for a revision that grants or revokes the same in a database.
 
 Each statement is a template for Postgres' `format()`: %I takes an identifier and %L a
 literal. A role name, a database name or a password is therefore never spliced into SQL
 by hand.
 
 The grants reach the tables and sequences that exist when they run. Nothing is granted
-by default on an object created later: the baseline creates every table first, and a
-table created by hand afterwards is out of the app role's reach until it is granted.
+by default on an object created later: a revision that creates a table runs them again
+(`app.models.revisions.grant_app_role`), and a table created by hand is out of the app
+role's reach until it is granted.
 """
 
 from typing import Final
