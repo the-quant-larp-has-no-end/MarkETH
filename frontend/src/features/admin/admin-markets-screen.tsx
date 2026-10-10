@@ -5,6 +5,7 @@ import { type ReactNode, useId, useState } from "react";
 
 import { QueryState } from "@/components/feedback";
 import { Field } from "@/components/form";
+import { StatusBadge, statusName, useAskAtClose } from "@/components/market";
 import { Amount } from "@/components/money";
 import { Screen } from "@/components/shell";
 import { DateTime } from "@/components/time";
@@ -15,7 +16,6 @@ import type { MarketListResponse, MarketStatus, MarketSummary } from "@/lib/api/
 
 import { AdminTabs } from "./admin-tabs";
 import { Chance, type Column, DataTable, DataTableSkeleton, EmptyLine } from "./data-table";
-import { MarketStatusBadge, marketStatusName } from "./market-status";
 import { ALL_STATUSES } from "./words";
 
 const ALL = "ALL";
@@ -26,7 +26,7 @@ const COLUMNS: readonly Column<MarketSummary>[] = [
   { header: "Question", wide: true, cell: (market) => market.question },
   {
     header: "Status",
-    cell: (market) => <MarketStatusBadge status={market.status} outcome={market.outcome} />,
+    cell: (market) => <StatusBadge status={market.status} outcome={market.outcome} />,
   },
   { header: "Chance", numeric: true, cell: (market) => <Chance value={market.p_yes} /> },
   {
@@ -98,13 +98,27 @@ function Section({
  * by name, because a request without `status` leaves PROPOSED, EXPIRED and REJECTED out.
  * A row opens the admin view of its market.
  *
- * The rows stand in the API's order. Nothing is live: the lists are read when the screen
- * opens and when the window gets the focus back.
+ * The rows stand in the API's order. The lists are read when the screen opens and when the
+ * window gets the focus back. One thing happens to them without anybody acting: a proposal
+ * in review reaches its `close_at` and expires, and no event says so. So both lists are
+ * read again at the earliest close time among the rows they show as PROPOSED, and after
+ * the answer at the earliest one that is left (`useAskAtClose`): the proposal leaves the
+ * queue, and the table shows it as the API reports it.
  */
 export function AdminMarketsScreen() {
   const [status, setStatus] = useState<MarketStatus | typeof ALL>(ALL);
   const proposals = useQuery(marketsQuery(PROPOSED));
   const markets = useQuery(marketsQuery(status === ALL ? ALL_STATUSES : [status]));
+  const { refetch: readProposals } = proposals;
+  const { refetch: readMarkets } = markets;
+
+  const closeTimes = [...(proposals.data?.items ?? []), ...(markets.data?.items ?? [])]
+    .filter((market) => market.status === "PROPOSED")
+    .map((market) => market.close_at);
+  useAskAtClose(closeTimes, () => {
+    void readProposals({ cancelRefetch: false });
+    void readMarkets({ cancelRefetch: false });
+  });
 
   return (
     <Screen top="main" title="Admin">
@@ -126,7 +140,7 @@ export function AdminMarketsScreen() {
                 <NativeSelectOption value={ALL}>All</NativeSelectOption>
                 {ALL_STATUSES.map((entry) => (
                   <NativeSelectOption key={entry} value={entry}>
-                    {marketStatusName(entry)}
+                    {statusName(entry)}
                   </NativeSelectOption>
                 ))}
               </NativeSelect>

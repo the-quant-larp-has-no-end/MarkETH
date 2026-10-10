@@ -451,6 +451,7 @@ async def test_me_reports_the_profile_the_balance_and_the_next_monthly_grant(
     assert me.balance_cr == to_cr(12_500_000)
     assert me.monthly_grant_cr == to_cr(settings.grants.monthly_grant_micro)
     assert me.next_monthly_grant_at == container.grants.next_grant_at(user) == FIRST_GRANT_DUE
+    assert me.notices == []
     await assert_books_balance(container.uow_factory)
 
 
@@ -1208,7 +1209,9 @@ async def test_proposals_are_listed_newest_first_in_every_status_with_their_effe
     proposed: list[Market] = []
     for status, close_in, tier in (
         (MarketStatus.PROPOSED, timedelta(days=7), MarketTier.DEFAULT),
+        (MarketStatus.PROPOSED, timedelta(hours=1), MarketTier.DEFAULT),
         (MarketStatus.REJECTED, timedelta(days=7), MarketTier.DEFAULT),
+        (MarketStatus.REJECTED, timedelta(hours=1), MarketTier.DEFAULT),
         (MarketStatus.OPEN, timedelta(days=7), MarketTier.MEDIUM),
         (MarketStatus.OPEN, timedelta(hours=1), MarketTier.TIGHT),
         (MarketStatus.HALTED, timedelta(days=7), MarketTier.DEFAULT),
@@ -1228,7 +1231,7 @@ async def test_proposals_are_listed_newest_first_in_every_status_with_their_effe
         clock.advance(timedelta(minutes=10))
     theirs = await factory.market(created_by=bob)
     await factory.market()
-    # The market that closes an hour after it was proposed is past its deadline now.
+    # The three that close an hour after they were proposed are past their deadline now.
     clock.advance(timedelta(hours=1))
     view = container.market_view
 
@@ -1243,7 +1246,9 @@ async def test_proposals_are_listed_newest_first_in_every_status_with_their_effe
         MarketStatus.HALTED,
         MarketStatus.CLOSED,  # stored OPEN, and past its deadline
         MarketStatus.OPEN,
+        MarketStatus.REJECTED,  # turned down in time: it stays rejected past its deadline
         MarketStatus.REJECTED,
+        MarketStatus.EXPIRED,  # stored PROPOSED, and past its deadline
         MarketStatus.PROPOSED,
     ]
     for item, market in zip(listed.items, newest_first, strict=True):
@@ -1263,17 +1268,17 @@ async def test_proposals_are_listed_newest_first_in_every_status_with_their_effe
             market.created_at,
         )
         assert item.rejection_reason == market.rejection_reason
-    assert [item.rejection_reason for item in listed.items[-2:]] == ["Rejected in a test.", None]
+    assert [item.rejection_reason for item in listed.items[-4:]] == [
+        "Rejected in a test.",
+        "Rejected in a test.",
+        None,
+        None,
+    ]
     # How a market ended, for the two that did; the factory resolves to YES.
     assert [item.outcome for item in listed.items] == [
         ResolutionOutcome.VOID,
         ResolutionOutcome.YES,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
+        *[None] * 8,
     ]
     # Whatever tier VIS opened a market with, its proposer is told nothing of it.
     assert {market.tier for market in proposed} == {None, *FIXED_TIERS}
@@ -1315,6 +1320,40 @@ async def test_a_proposal_says_how_its_market_ended_and_nothing_before_that(
     }
     assert detail["outcome"] == outcome.value, "the list says what the market itself says"
     assert all("outcome" in item for item in listed)
+
+
+async def test_my_proposals_show_a_proposal_as_expired_from_its_deadline_on(
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+) -> None:
+    """An expired proposal is out of review: from the instant of `close_at` itself the list
+    says EXPIRED, with no outcome and no reason, and the row still says PROPOSED."""
+    alice = await factory.user()
+    proposal = await factory.market(
+        status=MarketStatus.PROPOSED, created_by=alice, close_in=timedelta(hours=1)
+    )
+    waiting = await factory.market(status=MarketStatus.PROPOSED, created_by=alice)
+    as_user(alice)
+
+    async def statuses() -> dict[str, str]:
+        listed = (await client.get("/api/me/proposals")).json()["items"]
+        assert all(item["outcome"] is None for item in listed)
+        assert all(item["rejection_reason"] is None for item in listed)
+        return {item["id"]: item["status"] for item in listed}
+
+    clock.set(proposal.close_at - timedelta(microseconds=1))
+    assert await statuses() == {str(proposal.id): "PROPOSED", str(waiting.id): "PROPOSED"}
+    clock.set(proposal.close_at)
+    assert await statuses() == {str(proposal.id): "EXPIRED", str(waiting.id): "PROPOSED"}
+    clock.set(proposal.close_at + timedelta(days=1))
+    assert await statuses() == {str(proposal.id): "EXPIRED", str(waiting.id): "PROPOSED"}
+    async with container.uow_factory() as uow:
+        row = await uow.markets.get(proposal.id)
+    assert row is not None
+    assert row.status is MarketStatus.PROPOSED
 
 
 async def test_the_outcomes_of_any_number_of_proposals_are_read_with_one_statement(
@@ -1394,6 +1433,7 @@ async def test_the_five_routes_answer_with_amounts_as_strings_and_prices_as_numb
         "monthly_grant_cr": format_cr(settings.grants.monthly_grant_micro),
         # 9 November at 14:00 in Zurich, sent as the instant it is.
         "next_monthly_grant_at": "2026-11-09T13:00:00Z",
+        "notices": [],
     }
     assert FIRST_GRANT_DUE.astimezone(UTC).isoformat() == "2026-11-09T13:00:00+00:00"
     (entry,) = positions.json()["items"]

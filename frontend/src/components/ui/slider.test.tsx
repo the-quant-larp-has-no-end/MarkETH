@@ -104,6 +104,9 @@ describe("Slider", () => {
     expect(part("slider-range")).toHaveClass("hidden");
     expect(thumb()).toHaveClass("bg-card", "border-2", "border-border-strong");
     expect(thumb()).not.toHaveClass("bg-foreground");
+    // Its target is as large as the disc's: 2 px more on each side, for the 2 px outline.
+    expect(thumb()).toHaveClass("after:-inset-3");
+    expect(thumb()).not.toHaveClass("after:-inset-2.5");
     // The thumb stays where it is, and says that it claims nothing.
     expect(thumb()).toHaveAttribute("aria-valuenow", "40");
     expect(thumb()).toHaveAttribute("aria-valuetext", "not set");

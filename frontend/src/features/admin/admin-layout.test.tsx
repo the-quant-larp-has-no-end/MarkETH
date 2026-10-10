@@ -41,7 +41,7 @@ describe("the admin area is for role ADMIN", () => {
 });
 
 describe("the tabs of the admin area", () => {
-  test("are three links, each to its route, with the current one marked", () => {
+  test("are four links, each to its route, with the current one marked", () => {
     navigation.go("/admin/codes");
     renderWithProviders(<AdminTabs />, { me: me({ role: "ADMIN" }) });
 
@@ -51,10 +51,22 @@ describe("the tabs of the admin area", () => {
       ["Markets", "/admin"],
       ["Codes", "/admin/codes"],
       ["Risk", "/admin/risk"],
+      ["Users", "/admin/users"],
     ]);
     expect(screen.getByRole("link", { name: "Codes" })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByRole("link", { name: "Markets" })).not.toHaveAttribute("aria-current");
-    expect(screen.getByRole("link", { name: "Risk" })).not.toHaveAttribute("aria-current");
+    for (const other of ["Markets", "Risk", "Users"]) {
+      expect(screen.getByRole("link", { name: other })).not.toHaveAttribute("aria-current");
+    }
+  });
+
+  test("the fourth tab leads to the users", async () => {
+    navigation.go("/admin");
+    const { user } = renderWithProviders(<AdminTabs />, { me: me({ role: "ADMIN" }) });
+
+    await user.click(screen.getByRole("link", { name: "Users" }));
+
+    expect(navigation.pathname).toBe("/admin/users");
+    expect(screen.getByRole("link", { name: "Users" })).toHaveAttribute("aria-current", "page");
   });
 
   test("on a phone the link to the barista scanner has a line of its own under the tabs, in full view", async () => {

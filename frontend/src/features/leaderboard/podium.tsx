@@ -98,7 +98,9 @@ function Place({
   }
 
   const first = place === 1;
-  const figure = <LeaderboardFigure entry={entry} sort={sort} size={first && wide ? "lg" : "md"} wrap />;
+  const figure = (
+    <LeaderboardFigure entry={entry} sort={sort} size={first && wide ? "lg" : "md"} wrap />
+  );
 
   return (
     <li

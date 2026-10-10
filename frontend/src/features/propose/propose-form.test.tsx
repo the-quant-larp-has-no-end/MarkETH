@@ -231,9 +231,9 @@ describe("submitting", () => {
     await fillIn(user);
     await user.click(submit());
 
-    const toast = (await screen.findByText("Proposal sent. VIS reviews it before it opens.")).closest(
-      "[data-sonner-toast]",
-    );
+    const toast = (
+      await screen.findByText("Proposal sent. VIS reviews it before it opens.")
+    ).closest("[data-sonner-toast]");
     expect(toast).not.toBeNull();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();

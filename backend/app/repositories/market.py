@@ -25,6 +25,21 @@ class MarketRepository(BaseRepository[Market]):
         """Lock the market row: the first lock of every transaction that touches a market."""
         return await self._get(market_id, for_update=True)
 
+    async def get_as_stored(self, market_id: UUID) -> Market | None:
+        """The market as its row reads inside this transaction, whatever copy of it the
+        unit of work holds. No lock is taken.
+
+        Changes of that copy that are still pending are sent first, and the copy is
+        then filled from the row. So what this transaction wrote is in the result, and
+        every value reads as the database keeps it: an instant a request wrote with an
+        offset comes back in UTC, the way every later reader gets it.
+        """
+        await self._session.flush()
+        statement = (
+            select(Market).where(Market.id == market_id).execution_options(populate_existing=True)
+        )
+        return await self._session.scalar(statement)
+
     async def get_many(self, market_ids: Collection[UUID]) -> dict[UUID, Market]:
         """Several markets by id, in one query. An unknown id is missing from the result."""
         statement = select(Market).where(Market.id.in_(market_ids))

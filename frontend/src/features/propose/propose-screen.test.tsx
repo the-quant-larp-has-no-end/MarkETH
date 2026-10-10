@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-import { marketDetail, proposal } from "@/test/fixtures";
+import { marketDetail, proposal, TODAY } from "@/test/fixtures";
 import { deferred, json, mockApi, noAnswer, type Route } from "@/test/http";
 import { renderWithProviders } from "@/test/render";
 
@@ -40,6 +40,16 @@ async function fillIn(user: User) {
 
 const earlier = proposal({ id: "earlier", question: "Will the Polybahn be free in 2027?" });
 const arrived = proposal({ id: "arrived", question: QUESTION });
+
+// My proposals sets a timer for the earliest close time among its proposals in review:
+// the tests stand on one day.
+beforeEach(() => {
+  vi.useFakeTimers({ now: TODAY, toFake: ["Date"] });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("Propose market", () => {
   test("is an inner screen titled Propose a market, with the form and My proposals", async () => {
@@ -120,9 +130,9 @@ describe("Propose market", () => {
     await user.click(submit());
 
     await waitFor(() => expect(api.calls(PROPOSE)).toHaveLength(2));
-    expect(api.calls(PROPOSE).map((call) => (call.body as { policy_accepted: unknown }).policy_accepted)).toEqual(
-      [true, true],
-    );
+    expect(
+      api.calls(PROPOSE).map((call) => (call.body as { policy_accepted: unknown }).policy_accepted),
+    ).toEqual([true, true]);
   });
 
   test("without an answer the button waits until the list was read again, and a proposal that arrived is in it", async () => {

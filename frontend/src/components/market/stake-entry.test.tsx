@@ -56,6 +56,16 @@ const chip = (amount: string) => screen.getByRole("button", { name: `${amount} t
 const part = (slot: string) => document.querySelector<HTMLElement>(`[data-slot=${slot}]`)!;
 const line = () => part("stake-left");
 
+/**
+ * A press on the slider's track, `x` px from its left end, and its release. jsdom lays
+ * nothing out, so the slider is given a place: 200 px wide, at the left edge.
+ */
+function press(x: number) {
+  vi.spyOn(part("slider"), "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 200, 44));
+  fireEvent.pointerDown(part("slider-track"), { clientX: x, pointerId: 1 });
+  fireEvent.pointerUp(part("slider-track"), { clientX: x, pointerId: 1 });
+}
+
 /** Fails unless each element comes after the one before it in the document. */
 function expectInOrder(elements: Element[]): void {
   for (let index = 1; index < elements.length; index += 1) {
@@ -96,7 +106,15 @@ describe("StakeEntry", () => {
       const icon = part("stake-field").querySelector("[data-slot=token-icon]")!;
       expect(icon).toHaveClass("absolute", "left-3", "pointer-events-none");
       expect(icon).toHaveAttribute("aria-hidden", "true");
-      expect(field()).toHaveClass("pl-9", "text-right", "type-number", "h-12");
+      // Barlow 500 with tabular figures, at the 16 px of every field: the number style.
+      expect(field()).toHaveClass(
+        "pl-9",
+        "text-right",
+        "font-display",
+        "font-medium",
+        "tabular-nums",
+        "h-12",
+      );
     });
 
     test("opens the decimal keypad, and is a text field: nothing rounds or steps what it holds", () => {
@@ -186,6 +204,17 @@ describe("StakeEntry", () => {
       await user.type(field(), "1 2,5 tokens-");
 
       expect(field()).toHaveValue("12.5");
+    });
+
+    test("what is pasted goes through the field as what is typed does", async () => {
+      const onChange = vi.fn();
+      const { user } = renderWithProviders(<Entry onChange={onChange} />);
+
+      await user.click(field());
+      await user.paste(" CHF 12,50 ");
+
+      expect(field()).toHaveValue("12.50");
+      expect(onChange).toHaveBeenCalledExactlyOnceWith("12.50");
     });
 
     test("takes one decimal point: a second one is not taken", async () => {
@@ -290,22 +319,19 @@ describe("StakeEntry", () => {
       ["040", "the digits of no step, though the figure is one"],
       ["40.0", "a step written with decimals"],
       ["40.", "an amount that is not finished"],
-    ])(
-      "with %j in the field (%s) the thumb stays where it is, as an outline",
-      async (text) => {
-        const { user } = renderWithProviders(<Entry start="40" />);
-        expect(part("slider")).toHaveAttribute("data-shown", "true");
+    ])("with %j in the field (%s) the thumb stays where it is, as an outline", async (text) => {
+      const { user } = renderWithProviders(<Entry start="40" />);
+      expect(part("slider")).toHaveAttribute("data-shown", "true");
 
-        await user.clear(field());
-        await user.type(field(), text);
+      await user.clear(field());
+      await user.type(field(), text);
 
-        expect(field()).toHaveValue(text);
-        expect(part("slider")).toHaveAttribute("data-shown", "false");
-        expect(thumb()).toHaveAttribute("aria-valuetext", "not set");
-        expect(part("slider-range")).toHaveClass("hidden");
-        expect(thumb()).toHaveClass("bg-card", "border-2", "border-border-strong");
-      },
-    );
+      expect(field()).toHaveValue(text);
+      expect(part("slider")).toHaveAttribute("data-shown", "false");
+      expect(thumb()).toHaveAttribute("aria-valuetext", "not set");
+      expect(part("slider-range")).toHaveClass("hidden");
+      expect(thumb()).toHaveClass("bg-card", "border-2", "border-border-strong");
+    });
 
     test("stays on the last step it showed while the field holds something else", async () => {
       const { user } = renderWithProviders(<Entry start="40" />);
@@ -353,22 +379,74 @@ describe("StakeEntry", () => {
       expect(part("slider")).toHaveAttribute("data-shown", "true");
     });
 
+    test("a press on the track moves the thumb there and writes that step, once", () => {
+      const onChange = vi.fn();
+      renderWithProviders(<Entry onChange={onChange} />);
+
+      // The middle of a slider that runs from 1 to 100.
+      press(100);
+
+      expect(field()).toHaveValue("51");
+      expect(onChange).toHaveBeenCalledExactlyOnceWith("51");
+      expect(part("slider")).toHaveAttribute("data-shown", "true");
+    });
+
     test("a press that moves it nowhere still chooses the step it rests on", () => {
       const onChange = vi.fn();
       renderWithProviders(<Entry onChange={onChange} />);
 
-      // The press ends where the thumb already stands: the slider itself reports nothing.
-      fireEvent.pointerUp(part("slider"));
+      // The left end, where the outline already rests: the slider itself reports nothing.
+      press(0);
 
       expect(field()).toHaveValue("1");
       expect(onChange).toHaveBeenCalledExactlyOnceWith("1");
+    });
+
+    test("a press on the outlined thumb itself chooses the step it rests on", async () => {
+      const onChange = vi.fn();
+      const { user } = renderWithProviders(<Entry start="40" onChange={onChange} />);
+      await user.type(field(), ".5");
+      onChange.mockClear();
+
+      fireEvent.pointerDown(thumb(), { pointerId: 1 });
+      fireEvent.pointerUp(thumb(), { pointerId: 1 });
+
+      expect(field()).toHaveValue("40");
+      expect(onChange).toHaveBeenCalledExactlyOnceWith("40");
+    });
+
+    test("a pointer that was pressed elsewhere and is let go over the slider chooses nothing", async () => {
+      const onChange = vi.fn();
+      const { user } = renderWithProviders(<Entry onChange={onChange} />);
+      await user.type(field(), "37.5");
+      onChange.mockClear();
+
+      // The text of the field is selected with the mouse, which ends up over the slider.
+      fireEvent.pointerDown(field(), { pointerId: 1 });
+      fireEvent.pointerUp(part("slider-track"), { pointerId: 1 });
+
+      expect(onChange).not.toHaveBeenCalled();
+      expect(field()).toHaveValue("37.5");
+    });
+
+    test("a press that was cancelled chooses nothing when the next pointer is let go there", () => {
+      const onChange = vi.fn();
+      renderWithProviders(<Entry onChange={onChange} />);
+
+      fireEvent.pointerDown(thumb(), { pointerId: 1 });
+      fireEvent.pointerCancel(thumb(), { pointerId: 1 });
+      fireEvent.pointerUp(thumb(), { pointerId: 2 });
+
+      expect(onChange).not.toHaveBeenCalled();
+      expect(field()).toHaveValue("");
     });
 
     test("a press or a key on a slider that shows its amount writes nothing again", async () => {
       const onChange = vi.fn();
       const { user } = renderWithProviders(<Entry start="40" onChange={onChange} />);
 
-      fireEvent.pointerUp(part("slider"));
+      fireEvent.pointerDown(thumb(), { pointerId: 1 });
+      fireEvent.pointerUp(thumb(), { pointerId: 1 });
       thumb().focus();
       await user.keyboard("{Tab}");
 
@@ -507,6 +585,15 @@ describe("StakeEntry", () => {
       expect(field().className).toContain("aria-invalid:border-no");
     });
 
+    test("the border is the error colour also while the field has the focus, which is when a typed amount is refused", () => {
+      renderWithProviders(<Entry start="150" refusal="This would exceed a limit." />);
+
+      expect(field()).toHaveClass(
+        "aria-invalid:focus-visible:border-no",
+        "aria-invalid:focus-visible:outline-no",
+      );
+    });
+
     test("describes the field and the slider, after the stake-left line", () => {
       renderWithProviders(<Entry start="150" left="40" refusal="This would exceed a limit." />);
 
@@ -538,7 +625,8 @@ describe("StakeEntry", () => {
 
       thumb().focus();
       await user.keyboard("{ArrowRight}{End}");
-      fireEvent.pointerUp(part("slider"));
+      fireEvent.pointerDown(thumb(), { pointerId: 1 });
+      fireEvent.pointerUp(thumb(), { pointerId: 1 });
       expect(onChange).not.toHaveBeenCalled();
     });
 
@@ -546,7 +634,8 @@ describe("StakeEntry", () => {
       const onChange = vi.fn();
       renderWithProviders(<Entry disabled onChange={onChange} />);
 
-      fireEvent.pointerUp(part("slider"));
+      fireEvent.pointerDown(thumb(), { pointerId: 1 });
+      fireEvent.pointerUp(thumb(), { pointerId: 1 });
 
       expect(onChange).not.toHaveBeenCalled();
     });

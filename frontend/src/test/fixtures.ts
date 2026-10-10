@@ -15,6 +15,7 @@ import type {
   MarketSummary,
   MarketViewer,
   MeResponse,
+  NoticeItem,
   PortfolioEntry,
   PortfolioResponse,
   ProfileSavedResponse,
@@ -45,6 +46,18 @@ import type {
  * Amounts are the strings the API sends: trailing zeros trimmed, a zero as `0`. A test
  * expects those strings on screen and never does arithmetic to find out what to expect.
  */
+
+/**
+ * The day the fixtures stand on: three days before their markets close and two months
+ * before their proposal does. A screen that waits for a close time (`useAskAtClose`) sets
+ * a timer for it, so a test that renders one fixes the device's clock to this day:
+ *
+ *     beforeEach(() => vi.useFakeTimers({ now: TODAY, toFake: ["Date"] }));
+ *     afterEach(() => vi.useRealTimers());
+ *
+ * Run on another day, that timer would fire in the test.
+ */
+export const TODAY = new Date("2026-10-11T10:00:00Z");
 
 export const MARKET_ID = "3f6c2f0e-8b1d-4c57-9a43-0d6f1e2b7a10";
 export const OTHER_MARKET_ID = "9a1b7c44-52de-4f0a-b6c3-7e85d1f0c2ab";
@@ -123,6 +136,19 @@ export function me(overrides: Partial<MeResponse> = {}): MeResponse {
     can_get_voucher: true,
     monthly_grant_cr: "200",
     next_monthly_grant_at: "2026-10-21T08:15:00Z",
+    notices: [],
+    ...overrides,
+  };
+}
+
+/** A notice of `/me`: VIS approved the market the viewer proposed, and it is open. */
+export function notice(overrides: Partial<NoticeItem> = {}): NoticeItem {
+  return {
+    id: "0e6d4a52-7c1b-4f39-a2d8-5b9c3e1f7a60",
+    kind: "PROPOSAL_APPROVED",
+    market_id: MARKET_ID,
+    question: "Will the Polybahn run without interruption during the exam session?",
+    created_at: "2026-10-05T09:00:00Z",
     ...overrides,
   };
 }
@@ -428,6 +454,8 @@ export function leaderboardEntry(overrides: Partial<LeaderboardEntry> = {}): Lea
     degree_level: "BACHELOR",
     degree_programme: "BSc Computer Science",
     credits_cr: "1204.5",
+    balance_cr: "1000",
+    positions_value_cr: "204.5",
     trades: 37,
     settled_markets: 8,
     win_rate: 0.625,
@@ -443,6 +471,8 @@ export function leaderboard(overrides: Partial<LeaderboardResponse> = {}): Leade
     rank: 3,
     username: "anna_m",
     credits_cr: "240",
+    balance_cr: "200",
+    positions_value_cr: "40",
     trades: 4,
     settled_markets: 0,
     win_rate: null,
@@ -456,11 +486,20 @@ export function leaderboard(overrides: Partial<LeaderboardResponse> = {}): Leade
         rank: 2,
         username: "cab_coffee",
         credits_cr: "980",
+        balance_cr: "980",
+        positions_value_cr: "0",
         degree_level: "MASTER",
         degree_programme: "MSc Data Science",
       }),
       viewer,
-      leaderboardEntry({ rank: 4, username: "mensa_fan", credits_cr: "120.25", trades: 1 }),
+      leaderboardEntry({
+        rank: 4,
+        username: "mensa_fan",
+        credits_cr: "120.25",
+        balance_cr: "100",
+        positions_value_cr: "20.25",
+        trades: 1,
+      }),
     ],
     next_cursor: null,
     viewer,

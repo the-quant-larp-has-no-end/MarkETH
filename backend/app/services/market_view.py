@@ -5,10 +5,12 @@ all show markets. The rules they must agree on live here, once:
 
 * the effective status: an OPEN market past its deadline is CLOSED everywhere, and
   a PROPOSED one past it is EXPIRED (A.4);
+* when trading in a market ended, which is where its chart stops;
 * display probabilities: rounded once, with NO as the complement of the rounded YES;
 * what a holding is worth, at which prices the open positions of everybody are
   valued, what a user's net stake in a market is and how much of the stake limit it
-  leaves, what a settled market paid or gave back;
+  leaves, what a settled market paid or gave back, what voiding a market would cost
+  VIS;
 * which buy buttons of the trade sheet would be accepted, between which amounts the
   slider of a buy runs, and how many shares its sell buttons stand for.
 
@@ -56,6 +58,13 @@ HIDDEN_STATUSES: Final[frozenset[MarketStatus]] = frozenset(
 proposal, whatever became of it. To anyone else they are 404. An expired proposal is
 one of them: its row says PROPOSED."""
 
+TRADING_STATUSES: Final[frozenset[MarketStatus]] = frozenset(
+    {MarketStatus.OPEN, MarketStatus.HALTED}
+)
+"""Stored statuses of the markets in which trading is not over while their `close_at`
+has not come: an open one, and a halted one, which trades nothing for now and may be
+resumed."""
+
 _STORED_AS: Final[Mapping[MarketStatus, frozenset[MarketStatus]]] = {
     MarketStatus.CLOSED: frozenset({MarketStatus.CLOSED, MarketStatus.OPEN}),
     MarketStatus.EXPIRED: frozenset({MarketStatus.PROPOSED}),
@@ -77,7 +86,7 @@ class MarketView:
     def effective_status(self, market: Market, now: datetime) -> MarketStatus:
         """The status to report and to act on (A.4): what the row says, except that from
         the instant of `close_at` on an OPEN market is CLOSED and a PROPOSED one is
-        EXPIRED. Nobody trades the first any more and no admin decides on the second."""
+        EXPIRED. Nobody trades the first and no admin decides on the second."""
         if now >= market.close_at:
             if market.status is MarketStatus.OPEN:
                 return MarketStatus.CLOSED
@@ -100,6 +109,26 @@ class MarketView:
 
     def is_trading_open(self, market: Market, now: datetime) -> bool:
         return self.effective_status(market, now) is MarketStatus.OPEN
+
+    def trading_ended_at(self, market: Market, now: datetime) -> datetime | None:
+        """The moment trading in `market` ended for good, or None while it can still
+        trade at `now`. For a market that was opened.
+
+        A market can still trade while its row says OPEN or HALTED and `close_at` has
+        not come. In every other case trading is over. It ended at `close_at`, or
+        before that at `closed_at`: the moment an admin closed the market, or a
+        settlement closed it on its way. A market is resolved or voided no earlier
+        than it was closed, so the earlier of `close_at` and `closed_at` is also the
+        earlier of `close_at` and the moment it was closed, resolved or voided.
+
+        The chart of a market is drawn up to this moment, and up to now while there
+        is none (`HistoryResponse.until`).
+        """
+        if market.status in TRADING_STATUSES and now < market.close_at:
+            return None
+        if market.closed_at is None:
+            return market.close_at
+        return min(market.close_at, market.closed_at)
 
     def p_yes_micro(self, market: Market) -> int:
         """The exact YES price in millionths, from the row's q and b."""
@@ -239,6 +268,22 @@ class MarketView:
         if resolution is None or resolution.outcome is not ResolutionOutcome.VOID:
             return None
         return self.net_stake_micro(positions)
+
+    def void_cost_micro(self, net_stakes_micro: int, account_balance_micro: int) -> int:
+        """What VIS would have to add if a market were voided now, in µCR (A.5).
+
+        A void refunds every trader their net stake. `net_stakes_micro` is those of
+        all its traders added up (`positions.net_stake_totals`), and
+        `account_balance_micro` what the market's account holds to pay them from. The
+        difference is what traders who sold above their cost have taken out: a void
+        does not take that back, and `vis:mm_pnl` books it. It is never below zero
+        while the books are right, and it is bounded by the stake limit per trader,
+        not by the market's budget.
+
+        The risk page and the market detail of an admin show this figure, and both
+        get it here, from those two readings.
+        """
+        return net_stakes_micro - account_balance_micro
 
     def holding_value_micro(
         self, market: Market, outcome: Outcome, shares_micro: int, resolution: Resolution | None

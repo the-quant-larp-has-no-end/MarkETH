@@ -656,7 +656,7 @@ describe("a voucher that stays in front of the camera", () => {
     expect(result("rejected")).toBeNull();
   });
 
-  test("two vouchers in front of the camera at once are read in turn, and each is sent once", async () => {
+  test("two vouchers that the camera reads in turn are each sent once: a second one does not make it forget the first", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const { api } = renderBarista(json(200, voucherRedeemed({ product_name: "Coffee" })));
 
@@ -712,7 +712,7 @@ describe("a typed voucher code", () => {
     const sheet = await screen.findByRole("dialog", { name: "Type the voucher code" });
     await user.type(within(sheet).getByLabelText("Voucher code"), "7kq2m9xa");
 
-    const cross = within(sheet).getByRole("button", { name: "Close", exact: true });
+    const cross = within(sheet).getByRole("button", { name: "Close" });
     expect(cross).toBeEnabled();
     expect(cross.querySelector("svg")).toBeInTheDocument();
     await user.click(cross);

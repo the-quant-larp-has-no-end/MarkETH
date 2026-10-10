@@ -4,6 +4,10 @@ Reads report the effective status and display prices through `MarketView`. The l
 which are the same for everybody, are cached in Redis for `MARKET_CACHE_TTL_SECONDS`;
 whatever belongs to one viewer (holdings, stake, balance) is always read from Postgres.
 
+One market is read by `detail_in`, inside a transaction somebody else opened. `detail`
+opens one for it; a proposal and the seven admin actions call it in the transaction
+that makes their change, so their answer exists before the commit (A.5).
+
 Two rules a proposal and its approval share live here as functions, so that
 `MarketLifecycleService` applies the very same ones: `check_market_dates` and
 `refuse_nul`.
@@ -31,6 +35,7 @@ from app.core.units import to_cr
 from app.integrations.redis.market_cache import MarketCache
 from app.models.market import Market, Resolution
 from app.models.trading import Position
+from app.repositories.unit_of_work import UnitOfWork
 from app.schemas.common import Limit
 from app.schemas.markets import (
     DECIDED_BEFORE_CLOSE_MESSAGE,
@@ -42,7 +47,12 @@ from app.schemas.markets import (
     TradeBlockReason,
 )
 from app.services import UowFactory
-from app.services.market_view import HIDDEN_STATUSES, SETTLED_STATUSES, MarketView
+from app.services.market_view import (
+    HIDDEN_STATUSES,
+    SETTLED_STATUSES,
+    UNSETTLED_STATUSES,
+    MarketView,
+)
 
 VOID_RULE: Final[str] = (
     "If VIS voids this market, every trader gets back their net stake in it: what they "
@@ -158,7 +168,11 @@ class MarketService:
            `tier=None`, `created_by=user.id`, `created_at=now`; budget, b,
            quantities, version and volume stay 0. A proposal says nothing about
            liquidity: the admin who approves it picks the tier.
-        4. Return its detail as `detail(user, market.id)` would.
+        4. Build the answer in that transaction: `detail_in(uow, user, market.id)`,
+           the proposal as its proposer sees it. Nothing is read once the
+           transaction has committed, so a proposal that was filed is never answered
+           as one that failed. Sent again after such an answer it would be filed a
+           second time and use up one more of the day's limit.
 
         `now` is read once, before the transaction: it is what the dates are held
         against, the day the limit counts, and the proposal's `created_at`.
@@ -195,8 +209,9 @@ class MarketService:
                     created_at=now,
                 )
             )
+            answer = await self.detail_in(uow, user, market.id)
 
-        return await self.detail(user, market.id)
+        return answer
 
     async def list_markets(
         self, viewer: AuthenticatedUser, statuses: Collection[MarketStatus] | None
@@ -268,12 +283,32 @@ class MarketService:
     async def detail(self, viewer: AuthenticatedUser, market_id: UUID) -> MarketDetailResponse:
         """One market with its rules, and the viewer's side of it (`GET /markets/{id}`).
 
-        Visibility: an unknown market raises `NotFoundError` (404). So does a PROPOSED
-        or REJECTED one unless `viewer.is_admin` or the viewer is its proposer.
+        One read transaction around `detail_in`, which says what the answer holds.
 
         Every answer carries the viewer's side, so none is cached: everything is read
-        from Postgres, in one transaction. Its statements are not one snapshot: a trade
+        from Postgres. The statements of the transaction are not one snapshot: a trade
         that commits between two of them shows until the next request.
+        """
+        async with self._uow_factory() as uow:
+            return await self.detail_in(uow, viewer, market_id)
+
+    async def detail_in(
+        self, uow: UnitOfWork, viewer: AuthenticatedUser, market_id: UUID
+    ) -> MarketDetailResponse:
+        """What `viewer` sees of one market, read inside the transaction of `uow`.
+
+        `detail` opens a transaction for it. `propose` and the seven actions of
+        `MarketLifecycleService` call it as the last step of the transaction that
+        makes their change: the answer of a write is built from what its transaction
+        wrote, before the commit, and nothing is read after it (backend/CLAUDE.md,
+        "Transactions"). It takes no lock and changes no row.
+
+        The market is read as its row stands in the transaction
+        (`markets.get_as_stored`), so an answer built before a commit is the one
+        `detail` gives right after it, down to how an instant is written.
+
+        Visibility: an unknown market raises `NotFoundError` (404). So does a PROPOSED
+        or REJECTED one unless `viewer.is_admin` or the viewer is its proposer.
 
         Fields beyond `MarketView.summary`: the wording columns (`yes_def` and
         `no_def` are `yes_definition` and `no_definition`), `void_rule = VOID_RULE`,
@@ -282,10 +317,23 @@ class MarketService:
         `resolutions` row is read, and used, only when the market's own row says
         RESOLVED or VOID.
 
-        For admins only, null to everyone else, the proposer included: `tier`, `b_cr`
-        and `max_loss_cr = budget_micro`, which is how much liquidity VIS gave the
-        market (to an admin `tier` is null and the two amounts are 0 until the
-        approval), and `proposer_email`, the proposer's `users.email`.
+        For admins only, null to everyone else, the proposer included:
+
+        * `tier`, `b_cr` and `max_loss_cr = budget_micro`, which is how much liquidity
+          VIS gave the market (to an admin `tier` is null and the two amounts are 0
+          until the approval);
+        * `proposer_email`, the proposer's `users.email`;
+        * `void_cost_cr = MarketView.void_cost_micro(<the net stakes of the market's
+          traders, `positions.net_stake_totals`>, <the balance of its account>)`: what
+          VIS would have to add if the market were voided now. It is the figure of
+          the market's row on the risk page (`RiskService.snapshot`), from the same
+          two readings and the same function. Null to an admin too where there is
+          nothing to void: a market that was never opened (`HIDDEN_STATUSES`, an
+          expired proposal among them) and one that is settled. So it is set for
+          exactly the markets the risk page lists (`UNSETTLED_STATUSES`), and its two
+          reads run for nobody but an admin looking at such a market. A market of
+          those has its account since its approval; one without is a broken book
+          and raises `LookupError` (500).
 
         `viewer` block, from the viewer's account (`accounts.get_user_account`) and
         their `positions.list_for_user_market`. Every user has an account, because the
@@ -316,23 +364,30 @@ class MarketService:
           market (A.4), asked here so that the admin screen can say so before anyone
           tries. The query runs only for an admin; everybody else gets false. The
           market's status plays no part in it.
+
+        The clock is read once, here: the effective status, and with it whether the
+        viewer may trade, is the one of that instant.
         """
         now = self._clock.now()
-        async with self._uow_factory() as uow:
-            market = await uow.markets.get(market_id)
-            if market is None or _hidden_from(viewer, market):
-                raise NotFoundError
-            resolution = (
-                await uow.resolutions.get_by_market(market.id)
-                if market.status in SETTLED_STATUSES
-                else None
-            )
-            proposer = await uow.users.get(market.created_by) if viewer.is_admin else None
-            account = await uow.accounts.get_user_account(viewer.id)
-            positions = await uow.positions.list_for_user_market(viewer.id, market.id)
-            can_settle = viewer.is_admin and not await uow.trades.exists_for_user_market(
-                viewer.id, market.id
-            )
+        market = await uow.markets.get_as_stored(market_id)
+        if market is None or _hidden_from(viewer, market):
+            raise NotFoundError
+        resolution = (
+            await uow.resolutions.get_by_market(market.id)
+            if market.status in SETTLED_STATUSES
+            else None
+        )
+        proposer = await uow.users.get(market.created_by) if viewer.is_admin else None
+        account = await uow.accounts.get_user_account(viewer.id)
+        positions = await uow.positions.list_for_user_market(viewer.id, market.id)
+        can_settle = viewer.is_admin and not await uow.trades.exists_for_user_market(
+            viewer.id, market.id
+        )
+        void_cost_micro = (
+            await self._void_cost_micro(uow, market)
+            if viewer.is_admin and market.status in UNSETTLED_STATUSES
+            else None
+        )
         if account is None:
             raise LookupError(f"user {viewer.id} has no ledger account")
         if viewer.is_admin and proposer is None:
@@ -348,7 +403,7 @@ class MarketService:
             tier=market.tier if viewer.is_admin else None,
             b_cr=to_cr(market.b_micro) if viewer.is_admin else None,
             max_loss_cr=to_cr(market.budget_micro) if viewer.is_admin else None,
-            void_cost_cr=None,
+            void_cost_cr=_optional_cr(void_cost_micro),
             void_rule=VOID_RULE,
             created_at=market.created_at,
             opened_at=market.opened_at,
@@ -366,6 +421,16 @@ class MarketService:
                 can_settle=can_settle,
             ),
         )
+
+    async def _void_cost_micro(self, uow: UnitOfWork, market: Market) -> int:
+        """`void_cost_cr` of a market that is not settled, in µCR: its two readings,
+        as the risk page takes them, through `MarketView.void_cost_micro`. A market
+        nobody holds a position in has no net stakes to refund."""
+        account = await uow.accounts.get_market_account(market.id)
+        if account is None:
+            raise LookupError(f"market {market.id} is {market.status} but has no account")
+        net_stakes_micro = await uow.positions.net_stake_totals([market.id])
+        return self._view.void_cost_micro(net_stakes_micro.get(market.id, 0), account.balance_micro)
 
     async def _cached_list(self, key: str) -> MarketListResponse | None:
         """The list cached under `key`; None on a miss, and for an entry that is no

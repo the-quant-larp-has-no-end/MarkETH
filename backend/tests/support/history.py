@@ -68,8 +68,9 @@ class MemoryHistory(QuoteHistoryStore):
     * A point is keyed by market, instant and version, so writing one twice leaves one
       row. The instant is kept in UTC and cut to the millisecond; a read gives it back
       that way.
-    * `read` returns the points with `since <= ts <= until` in ascending order of
-      instant, then version.
+    * `read` returns the newest `limit` points with `since <= ts <= until`, in
+      ascending order of instant, then version. A `limit` below 1 is refused with
+      `ValueError`.
     * It starts as a node without a keyspace does. Until `ensure_schema` ran, `write`
       and `read` raise `ScyllaUnavailableError`: a missing keyspace and an outage are
       one error to the callers. `wipe` takes the keyspace away again.
@@ -81,7 +82,8 @@ class MemoryHistory(QuoteHistoryStore):
 
         calls       the name of every method called, in order, failed calls included
         written     every point a `write` stored, in order, repeats included
-        reads       the market and the range of every `read`, in order, failed ones too
+        reads       the market, the range and the limit of every `read`, in order,
+                    failed ones too
         on_write    awaited by `write` just before it stores a point: raise from it to
                     make that write fail, or wait in it to hold the write
         on_read     awaited by `read` before it answers
@@ -95,7 +97,7 @@ class MemoryHistory(QuoteHistoryStore):
         self.down = False
         self.calls: list[str] = []
         self.written: list[QuotePoint] = []
-        self.reads: list[tuple[UUID, datetime, datetime]] = []
+        self.reads: list[tuple[UUID, datetime, datetime, int]] = []
         self.on_write: Callable[[QuotePoint], Awaitable[None]] | None = None
         self.on_read: Callable[[], Awaitable[None]] | None = None
 
@@ -132,18 +134,23 @@ class MemoryHistory(QuoteHistoryStore):
         self._rows[(stored.market_id, stored.ts, stored.version)] = stored
         self.written.append(point)
 
-    async def read(self, market_id: UUID, since: datetime, until: datetime) -> list[QuotePoint]:
+    async def read(
+        self, market_id: UUID, since: datetime, until: datetime, *, limit: int
+    ) -> list[QuotePoint]:
         self.calls.append("read")
-        self.reads.append((market_id, since, until))
+        self.reads.append((market_id, since, until, limit))
+        if limit < 1:
+            raise ValueError(f"a read asks for at least one point, got {limit}")
         first, last = to_milliseconds(since), to_milliseconds(until)
         if self.on_read is not None:
             await self.on_read()
         self._answer()
-        return _in_reading_order(
+        in_range = _in_reading_order(
             point
             for point in self._rows.values()
             if _of(point, market_id) and first <= point.ts <= last
         )
+        return in_range[-limit:]
 
     def _answer(self) -> None:
         """Raise what the real store raises when ScyllaDB did not run a statement."""

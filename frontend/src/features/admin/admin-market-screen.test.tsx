@@ -97,7 +97,7 @@ describe("Admin: one market", () => {
     expect(stated("Proposed by")).toBe("bea.beispiel@ethz.ch");
     // A proposal asks for no tier: there is the one VIS gave the market, and no other.
     expect(screen.queryByText(/requested/i)).not.toBeInTheDocument();
-    expect(stated("Liquidity")).toBe("Default");
+    expect(stated("Tier")).toBe("Default");
     expect(stated("Liquidity b")).toBe("1,0001,000 tokens");
     // Cut after the second decimal, never rounded up.
     expect(stated("Loss budget")).toBe("693.14693.14 tokens");
@@ -106,6 +106,17 @@ describe("Admin: one market", () => {
     expect(stated("Closed")).toBe("–none yet");
     expect(screen.queryByText("Rejection reason")).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Resolution" })).not.toBeInTheDocument();
+    // The facts stand in the order of DESIGN.md §13: who and when first, the pricing last.
+    const details = screen.getByRole("heading", { level: 2, name: "Details" }).parentElement!;
+    expect([...details.querySelectorAll("dt")].map((term) => term.textContent)).toEqual([
+      "Proposed by",
+      "Proposed",
+      "Opened",
+      "Closed",
+      "Tier",
+      "Liquidity b",
+      "Loss budget",
+    ]);
   });
 
   test("a proposal has no tier yet, and a custom tier is named Custom", async () => {
@@ -120,8 +131,9 @@ describe("Admin: one market", () => {
       }),
     );
     await screen.findByRole("heading", { level: 2, name: "Details" });
-    expect(stated("Liquidity")).toBe("–none yet");
-    // Liquidity and loss budget come with the tier: until then there is nothing to show.
+    expect(stated("Tier")).toBe("–none yet");
+    // Liquidity b and loss budget come with the tier: until the approval each is a dash,
+    // also though the API sends a zero for the two.
     expect(stated("Liquidity b")).toBe("–none yet");
     expect(stated("Loss budget")).toBe("–none yet");
     expect(stated("Opened")).toBe("–none yet");
@@ -129,7 +141,7 @@ describe("Admin: one market", () => {
 
     show(adminMarket({ id: "custom", tier: "CUSTOM", b_cr: "3606.737602", max_loss_cr: "2500" }));
     await screen.findByRole("heading", { level: 2, name: "Details" });
-    expect(stated("Liquidity")).toBe("Custom");
+    expect(stated("Tier")).toBe("Custom");
     expect(stated("Liquidity b")).toBe("3,606.733,606.73 tokens");
   });
 
@@ -145,6 +157,34 @@ describe("Admin: one market", () => {
 
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Not approved"));
     expect(stated("Rejection reason")).toBe("One trader can decide this outcome alone.");
+  });
+
+  test("a proposal whose close time passed shows the badge Expired and offers neither Approve nor Reject", async () => {
+    const api = mockApi({
+      [MARKET]: json(
+        200,
+        adminMarket({
+          status: "EXPIRED",
+          trading_open: false,
+          tier: null,
+          b_cr: "0",
+          max_loss_cr: "0",
+          void_cost_cr: null,
+          opened_at: null,
+        }),
+      ),
+    });
+    renderWithProviders(<AdminMarketScreen marketId={MARKET_ID} />, admin);
+
+    await screen.findByRole("heading", { level: 2, name: "Rules" });
+    const badge = within(screen.getByRole("status")).getByText("Expired");
+    expect(badge).toHaveAttribute("data-slot", "badge");
+    expect(screen.queryByText("In review")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Actions" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Approve|Reject/ })).not.toBeInTheDocument();
+    // What the screen shows is the status the API sent: nothing here looks at a clock.
+    expect(api.calls(MARKET)).toHaveLength(1);
+    expect(stated("Tier")).toBe("–none yet");
   });
 
   test.each([
@@ -239,7 +279,7 @@ describe("the action bar offers only what the status allows", () => {
     }
   });
 
-  test.each(["REJECTED", "RESOLVED", "VOID"] as const satisfies readonly MarketStatus[])(
+  test.each(["EXPIRED", "REJECTED", "RESOLVED", "VOID"] as const satisfies readonly MarketStatus[])(
     "%s: nothing is left to do",
     async (status) => {
       show(adminMarket({ status, trading_open: false }));

@@ -12,6 +12,7 @@ const TABS: readonly LinkTab[] = [
   { label: "Markets", href: "/admin" },
   { label: "Codes", href: "/admin/codes" },
   { label: "Risk", href: "/admin/risk" },
+  { label: "Users", href: "/admin/users" },
 ];
 
 /** The link to the Barista screen: an admin has no Scan tab and reaches the scanner here. */
@@ -31,9 +32,10 @@ function ScanLink({ className }: { className?: string }) {
 }
 
 /**
- * The three tabs of the admin area (DESIGN.md §13), each a link to its route, and the
- * "Scan vouchers" link to the Barista screen. It stands at the top of each of the three
- * screens, under the top bar.
+ * The four tabs of the admin area (DESIGN.md §13), each a link to its route, and the
+ * "Scan vouchers" link to the Barista screen. It stands at the top of each of the four
+ * screens, under the top bar. A row of tabs that is wider than the screen scrolls
+ * sideways and keeps the current tab in sight.
  *
  * From 768 px the link sits beside the tabs. On a phone the row has no room for it, and
  * the scanner is the one thing an admin opens on a phone at the bar: there the link has a

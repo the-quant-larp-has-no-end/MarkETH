@@ -1,10 +1,17 @@
-import type { CodeBatchCreatedResponse } from "@/lib/api/schema";
+import type { CodeBatchCodesResponse } from "@/lib/api/schema";
 
 /**
- * The codes of a batch as a CSV file, made in the browser from the one answer that holds
- * them (DESIGN.md §13, SPEC A.6). One row per code: the code as printed on its card, the
- * link its QR holds, and what the batch says about every code of it. Every value is
- * written as the API sent it.
+ * A batch with codes of it: what the answer that creates a batch holds, and what
+ * `GET /admin/code-batches/{batch_id}/codes` answers. The CSV and the QR sheet are made
+ * from either.
+ */
+export type BatchCodes = Pick<CodeBatchCodesResponse, "batch" | "codes">;
+
+/**
+ * The codes of a batch as a CSV file, made in the browser from the codes the dialog shows
+ * (DESIGN.md §13, SPEC A.6). One row per code: the code as printed on its card, the link
+ * its QR holds, and what the batch says about every code of it. Every value is written as
+ * the API sent it.
  */
 
 const COLUMNS = ["code", "redeem_url", "label", "tokens", "expires_at"] as const;
@@ -22,7 +29,7 @@ function text(value: string): string {
   return FORMULA_START.test(value) ? `'${value}` : value;
 }
 
-export function codesCsv({ batch, codes }: CodeBatchCreatedResponse): string {
+export function codesCsv({ batch, codes }: BatchCodes): string {
   const rows = codes.map(({ code, redeem_url }) => [
     code,
     redeem_url,

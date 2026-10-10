@@ -5,11 +5,9 @@ import { config, leaderboardEntry } from "@/test/fixtures";
 
 import {
   arrange,
-  cleanBound,
   draftOf,
   type Filters,
   filtersOf,
-  finishDraft,
   hasFigure,
   isPodiumRow,
   MEASURES,
@@ -28,9 +26,9 @@ const read = (query: string) => readView(new URLSearchParams(query));
 const degrees = config().degrees;
 
 describe("the four measures", () => {
-  test("carry the chip names and the captions of DESIGN.md §13, in the order of the sort row", () => {
+  test("carry the chip names and the captions of DESIGN.md §13, in the order of the sort chips", () => {
     expect(MEASURES.map((measure) => [measure.sort, measure.name, measure.caption])).toEqual([
-      ["credits", "Tokens", "Tokens held right now."],
+      ["credits", "Tokens", "Tokens in the wallet plus the value of open positions."],
       ["win_rate", "Win rate", "Share of resolved markets that returned more than was put in."],
       ["trades", "Trades", "Number of trades made."],
       ["avg_payout_ratio", "Payout", "Tokens returned per token put in, over resolved markets."],
@@ -45,6 +43,15 @@ describe("the four measures", () => {
       ["min_avg_payout_ratio", "max_avg_payout_ratio"],
     ]);
     expect(measureOf("trades").name).toBe("Trades");
+  });
+
+  test("tokens say what they are made of; the other measures need no such word", () => {
+    expect(MEASURES.map((measure) => measure.parts)).toEqual([
+      "Wallet plus open positions",
+      undefined,
+      undefined,
+      undefined,
+    ]);
   });
 });
 
@@ -192,60 +199,51 @@ describe("the fields of the filter sheet", () => {
     expect(filtersOf(draftOf({}))).toEqual({});
   });
 
-  test("a field keeps the characters a figure can have, and nothing else", () => {
-    expect(cleanBound("amount", "1,204.5 tokens")).toBe("1,204.5");
-    expect(cleanBound("percent", "62,5%")).toBe("62,5");
-    expect(cleanBound("ratio", "x1.5")).toBe("1.5");
-    expect(cleanBound("amount", "-5")).toBe("5");
-    expect(cleanBound("count", "1,204")).toBe("1204");
-    expect(cleanBound("count", "abc")).toBe("");
+  test("a percentage that is still being typed is read as it stands: the point moves, nothing is calculated", () => {
+    const sent = (typed: string) => filtersOf({ ...draftOf({}), min_win_rate: typed }).min_win_rate;
+
+    expect(sent("80.")).toBe("0.8");
+    expect(sent(".5")).toBe("0.005");
+    expect(sent("5")).toBe("0.05");
+    expect(sent("007")).toBe("0.07");
+    expect(sent("33.333333")).toBe("0.33333333");
+    expect(sent("0")).toBe("0");
+    // No percentage at all: it goes out as it is, and the API says so on the field.
+    expect(sent(".")).toBe(".");
+    expect(sent("1.2.3")).toBe("1.2.3");
   });
 
-  const finished = (typed: string) =>
-    finishDraft({ ...draftOf({}), min_credits_cr: typed }).min_credits_cr;
-
-  test("a figure grouped the way the app writes it is read that way", () => {
-    expect(finished("1,204.5")).toBe("1204.5");
-    expect(finished("1,000")).toBe("1000");
-    expect(finished("12,345,678.25")).toBe("12345678.25");
-  });
-
-  test("a decimal comma, as a phone's decimal key types it, becomes the point", () => {
-    expect(finished("62,5")).toBe("62.5");
-    expect(finished("0,125")).toBe("0.125");
-    expect(finished("1000,5")).toBe("1000.5");
-    expect(finished(",5")).toBe("0.5");
-  });
-
-  test("a separator nothing follows is dropped, and a leading one gets its zero", () => {
-    expect(finished("5.")).toBe("5");
-    expect(finished("5,")).toBe("5");
-    expect(finished(".5")).toBe("0.5");
-    expect(finished(" 100 ")).toBe("100");
-  });
-
-  test("a plain figure is left exactly as typed: no digit is added, dropped or rounded", () => {
-    for (const typed of ["0100.50", "12345678901234567890.123456", "007", "1.50", "0"]) {
-      expect(finished(typed)).toBe(typed);
+  test("every other figure goes out with the characters that were typed: none is added, dropped or rounded", () => {
+    for (const typed of [
+      "0100.50",
+      "12345678901234567890.123456",
+      "007",
+      "1.50",
+      "0",
+      "5.",
+      ".5",
+    ]) {
+      expect(filtersOf({ ...draftOf({}), min_credits_cr: typed }).min_credits_cr).toBe(typed);
+      expect(filtersOf({ ...draftOf({}), max_avg_payout_ratio: typed }).max_avg_payout_ratio).toBe(
+        typed,
+      );
     }
+    expect(filtersOf({ ...draftOf({}), min_trades: "007" }).min_trades).toBe("007");
   });
 
-  test("what cannot be read is not guessed at: it goes to the API as it is", () => {
-    for (const typed of ["1.204,5", "1,2,3", "1.2.3", "12,34.5"]) {
-      expect(finished(typed)).toBe(typed);
-    }
-  });
-
-  test("only the bounds are figures: a programme with a comma in it stays as it is", () => {
-    const draft = finishDraft({
+  test("only the two bounds of the win rate are percentages: a programme stays as it is", () => {
+    const filters = filtersOf({
       ...draftOf({}),
       degree_programme: "MSc Science, Technology and Policy",
       min_win_rate: "5.",
-      max_win_rate: ",5",
+      max_win_rate: "62.5",
     });
 
-    expect(draft.degree_programme).toBe("MSc Science, Technology and Policy");
-    expect(filtersOf(draft)).toMatchObject({ min_win_rate: "0.05", max_win_rate: "0.005" });
+    expect(filters).toEqual({
+      degree_programme: "MSc Science, Technology and Policy",
+      min_win_rate: "0.05",
+      max_win_rate: "0.625",
+    });
   });
 });
 

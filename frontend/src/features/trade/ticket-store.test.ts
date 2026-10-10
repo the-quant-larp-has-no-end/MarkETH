@@ -472,6 +472,62 @@ describe("QUOTE_STALE", () => {
   });
 });
 
+describe("a refusal that says the screen is behind", () => {
+  /** The sheet is open on the input of `buy`: its quote is being read. */
+  function reading(client: ReturnType<typeof setup>["client"]) {
+    const quoteKey = keys.markets.quote(MARKET_ID, buy.request);
+    const observer = new QueryObserver(client, { queryKey: quoteKey, enabled: false });
+    const stop = observer.subscribe(() => {});
+    client.setQueryData(quoteKey, buy.quote);
+    return { quoteKey, stop };
+  }
+
+  test.each([
+    ["INSUFFICIENT_BALANCE", "Not enough tokens for this."],
+    ["INSUFFICIENT_SHARES", "You cannot sell more shares than you hold."],
+    ["MARKET_NOT_OPEN", "This market is not open for trading."],
+    ["LIMIT_EXCEEDED", "This would exceed a limit."],
+  ] as const)(
+    "%s marks the quote on screen out of date: it did not hold",
+    async (code, message) => {
+      const { client, store } = setup(apiError(409, code, message));
+      const { quoteKey, stop } = reading(client);
+
+      store.confirm(MARKET_ID, buy);
+      await answered(store);
+
+      expect(client.getQueryState(quoteKey)?.isInvalidated).toBe(true);
+      stop();
+    },
+  );
+
+  test.each([
+    [422, "TRADE_TOO_SMALL"],
+    [422, "VALIDATION_ERROR"],
+    [422, "IDEMPOTENCY_KEY_REUSED"],
+    [404, "NOT_FOUND"],
+  ] as const)("a %i %s leaves the quote on screen as it is", async (status, code) => {
+    const { client, store } = setup(apiError(status, code, "Refused."));
+    const { quoteKey, stop } = reading(client);
+
+    store.confirm(MARKET_ID, buy);
+    await answered(store);
+
+    expect(client.getQueryState(quoteKey)?.isInvalidated).toBe(false);
+    expect(client.getQueryData(quoteKey)).toEqual(buy.quote);
+    stop();
+  });
+
+  test("asks for no quote when the sheet is closed: the next opening asks afresh", async () => {
+    const { client, store } = setup(apiError(409, "LIMIT_EXCEEDED", "This would exceed a limit."));
+
+    store.confirm(MARKET_ID, buy);
+    await answered(store);
+
+    expect(client.getQueryState(keys.markets.quote(MARKET_ID, buy.request))).toBeUndefined();
+  });
+});
+
 describe("the cache", () => {
   test("is updated by the trade's own handling: the balance and the stake are the answer's", async () => {
     const { client, store } = setup(

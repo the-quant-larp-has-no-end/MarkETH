@@ -10,6 +10,15 @@ export const TOAST_MS = 4000;
 /** §13, Barista: the full-screen result shows for 2.5 s, then the scanner returns. */
 export const BARISTA_RESULT_MS = 2500;
 
+/** §13, Users: the search asks 300 ms after the last keystroke. */
+export const SEARCH_DELAY_MS = 300;
+
+/**
+ * §12, QR code: the quiet zone a camera needs around a code, in the code's own modules.
+ * It is counted from the size a module is drawn at, so it holds at every width.
+ */
+export const QR_QUIET_MODULES = 4;
+
 /** §15, Live regions: the live price is announced at most once per 10 s. */
 export const PRICE_ANNOUNCE_MS = 10_000;
 

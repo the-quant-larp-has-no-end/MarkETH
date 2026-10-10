@@ -1,6 +1,6 @@
 "use client";
 
-import { type KeyboardEvent, useId, useMemo, useState } from "react";
+import { type KeyboardEvent, useId, useMemo, useRef, useState } from "react";
 
 import { TokenIcon } from "@/components/brand";
 import { InlineError } from "@/components/feedback";
@@ -134,7 +134,10 @@ export function StakeEntry({
             value={value}
             onChange={(event) => onChange(typedDecimal(event.target.value))}
             disabled={disabled}
-            className="pl-9 text-right type-number"
+            // The `number` style at the size of every field: Barlow 500, tabular figures.
+            // A refusal arrives while the amount is being typed, so the field has the focus
+            // then: its border is `--no` all the same, as every refused field's is.
+            className="pl-9 text-right font-display font-medium tabular-nums"
           />
         </div>
       </div>
@@ -166,14 +169,16 @@ function StakeSlider({
   disabled: boolean;
   describedBy: string;
 }) {
-  const steps = useMemo(() => stepsByDigits(range), [range]);
+  const { min, max, step } = range;
+  // The same range in another answer of the API is the same slider.
+  const steps = useMemo(() => stepsByDigits({ min, max, step }), [min, max, step]);
   // The step whose digits the field holds, if it holds those of one.
   const held = steps.get(value);
   // Where the thumb stays while the field holds anything else: the step it stood on last,
   // or the nearest end of a range that has changed since.
-  const [rest, setRest] = useState(range.min);
+  const [rest, setRest] = useState(min);
   if (held !== undefined && held !== rest) setRest(held);
-  const place = held ?? Math.min(Math.max(rest, range.min), range.max);
+  const place = held ?? Math.min(Math.max(rest, min), max);
   const shown = held !== undefined;
 
   // A press or a key that leaves the thumb on the step it rests on moves nothing, so the
@@ -181,13 +186,25 @@ function StakeSlider({
   const chooseRest = () => {
     if (!shown && !disabled) onChange(String(place));
   };
+  // A press is the slider's own when it began on the slider. A pointer that was pressed
+  // elsewhere, to select the text of the field for one, and is let go here chooses nothing.
+  const pressed = useRef(false);
 
   return (
     <div
       // A drag along the slider is not a drag of the sheet it stands in.
       data-vaul-no-drag=""
       className="min-w-0 flex-1"
-      onPointerUp={chooseRest}
+      onPointerDown={() => {
+        pressed.current = true;
+      }}
+      onPointerUp={() => {
+        if (pressed.current) chooseRest();
+        pressed.current = false;
+      }}
+      onPointerCancel={() => {
+        pressed.current = false;
+      }}
       onKeyUp={(event: KeyboardEvent) => {
         if (SLIDER_KEYS.has(event.key)) chooseRest();
       }}
@@ -195,10 +212,10 @@ function StakeSlider({
       <Slider
         label="Stake in whole tokens"
         value={place}
-        onChange={(step) => onChange(String(step))}
-        min={range.min}
-        max={range.max}
-        step={range.step}
+        onChange={(chosen) => onChange(String(chosen))}
+        min={min}
+        max={max}
+        step={step}
         valueText={shown ? formatTokens(String(place)) : "not set"}
         shown={shown}
         disabled={disabled}

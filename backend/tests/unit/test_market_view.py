@@ -26,7 +26,12 @@ from app.core.units import MICRO, format_cr, to_cr, to_micro
 from app.models import Market, Position, Resolution
 from app.pricing import lmsr
 from app.schemas.markets import BuySlider, SellPortion
-from app.services.market_view import EVEN_ODDS_MICRO, MarketView
+from app.services.market_view import (
+    EVEN_ODDS_MICRO,
+    HIDDEN_STATUSES,
+    TRADING_STATUSES,
+    MarketView,
+)
 from tests.support.clock import TEST_NOW
 from tests.support.economy import DEFAULT_B
 from tests.support.settings import load_base_settings
@@ -194,6 +199,87 @@ def test_every_effective_status_is_found_among_the_stored_statuses_read_for_it(
         for at in (TEST_NOW, TEST_NOW + 30 * DAY):
             if view.effective_status(market(status=status), at) is effective:
                 assert status in read
+
+
+# --- When trading ended ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("status", sorted(TRADING_STATUSES))
+def test_trading_is_not_over_in_an_open_or_a_halted_market_before_its_deadline(
+    view: MarketView, status: MarketStatus
+) -> None:
+    """A halted market trades nothing for now, and it may be resumed."""
+    tradable = market(status=status)
+    just_before = tradable.close_at - timedelta(microseconds=1)
+
+    assert view.trading_ended_at(tradable, TEST_NOW) is None
+    assert view.trading_ended_at(tradable, just_before) is None
+
+
+@pytest.mark.parametrize("status", sorted(TRADING_STATUSES))
+@pytest.mark.parametrize("late_by", [timedelta(0), timedelta(microseconds=1), 30 * DAY])
+def test_from_its_deadline_on_trading_in_an_open_or_a_halted_market_ended_at_the_deadline(
+    view: MarketView, status: MarketStatus, late_by: timedelta
+) -> None:
+    """Nobody closed it, so no row says when: `close_at` is the moment, also for a
+    halted market, which could have been resumed until then and not after."""
+    past = market(status=status)
+
+    assert view.trading_ended_at(past, past.close_at + late_by) == past.close_at
+
+
+@pytest.mark.parametrize("status", [MarketStatus.CLOSED, MarketStatus.RESOLVED, MarketStatus.VOID])
+def test_trading_in_a_market_that_was_closed_ended_when_it_was_closed_or_at_its_deadline(
+    view: MarketView, status: MarketStatus
+) -> None:
+    """Whichever came first. A market is resolved or voided no earlier than it was
+    closed, so `closed_at` is all a settled one needs. The answer does not move with
+    the clock."""
+    early = market(status=status, closed_at=TEST_NOW + 2 * DAY)
+    late = market(status=status, closed_at=TEST_NOW + 9 * DAY)
+    on_time = market(status=status, closed_at=TEST_NOW + 7 * DAY)
+
+    for at in (TEST_NOW, TEST_NOW + 3 * DAY, TEST_NOW + 30 * DAY):
+        assert view.trading_ended_at(early, at) == TEST_NOW + 2 * DAY
+        assert view.trading_ended_at(late, at) == late.close_at == TEST_NOW + 7 * DAY
+        assert view.trading_ended_at(on_time, at) == on_time.close_at
+
+
+def test_a_closed_market_whose_row_does_not_say_when_ended_at_its_deadline(
+    view: MarketView,
+) -> None:
+    closed = market(status=MarketStatus.CLOSED)
+
+    assert closed.closed_at is None
+    assert view.trading_ended_at(closed, TEST_NOW) == closed.close_at
+
+
+@given(
+    status=st.sampled_from([s for s in STORED_MARKET_STATUSES if s not in HIDDEN_STATUSES]),
+    closed_after=st.none() | st.timedeltas(min_value=timedelta(0), max_value=30 * DAY),
+    asked_after=st.timedeltas(min_value=timedelta(0), max_value=30 * DAY),
+)
+def test_trading_never_ended_after_the_deadline_and_never_after_now_once_it_is_over(
+    base_settings: Settings,
+    status: MarketStatus,
+    closed_after: timedelta | None,
+    asked_after: timedelta,
+) -> None:
+    """For a market in any status a chart is drawn of: the end of trading is at most
+    `close_at`, and it is None exactly while the row says OPEN or HALTED and the
+    deadline has not come."""
+    view = MarketView(base_settings)
+    closed_at = None if closed_after is None else TEST_NOW + closed_after
+    opened = market(status=status, closed_at=closed_at)
+    now = TEST_NOW + asked_after
+
+    ended_at = view.trading_ended_at(opened, now)
+
+    can_still_trade = status in TRADING_STATUSES and now < opened.close_at
+    assert (ended_at is None) == can_still_trade
+    if ended_at is not None:
+        assert ended_at <= opened.close_at
+        assert ended_at in (opened.close_at, closed_at)
 
 
 def test_a_fresh_market_is_priced_at_fifty_fifty(view: MarketView) -> None:
@@ -391,6 +477,34 @@ def test_a_market_that_is_not_settled_has_paid_and_given_back_nothing_yet(
 
     assert view.payout_micro(held, None) is None
     assert view.refund_micro(held, None) is None
+
+
+def test_voiding_a_market_costs_the_net_stakes_it_refunds_minus_what_its_account_holds(
+    view: MarketView,
+) -> None:
+    """What traders who sold above their cost took out is what the account lacks."""
+    assert view.void_cost_micro(net_stakes_micro=0, account_balance_micro=0) == 0
+    assert view.void_cost_micro(net_stakes_micro=70 * CR, account_balance_micro=70 * CR) == 0
+    assert view.void_cost_micro(net_stakes_micro=70 * CR, account_balance_micro=58 * CR) == 12 * CR
+    assert view.void_cost_micro(net_stakes_micro=1, account_balance_micro=0) == 1
+
+
+def test_the_void_cost_of_a_book_is_what_its_sellers_took_out_above_their_cost(
+    view: MarketView,
+) -> None:
+    """Three traders: one still in, one who sold at a gain, one who sold at a loss. The
+    account holds every cost minus every proceeds; a void refunds each net stake, and
+    the gain of the second is what `vis:mm_pnl` would have to add."""
+    market_id = uuid7()
+    still_in = [position(market_id, Outcome.YES, cost_micro=60 * CR)]
+    sold_at_a_gain = [position(market_id, Outcome.YES, cost_micro=40 * CR, proceeds_micro=52 * CR)]
+    sold_at_a_loss = [position(market_id, Outcome.NO, cost_micro=30 * CR, proceeds_micro=20 * CR)]
+    books = (still_in, sold_at_a_gain, sold_at_a_loss)
+    account_micro = sum(p.cost_micro - p.proceeds_micro for held in books for p in held)
+    net_stakes_micro = sum(view.net_stake_micro(held) for held in books)
+
+    assert (account_micro, net_stakes_micro) == (58 * CR, 70 * CR)
+    assert view.void_cost_micro(net_stakes_micro, account_micro) == 12 * CR
 
 
 # --- Stake presets (A.11) ----------------------------------------------------------

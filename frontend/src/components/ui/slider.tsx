@@ -87,9 +87,12 @@ function Slider({
         aria-describedby={describedBy}
         className={cn(
           "relative block size-6 rounded-full transition-colors duration-(--duration-fast)",
-          // The target around the disc: 44 px.
-          "after:absolute after:-inset-2.5 after:rounded-full",
-          shown ? "bg-foreground" : "border-2 border-border-strong bg-card",
+          // The target around the disc: 44 px. It is measured from inside the outline, so
+          // the outlined thumb reaches 2 px further to stay as large.
+          "after:absolute after:rounded-full",
+          shown
+            ? "bg-foreground after:-inset-2.5"
+            : "border-2 border-border-strong bg-card after:-inset-3",
         )}
       />
     </SliderPrimitive.Root>

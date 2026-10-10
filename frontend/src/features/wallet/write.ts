@@ -1,15 +1,10 @@
 "use client";
 
-import {
-  type MutationKey,
-  useIsMutating,
-  useMutation,
-  type UseMutationOptions,
-  useQueryClient,
-} from "@tanstack/react-query";
+import { type MutationKey, type UseMutationOptions, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { type ApiError, isApiError } from "@/lib/api/errors";
+import { useSubmit } from "@/lib/api/submit";
 
 /** A read the Wallet shows, as far as a write looks at it. */
 export type Read = {
@@ -77,9 +72,10 @@ export type Write<TData, TVariables> = {
 /**
  * One write of the Wallet, sent the way DESIGN.md §14 asks for.
  *
- * - **One request at a time.** `send` asks the cache, not the last render, whether a
- *   request with this `key` is on its way: two taps in one moment are one request, and so
- *   are a tap, a look at another screen and a second tap.
+ * - **One request at a time.** The write goes through `useSubmit` under its `key`, which
+ *   asks the cache, not the last render, whether a request of it is on its way: two taps
+ *   in one moment are one request, and so are a tap, a look at another screen and a second
+ *   tap.
  * - **A request without an answer is not sent again blindly** ("Other writes without an
  *   answer"). The write of `lib/api/mutations.ts` reads again what it would have changed.
  *   `unanswered` says so from the moment the request failed, which is earlier than the
@@ -98,7 +94,7 @@ export function useWrite<TData, TVariables>(
   const [unanswered, setUnanswered] = useState<ApiError | null>(null);
   const request = options.mutationFn;
 
-  const mutation = useMutation<TData, ApiError, TVariables>({
+  const mutation = useSubmit<TData, TVariables>({
     ...options,
     mutationKey: key,
     mutationFn: async (variables, context) => {
@@ -127,7 +123,7 @@ export function useWrite<TData, TVariables>(
   };
 
   // Counts a request of an earlier visit to the screen too, and the re-read after it.
-  const busy = useIsMutating({ mutationKey: key }) > 0;
+  const busy = mutation.isPending;
   const waiting =
     unanswered !== null && !reads.every((read) => read.dataUpdatedAt >= unanswered.receivedAt);
   const failedRead = waiting
@@ -146,14 +142,15 @@ export function useWrite<TData, TVariables>(
     },
     blocked: busy || waiting,
     send: (variables, callbacks = {}) => {
-      if (waiting || client.isMutating({ mutationKey: key }) > 0) return false;
-      setUnanswered(null);
-      // An answer that arrived with nobody there is not kept beyond the next request.
-      dropSettled();
-      mutation.mutate(variables, {
+      if (waiting) return false;
+      const sent = mutation.mutate(variables, {
         onSuccess: (data) => callbacks.onSuccess?.(data),
         onError: (error) => callbacks.onError?.(error),
       });
+      if (!sent) return false;
+      setUnanswered(null);
+      // An answer that arrived with nobody there is not kept beyond the next request.
+      dropSettled();
       return true;
     },
     forget: () => {

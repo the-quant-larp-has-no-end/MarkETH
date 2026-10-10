@@ -1,7 +1,7 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-import { marketSummary, me, OTHER_MARKET_ID } from "@/test/fixtures";
+import { config, marketSummary, me, OTHER_MARKET_ID, TODAY } from "@/test/fixtures";
 import { apiError, deferred, errorPage, json, mockApi, noAnswer, type Route } from "@/test/http";
 import { navigation } from "@/test/navigation";
 import { renderWithProviders } from "@/test/render";
@@ -22,6 +22,11 @@ const mensa = () =>
 const cards = () => screen.getAllByRole("article");
 const chip = (name: string) =>
   within(screen.getByRole("group", { name: "Status" })).getByRole("button", { name });
+
+// The list sets a timer for the earliest close time it shows: the tests stand on one day.
+beforeEach(() => {
+  vi.useFakeTimers({ now: TODAY, toFake: ["Date"] });
+});
 
 afterEach(() => {
   vi.useRealTimers();
@@ -81,7 +86,6 @@ describe("MarketsScreen", () => {
     });
 
     test("a card shows what the API sent: the percentage, the volume and the deadline", async () => {
-      vi.useFakeTimers({ now: new Date("2026-10-11T10:00:00Z"), toFake: ["Date"] });
       mockApi({ [MARKETS]: json(200, { items: [polybahn()] }) });
 
       renderWithProviders(<MarketsScreen />);
@@ -237,6 +241,166 @@ describe("MarketsScreen", () => {
       expect(resolved).toBeInTheDocument();
       expect(within(cards()[0]!).queryByText("chance")).not.toBeInTheDocument();
       expect(within(cards()[1]!).getByText("Voided")).toBeInTheDocument();
+    });
+  });
+
+  describe("when a market on the list reaches its close time", () => {
+    /** Twenty seconds before the Polybahn market closes, at 16:00 UTC. */
+    const BEFORE_CLOSE = new Date("2026-10-14T15:59:40Z");
+
+    /** The Mensa market, which closes a minute after the Polybahn market. */
+    const mensaSoon = () => marketSummary({ ...mensa(), close_at: "2026-10-14T16:01:00Z" });
+    const closed = (market: ReturnType<typeof marketSummary>) =>
+      marketSummary({ ...market, status: "CLOSED", trading_open: false });
+
+    const render = (pollSeconds = 10) =>
+      renderWithProviders(<MarketsScreen />, {
+        config: config({ live_poll_fallback_seconds: pollSeconds }),
+      });
+
+    beforeEach(() => {
+      vi.useFakeTimers({ now: BEFORE_CLOSE, shouldAdvanceTime: true });
+    });
+
+    test("reads the list again at the earliest close time among the cards that are open for trading", async () => {
+      // The later one stands first: the list is not asked to be in any order.
+      const api = mockApi({ [MARKETS]: json(200, { items: [mensaSoon(), polybahn()] }) });
+      render();
+      await screen.findByRole("heading", { name: POLYBAHN });
+      api.on(MARKETS, json(200, { items: [mensaSoon()] }));
+
+      // Not before its time.
+      await act(() => vi.advanceTimersByTimeAsync(15_000));
+      expect(api.calls(MARKETS)).toHaveLength(1);
+
+      await act(() => vi.advanceTimersByTimeAsync(5_500));
+
+      await waitFor(() => expect(api.calls(MARKETS)).toHaveLength(2));
+      // The same list is asked for: the statuses of the chosen chip, and nothing else.
+      expect(api.lastCall(MARKETS)?.query.getAll("status")).toEqual(["OPEN", "HALTED"]);
+      // The API lists the market under Open no more.
+      await waitFor(() =>
+        expect(screen.queryByRole("heading", { name: POLYBAHN })).not.toBeInTheDocument(),
+      );
+      expect(screen.getByRole("heading", { name: MENSA })).toBeInTheDocument();
+    });
+
+    test("after the answer it waits for the earliest close time that is left", async () => {
+      const api = mockApi({ [MARKETS]: json(200, { items: [polybahn(), mensaSoon()] }) });
+      render();
+      await screen.findByRole("heading", { name: POLYBAHN });
+      api.on(MARKETS, json(200, { items: [mensaSoon()] }));
+      await act(() => vi.advanceTimersByTimeAsync(20_500));
+      await waitFor(() => expect(api.calls(MARKETS)).toHaveLength(2));
+      await waitFor(() =>
+        expect(screen.queryByRole("heading", { name: POLYBAHN })).not.toBeInTheDocument(),
+      );
+
+      // The Mensa market closes at 16:01: nothing is asked in between.
+      api.on(MARKETS, json(200, { items: [] }));
+      await act(() => vi.advanceTimersByTimeAsync(50_000));
+      expect(api.calls(MARKETS)).toHaveLength(2);
+
+      await act(() => vi.advanceTimersByTimeAsync(10_500));
+
+      await waitFor(() => expect(api.calls(MARKETS)).toHaveLength(3));
+      expect(await screen.findByText(/No markets yet/)).toBeInTheDocument();
+      // No card is left to wait for.
+      await act(() => vi.advanceTimersByTimeAsync(120_000));
+      expect(api.calls(MARKETS)).toHaveLength(3);
+    });
+
+    test("on All the card stays, and whether it keeps its Yes and No is trading_open of the answer", async () => {
+      const api = mockApi({ [MARKETS]: json(200, { items: [polybahn()] }) });
+      const { user } = render();
+      await screen.findByRole("article");
+      await user.click(chip("All"));
+      await waitFor(() => expect(api.calls(MARKETS)).toHaveLength(2));
+      expect(await screen.findByRole("link", { name: `Yes: ${POLYBAHN}` })).toBeInTheDocument();
+      api.on(MARKETS, json(200, { items: [closed(polybahn())] }));
+
+      await act(() => vi.advanceTimersByTimeAsync(20_500));
+
+      const card = await screen.findByRole("article");
+      expect(await within(card).findByText("Closed")).toHaveAttribute("data-slot", "badge");
+      expect(within(card).queryByRole("link", { name: /^(Yes|No):/ })).not.toBeInTheDocument();
+      // The deadline of a market that is not open for trading is its date alone.
+      expect(within(card).getByText("14 Oct 2026")).toBeInTheDocument();
+      expect(api.lastCall(MARKETS)?.query.getAll("status")).toEqual([]);
+    });
+
+    test("the timer decides nothing: a card the API still calls open keeps its buttons, and the list is read again every live_poll_fallback_seconds", async () => {
+      // The clock of the device runs ahead of the server's.
+      const api = mockApi({ [MARKETS]: json(200, { items: [polybahn()] }) });
+      render(4);
+      await screen.findByRole("article");
+
+      await act(() => vi.advanceTimersByTimeAsync(20_500));
+      await waitFor(() => expect(api.calls(MARKETS)).toHaveLength(2));
+
+      expect(screen.getByRole("link", { name: `Yes: ${POLYBAHN}` })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: `No: ${POLYBAHN}` })).toBeInTheDocument();
+      expect(within(screen.getByRole("article")).queryByText("Closed")).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+      await act(() => vi.advanceTimersByTimeAsync(4_000));
+      await waitFor(() => expect(api.calls(MARKETS)).toHaveLength(3));
+
+      api.on(MARKETS, json(200, { items: [] }));
+      await act(() => vi.advanceTimersByTimeAsync(4_000));
+
+      expect(await screen.findByText(/No markets yet/)).toBeInTheDocument();
+      const asked = api.calls(MARKETS).length;
+      await act(() => vi.advanceTimersByTimeAsync(30_000));
+      expect(api.calls(MARKETS)).toHaveLength(asked);
+    });
+
+    test("a card that is not open for trading is not waited for", async () => {
+      const paused = marketSummary({ status: "HALTED", trading_open: false });
+      const api = mockApi({ [MARKETS]: json(200, { items: [paused] }) });
+      render();
+      await screen.findByRole("article");
+
+      await act(() => vi.advanceTimersByTimeAsync(120_000));
+
+      expect(api.calls(MARKETS)).toHaveLength(1);
+    });
+
+    test("the list of another chip has its own cards to wait for", async () => {
+      const api = mockApi({ [MARKETS]: json(200, { items: [polybahn()] }) });
+      const { user } = render();
+      await screen.findByRole("article");
+      // Closed markets have no close time ahead of them.
+      api.on(MARKETS, json(200, { items: [closed(mensa())] }));
+      await user.click(chip("Closed"));
+      await screen.findByRole("heading", { name: MENSA });
+      const asked = api.calls(MARKETS).length;
+
+      await act(() => vi.advanceTimersByTimeAsync(120_000));
+
+      expect(api.calls(MARKETS)).toHaveLength(asked);
+    });
+
+    test("is cleared when the screen goes away", async () => {
+      const api = mockApi({ [MARKETS]: json(200, { items: [polybahn()] }) });
+      const { unmount } = render();
+      await screen.findByRole("article");
+
+      unmount();
+      await act(() => vi.advanceTimersByTimeAsync(120_000));
+
+      expect(api.calls(MARKETS)).toHaveLength(1);
+    });
+
+    test("days before any close time nothing is asked", async () => {
+      vi.setSystemTime(TODAY);
+      const api = mockApi({ [MARKETS]: json(200, { items: [polybahn(), mensa()] }) });
+      render();
+      await screen.findByRole("heading", { name: POLYBAHN });
+
+      await act(() => vi.advanceTimersByTimeAsync(10 * 60_000));
+
+      expect(api.calls(MARKETS)).toHaveLength(1);
     });
   });
 

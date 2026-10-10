@@ -62,6 +62,7 @@ suite: where the reaper finds the Docker socket, and a race while it starts.
 
 import os
 import sys
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from typing import Final
 
@@ -122,6 +123,8 @@ if sys.platform == "darwin":
 
 DOCKER_MARKERS: Final[tuple[str, ...]] = ("integration", "scylla")
 REAPER_START_ATTEMPTS: Final[int] = 10
+REAPER_RETRY_SECONDS: Final[float] = 0.5
+"""What lies between two attempts to start the reaper: time for Docker to catch up."""
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -140,16 +143,23 @@ def _start_reaper() -> None:
     `ConnectionError`: 5 of 12 starts on a busy machine. Left alone, that fails whichever
     container fixture happens to run first. Started here, no fixture has to start it; once
     it runs, this returns at once.
+
+    Every attempt that fails stops its half-started container, the last one too. One
+    left running keeps the reaper's name until it gives up by itself, about a minute
+    later, and every test that sets up in that minute fails on the name.
     """
-    for _ in range(REAPER_START_ATTEMPTS - 1):
+    for attempts_left in reversed(range(REAPER_START_ATTEMPTS)):
         try:
             Reaper.get_instance()
         except ConnectionError:
-            # Stops the half-started container, which frees its name for the next attempt.
+            # Stops the half-started container, which frees its name: for the next
+            # attempt, and after the last one for the next test.
             Reaper.delete_instance()
+            if not attempts_left:
+                raise
+            time.sleep(REAPER_RETRY_SECONDS)
         else:
             return
-    Reaper.get_instance()
 
 
 @pytest.fixture(scope="session")

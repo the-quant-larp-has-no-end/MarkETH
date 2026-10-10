@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
 
 import type { RiskResponse } from "@/lib/api/schema";
@@ -26,13 +26,14 @@ const tile = (name: string) => screen.findByRole("group", { name });
 function spoken(element: HTMLElement): string {
   const copy = element.cloneNode(true) as HTMLElement;
   for (const hidden of copy.querySelectorAll("[aria-hidden]")) hidden.remove();
-  // A heading, a paragraph, a label and its value are each heard on their own.
-  for (const block of copy.querySelectorAll("h3, p, dt, dd")) block.append(" ");
+  // A heading, a paragraph, a label and its value, and a line of a cell that has two are
+  // each heard on their own.
+  for (const block of copy.querySelectorAll("h3, p, dt, dd, .block")) block.append(" ");
   return (copy.textContent ?? "").replace(/\s+/g, " ").trim();
 }
 
 describe("Admin: risk", () => {
-  test("stands under the three tabs, with a hidden h1 that names the screen", async () => {
+  test("stands under the tabs, with a hidden h1 that names the screen", async () => {
     show();
 
     expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
@@ -60,6 +61,7 @@ describe("Admin: risk", () => {
         unredeemed_code_value_cr: "490",
         code_issuance_this_month_cr: "700",
         max_code_issuance_per_month_cr: "7000",
+        adjustments_this_month_cr: "35",
       }),
     );
 
@@ -70,10 +72,25 @@ describe("Admin: risk", () => {
     expect(spoken(await tile("Loss budget"))).toBe("Loss budget 4,158.88 tokens of 70,000 tokens");
     expect(spoken(await tile("Open markets"))).toBe("Open markets 6 of 100");
     expect(spoken(await tile("Codes not redeemed yet"))).toBe("Codes not redeemed yet 490 tokens");
+    // The month's net adjustments stand under the two, and have no "of": no cap counts them.
     expect(spoken(await tile("Codes this month"))).toBe(
-      "Codes this month 700 tokens of 7,000 tokens",
+      "Codes this month 700 tokens of 7,000 tokens Adjustments this month 35 tokens",
     );
     expect(screen.getAllByRole("group")).toHaveLength(5);
+  });
+
+  test("the net adjustments of the month are the API's figure, sign included", async () => {
+    const { unmount } = show(risk({ adjustments_this_month_cr: "-12.512345" }));
+    const taken = (await tile("Codes this month")).querySelector("dl")!;
+    expect(spoken(taken)).toBe("Adjustments this month −12.51 tokens");
+    // More taken than given is no gain and no loss of anybody: it is not coloured.
+    expect(taken.querySelector("[data-slot=amount]")).not.toHaveClass("text-yes-text");
+    unmount();
+
+    show(risk({ adjustments_this_month_cr: "0" }));
+    expect(spoken((await tile("Codes this month")).querySelector("dl")!)).toBe(
+      "Adjustments this month 0 tokens",
+    );
   });
 
   test("the parts of the obligations stand under their labels", async () => {
@@ -337,6 +354,25 @@ describe("alerts", () => {
     expect(await screen.findByText("No alerts.")).toBeInTheDocument();
   });
 
+  test("two taps in one moment are one request: the second is stopped where it is made", async () => {
+    const answer = deferred();
+    const { api } = show(risk({ alerts: [alert({ id: 7 })] }));
+    api.on(ACK, answer.handler);
+    const button = await screen.findByRole("button", { name: "Acknowledge" });
+
+    // A tap that lands twice: no render lies between the two, so the button was not
+    // disabled for the second.
+    act(() => {
+      button.click();
+      button.click();
+    });
+
+    await waitFor(() => expect(api.calls(ACK)).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(api.calls(ACK)).toHaveLength(1);
+    expect(button).toHaveAttribute("aria-busy", "true");
+  });
+
   test("a refusal shows the API's message beside the alert, which stays", async () => {
     const { api, user } = show(risk({ alerts: [alert({ id: 7, message: "The alert." })] }));
     api.on(ACK, apiError(404, "NOT_FOUND", "Not found."));
@@ -379,7 +415,7 @@ describe("the markets that are not settled", () => {
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });
 
-  test("one row per market, in the API's order, with every figure as sent", async () => {
+  test("one row per market, in the API's order, in ten columns with every figure as sent", async () => {
     show(
       risk({
         markets: [
@@ -409,23 +445,21 @@ describe("the markets that are not settled", () => {
     );
 
     const table = await screen.findByRole("table", { name: "Markets" });
+    // Exposure and void cost stand before the share counts: an admin reads them first.
     expect(
       within(table)
         .getAllByRole("columnheader")
         .map((header) => header.textContent),
     ).toEqual([
       "Question",
-      "Status",
-      "Liquidity",
       "Chance",
       "Volume",
-      "YES shares",
-      "NO shares",
-      "Liquidity b",
-      "Loss budget",
-      "Account",
       "Exposure",
       "Void cost",
+      "Shares",
+      "Tier",
+      "Loss budget",
+      "Account",
       "Closes",
     ]);
     const [, first, second] = within(table).getAllByRole("row");
@@ -435,21 +469,45 @@ describe("the markets that are not settled", () => {
         .getAllByRole("cell")
         .map((cell) => spoken(cell)),
     ).toEqual([
-      "Will the Polybahn run without interruption?",
-      "Paused",
-      "Custom",
+      // The status badge stands under the question, in its cell.
+      "Will the Polybahn run without interruption? Paused",
       "54.8%",
       "1,250.5 tokens",
-      "412.5",
-      // Cut, not rounded.
-      "220.25",
-      "1,000 tokens",
-      "693.14 tokens",
-      "823.9 tokens",
       "−411.4 tokens",
       "−130.75 tokens",
-      "14 Oct 2026, 18:00",
+      // Both share counts in one cell, one under the other. Cut, not rounded.
+      "412.5 YES 220.25 NO",
+      // The tier, and under it the liquidity b it stands for.
+      "Custom b 1,000",
+      "693.14 tokens",
+      "823.9 tokens",
+      // The date, and under it the time.
+      "14 Oct 2026 18:00",
     ]);
+    const question = within(second!).getAllByRole("cell")[0]!;
+    expect(within(question).getByText("Paused")).toHaveAttribute("data-slot", "badge");
+  });
+
+  test("the table is built to fit 1024 px: ten columns, 8 px at the sides of every cell, and a question that gives way", async () => {
+    show(risk({ markets: [riskMarketRow()] }));
+
+    const table = await screen.findByRole("table", { name: "Markets" });
+    const headings = within(table).getAllByRole("columnheader");
+    const [, row] = within(table).getAllByRole("row");
+    const cells = within(row!).getAllByRole("cell");
+    expect(headings).toHaveLength(10);
+    expect(cells).toHaveLength(10);
+    for (const cell of [...headings, ...cells]) expect(cell).toHaveClass("px-2");
+    // The question wraps and takes the room the others leave; no other column gives way.
+    expect(cells[0]).toHaveClass("wrap-break-word");
+    for (const cell of cells.slice(1)) expect(cell).toHaveClass("whitespace-nowrap", "w-px");
+    // Figures are right aligned, in the number style.
+    for (const index of [1, 2, 3, 4, 5, 7, 8]) {
+      expect(cells[index]).toHaveClass("text-right", "type-number");
+    }
+    // The second lines are captions.
+    expect(within(cells[6]!).getByText("b 1,000")).toHaveClass("type-caption");
+    expect(within(cells[9]!).getByText("18:00")).toHaveClass("type-caption");
   });
 
   test("a market without a tier shows a dash", async () => {
@@ -457,7 +515,10 @@ describe("the markets that are not settled", () => {
 
     const table = await screen.findByRole("table", { name: "Markets" });
     const [, row] = within(table).getAllByRole("row");
-    expect(spoken(within(row!).getAllByRole("cell")[2]!)).toBe("none yet");
+    const tier = within(row!).getAllByRole("cell")[6]!;
+    expect(spoken(tier)).toBe("none yet");
+    // Without a tier there is no liquidity to name under it.
+    expect(tier).not.toHaveTextContent(/b /);
   });
 
   test("a row opens the admin view of its market", async () => {

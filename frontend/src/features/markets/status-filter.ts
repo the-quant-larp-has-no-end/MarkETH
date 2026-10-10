@@ -17,8 +17,8 @@ export const STATUS_CHIPS: readonly Chip<StatusFilter>[] = [
 /**
  * What each chip sends as `status` to `GET /markets`, which takes the parameter several
  * times. "Open" asks for HALTED too, so that a paused market stays in sight; "Resolved"
- * asks for VOID too. "All" sends none: the API then lists every status but PROPOSED and
- * REJECTED by itself.
+ * asks for VOID too. "All" sends none: the API then lists every status but those of a
+ * proposal (PROPOSED, REJECTED and EXPIRED) by itself.
  */
 const STATUSES: Record<StatusFilter, readonly MarketStatus[] | undefined> = {
   open: ["OPEN", "HALTED"],

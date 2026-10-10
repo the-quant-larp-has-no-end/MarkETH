@@ -21,6 +21,8 @@ import {
   marketDetail,
   marketViewerWithPosition,
   me,
+  notice,
+  OTHER_MARKET_ID,
   OTHER_USER_ID,
   portfolio,
   profileSaved,
@@ -42,6 +44,7 @@ import {
   adjustUserBalanceMutation,
   createCodeBatchMutation,
   issueVoucherMutation,
+  markNoticeSeenMutation,
   proposeMarketMutation,
   redeemCodeMutation,
   redeemVoucherMutation,
@@ -157,6 +160,131 @@ describe("saving the profile", () => {
     expect(api.lastCall("PUT /api/me/profile")?.rawBody).toBe(
       '{"username":"anna_m","degree_level":"MASTER","degree_programme":"MSc Data Science"}',
     );
+  });
+});
+
+describe("marking a notice seen", () => {
+  const SEEN: Route = "POST /api/me/notices/{notice_id}/seen";
+  const APPROVED = notice();
+  const SECOND = notice({
+    id: "5c1f0b7e-93a4-4d28-b6e1-2a7d9c4f8e13",
+    market_id: OTHER_MARKET_ID,
+    question: "Will the ASVZ open a second climbing wall before the end of the semester?",
+    created_at: "2026-10-06T09:00:00Z",
+  });
+
+  /** Every read of the seeded cache: what a write could mark out of date. */
+  const everyRead = (client: QueryClient) =>
+    client
+      .getQueryCache()
+      .getAll()
+      .map((query) => query.queryKey);
+
+  /** A cache whose profile lists these notices, with the profile on screen. */
+  function told(notices: MeResponse["notices"]) {
+    const client = seeded();
+    client.setQueryData(keys.me, me({ balance_cr: "240", notices }));
+    const reads = { me: 0 };
+    onScreen(client, keys.me, async () => {
+      reads.me += 1;
+      return me({ balance_cr: "240" });
+    });
+    return { client, reads };
+  }
+
+  test("names the notice in the address and sends no body", async () => {
+    const api = mockApi({ [SEEN]: json(200, APPROVED) });
+    const { client } = told([APPROVED]);
+
+    const answer = await run(client, markNoticeSeenMutation, APPROVED.id);
+
+    expect(answer).toEqual(APPROVED);
+    const sent = api.lastCall(SEEN);
+    expect(sent?.path).toBe(`/api/me/notices/${APPROVED.id}/seen`);
+    expect(sent?.rawBody).toBe("");
+  });
+
+  test("on its answer the notice leaves the notices of the cached profile, and nothing else moves", async () => {
+    const api = mockApi({ [SEEN]: json(200, APPROVED) });
+    const { client, reads } = told([APPROVED, SECOND]);
+
+    await run(client, markNoticeSeenMutation, APPROVED.id);
+
+    const cached = client.getQueryData<MeResponse>(keys.me);
+    expect(cached?.notices).toEqual([SECOND]);
+    // The rest of the profile is as it was: the answer is the notice, not the profile.
+    expect(cached).toEqual(me({ balance_cr: "240", notices: [SECOND] }));
+    // The cache says what the next `/me` would say, so nothing is asked for.
+    for (const key of everyRead(client))
+      expect(stale(client, key), JSON.stringify(key)).toBe(false);
+    expect(reads.me).toBe(0);
+    expect(api.requests).toHaveLength(1);
+  });
+
+  test("the second of two notices leaves the list as the first did", async () => {
+    mockApi({
+      [SEEN]: (request) => json(200, request.path.includes(SECOND.id) ? SECOND : APPROVED),
+    });
+    const { client } = told([APPROVED, SECOND]);
+
+    await Promise.all([
+      run(client, markNoticeSeenMutation, APPROVED.id),
+      run(client, markNoticeSeenMutation, SECOND.id),
+    ]);
+
+    expect(client.getQueryData<MeResponse>(keys.me)?.notices).toEqual([]);
+  });
+
+  test.each([
+    ["no response", noAnswer, { kind: "network" }],
+    ["an error page of the proxy", errorPage(502), { kind: "unavailable", status: 502 }],
+    [
+      "an error of the server",
+      apiError(503, "SERVICE_UNAVAILABLE", "This is temporarily unavailable. Try again shortly."),
+      { kind: "api", status: 503 },
+    ],
+  ])("after %s nothing is read and nothing is sent again", async (_name, handler, failure) => {
+    const api = mockApi({ [SEEN]: handler });
+    const { client, reads } = told([APPROVED, SECOND]);
+
+    const error = await run(client, markNoticeSeenMutation, APPROVED.id).catch(
+      (thrown: ApiError) => thrown,
+    );
+    // Whatever would follow by itself has had its turn.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(error).toMatchObject({ ...failure, outcomeUnknown: true });
+    // The notice stays in the list: the server still holds it as unseen.
+    expect(client.getQueryData<MeResponse>(keys.me)?.notices).toEqual([APPROVED, SECOND]);
+    for (const key of everyRead(client))
+      expect(stale(client, key), JSON.stringify(key)).toBe(false);
+    expect(reads.me).toBe(0);
+    expect(api.requests).toHaveLength(1);
+    expect(client.isMutating()).toBe(0);
+  });
+
+  test("a notice the API does not know as the caller's stays in the list, and nothing is read", async () => {
+    const api = mockApi({ [SEEN]: apiError(404, "NOT_FOUND", "Not found.") });
+    const { client, reads } = told([APPROVED]);
+
+    await expect(run(client, markNoticeSeenMutation, APPROVED.id)).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      message: "Not found.",
+    });
+
+    expect(client.getQueryData<MeResponse>(keys.me)?.notices).toEqual([APPROVED]);
+    expect(stale(client, keys.me)).toBe(false);
+    expect(reads.me).toBe(0);
+    expect(api.requests).toHaveLength(1);
+  });
+
+  test("a cache without a profile is left without one", async () => {
+    mockApi({ [SEEN]: json(200, APPROVED) });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await run(client, markNoticeSeenMutation, APPROVED.id);
+
+    expect(client.getQueryData(keys.me)).toBeUndefined();
   });
 });
 

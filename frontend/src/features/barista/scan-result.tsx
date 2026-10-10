@@ -27,7 +27,8 @@ export function verdictOf(voucher: VoucherRedeemResponse): Verdict {
    sliding away included. */
 const surface =
   "fixed inset-0 z-60 flex flex-col items-center justify-center gap-4 px-6 py-20 text-center";
-const footnote = "absolute inset-x-6 bottom-[max(1.5rem,env(safe-area-inset-bottom))] type-body";
+const footnote =
+  "absolute inset-x-6 bottom-[max(1.5rem,env(safe-area-inset-bottom))] type-body text-balance";
 
 /**
  * The result of a scan (DESIGN.md §13), readable from across a counter.
@@ -64,7 +65,7 @@ export function ScanResult({ verdict }: { verdict: Verdict | null }) {
           <ClockIcon aria-hidden className="size-24 shrink-0" />
           <p className="max-w-full type-display wrap-break-word">{verdict.voucher.product_name}</p>
           <p className="flex flex-col items-center gap-1">
-            <span className="type-h2">Redeemed a moment ago at this bar</span>{" "}
+            <span className="type-h2 text-balance">Redeemed a moment ago at this bar</span>{" "}
             <time dateTime={verdict.voucher.redeemed_at} className="type-number-lg">
               {formatTime(verdict.voucher.redeemed_at, timezone)}
             </time>

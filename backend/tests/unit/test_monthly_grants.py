@@ -38,7 +38,11 @@ ZURICH: Final[ZoneInfo] = load_base_settings().app.timezone
 HOUR: Final[timedelta] = timedelta(hours=1)
 
 YEARS: Final[range] = range(2025, 2035)
-"""The years the grants of these tests fall due in."""
+"""The years the sign-ups of these tests lie in."""
+
+DUE_YEARS: Final[range] = range(YEARS.start, YEARS.stop + 4)
+"""The years their grants fall due in: the properties below follow a sign-up for up to
+forty months, so one late in the last of `YEARS` has grants in the fourth year after."""
 
 
 def last_sunday(year: int, month: int) -> date:
@@ -47,12 +51,12 @@ def last_sunday(year: int, month: int) -> date:
 
 
 CLOCKS_FORWARD: Final[tuple[date, ...]] = tuple(last_sunday(year, 3) for year in YEARS)
-"""The last Sundays of March: in Zurich the clocks go from 02:00 to 03:00, and the
-times in between do not exist that day."""
+"""The last Sundays of March of `YEARS`: in Zurich the clocks go from 02:00 to 03:00,
+and the times in between do not exist that day."""
 
 CLOCKS_BACK: Final[tuple[date, ...]] = tuple(last_sunday(year, 10) for year in YEARS)
-"""The last Sundays of October: the clocks go from 03:00 back to 02:00, and the times
-in between come twice that day."""
+"""The last Sundays of October of `YEARS`: the clocks go from 03:00 back to 02:00, and
+the times in between come twice that day."""
 
 
 def zurich(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
@@ -81,8 +85,9 @@ def period_of(month: int) -> str:
 
 def is_skipped(wall: datetime) -> bool:
     """Whether the clocks in Zurich never show `wall`: it lies in the hour a spring
-    change leaves out."""
-    return wall.date() in CLOCKS_FORWARD and time(2) <= wall.time() < time(3)
+    change leaves out, on the last Sunday of March of its year. A grant can fall due
+    in a later year than any sign-up lies in, so this asks the calendar of that year."""
+    return wall.date() == last_sunday(wall.year, 3) and time(2) <= wall.time() < time(3)
 
 
 def schedule(signed_up: datetime, grants: int) -> list[MonthlyGrant]:
@@ -90,21 +95,28 @@ def schedule(signed_up: datetime, grants: int) -> list[MonthlyGrant]:
 
 
 def test_the_tests_run_on_the_calendar_of_zurich_and_know_its_clock_changes() -> None:
-    """What the tests below stand on: on each of these Sundays one minute leads from
-    01:59 to 03:00, or 02:30 comes twice, an hour apart. No other day has either."""
+    """What the tests below stand on: on the last Sunday of March one minute leads from
+    01:59 to 03:00, and on the last Sunday of October 02:30 comes twice, an hour apart.
+    No other day has either, in any year a grant of these tests falls due in."""
     assert ZURICH.key == "Europe/Zurich"
     assert (CLOCKS_FORWARD[1], CLOCKS_BACK[1]) == (date(2026, 3, 29), date(2026, 10, 25))
     assert (CLOCKS_FORWARD[2], CLOCKS_BACK[2]) == (date(2027, 3, 28), date(2027, 10, 31))
-    day = date(YEARS.start, 1, 1)
-    while day.year in YEARS:
+    assert set(CLOCKS_FORWARD) == {last_sunday(year, 3) for year in YEARS}
+    assert (DUE_YEARS.start, DUE_YEARS.stop) == (YEARS.start, YEARS.stop + 4)
+    day = date(DUE_YEARS.start, 1, 1)
+    while day.year in DUE_YEARS:
         before = datetime.combine(day, time(1, 59), tzinfo=ZURICH).astimezone(UTC)
         after = datetime.combine(day, time(3), tzinfo=ZURICH).astimezone(UTC)
         half_past_two = datetime.combine(day, time(2, 30), tzinfo=ZURICH)
         twice = half_past_two.replace(fold=1).astimezone(UTC) != half_past_two.astimezone(UTC)
+        forward, back = day == last_sunday(day.year, 3), day == last_sunday(day.year, 10)
 
-        assert (after - before == timedelta(minutes=1)) == (day in CLOCKS_FORWARD), day
-        assert (twice and after - before == 2 * HOUR + timedelta(minutes=1)) == (
-            day in CLOCKS_BACK
+        assert (after - before == timedelta(minutes=1)) == forward, day
+        assert (twice and after - before == 2 * HOUR + timedelta(minutes=1)) == back, day
+        assert is_skipped(datetime.combine(day, time(2, 30))) == forward, day
+        assert (day in CLOCKS_FORWARD, day in CLOCKS_BACK) == (
+            forward and day.year in YEARS,
+            back and day.year in YEARS,
         ), day
         day += timedelta(days=1)
 

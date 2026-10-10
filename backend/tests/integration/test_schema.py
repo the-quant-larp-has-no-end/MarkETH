@@ -7,15 +7,15 @@ test harness the other integration tests stand on.
 """
 
 import asyncio
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, Final
 from uuid import UUID, uuid7
 
 import pytest
 from sqlalchemy import CheckConstraint, func, literal_column, select, text
-from sqlalchemy.exc import DBAPIError, IntegrityError, ProgrammingError
+from sqlalchemy.exc import DBAPIError, IntegrityError, ProgrammingError, StatementError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -23,6 +23,7 @@ from app.core.config import PRODUCT_ID_MAX_LENGTH, PRODUCT_NAME_MAX_LENGTH, Sett
 from app.core.degrees import CATALOGUE
 from app.core.enums import (
     SIGNUP_GRANT_PERIOD,
+    STORED_MARKET_STATUSES,
     SYSTEM_ACCOUNT_KINDS,
     AccountKind,
     AlertSeverity,
@@ -31,6 +32,7 @@ from app.core.enums import (
     JournalKind,
     MarketStatus,
     MarketTier,
+    NoticeKind,
     OutboxTopic,
     Outcome,
     ResolutionOutcome,
@@ -52,6 +54,7 @@ from app.models import (
     IdempotencyKey,
     JournalEntry,
     Market,
+    Notice,
     Position,
     Posting,
     Resolution,
@@ -819,7 +822,7 @@ REJECTED_ROWS: Final = [
             "ck_markets_b_positive_once_approved",
             id=f"{status.lower()}-market-without-liquidity",
         )
-        for status in MarketStatus
+        for status in STORED_MARKET_STATUSES
         if status not in (MarketStatus.PROPOSED, MarketStatus.REJECTED)
     ),
     pytest.param(
@@ -851,6 +854,43 @@ REJECTED_ROWS: Final = [
         "ck_idempotency_keys_request_hash_sha256_hex",
         id="request-hash-that-is-no-hash",
     ),
+    pytest.param(
+        lambda w: [
+            Notice(
+                user_id=w.user.id,
+                kind=NoticeKind.PROPOSAL_APPROVED,
+                market_id=w.market.id,
+                created_at=NOW + late,
+            )
+            for late in (timedelta(0), DAY)
+        ],
+        "uq_notices_user_id_kind_market_id",
+        id="second-notice-of-one-kind-about-one-market",
+    ),
+    pytest.param(
+        lambda w: [
+            Notice(
+                user_id=uuid7(),
+                kind=NoticeKind.PROPOSAL_APPROVED,
+                market_id=w.market.id,
+                created_at=NOW,
+            )
+        ],
+        "fk_notices_user_id_users",
+        id="notice-for-nobody",
+    ),
+    pytest.param(
+        lambda w: [
+            Notice(
+                user_id=w.user.id,
+                kind=NoticeKind.PROPOSAL_APPROVED,
+                market_id=uuid7(),
+                created_at=NOW,
+            )
+        ],
+        "fk_notices_market_id_markets",
+        id="notice-about-no-market",
+    ),
 ]
 
 
@@ -863,6 +903,214 @@ async def test_database_rejects(
 ) -> None:
     with pytest.raises(IntegrityError, match=constraint):
         await _insert(uow_factory, rows(world))
+
+
+# --- EXPIRED is reported, never stored (A.4) -------------------------------------------
+
+
+async def test_the_application_cannot_store_a_market_as_expired(
+    uow_factory: UowFactory, world: World
+) -> None:
+    """Neither as a row of its own nor by changing one: the statement fails when it is
+    bound, the transaction is rolled back, and the market is what it was."""
+    with pytest.raises(StatementError, match="EXPIRED"):
+        await _insert(uow_factory, [_market(world.user.id, status=MarketStatus.EXPIRED)])
+
+    async def expire() -> None:
+        async with uow_factory() as uow:
+            market = await uow.markets.get_for_update(world.market.id)
+            assert market is not None
+            market.status = MarketStatus.EXPIRED
+
+    with pytest.raises(StatementError, match="EXPIRED"):
+        await expire()
+
+    async with uow_factory() as uow:
+        stored = (await uow.session.scalars(select(Market))).all()
+    assert [(market.id, market.status) for market in stored] == [
+        (world.market.id, MarketStatus.OPEN)
+    ]
+
+
+async def test_the_application_cannot_ask_the_database_for_expired_markets(
+    uow_factory: UowFactory, world: World
+) -> None:
+    """A query for a status no row holds would answer with nothing and be taken for
+    "there are none". It fails instead: an expired proposal is read as PROPOSED and
+    judged by the clock (`MarketView.stored_statuses`)."""
+    questions: list[Callable[[UnitOfWork], Awaitable[object]]] = [
+        lambda uow: uow.markets.list_by_statuses([MarketStatus.EXPIRED]),
+        lambda uow: uow.markets.list_by_statuses([MarketStatus.OPEN, MarketStatus.EXPIRED]),
+        lambda uow: uow.markets.count_by_statuses([MarketStatus.EXPIRED]),
+        lambda uow: uow.markets.list_held_outside([MarketStatus.EXPIRED]),
+    ]
+    for asking in questions:
+        with pytest.raises(StatementError, match="EXPIRED"):
+            async with uow_factory() as uow:
+                await asking(uow)
+
+    async with uow_factory() as uow:
+        assert [
+            market.id for market in await uow.markets.list_by_statuses(STORED_MARKET_STATUSES)
+        ] == [world.market.id]
+
+
+@pytest.mark.parametrize("role", ["owner", "app"])
+async def test_the_database_itself_refuses_a_market_stored_as_expired(
+    owner_engine: AsyncEngine, database: Database, world: World, role: str
+) -> None:
+    """Whoever goes around the application meets the CHECK, which lists the seven
+    statuses a row keeps."""
+    engine = owner_engine if role == "owner" else database.engine
+
+    async def write(statement: str) -> None:
+        async with engine.begin() as connection:
+            await connection.execute(text(statement), {"id": world.market.id})
+
+    with pytest.raises(IntegrityError, match="ck_markets_status"):
+        await write("UPDATE markets SET status = 'EXPIRED' WHERE id = :id")
+    with pytest.raises(IntegrityError, match="ck_markets_status"):
+        await write(
+            "INSERT INTO markets (id, question, yes_def, no_def, resolution_criteria,"
+            " resolution_source, status, budget_micro, b_micro, q_yes_micro, q_no_micro,"
+            " version, volume_micro, close_at, resolve_by, created_by, created_at)"
+            " SELECT gen_random_uuid(), question, yes_def, no_def, resolution_criteria,"
+            " resolution_source, 'EXPIRED', budget_micro, b_micro, 0, 0, 0, 0, close_at,"
+            " resolve_by, created_by, created_at FROM markets WHERE id = :id"
+        )
+
+    async with owner_engine.connect() as connection:
+        statuses = (await connection.scalars(text("SELECT status FROM markets"))).all()
+        listed = await connection.scalar(
+            text(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint"
+                " WHERE conname = 'ck_markets_status'"
+            )
+        )
+    assert statuses == ["OPEN"]
+    assert listed is not None
+    assert "EXPIRED" not in listed
+    assert all(f"'{status.value}'" in listed for status in STORED_MARKET_STATUSES)
+
+
+async def test_a_notice_of_a_kind_the_enum_does_not_know_is_refused(
+    owner_engine: AsyncEngine, world: World
+) -> None:
+    async def write() -> None:
+        async with owner_engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO notices (id, user_id, kind, market_id, created_at)"
+                    " VALUES (gen_random_uuid(), :user, 'PROPOSAL_REJECTED', :market, now())"
+                ),
+                {"user": world.user.id, "market": world.market.id},
+            )
+
+    with pytest.raises(IntegrityError, match="ck_notices_kind"):
+        await write()
+
+
+# --- Notices (A.5) ---------------------------------------------------------------------
+
+
+async def test_the_unseen_notices_of_a_user_are_listed_oldest_first_with_their_questions(
+    uow_factory: UowFactory, world: World
+) -> None:
+    """The repository itself: by `created_at`, then by id, never somebody else's and
+    never one that is marked."""
+    async with uow_factory() as uow:
+        later = await uow.markets.add(_market(world.user.id, question="Asked later?"))
+        twin = await uow.markets.add(_market(world.user.id, question="Asked at the same time?"))
+        seen = await uow.markets.add(_market(world.user.id, question="Seen already?"))
+
+    def notice(market: Market, user: User, at: datetime, **more: Any) -> Notice:
+        return Notice(
+            id=uuid7(),
+            user_id=user.id,
+            kind=NoticeKind.PROPOSAL_APPROVED,
+            market_id=market.id,
+            created_at=at,
+            **more,
+        )
+
+    first_twin = notice(later, world.user, NOW + DAY)
+    second_twin = notice(twin, world.user, NOW + DAY)
+    oldest = notice(world.market, world.user, NOW)
+    await _insert(
+        uow_factory,
+        [
+            second_twin,
+            first_twin,
+            oldest,
+            notice(seen, world.user, NOW - DAY, seen_at=NOW),
+            notice(world.market, world.admin, NOW - DAY),
+        ],
+    )
+
+    async with uow_factory() as uow:
+        unseen = await uow.notices.list_unseen(world.user.id)
+        others = await uow.notices.list_unseen(world.admin.id)
+        nobodys = await uow.notices.list_unseen(uuid7())
+
+    assert first_twin.id < second_twin.id
+    assert [(row.id, question) for row, question in unseen] == [
+        (oldest.id, world.market.question),
+        (first_twin.id, "Asked later?"),
+        (second_twin.id, "Asked at the same time?"),
+    ]
+    assert [question for _, question in others] == [world.market.question]
+    assert nobodys == []
+
+
+async def test_a_notice_is_marked_seen_once_and_only_by_its_user(
+    uow_factory: UowFactory, world: World
+) -> None:
+    notice = Notice(
+        user_id=world.user.id,
+        kind=NoticeKind.PROPOSAL_APPROVED,
+        market_id=world.market.id,
+        created_at=NOW,
+    )
+    await _insert(uow_factory, [notice])
+
+    async with uow_factory() as uow:
+        assert not await uow.notices.mark_seen(notice.id, world.admin.id, NOW + DAY)
+        assert not await uow.notices.mark_seen(uuid7(), world.user.id, NOW + DAY)
+        assert await uow.notices.get_for_user(notice.id, world.admin.id) is None
+        assert await uow.notices.mark_seen(notice.id, world.user.id, NOW + DAY)
+        assert not await uow.notices.mark_seen(notice.id, world.user.id, NOW + 2 * DAY)
+
+    async with uow_factory() as uow:
+        found = await uow.notices.get_for_user(notice.id, world.user.id)
+        assert found is not None
+        stored, question = found
+        assert (stored.seen_at, question) == (NOW + DAY, world.market.question)
+        assert await uow.notices.list_unseen(world.user.id) == []
+
+
+async def test_the_app_role_reads_writes_and_marks_notices(
+    uow_factory: UowFactory, database: Database, settings: Settings, world: World
+) -> None:
+    """`uow_factory` runs on the app role: the baseline granted it the table like every
+    other one that was there when it ran."""
+    async with uow_factory() as uow:
+        await uow.notices.add(
+            Notice(
+                user_id=world.user.id,
+                kind=NoticeKind.PROPOSAL_APPROVED,
+                market_id=world.market.id,
+                created_at=NOW,
+            )
+        )
+        ((written, _),) = await uow.notices.list_unseen(world.user.id)
+        assert await uow.notices.mark_seen(written.id, world.user.id, NOW)
+
+    async with database.engine.connect() as connection:
+        role = await connection.scalar(text("SELECT current_user"))
+        marked = await connection.scalar(
+            select(func.count()).select_from(Notice).where(Notice.seen_at.is_not(None))
+        )
+    assert (role, marked) == (settings.postgres.app_user, 1)
 
 
 @pytest.mark.parametrize("status", [CodeStatus.REDEEMED, CodeStatus.REVOKED])
@@ -1455,6 +1703,46 @@ async def test_market_queries(uow_factory: UowFactory, world: World) -> None:
         }
 
 
+async def test_a_market_read_as_stored_holds_what_its_transaction_wrote_as_the_database_keeps_it(
+    uow_factory: UowFactory, world: World
+) -> None:
+    """`markets.get_as_stored` is how the answer of a write reads its market before the
+    commit. A change the unit of work has not sent yet is sent, not lost; the copy it
+    holds is filled from the row, so an instant written at an offset reads in UTC, as
+    it will to every later reader; and the read takes no lock and waits for none."""
+    kolkata = timezone(timedelta(hours=5, minutes=30))
+    edited = "Will the Polymensa serve Älplermagronen next Friday?"
+
+    async with uow_factory() as uow:
+        held = await uow.markets.get_for_update(world.market.id)
+        assert held is not None
+        held.question = edited
+        held.close_at = (NOW + 3 * DAY).astimezone(kolkata)
+        assert held.close_at.utcoffset() == timedelta(hours=5, minutes=30)
+
+        stored = await uow.markets.get_as_stored(world.market.id)
+
+        assert stored is held, "the copy of the unit of work, brought up to date"
+        assert stored.question == edited
+        assert stored.close_at == NOW + 3 * DAY
+        assert stored.close_at.utcoffset() == timedelta(0)
+        assert await uow.markets.get_as_stored(uuid7()) is None
+        # Somebody else reads the row as it is committed, and is not kept waiting by
+        # the lock this transaction holds on it.
+        async with uow_factory() as elsewhere:
+            committed = await asyncio.wait_for(
+                elsewhere.markets.get_as_stored(world.market.id), timeout=5
+            )
+        assert committed is not None
+        assert committed is not held
+        assert (committed.question, committed.close_at) == (world.market.question, NOW + 7 * DAY)
+
+    async with uow_factory() as uow:
+        afterwards = await uow.markets.get_as_stored(world.market.id)
+        assert afterwards is not None
+        assert (afterwards.question, afterwards.close_at) == (edited, NOW + 3 * DAY)
+
+
 async def test_position_queries(uow_factory: UowFactory, world: World) -> None:
     def position(user: User, outcome: Outcome, shares_micro: int) -> Position:
         return Position(
@@ -1545,11 +1833,21 @@ async def test_trade_queries(uow_factory: UowFactory, world: World) -> None:
     async with uow_factory() as uow:
         trades = [
             await uow.trades.add(
-                _trade(world, market_version=version, created_at=NOW + version * DAY)
+                _trade(
+                    world,
+                    market_version=version,
+                    created_at=NOW + version * DAY,
+                    p_yes_after_micro=500_000 + version,
+                )
             )
             for version in (1, 2, 3)
         ]
+        elsewhere = await uow.markets.add(_market(world.admin.id))
+        await uow.trades.add(
+            _trade(world, market_id=elsewhere.id, user_id=world.admin.id, market_version=9)
+        )
     ids = [trade.id for trade in trades]
+    prices = [(version, NOW + version * DAY, 500_000 + version) for version in (1, 2, 3)]
 
     async with uow_factory() as uow:
         newest = await uow.trades.list_for_user(world.user.id, limit=2)
@@ -1563,13 +1861,15 @@ async def test_trade_queries(uow_factory: UowFactory, world: World) -> None:
         assert [t.market_version for t in recent] == [2, 3]
         page = await uow.trades.list_for_market(world.market.id, limit=1, after_version=1)
         assert [t.market_version for t in page] == [2]
-        # With more trades than the limit, a chart must lose the oldest, not the newest.
-        latest = await uow.trades.list_for_market(world.market.id, limit=2, newest_first=True)
-        assert [t.market_version for t in latest] == [3, 2]
-        after = await uow.trades.list_for_market(
-            world.market.id, limit=10, after_version=2, newest_first=True
-        )
-        assert [t.market_version for t in after] == [3]
+
+        # What a chart reads of the record: the price each trade left, newest first.
+        # With more trades than the limit it loses the oldest, never the newest.
+        points = world.market.id
+        assert await uow.trades.list_price_points(points, after_version=0, limit=10) == prices[::-1]
+        assert await uow.trades.list_price_points(points, after_version=0, limit=2) == prices[:0:-1]
+        assert await uow.trades.list_price_points(points, after_version=2, limit=10) == prices[2:]
+        assert await uow.trades.list_price_points(points, after_version=3, limit=10) == []
+        assert await uow.trades.list_price_points(uuid7(), after_version=0, limit=10) == []
 
         assert await uow.trades.exists_for_user_market(world.user.id, world.market.id)
         assert not await uow.trades.exists_for_user_market(world.admin.id, world.market.id)

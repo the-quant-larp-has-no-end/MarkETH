@@ -48,6 +48,9 @@ import type { Serialised, Submission } from "./submissions";
  * | ---------------------------- | ----------------------------------- | ---------------------- |
  * | `saveProfileMutation`        | `me` is the answer; leaderboard     | nothing: saving again  |
  * |                              |                                     | is safe                |
+ * | `markNoticeSeenMutation`     | the notice leaves the notices of    | nothing: the notice is |
+ * |                              | `me`                                | told once more by a    |
+ * |                              |                                     | later page             |
  * | `tradeMutation`              | balance and market from the answer; | nothing: the sheet     |
  * |                              | the market, its history, all under  | sends the same request |
  * |                              | `me`, market lists, leaderboard     | again                  |
@@ -129,6 +132,32 @@ export const saveProfileMutation = mutationOptions({
     const { signup_granted, ...me } = saved;
     client.setQueryData<MeResponse>(keys.me, me);
     void refresh(client, keys.leaderboard.all);
+  },
+});
+
+/* ---- Notices ---------------------------------------------------------------------- */
+
+/**
+ * `POST /me/notices/{notice_id}/seen`: the notice was shown to its user. The answer is the
+ * notice. It leaves the notices of `/me` at once, so that nothing reads it as unseen from
+ * the cache; the next `/me` says the same. The API takes the same notice any number of
+ * times.
+ *
+ * This is the one write no tap sends: the screen sends it when it has shown the notice
+ * (`features/session`). After no answer nothing is read again and nothing is sent again:
+ * the notice stays unseen on the server, and a later page tells it once more.
+ */
+export const markNoticeSeenMutation = mutationOptions({
+  mutationFn: (noticeId: string) =>
+    call((api) =>
+      api.POST("/api/me/notices/{notice_id}/seen", { params: { path: { notice_id: noticeId } } }),
+    ),
+  onSuccess: (_notice, noticeId, _result, { client }) => {
+    client.setQueryData<MeResponse>(keys.me, (me) =>
+      me === undefined
+        ? me
+        : { ...me, notices: me.notices.filter((notice) => notice.id !== noticeId) },
+    );
   },
 });
 

@@ -327,13 +327,19 @@ describe("a code the API refuses", () => {
 
   test("every code that cannot be redeemed looks the same, whatever the reason behind it", async () => {
     const { api, user } = renderWallet({ [WALLET.redeem]: INVALID });
-    const sheet = await typeCode(user, "aaaabbbbcccc");
+    const sheet = await openSheet(user);
     const field = within(sheet).getByLabelText("Code");
     const texts: string[] = [];
 
-    for (const typed of ["aaaabbbbcccc", "ddddeeeeffff", "gggghhhhjjjj"]) {
+    // Each code goes in with one paste: the test is about the answer, not about typing.
+    for (const [code, shown] of [
+      ["aaaabbbbcccc", "AAAA-BBBB-CCCC"],
+      ["ddddeeeeffff", "DDDD-EEEE-FFFF"],
+      ["gggghhhhjjjj", "GGGG-HHHH-JJJJ"],
+    ] as const) {
       await user.clear(field);
-      await user.type(field, typed);
+      await user.paste(code);
+      expect(field).toHaveValue(shown);
       await user.click(within(sheet).getByRole("button", { name: "Redeem" }));
       const error = await within(sheet).findByRole("alert");
       // The sheet below the title is the same text every time, apart from the code.

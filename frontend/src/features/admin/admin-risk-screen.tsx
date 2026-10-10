@@ -1,6 +1,6 @@
 "use client";
 
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { InfoIcon, type LucideIcon, OctagonAlertIcon, TriangleAlertIcon } from "lucide-react";
 import { type ReactNode, useId } from "react";
 
@@ -22,7 +22,9 @@ import { messageOf } from "@/lib/api/errors";
 import { acknowledgeAlertMutation } from "@/lib/api/mutations";
 import { riskQuery } from "@/lib/api/queries";
 import type { AlertItem, AlertSeverity, RiskMarketRow, RiskResponse } from "@/lib/api/schema";
-import { formatAmount, formatCount } from "@/lib/format";
+import { useConfig } from "@/lib/api/session";
+import { useSubmit } from "@/lib/api/submit";
+import { formatAmount, formatCount, formatDate, formatTime } from "@/lib/format";
 import { useRetryAfter } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
 
@@ -91,7 +93,8 @@ function Part({ label, value }: { label: string; value: string }) {
  * The tiles of the risk page (DESIGN.md §13). Every figure is a field of `GET
  * /admin/risk`, shown as sent: a figure and its limit stand side by side and the page
  * compares nothing. Only Obligations has a warning state, because only for it the API
- * sends a flag (`above_threshold`).
+ * sends a flag (`above_threshold`). The month's net adjustments of balances stand in the
+ * tile of the codes: both are tokens VIS handed out by hand.
  */
 function Tiles({ risk }: { risk: RiskResponse }) {
   const { obligations } = risk;
@@ -146,7 +149,13 @@ function Tiles({ risk }: { risk: RiskResponse }) {
               of <Amount value={risk.max_code_issuance_per_month_cr} size="sm" />
             </>
           }
-        />
+        >
+          {/* What admins added to balances and took from them by hand: it counts against
+              no cap, so it has no "of", and a net below zero keeps its minus sign. */}
+          <dl className="flex flex-col">
+            <Part label="Adjustments this month" value={risk.adjustments_this_month_cr} />
+          </dl>
+        </Tile>
       </div>
     </section>
   );
@@ -179,7 +188,7 @@ function shown(value: unknown): string {
  * Once that is answered the alert is done with; the list is read again and drops it.
  */
 function Alert({ alert }: { alert: AlertItem }) {
-  const acknowledge = useMutation(acknowledgeAlertMutation);
+  const acknowledge = useSubmit(acknowledgeAlertMutation);
   const wait = useRetryAfter(acknowledge.error);
   const { tone, icon, word } = SEVERITIES[alert.severity];
   const context = Object.entries(alert.context);
@@ -199,7 +208,8 @@ function Alert({ alert }: { alert: AlertItem }) {
             loading={acknowledge.isPending}
             disabled={wait > 0}
             onClick={() => {
-              if (!acknowledge.isPending) acknowledge.mutate(alert.id);
+              // A second tap sends nothing while the first is out (DESIGN.md §14).
+              acknowledge.mutate(alert.id);
             }}
           >
             Acknowledge
@@ -238,31 +248,76 @@ function Alert({ alert }: { alert: AlertItem }) {
 
 /* ---- Markets ---------------------------------------------------------------------- */
 
+/** `close_at` in a narrow column: the date, and under it the time of day. */
+function Closes({ value }: { value: string }) {
+  const { timezone } = useConfig();
+  return (
+    <time dateTime={value}>
+      <span className="block">{formatDate(value, timezone)}</span>{" "}
+      <span className="block type-caption text-muted-foreground">
+        {formatTime(value, timezone)}
+      </span>
+    </time>
+  );
+}
+
 /**
- * One row per market that is not settled, with the fields of `RiskMarketRow` in the
- * order DESIGN.md §13 names them. A figure the API sends with a minus sign keeps it.
+ * One row per market that is not settled, in the ten columns of DESIGN.md §13: the
+ * question with its status badge under it, then what an admin reads first (the chance,
+ * the volume, the exposure and what a void would cost), then the share counts, how the
+ * market is priced, its account and when it closes. Two values share a cell where they
+ * belong together, so that the table fits 1024 px. A figure the API sends with a minus
+ * sign keeps it.
  */
 const COLUMNS: readonly Column<RiskMarketRow>[] = [
-  { header: "Question", wide: true, cell: (market) => market.question },
-  { header: "Status", cell: (market) => <StatusBadge status={market.status} /> },
   {
-    header: "Liquidity",
-    cell: (market) => (market.tier === null ? <Missing /> : tierName(market.tier)),
+    header: "Question",
+    wide: true,
+    // Nine columns of figures stand beside it: it wraps into the room they leave. From
+    // 1024 px it asks for less, so that the table fits its box whatever the figures are.
+    className: "min-w-40 lg:min-w-28",
+    cell: (market) => (
+      <>
+        <span className="wrap-break-word">{market.question}</span>{" "}
+        <StatusBadge status={market.status} className="mt-1" />
+      </>
+    ),
   },
   { header: "Chance", numeric: true, cell: (market) => <Chance value={market.p_yes} /> },
   { header: "Volume", numeric: true, cell: (market) => <Amount value={market.volume_cr} /> },
-  { header: "YES shares", numeric: true, cell: (market) => formatAmount(market.q_yes) },
-  { header: "NO shares", numeric: true, cell: (market) => formatAmount(market.q_no) },
-  { header: "Liquidity b", numeric: true, cell: (market) => <Amount value={market.b_cr} /> },
+  { header: "Exposure", numeric: true, cell: (market) => <Amount value={market.exposure_cr} /> },
+  { header: "Void cost", numeric: true, cell: (market) => <Amount value={market.void_cost_cr} /> },
+  {
+    header: "Shares",
+    numeric: true,
+    cell: (market) => (
+      <>
+        <span className="block">{formatAmount(market.q_yes)} YES</span>{" "}
+        <span className="block">{formatAmount(market.q_no)} NO</span>
+      </>
+    ),
+  },
+  {
+    header: "Tier",
+    cell: (market) =>
+      market.tier === null ? (
+        <Missing />
+      ) : (
+        <>
+          <span className="block">{tierName(market.tier)}</span>{" "}
+          <span className="block type-caption text-muted-foreground">
+            b {formatAmount(market.b_cr)}
+          </span>
+        </>
+      ),
+  },
   { header: "Loss budget", numeric: true, cell: (market) => <Amount value={market.budget_cr} /> },
   {
     header: "Account",
     numeric: true,
     cell: (market) => <Amount value={market.account_balance_cr} />,
   },
-  { header: "Exposure", numeric: true, cell: (market) => <Amount value={market.exposure_cr} /> },
-  { header: "Void cost", numeric: true, cell: (market) => <Amount value={market.void_cost_cr} /> },
-  { header: "Closes", cell: (market) => <DateTime value={market.close_at} /> },
+  { header: "Closes", cell: (market) => <Closes value={market.close_at} /> },
 ];
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -289,7 +344,7 @@ function RiskSkeleton() {
         <Skeleton className="h-24 rounded-lg" />
       </div>
       <Skeleton className="h-16 w-full" />
-      <DataTableSkeleton columns={COLUMNS} />
+      <DataTableSkeleton columns={COLUMNS} dense />
     </div>
   );
 }
@@ -297,7 +352,8 @@ function RiskSkeleton() {
 /**
  * Admin: the risk panel (`/admin/risk`, DESIGN.md §13). The tiles, then the alerts nobody
  * acknowledged yet, then the table of the markets that are not settled, in the API's
- * order. A row opens the admin view of its market.
+ * order. The table fits 1024 px without scrolling sideways; on anything narrower it
+ * scrolls inside its own box. A row opens the admin view of its market.
  *
  * Every figure is the API's, shown as sent. The page refetches when the window gets the
  * focus back; nothing on it is live.
@@ -333,6 +389,7 @@ export function AdminRiskScreen() {
                   rows={data.markets}
                   rowKey={(market) => market.id}
                   rowHref={(market) => `/admin/markets/${market.id}`}
+                  dense
                 />
               )}
             </Section>

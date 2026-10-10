@@ -35,10 +35,14 @@ Shared by all seven methods:
   target `AuditService.target(AuditTarget.MARKET, market.id)`, and `before` and `after`
   holding at least `{"status": ...}` plus what the action changed or was told (tier,
   budget, a reason, the outcome).
+* The result is the market's detail as the action leaves it, built as the last step
+  of the transaction: `MarketService.detail_in(uow, actor, market.id)`. Nothing is read
+  once the transaction has committed, so an action that took effect is never answered
+  as one that failed. Sent again after such an answer it would be refused with 409.
 * After the commit, best effort: `MarketCache.invalidate_lists()` and
-  `LiveQuoteService.publish_status(market)`. `reject` does neither: a proposal was never
-  in a list and nobody is watching it.
-* The result is the market's detail afterwards: `MarketService.detail(actor, market.id)`.
+  `LiveQuoteService.publish_status(market)`. Neither can fail the request: what goes
+  wrong there is logged, and the answer stands. `reject` does neither: a proposal was
+  never in a list and nobody is watching it.
 
 Construction checks that the liquidity settings can work, and raises `ValueError` if
 they cannot, so the api and the relay do not start on them: the b of every fixed tier
@@ -49,6 +53,7 @@ an admin could open a market nobody can trade; without the second a tier could n
 approved. `check_liquidity_settings` is that check.
 """
 
+import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, Final
@@ -101,6 +106,8 @@ from app.services.notices import NoticeService
 from app.services.outbox_events import quote_updated_payload
 from app.services.public_config import FIXED_TIERS
 from app.services.risk import CAPPED_STATUSES
+
+logger = logging.getLogger(__name__)
 
 ALLOWED_TRANSITIONS: Final[Mapping[MarketStatus, frozenset[MarketStatus]]] = {
     MarketStatus.PROPOSED: frozenset({MarketStatus.OPEN, MarketStatus.REJECTED}),
@@ -334,9 +341,10 @@ class MarketLifecycleService:
                 },
             )
             await self._notices.proposal_approved(uow, market, actor, now)
+            answer = await self._markets.detail_in(uow, actor, market.id)
 
         await self._after_commit(market)
-        return await self._markets.detail(actor, market.id)
+        return answer
 
     async def reject(
         self, actor: AuthenticatedUser, market_id: UUID, request: RejectMarketRequest
@@ -369,8 +377,9 @@ class MarketLifecycleService:
                 before={"status": previous.value},
                 after={"status": market.status.value, "reason": request.reason},
             )
+            answer = await self._markets.detail_in(uow, actor, market.id)
 
-        return await self._markets.detail(actor, market.id)
+        return answer
 
     async def halt(
         self, actor: AuthenticatedUser, market_id: UUID, request: HaltMarketRequest
@@ -399,9 +408,10 @@ class MarketLifecycleService:
                 before={"status": previous.value},
                 after={"status": market.status.value, "reason": request.reason},
             )
+            answer = await self._markets.detail_in(uow, actor, market.id)
 
         await self._after_commit(market)
-        return await self._markets.detail(actor, market.id)
+        return answer
 
     async def resume(
         self, actor: AuthenticatedUser, market_id: UUID, request: ResumeMarketRequest
@@ -426,9 +436,10 @@ class MarketLifecycleService:
                 before={"status": previous.value},
                 after={"status": market.status.value, "note": request.note},
             )
+            answer = await self._markets.detail_in(uow, actor, market.id)
 
         await self._after_commit(market)
-        return await self._markets.detail(actor, market.id)
+        return answer
 
     async def close(
         self, actor: AuthenticatedUser, market_id: UUID, request: CloseMarketRequest
@@ -445,9 +456,10 @@ class MarketLifecycleService:
             now = self._clock.now()
             _require_move(market, MarketStatus.CLOSED)
             await self._close(uow, actor, market, now, note=request.note)
+            answer = await self._markets.detail_in(uow, actor, market.id)
 
         await self._after_commit(market)
-        return await self._markets.detail(actor, market.id)
+        return answer
 
     async def resolve(
         self, actor: AuthenticatedUser, market_id: UUID, request: ResolveMarketRequest
@@ -525,9 +537,10 @@ class MarketLifecycleService:
                     "payouts_micro": sum(payouts_micro.values()),
                 },
             )
+            answer = await self._markets.detail_in(uow, actor, market.id)
 
         await self._after_commit(market)
-        return await self._markets.detail(actor, market.id)
+        return answer
 
     async def void(
         self, actor: AuthenticatedUser, market_id: UUID, request: VoidMarketRequest
@@ -608,9 +621,10 @@ class MarketLifecycleService:
                     "refunds_micro": sum(refunds_micro.values()),
                 },
             )
+            answer = await self._markets.detail_in(uow, actor, market.id)
 
         await self._after_commit(market)
-        return await self._markets.detail(actor, market.id)
+        return answer
 
     def _liquidity(self, request: ApproveMarketRequest) -> tuple[int, int]:
         """Step 4 of `approve`: the budget and the b of the tier asked for, in µCR."""
@@ -745,9 +759,22 @@ class MarketLifecycleService:
 
     async def _after_commit(self, market: Market) -> None:
         """What follows a committed change of a public market, best effort: drop the
-        cached lists, then tell open phones. Neither call raises."""
-        await self._cache.invalidate_lists()
-        await self._live.publish_status(market)
+        cached lists, then tell open phones.
+
+        The change stands and its answer is built, so nothing here is the request's
+        to fail. Both calls degrade by themselves when Redis is away; whatever else
+        one of them raises is logged here, and the other still runs. A request that
+        is cancelled stays cancelled: that is no failure of either call, and it is
+        not caught.
+        """
+        try:
+            await self._cache.invalidate_lists()
+        except Exception:
+            logger.exception("The cached lists were not dropped for market %s", market.id)
+        try:
+            await self._live.publish_status(market)
+        except Exception:
+            logger.exception("No status event was published for market %s", market.id)
 
 
 def _require_admin(actor: AuthenticatedUser) -> None:

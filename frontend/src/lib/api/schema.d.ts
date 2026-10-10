@@ -520,7 +520,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Chart data: the price after every trade
+         * Chart data: the price after a market's trades, thinned to a bounded size
          * @description Access: any registered user whose account is active.
          */
         get: operations["get_market_history"];
@@ -1268,7 +1268,12 @@ export interface components {
         };
         /**
          * HistoryResponse
-         * @description `GET /markets/{id}/history`: points in ascending `version` order.
+         * @description `GET /markets/{id}/history`: the chart of a market, points in ascending `version`
+         *     order.
+         *
+         *     The first point is the opening and the last is the latest price. Where a market
+         *     has more points than an answer holds, the ones in between are thinned evenly:
+         *     versions rise from point to point and may skip.
          */
         HistoryResponse: {
             /** Points */
@@ -1278,8 +1283,8 @@ export interface components {
              * Until
              * Format: date-time
              * @description The right edge of the chart: the server's now while the market can still trade,
-             *     otherwise the moment trading ended. A chart is drawn up to here, and with no
-             *     clock of the device.
+             *     otherwise the moment trading ended. No point lies after it. A chart is drawn up
+             *     to here, and with no clock of the device.
              */
             until: string;
         };
@@ -1373,7 +1378,8 @@ export interface components {
             /**
              * Rank
              * @description The user's place in the list as it was asked for, 1 being first. It counts within
-             *     the filters and in the chosen order.
+             *     the filters and in the chosen order: the first of a filtered list has rank 1,
+             *     whatever their place among everybody is.
              */
             rank: number;
             /**
@@ -2108,7 +2114,7 @@ export interface components {
             resolve_by: string;
             /**
              * @description The effective status, as in `MarketSummary`. EXPIRED for a proposal whose
-             *     `close_at` passed before an admin decided on it: it is not under review any more.
+             *     `close_at` passed before an admin decided on it: it is out of review.
              */
             status: components["schemas"]["MarketStatus"];
             /** Yes Definition */
@@ -4062,6 +4068,10 @@ export interface operations {
                 sort?: components["schemas"]["LeaderboardSort"];
                 /** @description `desc` puts the highest first. */
                 order?: components["schemas"]["SortOrder"];
+                /**
+                 * @description Compared with `credits_cr` of a row: the balance and the value of the open
+                 *     positions together, not the balance alone.
+                 */
                 min_credits_cr?: string | null;
                 max_credits_cr?: string | null;
                 min_trades?: number | null;

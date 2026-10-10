@@ -52,7 +52,7 @@ describe("what the scanner has sent", () => {
     expect(memory.holds(VOUCHER, AWAY + 20)).toBe(true);
   });
 
-  test("every QR that was sent is held, not only the latest: two in front of the camera are read in turn", () => {
+  test("every QR that was sent is held, not only the latest: the camera reads now one, now the other", () => {
     const memory = watchingMemory();
     memory.note(VOUCHER, 0);
     memory.note(OTHER, 300);

@@ -773,7 +773,7 @@ async def test_the_guard_of_the_stream_runs_before_the_stream_subscribes(
 async def test_every_route_that_asks_for_no_role_lets_a_registered_user_through(
     client: httpx.AsyncClient, app: FastAPI, factory: Factory, as_user: ActAs
 ) -> None:
-    """Eighteen operations are open to every registered user. No guard may turn a plain
+    """Nineteen operations are open to every registered user. No guard may turn a plain
     user away from one of them; what the service then answers is not the point here."""
     as_user(await factory.user())
     routes = [
@@ -781,8 +781,9 @@ async def test_every_route_that_asks_for_no_role_lets_a_registered_user_through(
         for method, path in member_operations(app)
         if not path.startswith(("/api/admin/", "/api/barista/"))
     ]
-    assert len(routes) == 18
+    assert len(routes) == 19
     assert ("GET", "/api/leaderboard") in routes
+    assert ("POST", "/api/me/notices/{notice_id}/seen") in routes
     for method, path in routes:
         response = await client.request(method, concrete(path))
         assert response.status_code not in (401, 403), (method, path, response.text)

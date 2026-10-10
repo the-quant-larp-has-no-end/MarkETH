@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useRef } from "react";
 
 import { QueryState } from "@/components/feedback";
+import { StatusBadge } from "@/components/market";
 import { NotFoundScreen, Screen } from "@/components/shell";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { ApiError } from "@/lib/api/errors";
@@ -11,7 +12,6 @@ import { marketQuery } from "@/lib/api/queries";
 import type { MarketDetailResponse } from "@/lib/api/schema";
 
 import { MarketActions } from "./market-actions";
-import { MarketStatusBadge } from "./market-status";
 import { MarketFacts, MarketRules, Resolution } from "./market-view";
 
 export type AdminMarketScreenProps = {
@@ -71,7 +71,7 @@ function AdminMarket({ market }: { market: MarketDetailResponse }) {
         </h1>
         {/* Announced when an action changed it. */}
         <span role="status">
-          <MarketStatusBadge status={market.status} outcome={market.outcome} />
+          <StatusBadge status={market.status} outcome={market.outcome} />
         </span>
       </header>
       <div className="grid gap-6 lg:grid-cols-2">

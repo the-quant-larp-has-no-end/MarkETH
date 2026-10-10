@@ -50,9 +50,12 @@ export function useQuote(marketId: string, request: QuoteRequest | null): QuoteR
     enabled: asked !== null,
   });
 
-  const current = wanted !== null && wanted === settled;
-  const quote = current ? (query.data ?? null) : null;
-  const error = current && !query.isFetching ? query.error : null;
+  // An answer counts once it is the latest one for the input as it is now. A quote that
+  // is being asked for again (after "Try again", or after a trade it guarded was refused)
+  // is on its way, and one whose latest read failed is none.
+  const current = wanted !== null && wanted === settled && !query.isFetching;
+  const error = current ? query.error : null;
+  const quote = current && error === null ? (query.data ?? null) : null;
 
   return {
     quote,

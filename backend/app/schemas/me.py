@@ -166,7 +166,7 @@ class ProposalItem(ResponseModel):
     resolution_source: str
     status: MarketStatus
     """The effective status, as in `MarketSummary`. EXPIRED for a proposal whose
-    `close_at` passed before an admin decided on it: it is not under review any more."""
+    `close_at` passed before an admin decided on it: it is out of review."""
 
     outcome: ResolutionOutcome | None
     """YES or NO once RESOLVED, VOID once VOID, otherwise null."""

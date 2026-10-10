@@ -31,7 +31,14 @@ def normalize_code(raw: str) -> str | None:
     """Canonical form of a code as typed or scanned, or None if it cannot be a code.
 
     Uppercases, drops dashes and whitespace, and reads O as 0 and I or L as 1.
+
+    A code is ASCII. A text with any other character in it is no code, whatever that
+    character turns into in upper case: a long s, a dotless i and a sharp s are read
+    as nothing, not as S, 1 and SS. One text is one code or none, and nothing is cut
+    out of a longer text, a link for instance, to find a code in it.
     """
+    if not raw.isascii():
+        return None
     cleaned = "".join(ch for ch in raw.upper() if ch not in "- \t\n\r").translate(_LOOKALIKES)
     if not cleaned or any(ch not in _CROCKFORD_SET for ch in cleaned):
         return None

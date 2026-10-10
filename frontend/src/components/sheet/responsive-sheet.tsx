@@ -45,8 +45,8 @@ export type ResponsiveSheetProps = {
    */
   dismissible?: boolean;
   /**
-   * A dialog at every width: the welcome dialog, "Proposal sent" and the dialogs of the
-   * admin area. Without it the sheet is a bottom sheet below 768 px.
+   * A dialog at every width, as the welcome dialog is. Without it the sheet is a bottom
+   * sheet below 768 px.
    */
   dialog?: boolean;
   /** `SheetBody`, then optionally `SheetFooter`. */

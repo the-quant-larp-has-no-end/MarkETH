@@ -12,6 +12,7 @@ import { confirmPortalSession } from "@/lib/session-recovery";
 
 import { BootScreen } from "./boot-screen";
 import { NoticeScreen } from "./notice-screen";
+import { Notices } from "./notices";
 import { ProfileSetupScreen } from "./profile-setup-screen";
 import { WelcomeDialog } from "./welcome-dialog";
 
@@ -65,6 +66,9 @@ function WithoutProfile(props: Parameters<typeof ProfileSetupScreen>[0]) {
  *
  * Everything inside `children` may call `useMe()` and `useConfig()`: nobody is signed
  * out, and nobody past this gate is without a profile.
+ *
+ * `/me` also lists what its user has not been told yet (`notices`): each is shown once as
+ * a toast over whatever route is open, and marked seen (`Notices`).
  */
 export function AppGate({ children }: { children: ReactNode }) {
   const config = useQuery(configQuery);
@@ -112,6 +116,7 @@ export function AppGate({ children }: { children: ReactNode }) {
     return (
       <WelcomeContext.Provider value={welcome?.open ?? false}>
         {children}
+        <Notices notices={me.data.notices} />
         <WelcomeDialog
           saved={welcome?.saved ?? null}
           open={welcome?.open ?? false}

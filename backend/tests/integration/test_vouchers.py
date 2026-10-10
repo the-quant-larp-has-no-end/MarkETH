@@ -42,6 +42,7 @@ from app.core.security import format_code, generate_code, hash_code, normalize_c
 from app.core.units import format_cr, to_cr
 from app.db.base import Base
 from app.models import Account, JournalEntry, Posting, User, Voucher
+from app.repositories.voucher import VoucherRepository
 from app.schemas.barista import VoucherRedeemResponse
 from app.schemas.vouchers import IssueVoucherRequest, VoucherCodeResponse
 from app.services.ledger import (
@@ -53,7 +54,7 @@ from app.services.ledger import (
 from app.services.vouchers import UNKNOWN_PRODUCT_MESSAGE, VoucherService
 from tests.support.books import assert_books_balance, system_balance
 from tests.support.clock import FrozenClock
-from tests.support.factories import ActAs, Factory, identity_of
+from tests.support.factories import ActAs, Factory, PortalHeaders, identity_of
 from tests.support.settings import load_base_settings
 
 pytestmark = pytest.mark.integration
@@ -1587,6 +1588,329 @@ async def test_a_fresh_code_for_somebody_elses_voucher_locks_only_the_callers_ow
             with pytest.raises(NotFoundError):
                 await container.vouchers.replace_code(mallory, voucher_id)
 
+    await assert_books_balance(container.uow_factory)
+
+
+# --- The same scan, the same answer -----------------------------------------------
+#
+# What a scan is answered depends on the voucher, on who scans and on the clock, and on
+# nothing else. These tests go through the two headers of the portal, so each request
+# is one of the real seam: `IdentityService`, the lazy upkeep of whoever scans, the
+# guard, the route, the service.
+
+FRESH_VOUCHERS: Final[int] = 50
+"""How many vouchers the bar scans in a row."""
+
+
+def _as_the_qr_carries_it(code: str) -> str:
+    return code
+
+
+def _typed_in_lower_case(code: str) -> str:
+    return code.lower()
+
+
+def _typed_without_the_dash(code: str) -> str:
+    return code.replace("-", "")
+
+
+def _typed_with_spaces(code: str) -> str:
+    return f"  {code[:2]} {code[2:].replace('-', ' - ')}  "
+
+
+def _read_with_a_line_end(code: str) -> str:
+    return f"{code}\r\n"
+
+
+def _typed_with_letters_for_digits(code: str) -> str:
+    return code.replace("0", "O").replace("1", "l")
+
+
+WRITTEN: Final[tuple[Callable[[str], str], ...]] = (
+    _as_the_qr_carries_it,
+    _typed_in_lower_case,
+    _typed_without_the_dash,
+    _typed_with_spaces,
+    _read_with_a_line_end,
+    _typed_with_letters_for_digits,
+)
+"""The ways a code reaches the API: as the QR of the wallet carries it, and as people
+type it."""
+
+
+class Bar:
+    """The requests of a test that go through the portal's two headers."""
+
+    def __init__(self, client: httpx.AsyncClient, headers: PortalHeaders) -> None:
+        self._client = client
+        self._headers = headers
+
+    async def get_voucher(self, owner: User, product: VoucherProduct = PRODUCT) -> dict[str, Any]:
+        response = await self._client.post(
+            VOUCHERS_PATH, json={"product_id": product.id}, headers=self._headers(owner)
+        )
+        assert response.status_code == 201, response.text
+        issued: dict[str, Any] = response.json()
+        return issued
+
+    async def fresh_code(self, owner: User, voucher_id: object) -> httpx.Response:
+        return await self._client.post(
+            f"{VOUCHERS_PATH}/{voucher_id}/code", headers=self._headers(owner)
+        )
+
+    async def scan(self, scanner: User, code: str) -> httpx.Response:
+        return await self._client.post(
+            SCAN_PATH, json={"code": code}, headers=self._headers(scanner)
+        )
+
+
+@pytest.fixture
+def bar(client: httpx.AsyncClient, portal_headers: PortalHeaders) -> Bar:
+    return Bar(client, portal_headers)
+
+
+async def test_fifty_fresh_vouchers_in_a_row_are_each_accepted_repeated_and_then_refused(
+    bar: Bar, factory: Factory, container: Container, clock: FrozenClock
+) -> None:
+    """One after another, each for another product and written another way. Every
+    fresh voucher is accepted, with `repeat` false. The barista who scanned it gets
+    the same answer with `repeat` true anywhere in the window, from the same instant
+    to its last one. Another barista and an admin are refused inside the window, and
+    everybody is once it is over. Not one of the three hundred answers is another."""
+    total_micro = sum(
+        PRODUCTS[number % len(PRODUCTS)].price_micro for number in range(FRESH_VOUCHERS)
+    )
+    guest = await factory.user(balance_micro=total_micro)
+    barista = await factory.barista()
+    others = [await factory.barista(1), await factory.admin()]
+
+    for number in range(FRESH_VOUCHERS):
+        product = PRODUCTS[number % len(PRODUCTS)]
+        another = others[number % len(others)]
+        scanned, scanned_again = (
+            WRITTEN[number % len(WRITTEN)],
+            WRITTEN[(number + 1) % len(WRITTEN)],
+        )
+        # From no time at all to the whole window, its last instant included.
+        inside_the_window = RESCAN * number / (FRESH_VOUCHERS - 1)
+        issued = await bar.get_voucher(guest, product)
+
+        first = await bar.scan(barista, scanned(issued["code"]))
+        redeemed_at = clock.now()
+        clock.advance(inside_the_window)
+        again = await bar.scan(barista, scanned_again(issued["code"]))
+        by_another = await bar.scan(another, issued["code"])
+        clock.set(redeemed_at + RESCAN + INSTANT)
+        afterwards = await bar.scan(barista, issued["code"])
+        afterwards_by_another = await bar.scan(another, issued["code"])
+
+        assert first.status_code == 200, (number, first.text)
+        assert first.json() == {
+            "voucher_id": issued["id"],
+            "product_id": product.id,
+            "product_name": product.name,
+            "value_cr": format_cr(product.price_micro),
+            "redeemed_at": on_the_wire(redeemed_at),
+            "repeat": False,
+        }, number
+        assert again.status_code == 200, (number, again.text)
+        assert again.json() == first.json() | {"repeat": True}, number
+        for refused in (by_another, afterwards, afterwards_by_another):
+            assert refused.status_code == 400, (number, refused.text)
+            assert refused.json() == CODE_INVALID, number
+
+    assert RESCAN * (FRESH_VOUCHERS - 1) / (FRESH_VOUCHERS - 1) == RESCAN
+    stored = await rows(container, guest)
+    assert [(row.status, row.redeemed_by) for row in stored] == [
+        (VoucherStatus.REDEEMED, barista.id)
+    ] * FRESH_VOUCHERS
+    assert await voucher_entries(container) == [ISSUE, REDEEM] * FRESH_VOUCHERS
+    assert await parked(container) == (0, total_micro)
+    assert await factory.balance_micro(guest) == 0
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_what_is_no_voucher_code_is_refused_every_time_and_leaves_the_voucher_as_it_was(
+    bar: Bar, factory: Factory, container: Container
+) -> None:
+    """A link, also one that holds the code of the very voucher, a code with a
+    character too many or too few, one of another kind and plain text: asked three
+    times each, refused three times each with the same answer, and the voucher is
+    accepted afterwards as if nothing had been scanned. A text longer than a code can
+    be is refused by the request model, 422 in place of 400, and that every time too."""
+    guest = await factory.user(balance_micro=WEALTH)
+    barista = await factory.barista()
+    issued = await bar.get_voucher(guest)
+    code: str = issued["code"]
+    base = container.settings.app.public_base_url
+    bare = code.replace("-", "")
+    no_voucher = {
+        "the link of a code card": f"{base}/wallet?code=ABCD-EFGH-JKMN",
+        "a link that holds this code": f"{base}/wallet?code={code}",
+        "a path that holds this code": f"/barista?code={code}",
+        "this code and a character more": f"{code}0",
+        "this code without its last character": code[:-1],
+        "this code twice": f"{code} {code}",
+        "this code with a letter no code has": f"{code[:-1]}U",
+        "this code with an en dash": code.replace("-", "\u2013"),
+        "this code with a long s in it": f"{bare[:-1]}\u017f",
+        "a code of the other kind": generate_code(container.settings.codes.length),
+        "the id of the voucher": issued["id"],
+        "words": "one coffee please",
+    }
+    too_long = f"{base}/wallet?code={code}&from=a-poster-in-the-main-hall-of-the-eth"
+    before = await everything_stored(container)
+
+    for what, text_scanned in no_voucher.items():
+        answers = [await bar.scan(barista, text_scanned) for _ in range(3)]
+        assert [answer.status_code for answer in answers] == [400, 400, 400], what
+        assert [answer.json() for answer in answers] == [CODE_INVALID] * 3, what
+    overlong = [await bar.scan(barista, too_long) for _ in range(3)]
+
+    assert len(too_long) > 64
+    assert [answer.status_code for answer in overlong] == [422, 422, 422]
+    assert {answer.json()["code"] for answer in overlong} == {"VALIDATION_ERROR"}
+    assert {
+        (tuple(error["loc"]), error["msg"])
+        for answer in overlong
+        for error in answer.json()["details"]["errors"]
+    } == {(("body", "code"), "Use at most 64 characters.")}
+    assert await everything_stored(container) == before
+    accepted = await bar.scan(barista, code)
+    assert (accepted.status_code, accepted.json()["repeat"]) == (200, False)
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_code_that_is_replaced_while_its_scan_waits_is_refused_and_the_fresh_one_works(
+    bar: Bar,
+    factory: Factory,
+    container: Container,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guest taps "Show QR" while the bar scans the code the voucher had. The
+    replacement holds the guest's account, so the scan, which has read the voucher by
+    the code it was given, waits. Once the fresh code is committed the scan finds no
+    voucher under its code: refused, at once and every time after. The fresh code
+    is accepted. Which of the two came first decides, and nothing else does."""
+    guest_row = await factory.user(balance_micro=WEALTH)
+    guest = factory.identity(guest_row)
+    barista_row = await factory.barista()
+    barista = factory.identity(barista_row)
+    issued = await bar.get_voucher(guest_row)
+    shown_first: str = issued["code"]
+    get_owned = VoucherRepository.get_owned
+    holding, released = asyncio.Event(), asyncio.Event()
+
+    async def held_until_released(self: VoucherRepository, *args: Any, **kwargs: Any) -> Any:
+        found = await get_owned(self, *args, **kwargs)
+        holding.set()
+        await released.wait()
+        return found
+
+    monkeypatch.setattr(VoucherRepository, "get_owned", held_until_released)
+    replacing = asyncio.create_task(container.vouchers.replace_code(guest, UUID(issued["id"])))
+    # The replacement holds the guest's account and the voucher row before the scan starts.
+    await asyncio.wait_for(holding.wait(), LOCK_WAIT_SECONDS)
+    scan = asyncio.create_task(container.vouchers.redeem(barista, shown_first))
+    await until_it_waits(container, scan)
+    released.set()
+
+    fresh = await replacing
+    with pytest.raises(CodeInvalidError):
+        await scan
+
+    assert fresh.code != shown_first
+    for _ in range(3):
+        stale = await bar.scan(barista_row, shown_first)
+        assert (stale.status_code, stale.json()) == (400, CODE_INVALID)
+    [row] = await rows(container, guest_row)
+    assert row.status is VoucherStatus.ACTIVE
+    accepted = await bar.scan(barista_row, fresh.code)
+    assert (accepted.status_code, accepted.json()["repeat"]) == (200, False)
+    assert await voucher_entries(container) == [ISSUE, REDEEM]
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_scan_that_came_first_stands_and_the_voucher_takes_no_other_code(
+    bar: Bar, factory: Factory, container: Container
+) -> None:
+    """The other order: the bar scans, then the guest taps "Show QR". The voucher is
+    used up and is given no fresh code, and the barista's second look at the code that
+    redeemed it is the repeat."""
+    guest = await factory.user(balance_micro=WEALTH)
+    barista = await factory.barista()
+    issued = await bar.get_voucher(guest)
+
+    first = await bar.scan(barista, issued["code"])
+    fresh = await bar.fresh_code(guest, issued["id"])
+    again = await bar.scan(barista, issued["code"])
+
+    assert (first.status_code, first.json()["repeat"]) == (200, False)
+    assert (fresh.status_code, fresh.json()) == (409, CONFLICT)
+    assert again.json() == first.json() | {"repeat": True}
+    assert await voucher_entries(container) == [ISSUE, REDEEM]
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_the_upkeep_of_the_baristas_own_request_changes_no_answer_of_a_scan(
+    bar: Bar, factory: Factory, container: Container, clock: FrozenClock
+) -> None:
+    """The request of a barista runs that barista's own upkeep first (A.3). Here it has
+    something to do: a voucher of the barista has expired and is refunded on the way.
+    The guest's voucher is accepted all the same, and so is the next one, scanned at
+    once, when the upkeep is not due again."""
+    interval = container.settings.identity.upkeep_interval
+    guest = await factory.user(balance_micro=WEALTH)
+    barista = await factory.barista(balance_micro=WEALTH)
+    forgotten = await bar.get_voucher(barista, CHEAPEST)
+    clock.advance(TTL - timedelta(days=1))
+    first, second = await bar.get_voucher(guest), await bar.get_voucher(guest)
+    clock.advance(timedelta(days=1))
+    assert await voucher_entries(container) == [ISSUE, ISSUE, ISSUE]
+
+    with_upkeep = await bar.scan(barista, first["code"])
+    refunded_by_then = await voucher_entries(container)
+    without_upkeep = await bar.scan(barista, second["code"])
+
+    assert interval > timedelta(0)
+    assert refunded_by_then == [ISSUE, ISSUE, ISSUE, REFUND, REDEEM]
+    for answer, issued in ((with_upkeep, first), (without_upkeep, second)):
+        assert answer.status_code == 200, answer.text
+        assert (answer.json()["voucher_id"], answer.json()["repeat"]) == (issued["id"], False)
+    [own] = await rows(container, barista)
+    assert (str(own.id), own.status) == (forgotten["id"], VoucherStatus.EXPIRED)
+    assert await factory.balance_micro(barista) == WEALTH
+    assert await voucher_entries(container) == [ISSUE, ISSUE, ISSUE, REFUND, REDEEM, REDEEM]
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_somebody_who_scans_their_own_voucher_is_answered_like_anybody(
+    bar: Bar, factory: Factory, container: Container, clock: FrozenClock
+) -> None:
+    """An admin who tries the bar alone holds the voucher and scans it. The upkeep of
+    the request and the scan lock the same account, one after the other: accepted,
+    repeated inside the window and refused after it, like every voucher. A voucher of
+    their own that has expired is refused, whether the upkeep of the request has
+    refunded it by then or the scan does."""
+    admin = await factory.admin(balance_micro=WEALTH)
+    issued = await bar.get_voucher(admin)
+    kept_too_long = [await bar.get_voucher(admin, CHEAPEST) for _ in range(2)]
+
+    first = await bar.scan(admin, issued["code"])
+    again = await bar.scan(admin, issued["code"])
+    clock.advance(RESCAN + INSTANT)
+    afterwards = await bar.scan(admin, issued["code"])
+    clock.advance(TTL)
+    # The request that carries this scan refunds both expired vouchers in its upkeep;
+    # the next scan follows at once and its request runs none.
+    expired = [await bar.scan(admin, voucher["code"]) for voucher in kept_too_long]
+
+    assert (first.status_code, first.json()["repeat"]) == (200, False)
+    assert again.json() == first.json() | {"repeat": True}
+    for refused in (afterwards, *expired):
+        assert (refused.status_code, refused.json()) == (400, CODE_INVALID)
+    assert await voucher_entries(container) == [ISSUE, ISSUE, ISSUE, REDEEM, REFUND, REFUND]
+    assert await factory.balance_micro(admin) == WEALTH - PRICE
     await assert_books_balance(container.uow_factory)
 
 

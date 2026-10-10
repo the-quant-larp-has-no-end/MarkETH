@@ -1,7 +1,7 @@
 "use client";
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useId, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useId, useState } from "react";
 
 import { ErrorBanner, InlineError } from "@/components/feedback";
 import { TextAreaField } from "@/components/form";
@@ -9,7 +9,6 @@ import { OutcomeToggle } from "@/components/market";
 import { Amount, Missing } from "@/components/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { placeError } from "@/lib/api/errors";
-import { keys } from "@/lib/api/keys";
 import {
   closeMarketMutation,
   haltMarketMutation,
@@ -18,7 +17,7 @@ import {
   resumeMarketMutation,
   voidMarketMutation,
 } from "@/lib/api/mutations";
-import { riskQuery } from "@/lib/api/queries";
+import { marketQuery } from "@/lib/api/queries";
 import type { MarketDetailResponse, Outcome } from "@/lib/api/schema";
 import { useConfig } from "@/lib/api/session";
 
@@ -259,30 +258,32 @@ export function ResolveDialog({ market, ...frame }: MarketDialogProps) {
 
 /**
  * Void (CLOSED): a reason, which is published as the market's resolution. The dialog
- * states the market's `void_rule` as the consequence and, from this market's row of
- * `GET /admin/risk`, what a void costs VIS now. That figure is read afresh for every
- * opening and never shown from an earlier read; until it is there, and when it cannot be
- * read, the void cannot be confirmed.
+ * states the market's `void_rule` as the consequence and what a void costs VIS now: the
+ * `void_cost_cr` of the market itself, which `GET /markets/{market_id}` sends to admins.
+ *
+ * The market is read afresh for every opening, and the figure is never shown from an
+ * earlier read. Until that read is back the figure is a skeleton, and when it fails the
+ * dialog shows the banner; either way the void cannot be confirmed. Neither can it when
+ * the API has no figure: a market with nothing to void was settled in the meantime, and
+ * the screen behind the dialog shows it as it is.
  */
 export function VoidDialog({ market, ...frame }: MarketDialogProps) {
   const config = useConfig();
-  const client = useQueryClient();
   const [reason, setReason] = useState("");
   const action = useMarketAction(voidMarketMutation, market.id, frame.onClose);
-  const risk = useQuery({ ...riskQuery, enabled: frame.open, refetchOnMount: "always" });
+  // The dialog reads the market itself: `isFetchedAfterMount` then says that the read of
+  // this opening has come back, whatever the screen behind it had in hand.
+  const fresh = useQuery({
+    ...marketQuery(market.id),
+    enabled: frame.open,
+    refetchOnMount: "always",
+  });
   const placed = action.error ? placeError(action.error, ["reason"]) : null;
   const typed = reason.trim();
 
-  const unread = risk.error !== null && !risk.isFetching;
-  const read = frame.open && !risk.isFetching && risk.error === null && risk.data !== undefined;
-  const row = read ? risk.data.markets.find((entry) => entry.id === market.id) : undefined;
-  // The risk page lists every market that is not settled. One that is missing there has
-  // been settled since the screen behind this dialog was read: show it as it is.
-  const settledSince = read && row === undefined;
-  useEffect(() => {
-    if (!settledSince) return;
-    void client.invalidateQueries({ queryKey: keys.markets.detail(market.id) });
-  }, [settledSince, client, market.id]);
+  const unread = fresh.error !== null && !fresh.isFetching;
+  const read = fresh.isFetchedAfterMount && fresh.error === null && fresh.data !== undefined;
+  const cost = read ? fresh.data.void_cost_cr : undefined;
 
   return (
     <ActionDialog
@@ -293,7 +294,7 @@ export function VoidDialog({ market, ...frame }: MarketDialogProps) {
       confirm="Void"
       destructive
       pending={action.pending}
-      disabled={typed === "" || row === undefined}
+      disabled={typed === "" || typeof cost !== "string"}
       error={action.error}
       message={placed?.form}
       onConfirm={() => action.send({ reason: typed })}
@@ -303,9 +304,9 @@ export function VoidDialog({ market, ...frame }: MarketDialogProps) {
         className="flex min-h-11 items-center justify-between gap-3 rounded-md bg-background px-3 py-2"
       >
         <span className="type-body-sm text-muted-foreground">What a void costs VIS now</span>{" "}
-        {row !== undefined ? (
-          <Amount value={row.void_cost_cr} />
-        ) : settledSince ? (
+        {typeof cost === "string" ? (
+          <Amount value={cost} />
+        ) : cost === null ? (
           <Missing />
         ) : (
           !unread && (
@@ -316,8 +317,8 @@ export function VoidDialog({ market, ...frame }: MarketDialogProps) {
           )
         )}
       </div>
-      {unread && risk.error !== null && (
-        <ErrorBanner error={risk.error} onRetry={() => void risk.refetch()} />
+      {unread && fresh.error !== null && (
+        <ErrorBanner error={fresh.error} onRetry={() => void fresh.refetch()} />
       )}
       <TextAreaField
         label="Reason"

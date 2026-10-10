@@ -77,6 +77,7 @@ from tests.support.books import assert_books_balance, count_rows, system_balance
 from tests.support.clock import FrozenClock
 from tests.support.factories import ActAs, Factory, identity_of
 from tests.support.settings import load_base_settings
+from tests.support.statements import recorded_statements, takes_a_row_lock
 
 pytestmark = pytest.mark.integration
 
@@ -329,6 +330,26 @@ async def until_it_waits(container: Container, operation: asyncio.Task[Any]) -> 
                 if await uow.session.scalar(queued):
                     return
             assert not operation.done(), "it went through without waiting for the lock"
+            await asyncio.sleep(0.01)
+
+
+async def until_both_wait(
+    container: Container, first: asyncio.Task[Any], second: asyncio.Task[Any]
+) -> None:
+    """Return once two sessions of the database queue for a lock: nothing else runs in
+    a test, so they are the two operations'. Fail if one of them ends instead, or the
+    two do not both queue in `LOCK_WAIT_SECONDS`."""
+    queued = text(
+        "SELECT count(*) FROM pg_stat_activity"
+        " WHERE datname = current_database() AND wait_event_type = 'Lock'"
+    )
+    async with asyncio.timeout(LOCK_WAIT_SECONDS):
+        while True:
+            async with container.uow_factory() as uow:
+                if await uow.session.scalar(queued) == 2:
+                    return
+            assert not first.done(), "the first went through without waiting for its lock"
+            assert not second.done(), "the second went through without waiting for its lock"
             await asyncio.sleep(0.01)
 
 
@@ -1106,6 +1127,88 @@ async def test_a_redemption_locks_the_code_row_then_the_users_account_then_issua
     assert vis_was_free
     assert account_was_free
     assert await factory.balance_micro(alice_row) == 2 * VALUE
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_redemption_reads_its_batch_and_never_locks_it(
+    acting: Acting, factory: Factory, container: Container
+) -> None:
+    """A revocation holds the row of the batch while it takes the rows of its codes. A
+    redemption holds the row of its code; if it locked the batch too, each could end
+    up waiting for the other. It reads the batch as it is committed: it does not wait
+    for whoever holds that row, and no statement of it asks for a lock on it."""
+    admin = await factory.admin()
+    alice_row = await factory.user()
+    alice = factory.identity(alice_row)
+    batch = await acting.batch(admin, count=2)
+    first, second = batch.codes
+
+    async with container.uow_factory() as revoking:
+        assert await revoking.code_batches.get(batch.id, for_update=True) is not None
+        redeemed = await asyncio.wait_for(container.codes.redeem(alice, first), LOCK_WAIT_SECONDS)
+    with recorded_statements(container) as statements:
+        await container.codes.redeem(alice, second)
+
+    assert redeemed.value_cr == to_cr(VALUE)
+    locking = [statement for statement in statements if takes_a_row_lock(statement)]
+    assert "FROM codes" in locking[0], "the code row is the first lock of a redemption"
+    assert "FROM accounts" in locking[1], "the user's account is the second"
+    assert any("FROM code_batches" in statement for statement in statements), "it is read"
+    assert not any("code_batches" in statement for statement in locking)
+    assert await factory.balance_micro(alice_row) == 2 * VALUE
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_a_redemption_and_a_revocation_that_meet_at_a_code_do_not_wait_for_each_other(
+    acting: Acting, factory: Factory, container: Container
+) -> None:
+    """The revocation holds the row of the batch and queues for the row of a code; the
+    redemption holds that row. It goes on without the batch's row, so the two end one
+    after the other and neither is ended by Postgres to break a cycle: the code is
+    redeemed, and the other code of the batch revoked.
+
+    Each erased the plain text of the code it took, under the lock it held on that
+    row: while both were still under way, the committed rows kept both codes."""
+    admin = await factory.admin()
+    alice_row = await factory.user()
+    alice = factory.identity(alice_row)
+    batch = await acting.batch(admin, count=2)
+    taken, left = batch.codes
+    the_code = select(Code.id).where(Code.code_hash == hash_code(plain(taken)))
+    the_batch = select(CodeBatch.id).where(CodeBatch.id == batch.id)
+
+    async with container.uow_factory() as holder:
+        await holder.accounts.get_user_account(alice_row.id, for_update=True)
+        redemption = asyncio.create_task(container.codes.redeem(alice, taken))
+        await until_it_waits(container, redemption)
+        revocation = asyncio.create_task(
+            container.codes.revoke(factory.identity(admin), batch.id, RevokeCodesRequest())
+        )
+        await until_both_wait(container, redemption, revocation)
+        code_was_held = not await lockable(container, the_code)
+        batch_was_held = not await lockable(container, the_batch)
+        kept_meanwhile = [(await row_of(container, code)).code for code in batch.codes]
+    redeemed, revoked = await asyncio.wait_for(
+        asyncio.gather(redemption, revocation), 2 * LOCK_WAIT_SECONDS
+    )
+
+    assert code_was_held, "by the redemption, which waits for the user's account"
+    assert batch_was_held, "by the revocation, which waits for the code"
+    assert kept_meanwhile == [plain(taken), plain(left)]
+    assert redeemed.value_cr == to_cr(VALUE)
+    assert (revoked.revoked_count, revoked.batch.redeemed_count, revoked.batch.active_count) == (
+        1,
+        1,
+        0,
+    )
+    rows = [await row_of(container, code) for code in batch.codes]
+    assert [(row.status, row.code) for row in rows] == [
+        (CodeStatus.REDEEMED, None),
+        (CodeStatus.REVOKED, None),
+    ]
+    assert rows[0].redeemed_by == alice_row.id
+    assert await factory.balance_micro(alice_row) == VALUE
+    assert await redemptions(container) == 1
     await assert_books_balance(container.uow_factory)
 
 

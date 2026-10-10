@@ -38,6 +38,7 @@ test("a first visit through a code card: set-up, the welcome dialog, then the re
           })
         : json(200, profile),
     "PUT /api/me/profile": () => {
+      // A profile made a moment ago: nobody has anything to tell it yet.
       profile = me({ username: "anna_m", balance_cr: "500" });
       return json(200, { ...profile, signup_granted: true });
     },

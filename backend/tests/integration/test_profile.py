@@ -759,6 +759,7 @@ ME_FIELDS: Final[set[str]] = {
     "can_get_voucher",
     "monthly_grant_cr",
     "next_monthly_grant_at",
+    "notices",
 }
 
 

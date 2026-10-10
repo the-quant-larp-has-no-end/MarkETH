@@ -800,7 +800,7 @@
         "type": "object"
       },
       "HistoryResponse": {
-        "description": "`GET /markets/{id}/history`: points in ascending `version` order.",
+        "description": "`GET /markets/{id}/history`: the chart of a market, points in ascending `version`\norder.\n\nThe first point is the opening and the last is the latest price. Where a market\nhas more points than an answer holds, the ones in between are thinned evenly:\nversions rise from point to point and may skip.",
         "properties": {
           "points": {
             "items": {
@@ -813,7 +813,7 @@
             "$ref": "#/components/schemas/HistorySource"
           },
           "until": {
-            "description": "The right edge of the chart: the server's now while the market can still trade,\notherwise the moment trading ended. A chart is drawn up to here, and with no\nclock of the device.",
+            "description": "The right edge of the chart: the server's now while the market can still trade,\notherwise the moment trading ended. No point lies after it. A chart is drawn up\nto here, and with no clock of the device.",
             "format": "date-time",
             "title": "Until",
             "type": "string"
@@ -961,7 +961,7 @@
             "type": "string"
           },
           "rank": {
-            "description": "The user's place in the list as it was asked for, 1 being first. It counts within\nthe filters and in the chosen order.",
+            "description": "The user's place in the list as it was asked for, 1 being first. It counts within\nthe filters and in the chosen order: the first of a filtered list has rank 1,\nwhatever their place among everybody is.",
             "title": "Rank",
             "type": "integer"
           },
@@ -2238,7 +2238,7 @@
           },
           "status": {
             "$ref": "#/components/schemas/MarketStatus",
-            "description": "The effective status, as in `MarketSummary`. EXPIRED for a proposal whose\n`close_at` passed before an admin decided on it: it is not under review any more."
+            "description": "The effective status, as in `MarketSummary`. EXPIRED for a proposal whose\n`close_at` passed before an admin decided on it: it is out of review."
           },
           "yes_definition": {
             "title": "Yes Definition",
@@ -5450,6 +5450,7 @@
             }
           },
           {
+            "description": "Compared with `credits_cr` of a row: the balance and the value of the open\npositions together, not the balance alone.",
             "in": "query",
             "name": "min_credits_cr",
             "required": false,
@@ -5466,6 +5467,7 @@
                   "type": "null"
                 }
               ],
+              "description": "Compared with `credits_cr` of a row: the balance and the value of the open\npositions together, not the balance alone.",
               "title": "Min Credits Cr"
             }
           },
@@ -5878,7 +5880,7 @@
             ]
           }
         ],
-        "summary": "Chart data: the price after every trade",
+        "summary": "Chart data: the price after a market's trades, thinned to a bounded size",
         "tags": [
           "live"
         ]

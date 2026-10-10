@@ -52,7 +52,10 @@ export function PlayerSheet({ player, open, onOpenChange }: PlayerSheetProps) {
       }
     >
       <SheetBody>
-        <dl data-slot="player-statistics" className="flex flex-col gap-2 rounded-md bg-background p-3">
+        <dl
+          data-slot="player-statistics"
+          className="flex flex-col gap-2 rounded-md bg-background p-3"
+        >
           <Figure label="Rank in this list">{formatCount(player.rank)}</Figure>
           <Figure label={measureOf("credits").name}>
             <Amount value={player.credits_cr} full />

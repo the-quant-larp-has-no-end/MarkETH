@@ -33,6 +33,7 @@ from app.core.enums import (
     CodeStatus,
     JournalKind,
     MarketStatus,
+    NoticeKind,
     ResolutionOutcome,
     TradeSide,
     UserRole,
@@ -53,6 +54,7 @@ from app.models import (
     IdempotencyKey,
     JournalEntry,
     Market,
+    Notice,
     OutboxEvent,
     Position,
     Posting,
@@ -74,6 +76,7 @@ from scripts.seed import (
     BATCH_SIZE,
     BATCH_VALID_FOR,
     DESK,
+    EXPIRES_AFTER,
     MARKETS,
     SEED_NAMESPACE,
     STUDENTS,
@@ -86,6 +89,7 @@ from scripts.seed import (
     seed,
 )
 from tests.support.books import assert_books_balance, count_rows, replay, system_balance
+from tests.support.clock import FrozenClock
 from tests.support.database import BACKEND_ROOT, reset_database
 from tests.support.factories import ActAs, Factory, PortalHeaders
 from tests.support.settings import EXAMPLE_ENV_FILE
@@ -94,12 +98,23 @@ pytestmark = pytest.mark.integration
 
 PEOPLE: Final[tuple[Person, ...]] = (*STUDENTS, DESK)
 TRADES_PLANNED: Final[int] = sum(len(market.trades) for market in MARKETS)
+NEVER_OPENED: Final[frozenset[MarketStatus]] = frozenset(
+    {MarketStatus.PROPOSED, MarketStatus.EXPIRED, MarketStatus.REJECTED}
+)
 OPENED: Final[tuple[DemoMarket, ...]] = tuple(
-    market
-    for market in MARKETS
-    if market.ends not in (MarketStatus.PROPOSED, MarketStatus.REJECTED)
+    market for market in MARKETS if market.ends not in NEVER_OPENED
 )
 """The demo markets an approval opened."""
+
+(EXPIRING,) = [market for market in MARKETS if market.ends is MarketStatus.EXPIRED]
+"""The proposal the demo lets expire."""
+
+
+def stored_status(plan: DemoMarket) -> MarketStatus:
+    """What the row of a demo market says where the plan leaves it: the status it ends
+    in, except that no row says EXPIRED. The proposal that expires stays PROPOSED."""
+    return MarketStatus.PROPOSED if plan.ends is MarketStatus.EXPIRED else plan.ends
+
 
 PRINTED_CODE: Final[re.Pattern[str]] = re.compile(
     r"^\s+([0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{4})  (\S+)$", re.MULTILINE
@@ -217,6 +232,7 @@ async def demo_state(container: Container) -> dict[str, object]:
         batches = (await session.scalars(select(CodeBatch))).all()
         codes = (await session.scalars(select(Code))).all()
         grants = (await session.scalars(select(Grant))).all()
+        notices = (await session.scalars(select(Notice))).all()
         entries = (await session.scalars(select(JournalEntry))).all()
         audited = (await session.scalars(select(AuditLogEntry))).all()
         outbox = (await session.scalars(select(OutboxEvent))).all()
@@ -318,6 +334,10 @@ async def demo_state(container: Container) -> dict[str, object]:
         ),
         "codes": Counter(code.status for code in codes),
         "grants": sorted((name[grant.user_id], grant.period) for grant in grants),
+        "notices": sorted(
+            (name[notice.user_id], notice.kind, question[notice.market_id], notice.seen_at)
+            for notice in notices
+        ),
         "journal entries": Counter(entry.kind for entry in entries),
         "audit rows": Counter(
             (row.action, name[row.actor_id] if row.actor_id else None) for row in audited
@@ -584,7 +604,8 @@ async def test_the_seed_leaves_every_market_in_the_state_its_plan_names(
     seeded: str, container: Container
 ) -> None:
     """Open in each tier, one paused, one closed, one resolved, one voided, one still
-    proposed and one rejected, each proposed by its student and opened by the desk."""
+    proposed, one that will expire and one rejected, each proposed by its student and
+    opened by the desk."""
     desk = await user_of(container, DESK)
     markets = {market.question: market for market in await rows(container, Market)}
     resolutions = {row.market_id: row for row in await rows(container, Resolution)}
@@ -594,7 +615,7 @@ async def test_the_seed_leaves_every_market_in_the_state_its_plan_names(
     for plan in MARKETS:
         market = markets[plan.question]
         proposer = await user_of(container, STUDENTS[plan.proposer])
-        assert market.status is plan.ends, plan.slug
+        assert market.status is stored_status(plan), plan.slug
         assert market.created_by == proposer.id
         if plan in OPENED:
             # The tier is the desk's choice at the approval; the proposal named none.
@@ -973,8 +994,108 @@ async def test_a_second_run_finds_everything_and_writes_nothing(
     assert again.count("already there") == len(PEOPLE) + len(VOUCHERS) + 1
     assert "registered" not in again
     assert "issued" not in again
+    # The clock of the tests stands still: the proposal that expires has not yet.
     for plan in MARKETS:
-        assert f"{plan.ends:<9} {plan.question}" in again
+        assert f"{stored_status(plan):<9} {plan.question}" in again
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_the_proposal_the_demo_lets_expire_is_proposed_first_and_expired_from_its_deadline(
+    seeded: str,
+    container: Container,
+    factory: Factory,
+    clock: FrozenClock,
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Made through the service like every proposal, so its deadline lies ahead when
+    it is made. `EXPIRES_AFTER` later it is expired to its proposer and to the admins,
+    out of their review queue, and no run of the seed and no admin changes that."""
+    dario = await user_of(container, STUDENTS[EXPIRING.proposer])
+    admin = await factory.admin()
+    expiring = await market_of(container, EXPIRING)
+    waiting = await market_of(
+        container, next(plan for plan in MARKETS if plan.ends is MarketStatus.PROPOSED)
+    )
+
+    async def seen() -> tuple[str, list[str], list[str]]:
+        as_user(dario)
+        proposals = (await client.get("/api/me/proposals")).json()["items"]
+        (own,) = [item["status"] for item in proposals if item["id"] == str(expiring.id)]
+        as_user(admin)
+        queue = (await client.get("/api/markets", params={"status": "PROPOSED"})).json()
+        expired = (await client.get("/api/markets", params={"status": "EXPIRED"})).json()
+        return (
+            own,
+            [item["id"] for item in queue["items"]],
+            [item["id"] for item in expired["items"]],
+        )
+
+    assert expiring.close_at == expiring.created_at + EXPIRES_AFTER
+    assert await seen() == ("PROPOSED", [str(expiring.id), str(waiting.id)], [])
+
+    clock.set(expiring.close_at)
+
+    assert await seen() == ("EXPIRED", [str(waiting.id)], [str(expiring.id)])
+    as_user(admin)
+    approval = await client.post(
+        f"/api/admin/markets/{expiring.id}/approve", json={"tier": "DEFAULT"}
+    )
+    assert (approval.status_code, approval.json()["code"]) == (409, "CONFLICT")
+    assert approval.json()["message"] == "This proposal expired: its closing time has passed."
+    left_behind = await everything(container)
+    capsys.readouterr()
+
+    await seed(container)
+
+    assert f"{'EXPIRED':<9} {EXPIRING.question}" in capsys.readouterr().out
+    assert await everything(container) == left_behind
+    assert (await market_of(container, EXPIRING)).status is MarketStatus.PROPOSED
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_every_approval_of_the_seed_told_its_proposer_once_and_no_run_tells_them_again(
+    seeded: str,
+    container: Container,
+    clock: FrozenClock,
+    client: httpx.AsyncClient,
+    as_user: ActAs,
+) -> None:
+    """The desk approved through `MarketLifecycleService`, which writes the notice with
+    the approval: one per opened market, for its proposer, unseen. A second run opens
+    nothing and so tells nobody anything, also after a notice was marked seen."""
+    proposers = {
+        plan.question: await user_of(container, STUDENTS[plan.proposer]) for plan in OPENED
+    }
+    questions = {market.id: market.question for market in await rows(container, Market)}
+
+    told = await rows(container, Notice)
+
+    assert sorted((questions[notice.market_id], notice.user_id) for notice in told) == sorted(
+        (question, proposer.id) for question, proposer in proposers.items()
+    )
+    assert {(notice.kind, notice.seen_at) for notice in told} == {
+        (NoticeKind.PROPOSAL_APPROVED, None)
+    }
+    anna = await user_of(container, STUDENTS[0])
+    as_user(anna)
+    listed = (await client.get("/api/me")).json()["notices"]
+    assert sorted(notice["question"] for notice in listed) == sorted(
+        plan.question for plan in OPENED if plan.proposer == 0
+    )
+    assert len(listed) == 2
+
+    marked = await client.post(f"/api/me/notices/{listed[0]['id']}/seen")
+    assert marked.status_code == 200
+    after_the_mark = await everything(container)
+    clock.advance(EXPIRES_AFTER)
+    await seed(container)
+
+    assert await everything(container) == after_the_mark
+    assert [notice["id"] for notice in (await client.get("/api/me")).json()["notices"]] == [
+        listed[1]["id"]
+    ]
     await assert_books_balance(container.uow_factory)
 
 
@@ -1040,7 +1161,7 @@ async def test_the_seed_needs_neither_redis_nor_scylla(
 
     assert len(printed_codes(capsys.readouterr().out)) == BATCH_SIZE
     assert Counter(market.status for market in await rows(container, Market)) == Counter(
-        plan.ends for plan in MARKETS
+        stored_status(plan) for plan in MARKETS
     )
     assert await count_rows(container.uow_factory, Trade) == TRADES_PLANNED
     assert await count_rows(container.uow_factory, Voucher) == len(VOUCHERS)
@@ -1149,7 +1270,7 @@ async def test_the_command_seeds_the_stack_prints_the_codes_and_can_be_run_again
     assert await count_rows(container.uow_factory, User) == len(PEOPLE)
     assert await count_rows(container.uow_factory, Trade) == TRADES_PLANNED
     statuses = Counter(market.status for market in await rows(container, Market))
-    assert statuses == Counter(plan.ends for plan in MARKETS)
+    assert statuses == Counter(stored_status(plan) for plan in MARKETS)
     after_the_first = await everything(container)
 
     status, out, err = await run_the_command(environment)

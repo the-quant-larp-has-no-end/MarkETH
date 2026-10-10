@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from app.container import Container
 from app.core.config import Settings, VoucherProduct
 from app.core.enums import (
+    STORED_MARKET_STATUSES,
     AccountKind,
     AlertSeverity,
     CodeStatus,
@@ -449,7 +450,7 @@ async def test_the_page_shows_open_markets_loss_budgets_and_outstanding_obligati
     await assert_books_balance(container.uow_factory)
 
 
-@pytest.mark.parametrize("status", list(MarketStatus))
+@pytest.mark.parametrize("status", STORED_MARKET_STATUSES, ids=str)
 async def test_a_market_is_owed_on_until_it_is_settled_and_capped_while_open_or_halted(
     container: Container, factory: Factory, owner_engine: AsyncEngine, status: MarketStatus
 ) -> None:
@@ -838,6 +839,13 @@ async def test_voiding_a_market_costs_what_its_sellers_took_out_above_their_cost
     )
     assert refunds_micro == bob_paid_micro
     assert row.void_cost_cr == to_cr(refunds_micro - account.balance_micro)
+    assert row.void_cost_cr == to_cr(
+        container.market_view.void_cost_micro(refunds_micro, account.balance_micro)
+    )
+    # The page an admin voids the market from says the same.
+    admin = factory.identity(await factory.admin())
+    assert (await container.markets.detail(admin, market.id)).void_cost_cr == row.void_cost_cr
+    assert (await container.markets.detail(admin, other.id)).void_cost_cr == to_cr(0)
     # Not an obligation: the total is balances, vouchers and exposure, as ever.
     owed = page.obligations
     assert owed.total_cr == owed.user_balances_cr + owed.market_exposure_cr
@@ -868,8 +876,9 @@ async def test_whatever_is_traded_the_exposure_stays_within_the_budget_and_a_voi
 ) -> None:
     """For any run of buys and sells on a market: its row shows the account as lmsr's
     costs and proceeds add up, the exposure is at most the budget (the LMSR bound), a
-    void costs the net stakes minus the account and never less than nothing, and the
-    page's total is the sum of its parts.
+    void costs the net stakes minus the account and never less than nothing, the
+    market's own detail tells an admin that same cost, and the page's total is the
+    sum of its parts.
 
     Every example trades a market of its own; the markets of earlier examples stay in
     the book, which the sums over all rows have to cope with.
@@ -909,6 +918,8 @@ async def test_whatever_is_traded_the_exposure_stays_within_the_budget_and_a_voi
     assert row.exposure_cr <= row.budget_cr
     assert row.void_cost_cr == to_cr(refunds_micro - account_micro)
     assert row.void_cost_cr >= 0
+    an_admin = factory.identity(await factory.user(role=UserRole.ADMIN))
+    assert (await container.markets.detail(an_admin, market.id)).void_cost_cr == row.void_cost_cr
     owed = page.obligations
     assert owed.market_exposure_cr == sum(row.exposure_cr for row in page.markets)
     assert owed.total_cr == (

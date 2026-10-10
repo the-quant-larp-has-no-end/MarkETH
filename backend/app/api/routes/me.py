@@ -1,4 +1,5 @@
-"""`/me` and its lists: what a user reads about themselves (SPEC §10, A.2)."""
+"""`/me` and its lists: what a user reads about themselves, and the one thing they
+mark there, a notice as seen (SPEC §10, A.2)."""
 
 from typing import Annotated
 from uuid import UUID

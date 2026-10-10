@@ -77,8 +77,9 @@ function ProfileCard({ me }: { me: MeResponse }) {
         <p>
           You accepted the usage policy on <DateTime value={me.policy_accepted_at} />.
         </p>
-        {/* A line of its own; the link is as wide as its words, not as the card. */}
-        <TextLink href="/policy" className="self-start">
+        {/* A line of its own, as wide as its words. Its 44 px target reaches into the
+            card's padding, so the words end 16 px above the card's edge like the rest. */}
+        <TextLink href="/policy" className="-mb-3 self-start">
           Read the usage policy
         </TextLink>
       </div>

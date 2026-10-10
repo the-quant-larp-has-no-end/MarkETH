@@ -6,8 +6,9 @@
  * a scan of its own again only once it has been out of sight for `awayMs`. Until then
  * every sight of it is noted and nothing goes out.
  *
- * - **Every QR that was sent is remembered, not only the latest.** Two vouchers in front of
- *   the camera at once are read in turn, and each is sent once.
+ * - **Every QR that was sent is remembered, not only the latest.** A second voucher that is
+ *   read in between does not make the scanner forget the first: while the camera reads now
+ *   one, now the other, neither is sent again.
  * - **Out of sight is measured in time the scanner was watching.** While a result, a check
  *   or the typing sheet covers the camera view, nothing can be seen and no time passes: a
  *   voucher is not "away" because the screen was busy with its answer.

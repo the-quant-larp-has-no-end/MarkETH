@@ -8,6 +8,7 @@ import { keys, type QuoteRequest } from "@/lib/api/keys";
 import { tradeMutation } from "@/lib/api/mutations";
 import type {
   BuySlider,
+  ErrorCode,
   QuoteResponse,
   SellPortion,
   SellPreset,
@@ -149,6 +150,19 @@ function tradeRequest(request: QuoteRequest, quote: QuoteResponse): TradeRequest
   };
 }
 
+/**
+ * The refusals that say the screen is behind: the balance, the stake, the holding or the
+ * market's status is another one than the ticket showed. The trade's own handling reads
+ * the market again for them (`tradeMutation`). The quote on screen is about the same
+ * caller and the same market, so it did not hold either.
+ */
+const SCREEN_BEHIND: readonly ErrorCode[] = [
+  "INSUFFICIENT_BALANCE",
+  "INSUFFICIENT_SHARES",
+  "MARKET_NOT_OPEN",
+  "LIMIT_EXCEEDED",
+];
+
 /** What the two verdicts on a trade do to its ticket. */
 const TRADES: SubmissionRules<TradeRequest, TradeResponse, Sent, Rest> = {
   mutation: tradeMutation,
@@ -165,13 +179,19 @@ const TRADES: SubmissionRules<TradeRequest, TradeResponse, Sent, Rest> = {
 
   /**
    * A 4xx other than 429: refused, nothing booked. After QUOTE_STALE the quote of the
-   * answer is the quote for this input.
+   * answer is the quote for this input. After a refusal that says the screen is behind,
+   * the quote for this input is asked for again: the server judges the amount, and Confirm
+   * waits for what it says now. Either way only a quote the sheet is showing is touched.
    */
   refused({ target: marketId, rest, attempt, error, client }) {
     const moved = staleQuote(error);
     const quoteKey = keys.markets.quote(marketId, attempt.request);
-    if (moved !== null && client.getQueryState(quoteKey) !== undefined) {
-      client.setQueryData<QuoteResponse>(quoteKey, moved);
+    if (client.getQueryState(quoteKey) !== undefined) {
+      if (moved !== null) {
+        client.setQueryData<QuoteResponse>(quoteKey, moved);
+      } else if (error.code !== null && SCREEN_BEHIND.includes(error.code)) {
+        void client.invalidateQueries({ queryKey: quoteKey, exact: true });
+      }
     }
     return { ...rest, refusal: { choiceKey: attempt.choiceKey, error } };
   },

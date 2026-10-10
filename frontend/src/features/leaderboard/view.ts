@@ -168,7 +168,7 @@ export function requestOf(view: View): LeaderboardParams {
 export type Draft = Record<FilterName, string>;
 
 /** How the bound of a filter is typed, or null for the two selects. */
-export function kindOf(name: FilterName): BoundKind | null {
+function kindOf(name: FilterName): BoundKind | null {
   const measure = MEASURES.find((candidate) => candidate.from === name || candidate.to === name);
   return measure?.kind ?? null;
 }
@@ -191,6 +191,8 @@ export function draftOf(filters: Filters): Draft {
  * `.5` half a percent. Null for what is no percentage.
  */
 function fractionOf(typed: string): string | null {
+  // A point alone is no figure yet.
+  if (typed === ".") return null;
   const whole = typed.startsWith(".") ? `0${typed}` : typed;
   return percentToFraction(whole.endsWith(".") ? whole.slice(0, -1) : whole);
 }
@@ -212,7 +214,7 @@ export function filtersOf(draft: Draft): Filters {
 
 /* ---- Filters that are set ---------------------------------------------------------- */
 
-/** A filter that is set, as its chip under the sort row states it. */
+/** A filter that is set, as its chip under the sort chips states it. */
 export type SetFilter = {
   id: string;
   /** "BSc Computer Science", "Win rate from 50%". */

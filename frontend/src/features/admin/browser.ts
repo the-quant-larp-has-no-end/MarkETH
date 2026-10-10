@@ -24,7 +24,13 @@ export const browser = {
     return () => URL.revokeObjectURL(address);
   },
 
-  /** Opens the browser's print dialog for the page as its print styles show it. */
+  /**
+   * Opens the browser's print dialog for the page as its print styles show it.
+   *
+   * Call it in the handler of the tap that asks for it, and with what is to be printed on
+   * the page already. A browser opens its print dialog for a tap; what it does with a
+   * print that a page asks for later, by itself, is up to that browser.
+   */
   print(): void {
     window.print();
   },

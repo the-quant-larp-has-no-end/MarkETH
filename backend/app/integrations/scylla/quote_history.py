@@ -5,8 +5,12 @@ history endpoint reads it back for the chart. Postgres remains the record: the s
 points can always be rebuilt from the `trades` table, which is what the endpoint falls
 back to when a call here raises `ScyllaUnavailableError`.
 
-A partition is one market on one UTC day. `ts` has millisecond precision in ScyllaDB,
-so a point read back carries its timestamp truncated to the millisecond.
+A partition is one market on one UTC day, with its newest point first. `ts` has
+millisecond precision in ScyllaDB, so a point read back carries its timestamp truncated
+to the millisecond.
+
+A read is bounded: it names how many points it wants, gets the newest ones, and is
+answered within one request timeout however many days it covers.
 """
 
 import asyncio
@@ -17,7 +21,7 @@ from typing import Final
 from uuid import UUID
 
 from app.core.config import ScyllaSettings
-from app.integrations.scylla.client import Row, ScyllaClient
+from app.integrations.scylla.client import Row, ScyllaClient, ScyllaUnavailableError
 
 TABLE: Final[str] = "quotes_by_market_day"
 
@@ -56,6 +60,7 @@ class QuoteHistoryStore:
     def __init__(self, client: ScyllaClient, settings: ScyllaSettings) -> None:
         self._client = client
         table = f"{settings.keyspace}.{TABLE}"
+        self._read_timeout_seconds = settings.request_timeout_seconds
         self._schema_timeout_seconds = settings.request_timeout_seconds * _SCHEMA_TIMEOUT_FACTOR
         self._create_keyspace = (
             f"CREATE KEYSPACE IF NOT EXISTS {settings.keyspace} WITH replication = "
@@ -69,10 +74,12 @@ class QuoteHistoryStore:
             "p_yes_micro, q_yes_micro, q_no_micro, trade_id) "
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
         )
+        # Newest first is the order a partition is stored in, so a LIMIT reads no row
+        # beyond the ones it returns.
         self._select = (
             "SELECT ts, version, p_yes_micro, q_yes_micro, q_no_micro, trade_id "
             f"FROM {table} WHERE market_id = %s AND day = %s AND ts >= %s AND ts <= %s "
-            "ORDER BY ts ASC, version ASC"
+            "ORDER BY ts DESC, version DESC LIMIT %s"
         )
 
     async def ensure_schema(self) -> None:
@@ -98,22 +105,45 @@ class QuoteHistoryStore:
             ),
         )
 
-    async def read(self, market_id: UUID, since: datetime, until: datetime) -> list[QuotePoint]:
-        """Points with `since <= ts <= until`, ascending by (ts, version).
+    async def read(
+        self, market_id: UUID, since: datetime, until: datetime, *, limit: int
+    ) -> list[QuotePoint]:
+        """The newest `limit` points with `since <= ts <= until`, ascending by
+        (ts, version).
 
-        Costs one query per UTC day in the range, all sent at once. The caller keeps
-        the range bounded; a market's lifetime (`MAX_MARKET_LIFETIME`) is the natural limit.
+        One query per UTC day of the range, the newest day first, each for no more
+        rows than are still missing, and none once `limit` is reached. However much a
+        market traded, ScyllaDB is asked for at most `limit` rows, and a market that
+        trades a lot costs a query or two. One that trades little is asked day by day
+        back to `since`: the caller keeps the range bounded, and a market's lifetime
+        (`MAX_MARKET_LIFETIME`) is the natural limit.
+
+        The read as a whole ends within one request timeout
+        (`SCYLLA_REQUEST_TIMEOUT_MS`), however many days it covers. After that it
+        raises `ScyllaUnavailableError`, like a statement that got no answer.
+
+        A `limit` below 1 is refused with `ValueError` before anything is sent.
         """
+        if limit < 1:
+            raise ValueError(f"a read asks for at least one point, got {limit}")
         since_ms, until_ms = _epoch_ms(since), _epoch_ms(until)
         first_day, last_day = _day_of(since_ms), _day_of(until_ms)
-        days = [first_day + timedelta(days=n) for n in range((last_day - first_day).days + 1)]
-        rows_per_day = await asyncio.gather(
-            *(
-                self._client.execute(self._select, (market_id, day, since_ms, until_ms))
-                for day in days
-            )
-        )
-        return [_to_point(market_id, row) for rows in rows_per_day for row in rows]
+        newest_first: list[Row] = []
+        try:
+            async with asyncio.timeout(self._read_timeout_seconds):
+                for days_back in range((last_day - first_day).days + 1):
+                    missing = limit - len(newest_first)
+                    if missing <= 0:
+                        break
+                    day = last_day - timedelta(days=days_back)
+                    newest_first += await self._client.execute(
+                        self._select, (market_id, day, since_ms, until_ms, missing)
+                    )
+        except TimeoutError as exc:
+            raise ScyllaUnavailableError(
+                f"ScyllaDB did not return a chart within {self._read_timeout_seconds:g} s"
+            ) from exc
+        return [_to_point(market_id, row) for row in reversed(newest_first)]
 
 
 def _epoch_ms(instant: datetime) -> int:

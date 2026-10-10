@@ -1,5 +1,5 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { AppShell } from "@/components/shell";
 import { sizeCharts } from "@/test/charts";
@@ -11,6 +11,7 @@ import {
   marketViewer,
   marketViewerWithPosition,
   statusEvent,
+  TODAY,
 } from "@/test/fixtures";
 import { deferred, json, mockApi } from "@/test/http";
 import { setViewport } from "@/test/media";
@@ -19,7 +20,16 @@ import { watchScrolling } from "@/test/observers";
 import { renderWithProviders } from "@/test/render";
 
 import { MarketDetailScreen } from "./index";
-import { HISTORY, MARKET, mockMarketApi, PATH } from "./testing";
+import {
+  answerTrade,
+  followsTicket,
+  HISTORY,
+  MARKET,
+  mockMarketApi,
+  PATH,
+  resetTrade,
+  sendTrade,
+} from "./testing";
 
 vi.mock("@/features/trade", async () => (await import("./testing")).tradeFeature);
 
@@ -30,13 +40,14 @@ type Market = ReturnType<typeof marketDetail>;
 let writes: ReturnType<typeof followHistoryWrites>;
 
 /**
- * The screen with its market read. The question is looked for as text: behind an open
- * sheet the page is hidden from assistive technology, and so from a query by role.
+ * The screen with its market read: its h1 is the question. It is looked for as text:
+ * behind an open sheet the page is hidden from assistive technology, and so from a query
+ * by role. The surface of the ticket has the question too, as its header.
  */
 async function open(market: Market = marketDetail()) {
   const api = mockMarketApi(market);
   const view = renderWithProviders(<MarketDetailScreen marketId={MARKET_ID} />);
-  await screen.findByText(QUESTION);
+  await screen.findByText(QUESTION, { selector: "h1" });
   return { api, ...view };
 }
 
@@ -68,6 +79,12 @@ beforeEach(() => {
   navigation.go(PATH);
   writes = followHistoryWrites();
   sizeCharts();
+  resetTrade();
+  vi.useFakeTimers({ now: TODAY, toFake: ["Date"] });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("MarketDetailScreen and the trade ticket", () => {
@@ -521,7 +538,7 @@ describe("MarketDetailScreen and the trade ticket", () => {
       expect(button("YES 54.8%")).toBeDisabled();
     });
 
-    test.each(["CLOSED", "RESOLVED", "VOID", "PROPOSED"] as const)(
+    test.each(["CLOSED", "RESOLVED", "VOID", "PROPOSED", "REJECTED", "EXPIRED"] as const)(
       "a %s market has no panel, and keeps to the 720 px column",
       async (status) => {
         navigation.go(`${PATH}?buy=YES`);
@@ -567,6 +584,221 @@ describe("MarketDetailScreen and the trade ticket", () => {
 
       expect(screen.getAllByTestId("ticket")).toHaveLength(1);
       expect(ticket()).toHaveAttribute("data-side", "BUY");
+    });
+  });
+
+  describe("the surface of the ticket has the question as its header", () => {
+    const header = () => document.querySelector<HTMLElement>("[data-slot=sheet-header]")!;
+
+    test("in the sheet it stands in the header row, on one line, beside the close cross", async () => {
+      const { user } = await open();
+      await user.click(button("YES 54.8%"));
+      const dialog = await sheet();
+
+      const question = within(header()).getByText(QUESTION);
+      expect(question).toHaveClass("truncate", "type-body-sm", "text-muted-foreground");
+      expect(dialog).toContainElement(header());
+      // The cross is the sheet's own, and the question ends before it.
+      expect(within(dialog).getByRole("button", { name: "Close" })).toBeEnabled();
+      expect(header()).toHaveClass("pr-12");
+    });
+
+    test("the header stands above the ticket and outside of it, so it does not scroll with it", async () => {
+      const { user } = await open();
+      await user.click(button("YES 54.8%"));
+      await sheet();
+
+      expect(ticket()).not.toContainElement(header());
+      expect(header().compareDocumentPosition(ticket()) & 4).toBeTruthy();
+      expect(header()).toHaveClass("shrink-0");
+    });
+
+    test("in the dialog from 768 px it is the same header", async () => {
+      setViewport("wide");
+      const { user } = await open();
+      await user.click(button("YES 54.8%"));
+      const dialog = await sheet();
+
+      expect(dialog).toHaveAttribute("data-slot", "dialog-content");
+      expect(within(header()).getByText(QUESTION)).toHaveClass("truncate");
+      expect(within(dialog).getByRole("button", { name: "Close" })).toBeInTheDocument();
+    });
+
+    test("in the panel the question stands alone: a panel is part of the page and has nothing to close", async () => {
+      setViewport("desktop");
+      await open();
+
+      const panel = screen.getByRole("complementary", { name: "Trade" });
+      const question = within(panel).getByText(QUESTION);
+      expect(question).toHaveClass("truncate", "type-body-sm", "text-muted-foreground");
+      expect(question.compareDocumentPosition(ticket()) & 4).toBeTruthy();
+      expect(ticket()).not.toContainElement(question);
+      // Above what scrolls: the panel's own first line, which keeps its height.
+      expect(question.parentElement).toBe(panel);
+      expect(question).toHaveClass("shrink-0");
+      expect(within(panel).queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
+    });
+
+    test("a long question is cut to its one line there, and is whole on the page", async () => {
+      const long =
+        "Will the number of students who hand in the first exercise sheet of the semester on time be above the number who hand it in late?";
+      mockMarketApi(marketDetail({ question: long }));
+      const { user } = renderWithProviders(<MarketDetailScreen marketId={MARKET_ID} />);
+      await user.click(await screen.findByRole("button", { name: "YES 54.8%" }));
+      await sheet();
+
+      expect(within(header()).getByText(long)).toHaveClass("truncate");
+      expect(screen.getByText(long, { selector: "h1" })).not.toHaveClass("truncate");
+    });
+  });
+
+  describe("while the sheet's trade is on its way", () => {
+    const cross = () => screen.getByRole("button", { name: "Close" });
+
+    test("the sheet cannot be closed: the cross stays, disabled, and Escape does nothing", async () => {
+      const { user } = await open();
+      await user.click(button("YES 54.8%"));
+      await sheet();
+      expect(cross()).toBeEnabled();
+
+      act(() => sendTrade());
+
+      expect(cross()).toBeDisabled();
+      await user.keyboard("{Escape}");
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(screen.getByRole("dialog", { name: "Trade" })).toBeInTheDocument();
+      expect(navigation.href).toBe(`${PATH}?buy=YES`);
+    });
+
+    test("once the answer is there it closes as ever", async () => {
+      const { user } = await open();
+      await user.click(button("YES 54.8%"));
+      await sheet();
+      act(() => sendTrade());
+
+      act(() => answerTrade());
+
+      expect(cross()).toBeEnabled();
+      await user.click(cross());
+      await waitFor(noSheet);
+      expect(navigation.href).toBe(PATH);
+      expect(navigation.depth).toBe(0);
+    });
+
+    test("the phone's Back does not take the sheet away: the request goes back into the address", async () => {
+      const { user } = await open();
+      await user.click(button("NO 45.2%"));
+      await sheet();
+      act(() => sendTrade());
+
+      act(() => navigation.router.back());
+
+      // The verdict is seen where the trade was made.
+      await waitFor(() => expect(navigation.href).toBe(`${PATH}?buy=NO`));
+      expect(screen.getByRole("dialog", { name: "Trade" })).toBeInTheDocument();
+      expect(screen.getByText("Ticket: BUY NO")).toBeInTheDocument();
+      expect(navigation.depth).toBe(1);
+      expect(cross()).toBeDisabled();
+
+      // With its answer the sheet is an ordinary sheet again: Back closes it.
+      act(() => answerTrade());
+      act(() => navigation.router.back());
+
+      await waitFor(noSheet);
+      expect(navigation.href).toBe(PATH);
+      expect(screen.getByRole("heading", { level: 1, name: QUESTION })).toBeInTheDocument();
+    });
+
+    test("a sheet that was kept under Back closes with one step back, as any sheet that was opened by a tap", async () => {
+      const { user } = await open();
+      await user.click(button("YES 54.8%"));
+      await sheet();
+      act(() => sendTrade());
+      act(() => navigation.router.back());
+      await waitFor(() => expect(navigation.href).toBe(`${PATH}?buy=YES`));
+      act(() => answerTrade());
+      navigation.router.back.mockClear();
+
+      await user.click(cross());
+
+      await waitFor(noSheet);
+      expect(navigation.router.back).toHaveBeenCalledTimes(1);
+      expect(navigation.href).toBe(PATH);
+      expect(navigation.depth).toBe(0);
+    });
+
+    test("the tab bar stays hidden while the sheet is kept", async () => {
+      mockMarketApi();
+      const { user } = renderWithProviders(
+        <AppShell>
+          <MarketDetailScreen marketId={MARKET_ID} />
+        </AppShell>,
+      );
+      await user.click(await screen.findByRole("button", { name: "YES 54.8%" }));
+      await sheet();
+      act(() => sendTrade());
+
+      act(() => navigation.router.back());
+
+      await waitFor(() => expect(navigation.href).toBe(`${PATH}?buy=YES`));
+      expect(screen.queryByRole("navigation", { name: "Main", hidden: true })).toBeNull();
+    });
+
+    test("the same holds for the dialog from 768 px", async () => {
+      setViewport("wide");
+      const { user } = await open();
+      await user.click(button("YES 54.8%"));
+      const dialog = await sheet();
+      expect(dialog).toHaveAttribute("data-slot", "dialog-content");
+
+      act(() => sendTrade());
+
+      expect(cross()).toBeDisabled();
+      await user.keyboard("{Escape}");
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(screen.getByRole("dialog", { name: "Trade" })).toBeInTheDocument();
+
+      act(() => answerTrade());
+      await user.keyboard("{Escape}");
+      await waitFor(noSheet);
+    });
+
+    test("the screen follows the ticket only while its sheet is open", async () => {
+      const { user } = await open();
+      // A closed sheet shows no ticket: a trade answered meanwhile must find none on screen.
+      expect(followsTicket()).toBe(false);
+
+      await user.click(button("YES 54.8%"));
+      await sheet();
+      expect(followsTicket()).toBe(true);
+
+      await user.keyboard("{Escape}");
+      await waitFor(noSheet);
+      expect(followsTicket()).toBe(false);
+    });
+
+    test("a trade that is on its way when the market is opened opens no sheet by itself", async () => {
+      sendTrade();
+
+      await open();
+
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      noSheet();
+      expect(navigation.href).toBe(PATH);
+      expect(writes.pushState).not.toHaveBeenCalled();
+    });
+
+    test("the panel has nothing to lock: from 1024 px the screen does not follow the ticket", async () => {
+      setViewport("desktop");
+      navigation.go(`${PATH}?buy=NO`);
+      await open();
+
+      act(() => sendTrade());
+
+      expect(followsTicket()).toBe(false);
+      expect(screen.getByRole("complementary", { name: "Trade" })).toBeInTheDocument();
+      noSheet();
+      expect(writes.pushState).not.toHaveBeenCalled();
     });
   });
 

@@ -21,19 +21,21 @@ function earliest(closeTimes: readonly string[]): number | null {
 }
 
 /**
- * Asks the API again when a market that is shown as open for trading reaches its
- * `close_at` (DESIGN.md §14, "Close time"). No event says that this moment has passed, so
- * a screen that shows such a market sets one timer for it.
+ * Asks the API again when a market the screen shows reaches its `close_at` in a state
+ * that ends there (DESIGN.md §14, "Close time"): a market that is open for trading closes
+ * at that moment, and a proposal in review expires. No event says that the moment has
+ * passed, so a screen that shows such a market sets one timer for it.
  *
- * `closeTimes` are the `close_at` of the markets the screen shows with `trading_open`
- * true, and `ask` reads them again. The timer is for the earliest of them. It is set again
- * when that time is another one, which is what an answer brings, and it is gone when no
- * such market is left or the screen goes away.
+ * `closeTimes` are the `close_at` of those markets: the ones the screen shows with
+ * `trading_open` true, and a proposal it shows as PROPOSED. `ask` reads them again. The
+ * timer is for the earliest of them. It is set again when that time is another one, which
+ * is what an answer brings, and it is gone when no such market is left or the screen goes
+ * away.
  *
  * The timer asks and decides nothing: what the screen shows afterwards is the `status`
  * and the `trading_open` of the answer. The clock of the device may run ahead of the
  * server's, and an answer may not arrive. So for as long as the same market is still
- * shown as open for trading after its close time, the question is asked again every
+ * shown in that state after its close time, the question is asked again every
  * `live_poll_fallback_seconds` of `/config`.
  */
 export function useAskAtClose(closeTimes: readonly string[], ask: () => void): void {

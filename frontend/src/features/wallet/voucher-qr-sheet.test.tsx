@@ -1,8 +1,9 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, test } from "vitest";
 
+import { keys } from "@/lib/api/keys";
 import type { VoucherCodeResponse } from "@/lib/api/schema";
-import { voucherCode, voucherItem } from "@/test/fixtures";
+import { voucherCode, voucherIssued, voucherItem, voucherProduct } from "@/test/fixtures";
 import { apiError, deferred, errorPage, json, noAnswer } from "@/test/http";
 
 import { renderWallet, WALLET } from "./testing";
@@ -245,6 +246,168 @@ describe("'Show QR'", () => {
 
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(document.body).not.toHaveTextContent("B4T8");
+  });
+});
+
+/* Every fresh code ends the one before it, so a request nobody asked for would leave a QR
+   on screen that the bar refuses. These are the ways such a request could come about. */
+describe("the code on screen is the one the voucher has", () => {
+  test("the lists are read again while the view is open: no other code is asked for, and the view keeps its code", async () => {
+    const { api, client, user } = renderWallet({
+      [WALLET.vouchers]: TWO_ACTIVE,
+      [WALLET.code]: json(200, mateCode("B4T8WN3C")),
+    });
+    await user.click((await row("Mate")).getByRole("button", { name: "Show QR" }));
+    const view = await screen.findByRole("dialog", { name: "Mate" });
+    await within(view).findByText("B4T8-WN3C");
+
+    // Everything of the caller's that the Wallet reads is asked again, as when the window
+    // gets the focus back.
+    await act(() => client.invalidateQueries({ queryKey: keys.me }));
+    await waitFor(() => expect(api.calls(WALLET.vouchers)).toHaveLength(2));
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await waitFor(() => expect(api.calls(WALLET.me).length).toBeGreaterThanOrEqual(2));
+
+    expect(api.calls(WALLET.code)).toHaveLength(1);
+    expect(within(view).getByText("B4T8-WN3C")).toBeInTheDocument();
+    expect(within(view).getByRole("img", { name: "Voucher QR code" })).toBeInTheDocument();
+  });
+
+  test("the list says the voucher was redeemed while its view is open: still no other code is asked for", async () => {
+    const { api, client, user } = renderWallet({
+      [WALLET.vouchers]: TWO_ACTIVE,
+      [WALLET.code]: json(200, mateCode("B4T8WN3C")),
+    });
+    await user.click((await row("Mate")).getByRole("button", { name: "Show QR" }));
+    const view = await screen.findByRole("dialog", { name: "Mate" });
+    await within(view).findByText("B4T8-WN3C");
+
+    // The barista scanned it: the list behind the view changes.
+    api.on(
+      WALLET.vouchers,
+      json(200, {
+        items: [
+          voucherItem({
+            id: MATE,
+            product_name: "Mate",
+            status: "REDEEMED",
+            redeemed_at: "2026-10-05T08:02:00Z",
+          }),
+          voucherItem({ id: COFFEE, product_name: "Coffee" }),
+        ],
+      }),
+    );
+    await act(() => client.invalidateQueries({ queryKey: keys.me }));
+    await waitFor(() => expect(api.calls(WALLET.vouchers)).toHaveLength(2));
+
+    expect(api.calls(WALLET.code)).toHaveLength(1);
+    expect(within(view).getByText("B4T8-WN3C")).toBeInTheDocument();
+  });
+
+  test("getting a voucher asks for no code of its own; 'Show QR' afterwards is the one request that replaces the code of the answer", async () => {
+    let issued = false;
+    const { api, user } = renderWallet({
+      [WALLET.vouchers]: () =>
+        json(200, { items: issued ? [voucherItem({ id: MATE, product_name: "Mate" })] : [] }),
+      [WALLET.products]: json(200, {
+        items: [voucherProduct({ id: "mate", name: "Mate", price_cr: "35" })],
+      }),
+      [WALLET.issue]: () => {
+        issued = true;
+        return json(
+          201,
+          voucherIssued({ id: MATE, product_id: "mate", product_name: "Mate", code: "7KQ2M9XA" }),
+        );
+      },
+      [WALLET.code]: json(200, mateCode("B4T8WN3C")),
+    });
+
+    // The voucher is got: its code is the one of the answer, and no other was asked for.
+    await user.click(await screen.findByRole("button", { name: "Get a voucher" }));
+    const sheet = await screen.findByRole("dialog", { name: "Get a voucher" });
+    await user.click(await within(sheet).findByRole("button", { name: /Mate/ }));
+    await user.click(within(sheet).getByRole("button", { name: "Get voucher" }));
+    const issuedView = await screen.findByRole("dialog", { name: "Mate" });
+    expect(await within(issuedView).findByText("7KQ2-M9XA")).toBeInTheDocument();
+    await waitFor(() => expect(api.calls(WALLET.vouchers).length).toBeGreaterThanOrEqual(2));
+    expect(api.calls(WALLET.code)).toHaveLength(0);
+
+    // Put away, then shown again: one request, and the code of the issue answer is gone.
+    await user.click(within(issuedView).getByRole("button", { name: "Done" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await user.click((await row("Mate")).getByRole("button", { name: "Show QR" }));
+    const shown = await screen.findByRole("dialog", { name: "Mate" });
+    expect(await within(shown).findByText("B4T8-WN3C")).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("7KQ2");
+    expect(api.calls(WALLET.code)).toHaveLength(1);
+    expect(api.calls(WALLET.issue)).toHaveLength(1);
+  });
+
+  test("while the view is open the button behind it is out of reach", async () => {
+    const { api, user } = renderWallet({
+      [WALLET.vouchers]: TWO_ACTIVE,
+      [WALLET.code]: json(200, mateCode("B4T8WN3C")),
+    });
+    const mate = (await row("Mate")).getByRole("button", { name: "Show QR" });
+    await user.click(mate);
+    const view = await screen.findByRole("dialog", { name: "Mate" });
+    await within(view).findByText("B4T8-WN3C");
+
+    // Nothing of the page behind the view can be found, and so nothing of it tapped.
+    expect(screen.queryByRole("button", { name: "Show QR" })).not.toBeInTheDocument();
+    expect(mate.closest("[aria-hidden=true]")).not.toBeNull();
+    expect(api.calls(WALLET.code)).toHaveLength(1);
+  });
+
+  test("whatever asks for a second code, the view shows the latest answer and never the one before it", async () => {
+    let asked = 0;
+    const { api, user } = renderWallet({
+      [WALLET.vouchers]: TWO_ACTIVE,
+      [WALLET.code]: () => {
+        asked += 1;
+        return json(200, mateCode(asked === 1 ? "B4T8WN3C" : "Z6PD4F7K"));
+      },
+    });
+    const mate = (await row("Mate")).getByRole("button", { name: "Show QR" });
+    await user.click(mate);
+    const view = await screen.findByRole("dialog", { name: "Mate" });
+    await within(view).findByText("B4T8-WN3C");
+
+    // A tap that got through to the button all the same, as a script could make one.
+    act(() => mate.click());
+
+    await within(view).findByText("Z6PD-4F7K");
+    expect(view).not.toHaveTextContent("B4T8");
+    expect(api.calls(WALLET.code)).toHaveLength(2);
+    expect(within(view).getAllByRole("img", { name: "Voucher QR code" })).toHaveLength(1);
+  });
+
+  test("a second code is on its way: the code before it has left the screen already", async () => {
+    const first = json(200, mateCode("B4T8WN3C"));
+    const second = deferred();
+    let asked = 0;
+    const { user } = renderWallet({
+      [WALLET.vouchers]: TWO_ACTIVE,
+      [WALLET.code]: () => {
+        asked += 1;
+        return asked === 1 ? first : second.handler();
+      },
+    });
+    const mate = (await row("Mate")).getByRole("button", { name: "Show QR" });
+    await user.click(mate);
+    const view = await screen.findByRole("dialog", { name: "Mate" });
+    await within(view).findByText("B4T8-WN3C");
+
+    act(() => mate.click());
+
+    // From the moment the request is out, the API may have replaced the code.
+    await waitFor(() => expect(view).not.toHaveTextContent("B4T8"));
+    expect(view.querySelector("[data-slot=voucher-skeleton]")).toBeInTheDocument();
+    second.resolve(json(200, mateCode("Z6PD4F7K")));
+    expect(await within(view).findByText("Z6PD-4F7K")).toBeInTheDocument();
   });
 });
 

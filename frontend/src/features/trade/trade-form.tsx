@@ -130,9 +130,6 @@ export function TradeForm({
   // A trade that waits keeps the quote it was confirmed with on screen. Otherwise a quote
   // counts for as long as the server lets the viewer trade.
   const quote = attempt?.quote ?? (viewer.can_trade ? read.quote : null);
-  const quoteFailure = waiting ? null : read.error;
-  const place = quoteFailure === null ? null : placeOfFailure(quoteFailure, side);
-  const amountRefused = place === "stake" ? quoteFailure : null;
 
   const unanswered = attempt !== null && !attempt.sending ? attempt.error : null;
   const wait = useRetryAfter(unanswered);
@@ -140,6 +137,13 @@ export function TradeForm({
     ticket.refusal !== null && ticket.refusal.choiceKey === choiceKey({ side, outcome }, choice)
       ? ticket.refusal.error
       : null;
+
+  // Why there is no quote. While the refusal of a trade stands above the button, a quote
+  // that gives the same verdict for the same input says nothing more, and is not said twice.
+  const said = refused !== null && read.error?.code === refused.code;
+  const quoteFailure = waiting || said ? null : read.error;
+  const place = quoteFailure === null ? null : placeOfFailure(quoteFailure, side);
+  const amountRefused = place === "stake" ? quoteFailure : null;
   // A `LIMIT_EXCEEDED`, of the trade or of the quote, says what is left as of its answer.
   const stakeLimit =
     (refused === null ? null : stakeLeft(refused)) ??

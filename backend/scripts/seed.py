@@ -13,11 +13,16 @@ What it leaves behind:
 
 * Six demo students and a demo desk, each with a profile, an account and the signup
   grant (`ProfileService.save`).
-* Nine markets, one in every state a screen has to show: open in each of the three
-  tiers, one paused, one closed, one resolved, one voided, one still proposed and one
-  rejected. The students propose them, the desk picks the tier each is opened with,
-  the students trade them with the buy buttons of the trade sheet
-  (`TRADE_STAKE_PRESETS_CR`), and one of them sells again before the resolution.
+* Ten markets, one in every state a screen has to show: open in each of the three
+  tiers, one paused, one closed, one resolved, one voided, one still proposed, one
+  proposal that expires and one rejected. The students propose them, the desk picks
+  the tier each is opened with, the students trade them with the buy buttons of the
+  trade sheet (`TRADE_STAKE_PRESETS_CR`), and one of them sells again before the
+  resolution. Each approval tells the proposer with a notice, as every approval does.
+* The proposal that expires is proposed like the others, with a deadline that is
+  `EXPIRES_AFTER` away, and nobody decides on it. The run that makes it leaves it
+  PROPOSED; from its deadline on the application reports it EXPIRED, and a later run
+  finds it so.
 * Three vouchers, one of them scanned at the desk.
 * One batch of codes. The run that makes it prints its codes. An admin opens the ones
   nobody has redeemed again in the admin panel.
@@ -102,6 +107,12 @@ RESOLVE_WITHIN: Final[timedelta] = timedelta(days=7)
 """How long after its close a demo market asks to be decided, unless
 `MAX_RESOLUTION_DELAY_DAYS` allows less."""
 
+EXPIRES_AFTER: Final[timedelta] = timedelta(seconds=10)
+"""How long after its proposal the trading of the proposal the demo lets expire would
+close. Short, so that the demo shows an expired proposal a moment after the run; long
+enough that the proposal is still one whose trading closes in the future when the
+service checks it."""
+
 BATCH_LABEL: Final[str] = "Demo codes"
 BATCH_SIZE: Final[int] = 5
 BATCH_VALID_FOR: Final[timedelta] = timedelta(days=30)
@@ -110,6 +121,10 @@ STOPPED: Final[frozenset[MarketStatus]] = frozenset(
     {MarketStatus.CLOSED, MarketStatus.RESOLVED, MarketStatus.VOID}
 )
 """Where a demo market ends once its trading was stopped for good."""
+
+UNDECIDED: Final[frozenset[MarketStatus]] = frozenset({MarketStatus.PROPOSED, MarketStatus.EXPIRED})
+"""Where a demo market ends that the desk never decides on: still waiting, or expired
+because nobody decided in time."""
 
 
 class SeedRefusedError(RuntimeError):
@@ -172,11 +187,12 @@ class DemoMarket:
     """Who proposes it, as an index into `STUDENTS`. A proposer cannot trade their own
     market (A.4)."""
 
-    closes_in_days: int
+    closes_in: timedelta
     """When trading closes, counted from the proposal; `MAX_MARKET_LIFETIME` at most."""
 
     ends: MarketStatus
-    """The status the demo leaves it in."""
+    """The status the demo leaves it in, as the application reports it. EXPIRED is a
+    proposal nobody decides on: it is left PROPOSED and expires at its deadline."""
 
     tier: MarketTier | None = None
     """The tier the desk opens it with. None for a market the desk never approves."""
@@ -239,7 +255,7 @@ MARKETS: Final[tuple[DemoMarket, ...]] = (
         resolution_source="The menu plan on ethz.ch",
         proposer=ANNA,
         tier=MarketTier.TIGHT,
-        closes_in_days=14,
+        closes_in=timedelta(days=14),
         ends=MarketStatus.OPEN,
         trades=(
             Buy(BEN, Outcome.YES, preset=1),
@@ -259,7 +275,7 @@ MARKETS: Final[tuple[DemoMarket, ...]] = (
         resolution_source="topuniversities.com",
         proposer=BEN,
         tier=MarketTier.DEFAULT,
-        closes_in_days=60,
+        closes_in=timedelta(days=60),
         ends=MarketStatus.OPEN,
         trades=(
             Buy(ANNA, Outcome.YES, preset=1),
@@ -280,7 +296,7 @@ MARKETS: Final[tuple[DemoMarket, ...]] = (
         resolution_source="The service notices of the operator",
         proposer=CHIARA,
         tier=MarketTier.MEDIUM,
-        closes_in_days=30,
+        closes_in=timedelta(days=30),
         ends=MarketStatus.OPEN,
         trades=(
             Buy(ANNA, Outcome.NO, preset=0),
@@ -299,7 +315,7 @@ MARKETS: Final[tuple[DemoMarket, ...]] = (
         resolution_source="The minutes of the assembly on vis.ethz.ch",
         proposer=DARIO,
         tier=MarketTier.DEFAULT,
-        closes_in_days=21,
+        closes_in=timedelta(days=21),
         ends=MarketStatus.HALTED,
         trades=(
             Buy(BEN, Outcome.NO, preset=1),
@@ -319,7 +335,7 @@ MARKETS: Final[tuple[DemoMarket, ...]] = (
         resolution_source="The closing announcement of VIScon",
         proposer=ELIF,
         tier=MarketTier.DEFAULT,
-        closes_in_days=10,
+        closes_in=timedelta(days=10),
         ends=MarketStatus.CLOSED,
         trades=(
             Buy(CHIARA, Outcome.YES, preset=1),
@@ -337,7 +353,7 @@ MARKETS: Final[tuple[DemoMarket, ...]] = (
         resolution_source="MeteoSwiss, station Zürich / Fluntern",
         proposer=FINN,
         tier=MarketTier.TIGHT,
-        closes_in_days=7,
+        closes_in=timedelta(days=7),
         ends=MarketStatus.RESOLVED,
         trades=(
             Buy(ANNA, Outcome.YES, preset=1),
@@ -359,7 +375,7 @@ MARKETS: Final[tuple[DemoMarket, ...]] = (
         resolution_source="The catering pages on ethz.ch",
         proposer=ANNA,
         tier=MarketTier.DEFAULT,
-        closes_in_days=14,
+        closes_in=timedelta(days=14),
         ends=MarketStatus.VOID,
         trades=(
             Buy(BEN, Outcome.YES, preset=0),
@@ -379,7 +395,7 @@ MARKETS: Final[tuple[DemoMarket, ...]] = (
         resolution_criteria="The programme ETH publishes for the open day decides.",
         resolution_source="The programme of the open day on ethz.ch",
         proposer=BEN,
-        closes_in_days=45,
+        closes_in=timedelta(days=45),
         ends=MarketStatus.PROPOSED,
     ),
     DemoMarket(
@@ -390,11 +406,22 @@ MARKETS: Final[tuple[DemoMarket, ...]] = (
         resolution_criteria="The grade my flatmate tells me decides.",
         resolution_source="My flatmate",
         proposer=CHIARA,
-        closes_in_days=20,
+        closes_in=timedelta(days=20),
         ends=MarketStatus.REJECTED,
         remark=(
             "A market must not be about a private person. Ask about something everybody can check."
         ),
+    ),
+    DemoMarket(
+        slug="library-all-night",
+        question="Will the main library stay open all night during the next exam session?",
+        yes_definition="On at least one night of the session it does not close at all.",
+        no_definition="It closes on every night of the session.",
+        resolution_criteria="The opening hours the ETH Library publishes for the session decide.",
+        resolution_source="library.ethz.ch",
+        proposer=DARIO,
+        closes_in=EXPIRES_AFTER,
+        ends=MarketStatus.EXPIRED,
     ),
 )
 """The demo markets, in the order they are made."""
@@ -426,7 +453,9 @@ async def seed(container: Container) -> None:
        its own fixed Idempotency-Key); then `halt`, or `close`, or `close` and
        `resolve`, or `close` and `void`. The status the market has decides which step
        is next, so a market that is where it ends is left alone, and so is one
-       somebody took elsewhere by hand.
+       somebody took elsewhere by hand. A market that ends PROPOSED or EXPIRED is
+       proposed and then left to itself: the second of the two has a deadline a
+       moment away (`EXPIRES_AFTER`) and expires there, without a write.
     4. Vouchers (`VoucherService.issue`), and the scan of one of them at the desk
        (`VoucherService.redeem`). A voucher that is there and still waits for its scan
        gets a fresh code first (`replace_code`): the one it was issued with is known
@@ -541,7 +570,7 @@ class _Seed:
             detail = await self._markets.detail(desk, market_id)
         market_id = detail.id
 
-        if detail.status is MarketStatus.PROPOSED and plan.ends is not MarketStatus.PROPOSED:
+        if detail.status is MarketStatus.PROPOSED and plan.ends not in UNDECIDED:
             if plan.ends is MarketStatus.REJECTED:
                 detail = await self._lifecycle.reject(
                     desk, market_id, RejectMarketRequest(reason=_said(plan))
@@ -584,9 +613,7 @@ class _Seed:
         return None
 
     async def _propose(self, proposer: AuthenticatedUser, plan: DemoMarket) -> MarketDetailResponse:
-        close_at = self._clock.now() + min(
-            timedelta(days=plan.closes_in_days), self._settings.risk.max_market_lifetime
-        )
+        close_at = self._clock.now() + min(plan.closes_in, self._settings.risk.max_market_lifetime)
         resolve_by = close_at + min(RESOLVE_WITHIN, self._settings.lifecycle.max_resolution_delay)
         return await self._markets.propose(
             proposer,

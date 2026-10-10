@@ -151,6 +151,11 @@ export type DateTimeFieldProps = FieldProps &
  * A date and a time (DESIGN.md §10): entered and shown in the `timezone` of `/config`,
  * whatever the device is set to, and handed on as ISO 8601 with that zone's offset,
  * ready to be sent.
+ *
+ * While it holds no value the browser fills the field itself, with the format of a date
+ * and a time or with today's date. That is a placeholder and has the colour of one
+ * (DESIGN.md §12): a browser that derives the colour of what it puts there from the
+ * colour of the field's text derives it from `--muted-foreground`.
  */
 export function DateTimeField({
   label,
@@ -173,6 +178,7 @@ export function DateTimeField({
           {...input}
           {...control}
           type="datetime-local"
+          className={cn(value === null && "text-muted-foreground")}
           value={value === null ? "" : toDateTimeInput(value, timezone)}
           min={min === undefined ? undefined : toDateTimeInput(min, timezone)}
           max={max === undefined ? undefined : toDateTimeInput(max, timezone)}

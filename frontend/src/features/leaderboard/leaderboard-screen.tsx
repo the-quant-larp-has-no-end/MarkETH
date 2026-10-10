@@ -41,10 +41,14 @@ import {
 const FRESH_MS = 1000;
 
 /**
- * The room the content column keeps at its foot while the viewer's row is pinned
+ * The room the content column keeps at its foot for the bar of the viewer's row
  * (DESIGN.md §13): as much as the bar is tall, and 16 px more, so the last row ends 16 px
  * above the bar. The bar is 73 px (a 1 px line, 8 px, the row of 56 px, 8 px) and stands
  * on the tab bar; from 768 px there is none, and the bar adds the safe area itself.
+ *
+ * A list the viewer is in keeps this room whether or not the bar shows right now. The bar
+ * comes and goes with the scrolling, and a page that grew at that moment would leave a
+ * reader who jumped to its end short of it, with the last row under the bar.
  */
 const ROOM_FOR_YOUR_ROW =
   "pb-[calc(var(--tab-bar-space)+5.5rem+1px)] md:pb-[calc(5.5rem+1px+env(safe-area-inset-bottom))]";
@@ -125,6 +129,9 @@ export function LeaderboardScreen() {
       ? null
       : (entries.find((entry) => entry.username === selected) ??
         (viewer?.username === selected ? viewer : null));
+  // A player the list does not hold has no statistics to show: the sheet goes, and does
+  // not come back by itself when a later answer lists the player again.
+  if (showingPlayer && player === null) setShowingPlayer(false);
 
   // In a "Highest first" list the players without a figure come last: when the first
   // row has none, nobody has.
@@ -132,7 +139,7 @@ export function LeaderboardScreen() {
   const nobodyRanked = order === "desc" && first !== undefined && !hasFigure(first, sort);
 
   return (
-    <Screen top="main" width="narrow" className={pinned ? ROOM_FOR_YOUR_ROW : undefined}>
+    <Screen top="main" width="narrow" className={viewer === null ? undefined : ROOM_FOR_YOUR_ROW}>
       {/* Measures the room the fixed bars take, for `useOnScreen`. It shows nothing. */}
       <span
         ref={barsRef}
@@ -245,11 +252,7 @@ export function LeaderboardScreen() {
         rejected={board.error?.code === "VALIDATION_ERROR" ? board.error : null}
         onApply={apply}
       />
-      <PlayerSheet
-        player={player}
-        open={showingPlayer && player !== null}
-        onOpenChange={setShowingPlayer}
-      />
+      <PlayerSheet player={player} open={showingPlayer} onOpenChange={setShowingPlayer} />
     </Screen>
   );
 }
@@ -264,7 +267,8 @@ export function LeaderboardScreen() {
  * trophy.
  *
  * Rows pass under the bar while the list scrolls, as they pass under the tab bar; the
- * screen keeps room at its foot, so the bar never rests on the last one.
+ * screen keeps room at its foot (`ROOM_FOR_YOUR_ROW`), so the bar never rests on the last
+ * one.
  */
 function YourRow({
   entry,

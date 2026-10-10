@@ -5,6 +5,7 @@ import { keys } from "@/lib/api/keys";
 import { sizeCharts } from "@/test/charts";
 import { installFakeEventSource } from "@/test/fake-event-source";
 import {
+  adminMarketDetail,
   history,
   holdings,
   MARKET_ID,
@@ -12,6 +13,7 @@ import {
   marketSummary,
   marketViewer,
   marketViewerWithPosition,
+  TODAY,
 } from "@/test/fixtures";
 import { apiError, deferred, errorPage, json, mockApi, noAnswer } from "@/test/http";
 import { followHistoryWrites, navigation } from "@/test/navigation";
@@ -46,8 +48,9 @@ beforeEach(() => {
   navigation.go(PATH);
   followHistoryWrites();
   sizeCharts();
-  // The deadline and the chart's right edge follow the clock: the tests stand on one day.
-  vi.useFakeTimers({ now: new Date("2026-10-11T10:00:00Z"), toFake: ["Date"] });
+  // The deadline is said by the device's clock, and the screen sets a timer for the
+  // market's close time: the tests stand on one day.
+  vi.useFakeTimers({ now: TODAY, toFake: ["Date"] });
 });
 
 afterEach(() => {
@@ -701,6 +704,7 @@ describe("MarketDetailScreen", () => {
     test.each([
       ["PROPOSED", "In review"],
       ["REJECTED", "Not approved"],
+      ["EXPIRED", "Expired"],
     ] as const)(
       "%s: the badge and the rules, and nothing that belongs to trading",
       async (status, badge) => {
@@ -760,6 +764,100 @@ describe("MarketDetailScreen", () => {
 
       await screen.findByRole("heading", { name: QUESTION });
       expect(querySection("Reason")).not.toBeInTheDocument();
+    });
+
+    test("EXPIRED: a proposal nobody reviewed before its close time, with a quiet badge and no reason", async () => {
+      mockApi({
+        [MARKET]: json(
+          200,
+          closed({ status: "EXPIRED", opened_at: null, close_at: "2026-10-09T16:00:00Z" }),
+        ),
+      });
+
+      open();
+
+      await screen.findByRole("heading", { level: 1, name: QUESTION });
+      const badge = screen.getByText("Expired");
+      expect(badge).toHaveAttribute("data-slot", "badge");
+      // A finished state, like "Closed" and "Not approved": no colour of an outcome, no icon.
+      expect(badge).toHaveClass("bg-raised", "text-muted-foreground");
+      expect(badge.className).not.toMatch(/yes|bg-no|text-no/);
+      expect(badge.querySelector("svg")).not.toBeInTheDocument();
+      expect(querySection("Reason")).not.toBeInTheDocument();
+      // Its rules stay readable, with the close time that passed.
+      const rules = section("Rules");
+      expect(within(rules).getByText("9 Oct 2026, 18:00")).toBeInTheDocument();
+      // No banner speaks for it, and it is no error.
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("how the market is priced is VIS's business", () => {
+    test("shows no tier, no liquidity figure and no loss bound, also to an admin whose answer carries them", async () => {
+      // The API sends the three to admins: the admin area shows them, this screen does not.
+      mockMarketApi(
+        adminMarketDetail({
+          tier: "MEDIUM",
+          b_cr: "2000",
+          max_loss_cr: "1386.294362",
+          void_cost_cr: "-130.752819",
+          viewer: marketViewerWithPosition({ can_settle: true }),
+        }),
+      );
+
+      open();
+
+      await screen.findByRole("application");
+      const text = screen.getByRole("main").textContent ?? "";
+      expect(text).not.toMatch(/tier|liquidity|loss|budget|medium/i);
+      expect(text).not.toContain("2,000");
+      expect(text).not.toContain("1,386");
+      expect(text).not.toContain("130.75");
+      // Nor who proposed it.
+      expect(text).not.toContain("bea.beispiel@ethz.ch");
+    });
+
+    test("the sections of the screen are the ones the design names, and none is about pricing", async () => {
+      mockMarketApi(adminMarketDetail({ viewer: marketViewerWithPosition() }));
+
+      open();
+
+      await screen.findByRole("application");
+      const headings = within(screen.getByRole("main"))
+        .getAllByRole("heading", { level: 2 })
+        .map((heading) => heading.textContent);
+      expect(headings).toEqual(["Your position", "Rules", "If the market is voided"]);
+    });
+  });
+
+  describe("the chart's right edge", () => {
+    test("is until of the history's answer, not the clock of the device", async () => {
+      // The device stands on 11 October; the server's now, as the answer says it, is the 4th.
+      mockMarketApi(marketDetail(), history({ until: "2026-10-04T10:00:00Z" }));
+
+      open();
+
+      const chart = await screen.findByRole("application");
+      const dates = [...chart.querySelectorAll(".recharts-xAxis-tick-labels text")].map(
+        (label) => label.textContent,
+      );
+      expect(dates).toEqual(["1 Oct 2026", "4 Oct 2026"]);
+    });
+
+    test("for a market whose trading is over it is the moment the answer names", async () => {
+      mockMarketApi(
+        closed({ close_at: "2026-10-09T16:00:00Z" }),
+        history({ until: "2026-10-09T16:00:00Z" }),
+      );
+
+      open();
+
+      const chart = await screen.findByRole("application");
+      const dates = [...chart.querySelectorAll(".recharts-xAxis-tick-labels text")].map(
+        (label) => label.textContent,
+      );
+      expect(dates).toEqual(["1 Oct 2026", "9 Oct 2026"]);
     });
   });
 

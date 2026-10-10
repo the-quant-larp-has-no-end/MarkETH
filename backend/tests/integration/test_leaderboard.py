@@ -1306,7 +1306,7 @@ async def test_credits_are_the_balance_plus_what_the_open_positions_are_worth(
 ) -> None:
     """After a buy the credits that went into the market still count, at what the
     shares are worth now: the total of the trader's portfolio. After the resolution
-    the payout is in the balance and nothing is in an open position any more."""
+    the payout is in the balance and nothing is in an open position."""
     trader = await factory.user(username="trader", balance_micro=cr(100))
     market = await desk.market()
 

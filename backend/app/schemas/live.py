@@ -1,8 +1,9 @@
 """Chart history and live updates of one market (SPEC §9, §10, Appendix A.4).
 
-`GET /markets/{id}/history` returns the chart. `GET /markets/{id}/stream` is a
-server-sent event stream that carries two kinds of event; the SSE `event:` field and the
-`type` field of the JSON in `data:` both name the kind:
+`GET /markets/{id}/history` returns the chart, which is bounded in size however much
+its market traded. `GET /markets/{id}/stream` is a server-sent event stream that
+carries two kinds of event; the SSE `event:` field and the `type` field of the JSON in
+`data:` both name the kind:
 
     event: quote            a trade moved the price          data: QuoteEvent
     event: status           the market's status changed      data: StatusEvent
@@ -39,14 +40,20 @@ class HistoryPoint(ResponseModel):
 
 
 class HistoryResponse(ResponseModel):
-    """`GET /markets/{id}/history`: points in ascending `version` order."""
+    """`GET /markets/{id}/history`: the chart of a market, points in ascending `version`
+    order.
+
+    The first point is the opening and the last is the latest price. Where a market
+    has more points than an answer holds, the ones in between are thinned evenly:
+    versions rise from point to point and may skip.
+    """
 
     points: list[HistoryPoint]
     source: HistorySource
     until: datetime
     """The right edge of the chart: the server's now while the market can still trade,
-    otherwise the moment trading ended. A chart is drawn up to here, and with no
-    clock of the device."""
+    otherwise the moment trading ended. No point lies after it. A chart is drawn up
+    to here, and with no clock of the device."""
 
 
 class QuoteEvent(ResponseModel):

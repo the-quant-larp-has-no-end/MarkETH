@@ -5,6 +5,7 @@ import {
   holdings,
   MARKET_ID,
   marketSummary,
+  me,
   OTHER_MARKET_ID,
   portfolio,
   portfolioEntry,
@@ -450,5 +451,43 @@ describe("History", () => {
 
     expect(await screen.findByText("Oldest trade")).toBeInTheDocument();
     expect(api.calls(POSITIONS)).toHaveLength(1);
+  });
+});
+
+describe("how a market is priced is not shown", () => {
+  test("neither tab names a tier, a liquidity figure or a loss bound, for an admin as for anybody", async () => {
+    mockApi({
+      [POSITIONS]: json(200, MIXED),
+      [TRADES]: json(200, { items: [tradeItem()], next_cursor: null }),
+    });
+    const { user } = renderWithProviders(<PortfolioScreen />, { me: me({ role: "ADMIN" }) });
+    await screen.findByRole("region", { name: "Open" });
+    // The words the admin area has for them: "Tier", "Liquidity b", "Loss budget".
+    const priced = /tier|liquidity|loss budget/i;
+
+    expect(document.querySelector("[data-slot=screen]")).not.toHaveTextContent(priced);
+
+    await openHistory(user);
+    await screen.findByText(tradeItem().market_question);
+
+    expect(document.querySelector("[data-slot=screen]")).not.toHaveTextContent(priced);
+  });
+
+  test("a row shows the fields of the position and of its market's summary, which carries no pricing", () => {
+    // The contract: what `GET /me/positions` sends of a market. A tier, a b or a loss
+    // bound is not among it, so the Portfolio has none to show.
+    expect(Object.keys(marketSummary()).sort()).toEqual([
+      "close_at",
+      "id",
+      "outcome",
+      "p_no",
+      "p_yes",
+      "question",
+      "resolve_by",
+      "status",
+      "trading_open",
+      "version",
+      "volume_cr",
+    ]);
   });
 });

@@ -86,7 +86,8 @@ export function RankingTable({
     <Table aria-label="Ranking">
       <TableHeader>
         <TableRow className="hover:bg-transparent">
-          <TableHead scope="col" numeric className={cn("w-14", CELL)}>
+          {/* 56 px, also beside a column that asks for all the width there is. */}
+          <TableHead scope="col" numeric className={cn("w-14 min-w-14", CELL)}>
             Rank
           </TableHead>
           <TableHead scope="col" className={CELL}>

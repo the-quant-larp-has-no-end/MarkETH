@@ -100,19 +100,23 @@ class AccountService:
         self._notices = notices
 
     async def me(self, user: AuthenticatedUser) -> MeResponse:
-        """Profile, balance and the next monthly grant (`GET /me`).
+        """Profile, balance, the next monthly grant and what the user has not been told
+        yet (`GET /me`).
 
-        One read transaction: the `users` row and the user's account. `id`, `email`,
-        `name`, `username`, `degree_level`, `degree_programme`, `created_at` and
-        `policy_accepted_at` come from the row. `role` is `user.role`, the role this
-        request was let in with: the row's own, or ADMIN for a bootstrap admin
-        (`IdentityService.authenticate`). `balance_cr` comes from the account.
+        One read transaction: the `users` row, the user's account and their unseen
+        notices. `id`, `email`, `name`, `username`, `degree_level`, `degree_programme`,
+        `created_at` and `policy_accepted_at` come from the row. `role` is `user.role`,
+        the role this request was let in with: the row's own, or ADMIN for a bootstrap
+        admin (`IdentityService.authenticate`). `balance_cr` comes from the account.
         `can_get_voucher` is `balance >= settings.vouchers.lowest_price_micro`: the
         balance covers the cheapest product of `VOUCHER_PRODUCTS`. Which products it
         covers is `VoucherService.products`. `monthly_grant_cr` comes from
         `MONTHLY_GRANT_CR` and `next_monthly_grant_at` from
-        `GrantService.next_grant_at(<the row>)`. Every user has a row and an account:
-        the profile transaction creates the two together and nothing deletes either.
+        `GrantService.next_grant_at(<the row>)`. `notices` are the user's notices
+        that are not marked seen, oldest first (`NoticeService.unseen`): an empty list
+        for most requests, and the approval of a proposal of theirs until the app has
+        shown it. Every user has a row and an account: the profile transaction creates
+        the two together and nothing deletes either.
 
         `ProfileService.save` answers with this too, right after its commit.
         """
@@ -311,7 +315,8 @@ class AccountService:
     async def proposals(self, user: AuthenticatedUser) -> ProposalListResponse:
         """The markets the user proposed, in every status, newest first
         (`GET /me/proposals`): `markets.list_created_by(user.id)`, each with its
-        effective status (`MarketView.effective_status`).
+        effective status (`MarketView.effective_status`). A proposal nobody decided
+        on before its `close_at` is listed EXPIRED: it is out of review.
 
         `outcome` is how a settled market ended: YES, NO or VOID from its
         `resolutions` row, and null for every market whose row does not say RESOLVED

@@ -36,7 +36,7 @@ export type ScreenProps = {
   /**
    * Something that stays at the bottom of the screen, above the tab bar, while the
    * content scrolls: the outcome buttons of Market detail once the user has scrolled
-   * past them, the viewer's own row of the leaderboard. Pass null while it is not shown.
+   * past them. It is as wide as the content column. Pass null while it is not shown.
    */
   pinned?: ReactNode;
   className?: string;

@@ -204,7 +204,7 @@ describe("with a camera", () => {
     expect(result("rejected")).toBeNull();
   });
 
-  test("a voucher shown again when the API no longer answers the redemption is refused", async () => {
+  test("a voucher shown again after the time in which the API answers its redemption again is refused", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     camera(working);
     const { api } = renderBarista(json(200, voucherRedeemed()));

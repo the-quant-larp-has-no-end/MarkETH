@@ -140,8 +140,9 @@ function StatusBanner({ market }: { market: MarketDetailResponse }) {
  * It is live: the Price, the chart and the volume follow the market's event stream, and
  * a `status` event reads the market again (`useMarketStream`). No event says that the
  * market's `close_at` has passed, so the screen asks again at that moment (`useAskAtClose`)
- * and shows what the answer says. Every figure is the API's, and nothing on the screen
- * says how the market is priced.
+ * and shows what the answer says: it is the moment a market open for trading closes and a
+ * proposal in review expires. Every figure is the API's, and nothing on the screen says
+ * how the market is priced.
  */
 export function MarketDetailScreen({ marketId }: MarketDetailScreenProps) {
   // What the screen remembers (the sheet, a payout that just arrived) belongs to one market.
@@ -176,10 +177,14 @@ function MarketDetail({ marketId }: MarketDetailScreenProps) {
     },
   });
 
-  // DESIGN.md §14, "Close time": while the market is shown as open for trading, the
-  // market and its chart are asked for again when its close time passes. The timer asks;
-  // the badge, the banner, the buttons and the deadline follow the answer.
-  useAskAtClose(market?.trading_open === true ? [market.close_at] : [], () => {
+  // DESIGN.md §14, "Close time": two things turn on `close_at`, and no event says either.
+  // A market that is open for trading closes, and a proposal in review expires. While the
+  // screen shows one of the two, the market and its chart are asked for again at that
+  // moment. The timer asks; the badge, the banner, the buttons and the deadline follow
+  // the answer.
+  const turnsAtClose =
+    market !== undefined && (market.trading_open || market.status === "PROPOSED");
+  useAskAtClose(turnsAtClose ? [market.close_at] : [], () => {
     void client.invalidateQueries({ queryKey: keys.markets.detail(marketId), exact: true });
     void client.invalidateQueries({ queryKey: keys.markets.history(marketId), exact: true });
   });

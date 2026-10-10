@@ -22,9 +22,9 @@ from sqlalchemy import select
 
 from app.container import Container
 from app.core.enums import MarketStatus, MarketTier, NoticeKind, Outcome
-from app.core.errors import LimitExceededError, NotFoundError
+from app.core.errors import ConflictError, LimitExceededError, NotFoundError
 from app.core.identity import AuthenticatedUser
-from app.core.units import MICRO
+from app.core.units import MICRO, to_cr
 from app.models import AuditLogEntry, Market, Notice, OutboxEvent, User
 from app.schemas.admin.markets import (
     ApproveMarketRequest,
@@ -169,14 +169,15 @@ async def test_an_approval_that_is_refused_writes_no_notice(
 ) -> None:
     """Over the budget a market may have, and past the deadline of the proposal."""
     too_large = ApproveMarketRequest(
-        tier=MarketTier.CUSTOM, budget_cr=container.settings.risk.max_market_budget_micro
+        tier=MarketTier.CUSTOM,
+        budget_cr=to_cr(container.settings.risk.max_market_budget_micro + 1),
     )
     proposal = await factory.market(status=MarketStatus.PROPOSED, created_by=proposer)
 
     with pytest.raises(LimitExceededError):
         await container.market_lifecycle.approve(admin, proposal.id, too_large)
     clock.set(proposal.close_at)
-    with pytest.raises(Exception, match="expired"):
+    with pytest.raises(ConflictError):
         await container.market_lifecycle.approve(admin, proposal.id, APPROVAL)
 
     assert (await market_row(container, proposal)).status is MarketStatus.PROPOSED
@@ -271,6 +272,7 @@ async def test_no_other_action_on_a_market_writes_a_notice(
         admin, proposed.id, ResolveMarketRequest(outcome=Outcome.YES, evidence="It opened.")
     )
     voided = await approved(container, factory, admin, await factory.user())
+    await lifecycle.close(admin, voided.id, CloseMarketRequest(note="It will not be decided."))
     await lifecycle.void(admin, voided.id, VoidMarketRequest(reason="The wall was moved."))
 
     assert [notice.id for notice in await notices_of(container, proposer)] == [told.id]

@@ -4,6 +4,9 @@
 trades and average payout ratio. The server sorts, filters and ranks; a client sends its
 choice as the query and shows the rows in the order they arrive (golden rule 6).
 
+Credits are what a user has: the balance of the wallet plus what the open positions are
+worth at the current prices. A row carries the sum and its two parts.
+
 The two rates are JSON numbers, already rounded for display like a probability. They are
 not amounts: a rate is a quotient, and no balance is ever computed from one. Credits are
 decimal strings like every `*_cr` field.
@@ -92,6 +95,9 @@ class LeaderboardQuery(PageQuery):
     """`desc` puts the highest first."""
 
     min_credits_cr: CreditAmount | None = None
+    """Compared with `credits_cr` of a row: the balance and the value of the open
+    positions together, not the balance alone."""
+
     max_credits_cr: CreditAmount | None = None
     min_trades: int | None = Field(default=None, ge=0, le=TRADES_FILTER_MAX)
     max_trades: int | None = Field(default=None, ge=0, le=TRADES_FILTER_MAX)
@@ -118,7 +124,8 @@ class LeaderboardEntry(ResponseModel):
 
     rank: int
     """The user's place in the list as it was asked for, 1 being first. It counts within
-    the filters and in the chosen order."""
+    the filters and in the chosen order: the first of a filtered list has rank 1,
+    whatever their place among everybody is."""
 
     username: str
     degree_level: DegreeLevel

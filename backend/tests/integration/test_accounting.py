@@ -1073,17 +1073,36 @@ async def test_a_trader_at_the_stake_limit_is_offered_no_buy_and_refused_one(
     await assert_books_balance(container.uow_factory)
 
 
+async def arrived(container: Container, market_id: UUID) -> None:
+    """Return once everything published on the channel of a market so far has arrived.
+
+    An action publishes its event after its commit and answers right away, so that
+    event can still be on its way through Redis when the answer is in, and a stream
+    opened at that moment would carry it. A marker published now travels behind it:
+    when the marker is back, so is everything that was sent before it.
+    """
+    marker = {"type": "marker"}
+    async with container.quote_bus.subscribe(market_id) as channel:
+        await container.quote_bus.publish(market_id, marker)
+        while await asyncio.wait_for(channel.get(), timeout=STREAM_SECONDS) != marker:
+            pass
+
+
 async def test_an_open_phone_is_told_of_every_trade_and_every_admin_action_on_its_market(
     api: Api, container: Container, factory: Factory, clock: FrozenClock
 ) -> None:
     """SPEC §8 step 9 and §9: the stream of a market starts with its state, then carries
     a quote event for every committed trade, with the price that trade was answered
-    with, and a status event for every committed admin action."""
+    with, and a status event for every committed admin action.
+
+    The phone starts listening once the approval's own status event has arrived: what
+    it hears from then on is what happens while it listens."""
     (paula,) = await registered(factory, clock, "paula")
     (alice,) = await registered(factory, clock, "alice", balance_micro=GRANT)
     admin = await factory.admin()
     market_id = (await api.propose(paula, clock.now())).id
     await api.done(admin, market_id, "approve", tier="DEFAULT")
+    await arrived(container, market_id)
 
     async def heard(events: AsyncIterator[LiveEvent]) -> LiveEvent:
         return await asyncio.wait_for(anext(events), timeout=STREAM_SECONDS)

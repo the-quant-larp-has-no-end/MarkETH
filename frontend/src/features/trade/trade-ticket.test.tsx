@@ -724,7 +724,11 @@ describe("the quote", () => {
         market: withPosition(),
         start: SELL_YES,
         routes: {
-          [QUOTE]: apiError(409, "INSUFFICIENT_SHARES", "You cannot sell more shares than you hold."),
+          [QUOTE]: apiError(
+            409,
+            "INSUFFICIENT_SHARES",
+            "You cannot sell more shares than you hold.",
+          ),
         },
       });
       await waitFor(() => expect(api.calls(MARKET)).toHaveLength(1));
@@ -758,6 +762,339 @@ describe("the quote", () => {
   });
 });
 
+describe("the amount of a buy", () => {
+  /** The latest quote that was asked for, as the parameters it went out with. */
+  const asked = (api: ReturnType<typeof openTicket>["api"]) => [
+    ...api.lastCall(QUOTE)!.query.entries(),
+  ];
+
+  test("is what the field holds: a typed amount is quoted with the characters that were typed", async () => {
+    const { user, api } = openTicket({
+      routes: { [QUOTE]: json(200, quote({ amount_cr: "37.5", shares: "67.4" })) },
+    });
+
+    await user.type(stakeField(), "37,5");
+
+    await waitFor(() => expect(row("Shares")).toHaveTextContent("67.4"));
+    expect(stakeField()).toHaveValue("37.5");
+    expect(asked(api)).toEqual([
+      ["side", "BUY"],
+      ["outcome", "YES"],
+      ["amount_cr", "37.5"],
+    ]);
+    expect(button("Buy YES")).toBeEnabled();
+    // No preset holds this amount, and the slider cannot show it.
+    for (const amount of ["25", "50", "100"]) {
+      expect(stakeChip(amount)).toHaveAttribute("aria-pressed", "false");
+    }
+    expect(stakeSlider()).toHaveAttribute("aria-valuetext", "not set");
+  });
+
+  test.each(["007", "0.100000000000000000000000000001", "9007199254740993.000001"])(
+    "the text %j goes out as it stands: nothing reads it as a number on the way",
+    async (typed) => {
+      const { user, api } = openTicket({ routes: { [QUOTE]: json(200, quote()) } });
+
+      // Put in with one paste: the field takes it as it takes what is typed.
+      await user.click(stakeField());
+      await user.paste(typed);
+      expect(stakeField()).toHaveValue(typed);
+
+      await waitFor(() => expect(api.lastCall(QUOTE)?.query.get("amount_cr")).toBe(typed));
+      await waitFor(() => expect(button("Buy YES")).toBeEnabled());
+    },
+  );
+
+  test("moving the slider writes its step into the field, and that is what is quoted", async () => {
+    const { user, api } = openTicket({ routes: { [QUOTE]: json(200, quote()) } });
+
+    stakeSlider().focus();
+    await user.keyboard("{End}");
+
+    expect(stakeField()).toHaveValue("100");
+    expect(stakeChip("100")).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(button("Buy YES")).toBeEnabled());
+    expect(asked(api)).toEqual([
+      ["side", "BUY"],
+      ["outcome", "YES"],
+      ["amount_cr", "100"],
+    ]);
+  });
+
+  test("a tap on a preset writes its amount into the field, and the slider stands on it", async () => {
+    const { user, api } = openTicket({ routes: { [QUOTE]: json(200, quote()) } });
+
+    await user.click(stakeChip("25"));
+
+    expect(stakeField()).toHaveValue("25");
+    expect(stakeSlider()).toHaveAttribute("aria-valuenow", "25");
+    expect(stakeSlider()).toHaveAttribute("aria-valuetext", "25 tokens");
+    await waitFor(() => expect(api.calls(QUOTE)).toHaveLength(1));
+    expect(api.lastCall(QUOTE)!.query.get("amount_cr")).toBe("25");
+  });
+
+  test("an empty field asks for nothing, and neither does one that ends in its decimal point", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { user, api } = openTicket({
+        routes: { [QUOTE]: json(200, quote({ amount_cr: "12.5" })) },
+        tunables: { quote_debounce_ms: 60_000 },
+      });
+
+      await user.type(stakeField(), "12.");
+      await act(() => vi.advanceTimersByTimeAsync(61_000));
+
+      // That amount is not finished: nothing is on its way and nothing can be confirmed.
+      expect(api.calls(QUOTE)).toHaveLength(0);
+      expect(button("Buy YES")).toBeDisabled();
+      expect(within(row("You pay")).getByText("none yet")).toBeInTheDocument();
+      expect(row("You pay").querySelector("[data-slot=skeleton]")).not.toBeInTheDocument();
+
+      await user.type(stakeField(), "5");
+      await act(() => vi.advanceTimersByTimeAsync(61_000));
+
+      await waitFor(() => expect(button("Buy YES")).toBeEnabled());
+      expect(api.calls(QUOTE)).toHaveLength(1);
+      expect(api.lastCall(QUOTE)!.query.get("amount_cr")).toBe("12.5");
+
+      // Emptied again: the quote that was read counts for nothing.
+      await user.clear(stakeField());
+      await act(() => vi.advanceTimersByTimeAsync(61_000));
+
+      expect(button("Buy YES")).toBeDisabled();
+      expect(within(row("You pay")).getByText("none yet")).toBeInTheDocument();
+      expect(api.calls(QUOTE)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("typing is one question once it has stopped, not one for every keystroke", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const { user, api } = openTicket({
+        routes: { [QUOTE]: json(200, quote()) },
+        tunables: { quote_debounce_ms: 60_000 },
+      });
+
+      await user.type(stakeField(), "1250");
+      await act(() => vi.advanceTimersByTimeAsync(30_000));
+      expect(api.calls(QUOTE)).toHaveLength(0);
+      // On its way, as far as the screen knows: bars, and Confirm waits.
+      expect(row("You pay").querySelector("[data-slot=skeleton]")).toBeInTheDocument();
+      expect(button("Buy YES")).toBeDisabled();
+
+      await act(() => vi.advanceTimersByTimeAsync(31_000));
+
+      await waitFor(() => expect(button("Buy YES")).toBeEnabled());
+      expect(api.calls(QUOTE)).toHaveLength(1);
+      expect(api.lastCall(QUOTE)!.query.get("amount_cr")).toBe("1250");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("the frontend refuses no amount by itself: one above the balance, the stake that is left and the slider is asked like any other", async () => {
+    const { user, api } = openTicket({
+      market: marketDetail({
+        viewer: marketViewer({
+          balance_cr: "12",
+          stake_left_cr: "30",
+          buy_slider: { min: 1, max: 12, step: 1 },
+        }),
+      }),
+      routes: { [QUOTE]: json(200, quote({ amount_cr: "5000" })) },
+    });
+
+    await user.type(stakeField(), "5000");
+
+    await waitFor(() => expect(api.lastCall(QUOTE)?.query.get("amount_cr")).toBe("5000"));
+    // The server answered with a quote, so it can be confirmed: its word, not ours.
+    await waitFor(() => expect(button("Buy YES")).toBeEnabled());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  test("is forgotten with the ticket, and kept when buying comes back from selling", async () => {
+    const { user } = openTicket({
+      market: withPosition(),
+      routes: { [QUOTE]: json(200, quote()) },
+    });
+    await user.type(stakeField(), "37.5");
+
+    await user.click(sideSegment("Sell"));
+    expect(screen.queryByRole("textbox", { name: "Stake in tokens" })).not.toBeInTheDocument();
+    await user.click(sideSegment("Buy"));
+
+    expect(stakeField()).toHaveValue("37.5");
+
+    await user.click(button("Close the sheet"));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await user.click(button("Open on Buy YES"));
+
+    expect(stakeField()).toHaveValue("");
+  });
+
+  test("another outcome is another quote for the same amount", async () => {
+    const { user, api } = openTicket({ routes: { [QUOTE]: json(200, quote()) } });
+    await user.type(stakeField(), "40");
+    await waitFor(() => expect(button("Buy YES")).toBeEnabled());
+
+    await user.click(outcomeSegment("NO"));
+
+    expect(stakeField()).toHaveValue("40");
+    await waitFor(() => expect(api.lastCall(QUOTE)?.query.get("outcome")).toBe("NO"));
+    expect(api.lastCall(QUOTE)!.query.get("amount_cr")).toBe("40");
+  });
+});
+
+describe("the server judges the amount", () => {
+  const limit = apiError(409, "LIMIT_EXCEEDED", "This would exceed a limit.", {
+    limit: "MAX_STAKE_PER_USER_MARKET",
+    stake_limit_cr: "80",
+    stake_left_cr: "12.5",
+  });
+
+  test("LIMIT_EXCEEDED stands with the stake entry: under the stake-left line, the field marked, no figures and no Confirm", async () => {
+    const { user, api } = openTicket({ routes: { [QUOTE]: limit } });
+    await waitFor(() => expect(api.calls(MARKET)).toHaveLength(1));
+
+    await user.type(stakeField(), "150");
+
+    const refusal = await screen.findByRole("alert");
+    expect(refusal).toHaveTextContent("This would exceed a limit.");
+    expect(stakeRefusal()).toBe(refusal);
+    expect(refusal).toHaveClass("text-no-text");
+    // Under the stake-left line, which says what the answer says is left.
+    const stakeLeft = screen.getByText("12.5 of 80 tokens left in this market");
+    expect(stakeLeft.compareDocumentPosition(refusal) & 4).toBeTruthy();
+    expect(screen.queryByText("100 of 100 tokens left in this market")).not.toBeInTheDocument();
+    expect(stakeField()).toHaveAttribute("aria-invalid", "true");
+    expect(stakeField()).toHaveAccessibleDescription(
+      "12.5 of 80 tokens left in this market This would exceed a limit.",
+    );
+    expect(stakeSlider()).toHaveAccessibleDescription(
+      "12.5 of 80 tokens left in this market This would exceed a limit.",
+    );
+
+    // The quote panel shows no values and does not pulse.
+    for (const label of ["You pay", "Shares", "Average price", "New probability"]) {
+      expect(within(row(label)).getByText("none yet")).toBeInTheDocument();
+      expect(row(label).querySelector("[data-slot=skeleton]")).not.toBeInTheDocument();
+    }
+    expect(button("Buy YES")).toBeDisabled();
+    // It is the server's verdict on this amount: no banner, nothing to try again, and the
+    // market on screen is not behind.
+    expect(screen.queryByRole("button", { name: /Try again/ })).not.toBeInTheDocument();
+    expect(ticketFrame()!.querySelector("[data-slot=sheet-footer] [role=alert]")).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(api.calls(MARKET)).toHaveLength(1);
+    expect(api.calls(TRADE)).toHaveLength(0);
+  });
+
+  test.each([
+    [409, "INSUFFICIENT_BALANCE", "Not enough tokens for this."],
+    [422, "TRADE_TOO_SMALL", "This trade is below the minimum size."],
+    [422, "VALIDATION_ERROR", "The request is not valid."],
+  ] as const)(
+    "a %i %s stands with the stake entry, in the API's words",
+    async (status, code, message) => {
+      const { user } = openTicket({ routes: { [QUOTE]: apiError(status, code, message) } });
+
+      await user.type(stakeField(), "0.5");
+
+      const refusal = await screen.findByRole("alert");
+      expect(refusal).toHaveTextContent(message);
+      expect(stakeRefusal()).toBe(refusal);
+      expect(stakeField()).toHaveAttribute("aria-invalid", "true");
+      expect(button("Buy YES")).toBeDisabled();
+      expect(within(row("You pay")).getByText("none yet")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /Try again/ })).not.toBeInTheDocument();
+      // The stake-left line is the market's own: this answer says nothing about it.
+      expect(screen.getByText("100 of 100 tokens left in this market")).toBeInTheDocument();
+    },
+  );
+
+  test("a text that is no amount is answered with the sentence the API wrote for the field", async () => {
+    const { user } = openTicket({
+      routes: {
+        [QUOTE]: apiError(422, "VALIDATION_ERROR", "The request is not valid.", {
+          errors: [
+            {
+              loc: ["query", "amount_cr"],
+              msg: "Enter an amount with at most six decimal places.",
+              type: "decimal_places",
+            },
+          ],
+        }),
+      },
+    });
+
+    await user.type(stakeField(), "1.0000001");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Enter an amount with at most six decimal places.",
+    );
+    expect(screen.queryByText("The request is not valid.")).not.toBeInTheDocument();
+    expect(stakeRefusal()).toBeInTheDocument();
+  });
+
+  test("Confirm stays disabled until another amount has been quoted, and the refusal goes with the amount it was about", async () => {
+    const { user, api } = openTicket({ routes: { [QUOTE]: limit } });
+    await user.type(stakeField(), "150");
+    await screen.findByRole("alert");
+
+    api.on(QUOTE, json(200, quote({ amount_cr: "12" })));
+    await user.clear(stakeField());
+
+    // An empty field: the verdict was about 150, and there is nothing to judge.
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(stakeField()).not.toHaveAttribute("aria-invalid");
+    expect(button("Buy YES")).toBeDisabled();
+    // The line is the market's own again.
+    expect(screen.getByText("100 of 100 tokens left in this market")).toBeInTheDocument();
+
+    await user.type(stakeField(), "12");
+
+    await waitFor(() => expect(button("Buy YES")).toBeEnabled());
+    expect(row("You pay")).toHaveTextContent("12 tokens");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  test("the same verdict for a preset: the amount is refused where it stands, and the chip stays the server's to disable", async () => {
+    const { user } = openTicket({
+      routes: { [QUOTE]: apiError(409, "INSUFFICIENT_BALANCE", "Not enough tokens for this.") },
+    });
+
+    await user.click(stakeChip("100"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Not enough tokens for this.");
+    expect(stakeRefusal()).toBeInTheDocument();
+    // The market on screen still allows the preset: nothing here overrules that.
+    expect(stakeChip("100")).toBeEnabled();
+    expect(stakeChip("100")).toHaveAttribute("aria-pressed", "true");
+  });
+
+  test("a refusal of the trade itself stands above the button, not with the stake entry", async () => {
+    const { user } = openTicket({
+      routes: {
+        [QUOTE]: json(200, quote()),
+        [TRADE]: apiError(409, "INSUFFICIENT_BALANCE", "Not enough tokens for this."),
+      },
+    });
+    await user.type(stakeField(), "25");
+    await waitFor(() => expect(button("Buy YES")).toBeEnabled());
+
+    await user.click(button("Buy YES"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Not enough tokens for this.");
+    expect(ticketFrame()!.querySelector("[data-slot=sheet-footer]")).toContainElement(alert);
+    expect(stakeRefusal()).not.toBeInTheDocument();
+    expect(stakeField()).not.toHaveAttribute("aria-invalid");
+    expect(stakeField()).toHaveValue("25");
+  });
+});
+
 describe("opening the ticket", () => {
   test("reads the market again, so the balance and the presets are current", async () => {
     const { user, api } = openTicket({ start: null });
@@ -785,6 +1122,25 @@ describe("opening the ticket", () => {
     await waitFor(() => expect(api.calls(MARKET)).toHaveLength(2));
     await waitFor(() => expect(row("Balance")).toHaveTextContent("440 tokens"));
     expect(stakeChip("100")).toBeDisabled();
+  });
+
+  test("reads the range of the slider with it", async () => {
+    const { user, api } = openTicket({ start: null });
+    await waitFor(() => expect(api.calls(MARKET)).toHaveLength(1));
+
+    api.on(
+      MARKET,
+      json(
+        200,
+        marketDetail({
+          viewer: marketViewer({ stake_left_cr: "40", buy_slider: { min: 1, max: 40, step: 1 } }),
+        }),
+      ),
+    );
+    await user.click(button("Open on Buy YES"));
+
+    await waitFor(() => expect(stakeSlider()).toHaveAttribute("aria-valuemax", "40"));
+    expect(screen.getByText("40 of 100 tokens left in this market")).toBeInTheDocument();
   });
 });
 
@@ -963,7 +1319,7 @@ describe("the receipt", () => {
   });
 });
 
-describe("amounts are strings from the chip to the request to the receipt", () => {
+describe("amounts are strings from the input to the request to the receipt", () => {
   // More digits than a float keeps. Any detour through a number would change them.
   const held = "9007199254740993.000000000000000001";
   const proceeds = "4503599627370496.100000000000000005";
@@ -1010,7 +1366,7 @@ describe("amounts are strings from the chip to the request to the receipt", () =
     ).toBeInTheDocument();
   });
 
-  test("a buy sends the chip's amount and the quote's shares untouched", async () => {
+  test("a buy sends the preset's amount and the quote's shares untouched", async () => {
     const stake = "0.100000000000000000000000000001";
     const shares = "0.179999999999999999999999999999";
     const viewer = marketViewer({ stake_presets: [{ amount_cr: stake, allowed: true }] });
@@ -1022,7 +1378,10 @@ describe("amounts are strings from the chip to the request to the receipt", () =
       },
     });
 
-    await user.click(within(screen.getByRole("group", { name: "Stake" })).getByRole("button"));
+    await user.click(
+      within(screen.getByRole("group", { name: "Quick amounts" })).getByRole("button"),
+    );
+    expect(stakeField()).toHaveValue(stake);
     await waitFor(() => expect(button("Buy YES")).toBeEnabled());
     expect(api.lastCall(QUOTE)!.query.get("amount_cr")).toBe(stake);
     await user.click(button("Buy YES"));
@@ -1031,5 +1390,63 @@ describe("amounts are strings from the chip to the request to the receipt", () =
     expect(api.lastCall(TRADE)!.rawBody).toBe(
       `{"side":"BUY","outcome":"YES","amount_cr":"${stake}","min_shares":"${shares}","quote_version":12}`,
     );
+  });
+
+  test("a buy sends the amount as it was typed, not as the quote answered it", async () => {
+    // Zeros a number would drop, and more digits than a float keeps.
+    const typed = "025.500000000000000000000000000001";
+    const shares = "45.999999999999999999999999999999";
+    const { user, api } = openTicket({
+      routes: {
+        // The server's own writing of the amount: the request keeps the user's.
+        [QUOTE]: json(200, quote({ amount_cr: "25.5", shares, quote_version: 12 })),
+        [TRADE]: deferred().handler,
+      },
+    });
+
+    // Put in with one paste: the field takes it as it takes what is typed.
+    await user.click(stakeField());
+    await user.paste(typed);
+    expect(stakeField()).toHaveValue(typed);
+    await waitFor(() => expect(button("Buy YES")).toBeEnabled());
+    expect(api.lastCall(QUOTE)!.query.get("amount_cr")).toBe(typed);
+    expect(row("You pay")).toHaveTextContent("25.5 tokens");
+    await user.click(button("Buy YES"));
+
+    await waitFor(() => expect(api.calls(TRADE)).toHaveLength(1));
+    expect(api.lastCall(TRADE)!.rawBody).toBe(
+      `{"side":"BUY","outcome":"YES","amount_cr":"${typed}","min_shares":"${shares}","quote_version":12}`,
+    );
+  });
+
+  test("a buy from the slider sends the digits of its step", async () => {
+    const { user, api } = openTicket({
+      routes: { [QUOTE]: json(200, quote({ amount_cr: "2" })), [TRADE]: deferred().handler },
+    });
+
+    stakeSlider().focus();
+    await user.keyboard("{ArrowRight}");
+    await waitFor(() => expect(button("Buy YES")).toBeEnabled());
+    await user.click(button("Buy YES"));
+
+    await waitFor(() => expect(api.calls(TRADE)).toHaveLength(1));
+    expect(api.lastCall(TRADE)!.rawBody).toBe(
+      '{"side":"BUY","outcome":"YES","amount_cr":"2","min_shares":"45.12","quote_version":7}',
+    );
+  });
+});
+
+describe("how the market is priced is VIS's business", () => {
+  test("the ticket names no tier, no liquidity figure and no loss bound, also when the API sends them", async () => {
+    // An admin reads the market with its tier and the two figures of it.
+    const market = adminMarketDetail({ b_cr: "1000", max_loss_cr: "693.147181" });
+    const { user } = openTicket({ market, routes: { [QUOTE]: json(200, quote()) } });
+    await user.click(stakeChip("25"));
+    await waitFor(() => expect(button("Buy YES")).toBeEnabled());
+
+    const text = ticketFrame()!.textContent ?? "";
+    expect(text).not.toMatch(/tier|liquidity|loss|budget|default/i);
+    expect(text).not.toContain("1,000");
+    expect(text).not.toContain("693");
   });
 });

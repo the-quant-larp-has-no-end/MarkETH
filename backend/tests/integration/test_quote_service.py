@@ -30,6 +30,7 @@ from sqlalchemy import select
 
 from app.container import Container
 from app.core.enums import (
+    STORED_MARKET_STATUSES,
     MarketStatus,
     MarketTier,
     Outcome,
@@ -67,6 +68,7 @@ from tests.support.economy import (
 )
 from tests.support.factories import ActAs, Factory
 from tests.support.settings import load_base_settings
+from tests.support.statements import recorded_statements, takes_a_row_lock, writes
 
 pytestmark = pytest.mark.integration
 
@@ -618,7 +620,7 @@ def test_the_proposer_of_a_market_is_admitted_to_no_trade_in_it(container: Conta
 
 
 @pytest.mark.parametrize(
-    "status", [status for status in MarketStatus if status is not MarketStatus.OPEN]
+    "status", [status for status in STORED_MARKET_STATUSES if status is not MarketStatus.OPEN]
 )
 def test_nobody_is_admitted_to_a_market_that_is_not_open(
     container: Container, status: MarketStatus
@@ -875,21 +877,67 @@ async def test_a_quote_does_not_wait_for_a_trade_that_holds_the_rows(
     traded: Market,
     as_user: ActAs,
 ) -> None:
-    """It locks nothing and waits for no lock: while a transaction holds the market's
-    row and the asker's account, as a trade in flight does, the quote is answered from
-    what is committed."""
+    """It locks nothing and waits for no lock: while a transaction holds every row a
+    quote reads, the market's row, the asker's account and their positions, as a trade
+    in flight holds the first two, the quote is answered from what is committed."""
     as_user(holder)
     size = buy_for(Outcome.YES, 25 * MICRO)
 
     async with container.uow_factory() as trade_in_flight:
         await trade_in_flight.markets.get_for_update(traded.id)
         await trade_in_flight.accounts.get_user_account(holder.id, for_update=True)
+        held = await trade_in_flight.positions.list_for_user_market(
+            holder.id, traded.id, for_update=True
+        )
         response = await asyncio.wait_for(get_quote(client, traded.id, size), WAIT_SECONDS)
+        sold = await asyncio.wait_for(
+            get_quote(client, traded.id, sell_shares(Outcome.YES, 20 * MICRO)), WAIT_SECONDS
+        )
 
-    assert response.status_code == 200, response.text
+    assert len(held) == 1
+    assert (response.status_code, sold.status_code) == (200, 200), response.text
     assert response.json() == shown(
         container.market_view, traded, lmsr_quote(traded, size)
     ).model_dump(mode="json")
+
+
+async def test_no_statement_of_a_quote_takes_a_lock_or_writes(
+    client: httpx.AsyncClient,
+    container: Container,
+    holder: User,
+    traded: Market,
+    as_user: ActAs,
+) -> None:
+    """A quote reads and does nothing else: whether it is answered or refused, every
+    statement it sends is a SELECT without a locking clause, and none asks for an
+    advisory lock. The trade of the same size sends the locks a quote does without:
+    the market's row, then the trader's account."""
+    as_user(holder)
+    sizes = (
+        buy_for(Outcome.YES, 25 * MICRO),
+        sell_shares(Outcome.YES, 20 * MICRO),
+        buy_for(Outcome.YES, 2 * STAKE_LIMIT),
+        sell_shares(Outcome.NO, MIN_TRADE_SHARES),
+    )
+
+    with recorded_statements(container) as of_the_quotes:
+        quotes = [await get_quote(client, traded.id, size) for size in sizes]
+    with recorded_statements(container) as of_the_trade:
+        trade = await post_trade(client, traded.id, sizes[0])
+
+    assert [response.status_code for response in quotes] == [200, 200, 409, 409]
+    assert len(of_the_quotes) >= 3 * len(sizes), "the market, the account and the positions"
+    for statement in of_the_quotes:
+        assert statement.startswith("SELECT"), statement
+        assert not takes_a_row_lock(statement), statement
+        assert not writes(statement), statement
+        assert "pg_advisory" not in statement, statement
+    assert trade.status_code == 201, trade.text
+    locked = [statement for statement in of_the_trade if takes_a_row_lock(statement)]
+    assert "FROM markets" in locked[0], "a trade locks the market row first"
+    assert "FROM accounts" in locked[1], "and the trader's account second"
+    assert any(writes(statement) for statement in of_the_trade)
+    await assert_books_balance(container.uow_factory)
 
 
 # --- quote: what the trade would answer -----------------------------------------------------

@@ -58,6 +58,37 @@ describe("what the screen shows", () => {
     ).toBeInTheDocument();
   });
 
+  test("under a second divider the card says when the usage policy was accepted, with the time of day, and links to it", async () => {
+    const { user } = renderProfile({ ...PROFILE, policy_accepted_at: "2026-09-21T16:05:30Z" });
+
+    const block = card().querySelector<HTMLElement>("[data-slot=profile-policy]")!;
+    // The last of the card's three parts, each under its divider but the first.
+    expect(card().lastElementChild).toBe(block);
+    expect(block).toHaveClass("border-t", "type-body-sm", "text-muted-foreground");
+    // An instant, in the timezone of /config: the day and the time of day.
+    expect(within(block).getByText(/You accepted the usage policy on/)).toHaveTextContent(
+      "You accepted the usage policy on 21 Sep 2026, 18:05.",
+    );
+    expect(block.querySelector("time")).toHaveAttribute("datetime", "2026-09-21T16:05:30Z");
+
+    const link = within(block).getByRole("link", { name: "Read the usage policy" });
+    expect(link).toHaveAttribute("href", "/policy");
+    expect(link).toHaveAttribute("data-slot", "text-link");
+    expect(link).toHaveClass("min-h-11", "underline", "text-foreground");
+    // Nothing is typed into this card, so the policy opens in place.
+    expect(link).not.toHaveAttribute("target");
+
+    await user.click(link);
+    expect(navigation.pathname).toBe("/policy");
+  });
+
+  test("there is nothing to tick: the policy was accepted when the profile was created", () => {
+    renderProfile();
+
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.queryByText("I accept the")).not.toBeInTheDocument();
+  });
+
   test("an empty name is left out", () => {
     renderProfile({ ...PROFILE, name: "" });
 

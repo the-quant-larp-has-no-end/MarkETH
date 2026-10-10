@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { LeaderboardResponse } from "@/lib/api/schema";
 import { REDUCED_MOTION_QUERY } from "@/lib/design";
 import { EN_DASH, TIMES } from "@/lib/format";
+import { leaderboard } from "@/test/fixtures";
 import {
   apiError,
   deferred,
@@ -19,7 +20,7 @@ import { intersect } from "@/test/observers";
 import { renderWithProviders } from "@/test/render";
 
 import { LeaderboardScreen } from "./leaderboard-screen";
-import { player, ranking, you } from "./test-players";
+import { player, you } from "./test-players";
 
 const BOARD: Route = "GET /api/leaderboard";
 
@@ -29,7 +30,7 @@ const UNAVAILABLE = apiError(
   "This is temporarily unavailable. Try again shortly.",
 );
 
-const board = (overrides: Partial<LeaderboardResponse>) => json(200, ranking(overrides));
+const board = (overrides: Partial<LeaderboardResponse>) => json(200, leaderboard(overrides));
 
 /** What a request asked for, by parameter. */
 const sent = (request: MockRequest | undefined) => Object.fromEntries(request?.query ?? []);
@@ -553,7 +554,9 @@ describe("sort and order", () => {
     expect(
       screen.getByText("Share of resolved markets that returned more than was put in."),
     ).toBeInTheDocument();
-    expect(screen.queryByText("Tokens held right now.")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Tokens in the wallet plus the value of open positions."),
+    ).not.toBeInTheDocument();
   });
 
   test.each([
@@ -842,7 +845,7 @@ describe("your row", () => {
     expect(trophy(bar)).not.toBeInTheDocument();
   });
 
-  test("while the bar shows, the screen keeps room at its foot for it; without the bar it does not", async () => {
+  test("a list the viewer is in keeps room at its foot for the bar, whether or not the bar shows", async () => {
     vi.stubGlobal("IntersectionObserver", Watcher);
     mockApi({
       [BOARD]: board({
@@ -852,18 +855,32 @@ describe("your row", () => {
     });
     renderWithProviders(<LeaderboardScreen />);
     await screen.findByText("anna_m");
+    // The bar is 73 px tall, and the last row ends 16 px above it.
     const room = "pb-[calc(var(--tab-bar-space)+5.5rem+1px)]";
 
+    // The row is in sight and nothing is pinned: the room is there all the same, so the
+    // page does not grow in the moment the bar comes.
     expect(pinnedBar()).not.toBeInTheDocument();
-    expect(main()).not.toHaveClass(room);
+    expect(main()).toHaveClass(room);
 
     report(viewerRow()!, 0);
-    // The bar is 73 px tall, and the last row ends 16 px above it.
     expect(pinnedBar()).toBeInTheDocument();
     expect(main()).toHaveClass(room);
 
     report(viewerRow()!, 1);
-    expect(main()).not.toHaveClass(room);
+    expect(pinnedBar()).not.toBeInTheDocument();
+    expect(main()).toHaveClass(room);
+  });
+
+  test("a list the viewer is not in has no bar and keeps no room for one", async () => {
+    navigation.go("/leaderboard?degree_level=DOCTORATE");
+    mockApi({ [BOARD]: board({ items: [player(1, "a"), player(2, "b")], viewer: null }) });
+    renderWithProviders(<LeaderboardScreen />);
+    await screen.findByText("a");
+
+    expect(pinnedBar()).not.toBeInTheDocument();
+    expect(main().className).not.toMatch(/5\.5rem/);
+    expect(main()).toHaveClass("pb-[calc(var(--tab-bar-space)+1.5rem)]");
   });
 
   test("the pinned row shows the figure of the measure the list is sorted by", async () => {
@@ -1170,7 +1187,10 @@ describe("from 768 px", () => {
     expect(row).toHaveClass("h-14");
     const [rank, who, ...figures] = within(row!).getAllByRole("cell");
     // "Rank" is 56 px wide.
-    expect(within(head!).getByRole("columnheader", { name: "Rank" })).toHaveClass("w-14");
+    expect(within(head!).getByRole("columnheader", { name: "Rank" })).toHaveClass(
+      "w-14",
+      "min-w-14",
+    );
     expect(rank).toHaveClass("text-right", "whitespace-nowrap");
     // "Player" takes what the others leave; the username and the programme are one line each.
     expect(who).toHaveClass("w-full", "max-w-0");
@@ -1227,7 +1247,7 @@ describe("from 768 px", () => {
     await screen.findByText("mensa_fan");
     expect(heading("Trades")).toHaveAttribute("aria-sort", "descending");
     expect(heading("Tokens")).toHaveAttribute("aria-sort", "none");
-    // The chips of the sort row say the same.
+    // The sort chips say the same.
     expect(chip("Trades")).toHaveAttribute("aria-pressed", "true");
 
     await user.click(within(heading("Trades")).getByRole("button"));

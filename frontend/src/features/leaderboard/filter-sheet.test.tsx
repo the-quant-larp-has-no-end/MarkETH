@@ -2,7 +2,7 @@ import { act, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { TIMES } from "@/lib/format";
-import { leaderboard, leaderboardEntry } from "@/test/fixtures";
+import { leaderboard } from "@/test/fixtures";
 import {
   apiError,
   deferred,
@@ -18,6 +18,7 @@ import { followHistoryWrites, navigation } from "@/test/navigation";
 import { renderWithProviders } from "@/test/render";
 
 import { LeaderboardScreen } from "./leaderboard-screen";
+import { player } from "./test-players";
 
 /**
  * The filter sheet, as the Leaderboard uses it: the address, the request and the list
@@ -30,13 +31,7 @@ type User = ReturnType<typeof renderWithProviders>["user"];
 
 const ANSWER = json(200, leaderboard());
 /** What the filtered list answers: one player nobody else is. */
-const FILTERED = json(
-  200,
-  leaderboard({
-    items: [leaderboardEntry({ rank: 1, username: "only_one" })],
-    viewer: null,
-  }),
-);
+const FILTERED = json(200, leaderboard({ items: [player(1, "only_one")], viewer: null }));
 
 const sent = (request: MockRequest | undefined) => Object.fromEntries(request?.query ?? []);
 const isFiltered = (request: MockRequest) =>
@@ -54,11 +49,20 @@ function boardApi(filtered: Handler = FILTERED) {
   });
 }
 
+/** A request that does not match its schema: one sentence of the API per field. */
 function invalid(...errors: { loc: string[]; msg: string }[]) {
   return apiError(422, "VALIDATION_ERROR", "The request is not valid.", {
     errors: errors.map((error) => ({ ...error, type: "x" })),
   });
 }
+
+/** A rule the service checks: it names its field, and the error's message is its sentence. */
+function refused(field: string, message: string) {
+  return apiError(422, "VALIDATION_ERROR", message, { field });
+}
+
+const NOT_A_PERCENTAGE = "Enter a percentage between 0 and 100.";
+const BOUNDS_OUT_OF_ORDER = "Enter a lower bound that is not above the upper one.";
 
 const sheet = () => screen.getByRole("dialog", { name: "Filter" });
 const level = () => within(sheet()).getByLabelText("Level");
@@ -100,29 +104,41 @@ beforeEach(() => {
 });
 
 describe("what the sheet offers", () => {
-  test("a Level and a Programme select from /config, then one row per measure with a from and a to field", async () => {
+  test("a Level and a Programme select from /config, then one group per measure with a From and a To field", async () => {
     boardApi();
     await renderOpen();
 
     expect(within(sheet()).getByRole("heading", { name: "Filter" })).toBeInTheDocument();
+    expect(within(sheet()).getByRole("button", { name: "Close" })).toBeEnabled();
     expect(options(level())).toEqual(["Any level", "Bachelor", "Master", "Doctorate", "Other"]);
     expect(level()).toHaveValue("");
     expect(programme()).toHaveValue("");
 
-    const rows = within(sheet()).getAllByRole("group");
-    expect(rows.map((group) => group.firstElementChild?.firstChild?.textContent)).toEqual([
-      "Tokens",
-      "Win rate",
-      "Trades",
-      "Payout",
-    ]);
-    for (const group of rows) {
+    const groups = within(sheet()).getAllByRole("group");
+    expect(
+      groups.map((group) => group.querySelector(".type-label")?.firstChild?.textContent),
+    ).toEqual(["Tokens", "Win rate", "Trades", "Payout"]);
+    for (const group of groups) {
       expect(within(group).getByLabelText("From")).toHaveValue("");
       expect(within(group).getByLabelText("To")).toHaveValue("");
     }
   });
 
-  test("the unit a bound is typed in is said with its row", async () => {
+  test("the two fields of a group stand side by side in equal columns, aligned at their tops", async () => {
+    boardApi();
+    await renderOpen();
+
+    for (const measure of ["Tokens", "Win rate", "Trades", "Payout"]) {
+      const columns = from(measure).closest(".grid") as HTMLElement;
+      expect(columns).toHaveClass("grid-cols-2", "gap-3", "items-start");
+      expect(columns.contains(to(measure))).toBe(true);
+    }
+    // The selects are as wide as the sheet: they stand outside any pair of columns.
+    expect(level().closest(".grid-cols-2")).toBeNull();
+    expect(programme().closest(".grid-cols-2")).toBeNull();
+  });
+
+  test("the unit a bound is typed in stands inside its field and is said with its group", async () => {
     boardApi();
     await renderOpen();
 
@@ -132,6 +148,22 @@ describe("what the sheet offers", () => {
     expect(row("Trades")).toHaveAccessibleName("Trades");
     expect(row("Payout")).toHaveAccessibleName("Payout, tokens returned per token put in");
     expect(row("Payout")).toHaveTextContent(TIMES);
+    // The text of such a field ends 36 px before its right end, where the unit stands.
+    expect(from("Win rate")).toHaveClass("pr-9");
+    expect(to("Payout")).toHaveClass("pr-9");
+    expect(from("Tokens")).not.toHaveClass("pr-9");
+  });
+
+  test("the Tokens group says what the figure is made of", async () => {
+    boardApi();
+    await renderOpen();
+
+    expect(row("Tokens")).toHaveAccessibleDescription("Wallet plus open positions");
+    expect(within(row("Tokens")).getByText("Wallet plus open positions")).toHaveClass(
+      "type-caption",
+      "text-muted-foreground",
+    );
+    expect(row("Trades")).not.toHaveAccessibleDescription();
   });
 
   test("a phone gets the keypad of the figure: decimal, or digits for a whole number", async () => {
@@ -188,15 +220,18 @@ describe("what the sheet offers", () => {
     expect(clearAll()).toBeDisabled();
   });
 
-  test("a field keeps the characters a figure can have, and nothing else", async () => {
+  test("a field keeps digits and one decimal point, a comma becomes the point, and a whole number keeps digits alone", async () => {
     boardApi();
     const { user } = await renderOpen();
 
     await user.type(from("Win rate"), "62,5%");
-    expect(from("Win rate")).toHaveValue("62,5");
+    expect(from("Win rate")).toHaveValue("62.5");
 
-    await user.type(from("Tokens"), "1,204.5 tokens");
-    expect(from("Tokens")).toHaveValue("1,204.5");
+    await user.type(from("Tokens"), "12a.5.0 tokens");
+    expect(from("Tokens")).toHaveValue("12.50");
+
+    await user.type(to("Payout"), "x1,25");
+    expect(to("Payout")).toHaveValue("1.25");
 
     await user.type(from("Trades"), "1,5x");
     expect(from("Trades")).toHaveValue("15");
@@ -273,7 +308,7 @@ describe("Show results", () => {
     ]);
   });
 
-  test("the filters then stand under the sort row as chips, and Filter counts them", async () => {
+  test("the filters then stand under the sort chips as chips, and Filter counts them", async () => {
     boardApi();
     const { user } = await renderOpen();
 
@@ -320,16 +355,16 @@ describe("Show results", () => {
     });
   });
 
-  test("a figure is sent as the plain decimal it spells, and the field then shows what was sent", async () => {
+  test("what a field shows is what is sent: the characters as typed, a percentage with its point moved", async () => {
     const answer = deferred();
     const api = boardApi(answer.handler);
     const { user } = await renderOpen();
 
-    // Grouped the way the app writes a figure; a decimal comma; an unfinished point.
-    await user.type(from("Tokens"), "1,204.5");
+    // A decimal comma, as a phone's keypad types it; a point nothing follows yet.
+    await user.type(from("Tokens"), "1204,5");
     await user.type(from("Win rate"), "62,5");
     await user.type(to("Win rate"), "80.");
-    await user.type(to("Payout"), ",5");
+    await user.type(to("Payout"), "1,50");
     await user.click(show());
 
     await waitFor(() =>
@@ -339,13 +374,14 @@ describe("Show results", () => {
         min_credits_cr: "1204.5",
         min_win_rate: "0.625",
         max_win_rate: "0.8",
-        max_avg_payout_ratio: "0.5",
+        max_avg_payout_ratio: "1.50",
       }),
     );
+    // Sending changes no field.
     expect(from("Tokens")).toHaveValue("1204.5");
     expect(from("Win rate")).toHaveValue("62.5");
-    expect(to("Win rate")).toHaveValue("80");
-    expect(to("Payout")).toHaveValue("0.5");
+    expect(to("Win rate")).toHaveValue("80.");
+    expect(to("Payout")).toHaveValue("1.50");
     answer.resolve(FILTERED);
     await closed();
   });
@@ -403,13 +439,8 @@ describe("Show results", () => {
 });
 
 describe("a value the API rejects", () => {
-  test("VALIDATION_ERROR is marked on its field with the API's message; the list keeps its last result and the address stays", async () => {
-    boardApi(
-      invalid({
-        loc: ["query", "max_win_rate"],
-        msg: "Input should be less than or equal to 1",
-      }),
-    );
+  test("VALIDATION_ERROR is marked on the field it names with the API's sentence; the list keeps its last result and the address stays", async () => {
+    boardApi(invalid({ loc: ["query", "max_win_rate"], msg: NOT_A_PERCENTAGE }));
     const intoView = vi.spyOn(Element.prototype, "scrollIntoView");
     const { user } = await renderOpen();
 
@@ -418,14 +449,15 @@ describe("a value the API rejects", () => {
     await user.click(show());
 
     await waitFor(() => expect(to("Win rate")).toBeInvalid());
-    expect(to("Win rate")).toHaveAccessibleDescription("Input should be less than or equal to 1");
+    expect(to("Win rate")).toHaveAccessibleDescription(NOT_A_PERCENTAGE);
     // The fields scroll under the buttons: the refused one is brought into view and
     // takes the focus, so that its message is seen and read out.
     await waitFor(() => expect(to("Win rate")).toHaveFocus());
     expect(intoView.mock.contexts).toContain(to("Win rate"));
-    expect(within(sheet()).getByRole("alert")).toHaveTextContent(
-      "Input should be less than or equal to 1",
-    );
+    const alert = within(sheet()).getByRole("alert");
+    expect(alert).toHaveTextContent(NOT_A_PERCENTAGE);
+    // The sentence stands under its field, inside the field's column.
+    expect(to("Win rate").closest("[data-slot=field]")!.contains(alert)).toBe(true);
     expect(from("Win rate")).not.toBeInvalid();
     // Nothing of ours is said, and nothing is applied.
     expect(within(sheet()).getAllByRole("alert")).toHaveLength(1);
@@ -440,15 +472,52 @@ describe("a value the API rejects", () => {
     expect(show()).toBeEnabled();
   });
 
+  test("a lower bound above its upper one: the API names the lower field, and its sentence stands under that field", async () => {
+    const api = boardApi(refused("min_credits_cr", BOUNDS_OUT_OF_ORDER));
+    const { user } = await renderOpen();
+
+    await user.type(from("Tokens"), "500");
+    await user.type(to("Tokens"), "100");
+    await user.click(show());
+
+    // Both went out as typed: the sheet compared nothing.
+    expect(sent(api.lastCall(BOARD))).toMatchObject({
+      min_credits_cr: "500",
+      max_credits_cr: "100",
+    });
+    await waitFor(() => expect(from("Tokens")).toBeInvalid());
+    expect(from("Tokens")).toHaveAccessibleDescription(BOUNDS_OUT_OF_ORDER);
+    expect(to("Tokens")).not.toBeInvalid();
+    // Once, on the field, and not a second time above the button.
+    expect(within(sheet()).getAllByRole("alert")).toHaveLength(1);
+    expect(within(sheet()).queryByText("The request is not valid.")).not.toBeInTheDocument();
+    expect(navigation.href).toBe("/leaderboard");
+    expect(screen.getByText("polyterrasse")).toBeInTheDocument();
+  });
+
+  test.each([
+    ["Win rate", "min_win_rate"],
+    ["Trades", "min_trades"],
+    ["Payout", "min_avg_payout_ratio"],
+  ])("a crossed pair of %s is marked on its From field", async (measure, field) => {
+    boardApi(refused(field, BOUNDS_OUT_OF_ORDER));
+    const { user } = await renderOpen();
+
+    await user.type(from(measure), "9");
+    await user.type(to(measure), "1");
+    await user.click(show());
+
+    await waitFor(() => expect(from(measure)).toBeInvalid());
+    expect(from(measure)).toHaveAccessibleDescription(BOUNDS_OUT_OF_ORDER);
+    expect(to(measure)).not.toBeInvalid();
+  });
+
   test("each field the API names is marked, whichever it is", async () => {
     boardApi(
       invalid(
-        {
-          loc: ["query", "min_credits_cr"],
-          msg: "Decimal input should have no more than 6 decimal places",
-        },
-        { loc: ["query", "degree_programme"], msg: "String should have at most 100 characters" },
-        { loc: ["query", "min_trades"], msg: "Input should be a valid integer" },
+        { loc: ["query", "min_credits_cr"], msg: "Use at most 6 decimal places." },
+        { loc: ["query", "degree_programme"], msg: "Use at most 100 characters." },
+        { loc: ["query", "min_trades"], msg: "Enter a whole number." },
       ),
     );
     const { user } = await renderOpen();
@@ -460,23 +529,17 @@ describe("a value the API rejects", () => {
     await user.click(show());
 
     await waitFor(() => expect(from("Tokens")).toBeInvalid());
-    expect(from("Tokens")).toHaveAccessibleDescription(
-      "Decimal input should have no more than 6 decimal places",
-    );
+    expect(from("Tokens")).toHaveAccessibleDescription("Use at most 6 decimal places.");
     expect(programme()).toBeInvalid();
-    expect(programme()).toHaveAccessibleDescription("String should have at most 100 characters");
+    expect(programme()).toHaveAccessibleDescription("Use at most 100 characters.");
     expect(from("Trades")).toBeInvalid();
+    expect(from("Trades")).toHaveAccessibleDescription("Enter a whole number.");
     expect(level()).not.toBeInvalid();
     expect(to("Tokens")).not.toBeInvalid();
   });
 
   test("an error that names no field stands above the button, with the API's message", async () => {
-    boardApi(
-      invalid({
-        loc: ["query"],
-        msg: "Value error, min_trades must not be above max_trades",
-      }),
-    );
+    boardApi(invalid({ loc: ["query"], msg: "This value is not valid." }));
     const { user } = await renderOpen();
 
     await user.type(from("Trades"), "11");
@@ -494,10 +557,7 @@ describe("a value the API rejects", () => {
   test("an error goes away once the input it was about changes, and the corrected filter is applied", async () => {
     const api = boardApi((request) =>
       request.query.get("max_win_rate") === "1.5"
-        ? invalid({
-            loc: ["query", "max_win_rate"],
-            msg: "Input should be less than or equal to 1",
-          })
+        ? invalid({ loc: ["query", "max_win_rate"], msg: NOT_A_PERCENTAGE })
         : FILTERED,
     );
     const { user } = await renderOpen();
@@ -519,12 +579,7 @@ describe("a value the API rejects", () => {
 
   test("an address that holds a rejected filter: the banner on the screen, and the field marked when the sheet opens", async () => {
     navigation.go("/leaderboard?max_win_rate=66.7&min_trades=3");
-    mockApi({
-      [BOARD]: invalid({
-        loc: ["query", "max_win_rate"],
-        msg: "Input should be less than or equal to 1",
-      }),
-    });
+    mockApi({ [BOARD]: invalid({ loc: ["query", "max_win_rate"], msg: NOT_A_PERCENTAGE }) });
     const { user } = renderWithProviders(<LeaderboardScreen />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent("The request is not valid.");
@@ -539,7 +594,7 @@ describe("a value the API rejects", () => {
 
     expect(to("Win rate")).toBeInvalid();
     expect(to("Win rate")).toHaveValue("6670");
-    expect(to("Win rate")).toHaveAccessibleDescription("Input should be less than or equal to 1");
+    expect(to("Win rate")).toHaveAccessibleDescription(NOT_A_PERCENTAGE);
     expect(from("Trades")).toHaveValue("3");
     expect(from("Trades")).not.toBeInvalid();
     // Opening is no answer to "Show results": no field takes the focus, no keyboard slides up.

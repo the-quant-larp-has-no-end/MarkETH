@@ -50,8 +50,8 @@ class MarketStatus(StrEnum):
     VOID = "VOID"
     EXPIRED = "EXPIRED"
     """A proposal whose `close_at` passed before an admin decided on it
-    (`MarketView.effective_status`). Its row says PROPOSED and stays that way: nobody
-    can approve or reject it any more."""
+    (`MarketView.effective_status`). Its row says PROPOSED and stays that way, and
+    nobody can approve or reject it."""
 
 
 STORED_MARKET_STATUSES: Final[tuple[MarketStatus, ...]] = (

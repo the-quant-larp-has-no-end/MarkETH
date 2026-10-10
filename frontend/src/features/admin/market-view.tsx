@@ -2,12 +2,10 @@
 
 import { type ReactNode, useId } from "react";
 
-import { tierName } from "@/components/market";
+import { StatusBadge, tierName } from "@/components/market";
 import { Amount, Missing } from "@/components/money";
 import { DateTime } from "@/components/time";
 import type { MarketDetailResponse, MarketResolution } from "@/lib/api/schema";
-
-import { MarketStatusBadge } from "./market-status";
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   const id = useId();
@@ -72,7 +70,7 @@ export function Resolution({ resolution }: { resolution: MarketResolution }) {
   return (
     <Section title="Resolution">
       <div className="flex flex-col items-start gap-2">
-        <MarketStatusBadge
+        <StatusBadge
           status={resolution.outcome === "VOID" ? "VOID" : "RESOLVED"}
           outcome={resolution.outcome}
         />

@@ -76,13 +76,15 @@ class RiskService:
           UNSETTLED_STATUSES)` (soonest `close_at` first) with its effective status,
           display `p_yes`, the balance of its account (all of them in one query,
           `accounts.list_market_accounts`), `exposure_cr = max(q_yes, q_no) -
-          balance`, and `void_cost_cr = <net stakes> - balance`, the net stakes
-          being `positions.net_stake_totals(<the market ids>)`, one query for all of
-          them, and 0 for a market nobody holds a position in. `void_cost_cr` is what
-          `vis:mm_pnl` would add to the market's account if an admin voided it now
-          (A.5): a void refunds every net stake, and traders who sold above their
-          cost keep what they took out. It is not part of the obligations and is
-          bounded by the stake limit per trader, not by the market's budget.
+          balance`, and `void_cost_cr = MarketView.void_cost_micro(<net stakes>,
+          <balance>)`, the net stakes being `positions.net_stake_totals(<the market
+          ids>)`, one query for all of them, and 0 for a market nobody holds a
+          position in. `void_cost_cr` is what `vis:mm_pnl` would add to the market's
+          account if an admin voided it now (A.5): a void refunds every net stake,
+          and traders who sold above their cost keep what they took out. It is not
+          part of the obligations and is bounded by the stake limit per trader, not
+          by the market's budget. The detail of a market shows an admin the same
+          figure (`MarketService.detail_in`), from the same function.
         * `alerts = alerts.list_unacknowledged()`, newest first.
 
         A market that is not settled has its account since its approval; one without
@@ -189,7 +191,7 @@ class RiskService:
             q_no=to_cr(market.q_no_micro),
             account_balance_cr=to_cr(balance_micro),
             exposure_cr=to_cr(max(market.q_yes_micro, market.q_no_micro) - balance_micro),
-            void_cost_cr=to_cr(net_stake_micro - balance_micro),
+            void_cost_cr=to_cr(self._view.void_cost_micro(net_stake_micro, balance_micro)),
             volume_cr=to_cr(market.volume_micro),
             close_at=market.close_at,
         )
