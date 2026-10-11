@@ -29,8 +29,8 @@ async function write(user: User, label: string, text: string) {
 /** Fills in the seven fields and accepts the usage policy. */
 async function fillIn(user: User) {
   await write(user, "Question", QUESTION);
-  await write(user, "YES means", YES);
-  await write(user, "NO means", NO);
+  await write(user, "Option 1", YES);
+  await write(user, "Option 2", NO);
   await write(user, "How it is decided", CRITERIA);
   await write(user, "Source", SOURCE);
   await user.type(field("Trading closes"), "2026-12-11T18:00");
@@ -41,6 +41,50 @@ async function fillIn(user: User) {
 const proposed = () => marketDetail({ status: "PROPOSED", trading_open: false, tier: null });
 
 describe("the form", () => {
+  test("prefills optional options with YES / NO and explains the blank defaults", () => {
+    renderWithProviders(<ProposeForm />);
+
+    expect(field("Option 1")).toHaveValue("YES");
+    expect(field("Option 2")).toHaveValue("NO");
+    expect(field("Option 1")).toHaveAccessibleDescription(
+      "Defaults to YES if left empty.",
+    );
+    expect(field("Option 2")).toHaveAccessibleDescription(
+      "Defaults to NO if left empty.",
+    );
+  });
+
+  test("the first typed character replaces the default, while custom text is edited normally", async () => {
+    const { user } = renderWithProviders(<ProposeForm />);
+
+    await user.click(field("Option 1"));
+    await user.keyboard("A");
+    expect(field("Option 1")).toHaveValue("A");
+    await user.keyboard("lice");
+    await user.click(field("Question"));
+    await user.click(field("Option 1"));
+    await user.keyboard("{End} wins");
+    expect(field("Option 1")).toHaveValue("Alice wins");
+
+    await user.click(field("Option 2"));
+    await user.keyboard("B");
+    expect(field("Option 2")).toHaveValue("B");
+  });
+
+  test("keyboard focus also lets typing replace the default", async () => {
+    const { user } = renderWithProviders(<ProposeForm />);
+
+    await user.click(field("Question"));
+    await user.tab();
+    expect(field("Option 1")).toHaveFocus();
+    await user.keyboard("Alice");
+    expect(field("Option 1")).toHaveValue("Alice");
+    await user.tab();
+    expect(field("Option 2")).toHaveFocus();
+    await user.keyboard("Bob");
+    expect(field("Option 2")).toHaveValue("Bob");
+  });
+
   test("has one field per row, in the order of the design", () => {
     renderWithProviders(<ProposeForm />);
 
@@ -51,8 +95,8 @@ describe("the form", () => {
 
     expect(labels).toEqual([
       "Question",
-      "YES means",
-      "NO means",
+      "Option 1",
+      "Option 2",
       "How it is decided",
       "Source",
       "Trading closes",
@@ -72,12 +116,14 @@ describe("the form", () => {
 
     expect(field("Question")).toHaveAccessibleDescription("12 to 150 characters.");
     expect(field("Question")).toHaveAttribute("maxlength", "150");
-    expect(field("YES means")).toHaveAttribute("maxlength", "300");
-    expect(field("NO means")).toHaveAttribute("maxlength", "300");
+    expect(field("Option 1")).toHaveAttribute("maxlength", "300");
+    expect(field("Option 2")).toHaveAttribute("maxlength", "300");
     expect(field("Source")).toHaveAttribute("maxlength", "300");
     expect(field("How it is decided")).toHaveAttribute("maxlength", "900");
     expect(screen.getByText("0 / 150")).toBeInTheDocument();
-    expect(screen.getAllByText("0 / 300")).toHaveLength(3);
+    expect(screen.getByText("0 / 300")).toBeInTheDocument();
+    expect(screen.getByText("3 / 300")).toBeInTheDocument();
+    expect(screen.getByText("2 / 300")).toBeInTheDocument();
     expect(screen.getByText("0 / 900")).toBeInTheDocument();
   });
 
@@ -166,13 +212,11 @@ describe("the form", () => {
     expect(screen.getByText("You can propose 1 market a day.")).toBeInTheDocument();
   });
 
-  test("the button is disabled until every field is filled and the box is ticked", async () => {
+  test("the button is disabled until every required field is filled and the box is ticked", async () => {
     const { user } = renderWithProviders(<ProposeForm />);
 
     expect(submit()).toBeDisabled();
     await write(user, "Question", QUESTION);
-    await write(user, "YES means", YES);
-    await write(user, "NO means", NO);
     await write(user, "How it is decided", CRITERIA);
     await write(user, "Source", SOURCE);
     await user.type(field("Trading closes"), "2026-12-11T18:00");
@@ -198,6 +242,50 @@ describe("the form", () => {
 });
 
 describe("submitting", () => {
+  test.each(["defaults", "empty", "whitespace"])(
+    "submits YES / NO when the options are %s",
+    async (options) => {
+      const api = mockApi({ [PROPOSE]: json(201, proposed()) });
+      const onSent = vi.fn();
+      const { user } = renderWithProviders(<ProposeForm onSent={onSent} />);
+      await fillIn(user);
+
+      for (const [label, fallback] of [
+        ["Option 1", "YES"],
+        ["Option 2", "NO"],
+      ]) {
+        await user.clear(field(label));
+        if (options !== "empty") {
+          await write(user, label, options === "defaults" ? fallback : "   ");
+        }
+      }
+      expect(submit()).toBeEnabled();
+      await user.click(submit());
+
+      await waitFor(() => expect(onSent).toHaveBeenCalledTimes(1));
+      expect(api.lastCall(PROPOSE)?.body).toMatchObject({
+        yes_definition: "YES",
+        no_definition: "NO",
+      });
+    },
+  );
+
+  test("a blank option defaults independently of the other option's custom text", async () => {
+    const api = mockApi({ [PROPOSE]: json(201, proposed()) });
+    const onSent = vi.fn();
+    const { user } = renderWithProviders(<ProposeForm onSent={onSent} />);
+    await fillIn(user);
+    await user.clear(field("Option 1"));
+
+    await user.click(submit());
+
+    await waitFor(() => expect(onSent).toHaveBeenCalledTimes(1));
+    expect(api.lastCall(PROPOSE)?.body).toMatchObject({
+      yes_definition: "YES",
+      no_definition: NO,
+    });
+  });
+
   test("sends the wording without the blanks around it, the times with the zone's offset, and that the policy is accepted", async () => {
     const api = mockApi({ [PROPOSE]: json(201, proposed()) });
     const onSent = vi.fn();
