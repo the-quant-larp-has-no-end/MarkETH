@@ -131,18 +131,28 @@ export function choiceKey(intent: TradeIntent, choice: Choice): string {
 
 /**
  * The body of a trade (DESIGN.md §13): what was quoted, and the quote on screen as its
- * guard. Buying sends the text of the amount field and is guarded by the quote's `shares`;
- * selling sends the text of the shares field and is guarded by the quote's `amount_cr`. A price
+ * guard. Buying by an amount sends the text of the amount field and is guarded by the
+ * quote's `shares`; buying or selling by shares sends the text of the shares field and is
+ * guarded by the quote's `amount_cr`. A price
  * that moved against the user is therefore always answered `QUOTE_STALE`. Every amount is
  * a string that was typed or that the API sent, and none is changed on its way.
  */
 function tradeRequest(request: QuoteRequest, quote: QuoteResponse): TradeRequest {
-  if (request.side === "BUY") {
+  if ("amount_cr" in request) {
     return {
       side: "BUY",
       outcome: request.outcome,
       amount_cr: request.amount_cr,
       min_shares: quote.shares,
+      quote_version: quote.quote_version,
+    };
+  }
+  if (request.side === "BUY") {
+    return {
+      side: "BUY",
+      outcome: request.outcome,
+      shares: request.shares,
+      max_cost_cr: quote.amount_cr,
       quote_version: quote.quote_version,
     };
   }

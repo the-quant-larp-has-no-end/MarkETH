@@ -7,6 +7,7 @@ import type { MeResponse } from "@/lib/api/schema";
 import { me, profileSaved } from "@/test/fixtures";
 import { apiError, deferred, json, mockApi, noAnswer, type Route } from "@/test/http";
 import { navigation } from "@/test/navigation";
+import { choosePicker } from "@/test/picker";
 import { renderWithProviders } from "@/test/render";
 
 import { ProfileScreen } from "./profile-screen";
@@ -158,7 +159,7 @@ describe("saving", () => {
     );
 
     await user.type(username(), "2");
-    await user.selectOptions(programme(), "MSc Computer Science");
+    await choosePicker(user, "Programme", "MSc Computer Science");
     await user.click(save());
 
     expect(await screen.findByText("Profile saved")).toBeInTheDocument();
@@ -224,7 +225,7 @@ describe("saving", () => {
 
     await user.clear(username());
     await user.type(username(), "polyterrasse");
-    await user.selectOptions(programme(), "MSc Computer Science");
+    await choosePicker(user, "Programme", "MSc Computer Science");
     await user.click(save());
 
     expect(await screen.findByRole("alert")).toHaveTextContent("This username is taken.");
@@ -266,7 +267,7 @@ describe("saving", () => {
     });
     const { user } = renderProfile();
 
-    await user.selectOptions(programme(), "MSc Computer Science");
+    await choosePicker(user, "Programme", "MSc Computer Science");
     await user.click(save());
 
     await waitFor(() => expect(programme()).toBeInvalid());

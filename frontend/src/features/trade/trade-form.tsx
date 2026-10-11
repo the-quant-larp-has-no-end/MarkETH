@@ -107,7 +107,8 @@ export function TradeForm({
   const sellPresets = attempt?.sellPresets ?? viewer.sell_presets;
   const sellSlider =
     (attempt?.sell ?? viewer.sell).find((entry) => entry.outcome === outcome)?.slider ?? null;
-  const stake = attempt?.request.side === "BUY" ? attempt.request.amount_cr : choice.stake;
+  const stake =
+    attempt && "amount_cr" in attempt.request ? attempt.request.amount_cr : choice.stake;
   const shares = attempt?.request.side === "SELL" ? attempt.request.shares : choice.shares;
 
   const sellable: Record<Outcome, boolean> = {
