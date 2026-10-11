@@ -14,6 +14,7 @@ import {
 import { apiError, deferred, json, mockApi, noAnswer, type Route } from "@/test/http";
 import { navigation } from "@/test/navigation";
 import { intersect } from "@/test/observers";
+import { sizeCharts } from "@/test/charts";
 import { renderWithProviders } from "@/test/render";
 
 import { PortfolioScreen } from "./portfolio-screen";
@@ -85,7 +86,10 @@ async function openHistory(user: ReturnType<typeof renderWithProviders>["user"])
   await user.click(screen.getByRole("tab", { name: "History" }));
 }
 
-beforeEach(() => navigation.go("/portfolio"));
+beforeEach(() => {
+  navigation.go("/portfolio");
+  sizeCharts();
+});
 
 describe("the frame", () => {
   test("a main screen whose one h1 names it, with the two views as tabs", async () => {
@@ -125,12 +129,34 @@ describe("loading", () => {
 });
 
 describe("the summary card", () => {
+  test("shows server-valued equity and remaining tokens alongside open positions", async () => {
+    mockApi({
+      [POSITIONS]: json(
+        200,
+        portfolio({
+          total_value_cr: "62.5",
+          balance_cr: "150.25",
+          total_equity_cr: "212.75",
+        }),
+      ),
+    });
+    renderWithProviders(<PortfolioScreen />);
+
+    await screen.findByText("Total equity");
+    expect(summary()!.querySelector("[data-slot=amount]")).toHaveTextContent("212.75 tokens");
+    expect(within(summary()!).getByText("Remaining tokens")).toBeInTheDocument();
+    expect(within(summary()!).getByText("150.25 tokens")).toBeInTheDocument();
+    expect(within(summary()!).getByRole("application")).toHaveAccessibleName(/now 212.75 tokens/);
+  });
+
   test("shows total_value_cr as the API sent it, in number-lg", async () => {
     mockApi({ [POSITIONS]: json(200, MIXED) });
     renderWithProviders(<PortfolioScreen />);
 
     await screen.findByText("Value of open positions");
-    const amount = summary()!.querySelector("[data-slot=amount]")!;
+    const amount = summary()!.querySelector(
+      "[data-slot=portfolio-positions-value] [data-slot=amount]",
+    )!;
     expect(amount).toHaveTextContent("62.5 tokens");
     expect(amount).toHaveClass("type-number-lg");
   });
@@ -242,7 +268,9 @@ describe("Positions", () => {
   });
 
   test("empty: the campus line and a primary button to the markets", async () => {
-    mockApi({ [POSITIONS]: json(200, portfolio({ total_value_cr: "0", items: [] })) });
+    mockApi({
+      [POSITIONS]: json(200, portfolio({ total_value_cr: "0", total_equity_cr: "150", items: [] })),
+    });
     renderWithProviders(<PortfolioScreen />);
 
     expect(await screen.findByText("No positions yet. Your cup is empty.")).toBeInTheDocument();
@@ -251,8 +279,11 @@ describe("Positions", () => {
     expect(browse).toHaveAttribute("data-variant", "primary");
     expect(document.querySelectorAll("[data-slot=button][data-variant=primary]")).toHaveLength(1);
     expect(screen.queryByRole("heading", { name: "Open" })).not.toBeInTheDocument();
-    // The card still says what there is: nothing.
-    expect(summary()!.querySelector("[data-slot=amount]")).toHaveTextContent("0 tokens");
+    expect(
+      summary()!.querySelector("[data-slot=portfolio-positions-value] [data-slot=amount]"),
+    ).toHaveTextContent("0 tokens");
+    expect(summary()!.querySelector("[data-slot=amount]")).toHaveTextContent("150 tokens");
+    expect(screen.getByRole("application", { name: /Total equity over time/ })).toBeInTheDocument();
   });
 
   test("error: a banner with the API's message and Try again, which reads the positions again", async () => {

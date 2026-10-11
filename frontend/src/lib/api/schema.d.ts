@@ -1980,6 +1980,27 @@ export interface components {
          */
         DependencyStatus: "up" | "down";
         /**
+         * EquityPoint
+         * @description A historical total equity, with an approximate coordinate used only for plotting.
+         */
+        EquityPoint: {
+            /**
+             * Plot Value
+             * @description Chart coordinate in tokens. Labels and all arithmetic use the exact amount.
+             */
+            plot_value: number;
+            /**
+             * T
+             * Format: date-time
+             */
+            t: string;
+            /**
+             * Total Equity Cr
+             * @example 0.25
+             */
+            total_equity_cr: string;
+        };
+        /**
          * ErrorCode
          * @enum {string}
          */
@@ -2974,14 +2995,37 @@ export interface components {
          *     settled ones (latest `close_at` first).
          */
         PortfolioResponse: {
+            /**
+             * Balance Cr
+             * @description Remaining tokens in the user's ledger account.
+             * @example 0.25
+             */
+            balance_cr: string;
+            /**
+             * Equity History
+             * @description Oldest first, bounded by HISTORY_MAX_POINTS. Includes all equity-changing events.
+             */
+            equity_history: components["schemas"]["EquityPoint"][];
             /** Items */
             items: components["schemas"]["PortfolioEntry"][];
+            /**
+             * Total Equity Cr
+             * @description `total_value_cr` plus `balance_cr`; settled holdings are excluded.
+             * @example 0.25
+             */
+            total_equity_cr: string;
             /**
              * Total Value Cr
              * @description Sum of `value_cr` over the markets that are not yet RESOLVED or VOID.
              * @example 0.25
              */
             total_value_cr: string;
+            /**
+             * Until
+             * Format: date-time
+             * @description The server's now, the right edge of the equity chart.
+             */
+            until: string;
         };
         /**
          * PostChatMessageRequest
@@ -4388,6 +4432,7 @@ export type CreatedCode = components['schemas']['CreatedCode'];
 export type DegreeLevel = components['schemas']['DegreeLevel'];
 export type DegreeLevelOption = components['schemas']['DegreeLevelOption'];
 export type DependencyStatus = components['schemas']['DependencyStatus'];
+export type EquityPoint = components['schemas']['EquityPoint'];
 export type ErrorCode = components['schemas']['ErrorCode'];
 export type ErrorResponse = components['schemas']['ErrorResponse'];
 export type HaltMarketRequest = components['schemas']['HaltMarketRequest'];

@@ -1343,12 +1343,12 @@ No sentence of the studio is a joke, and nothing in it names an amount of tokens
 ### Portfolio (`/portfolio`)
 
 1. Top bar.
-2. A summary card: "Value of open positions" with `total_value_cr` in `number-lg`.
+2. A summary card: "Total equity" with `total_equity_cr` in `number-lg`, followed by "Value of open positions" (`total_value_cr`) and "Remaining tokens" (`balance_cr`). Total equity is the server's sum of the two, excluding settled positions. Below the figures, an equity chart uses the probability chart's step line, colour, 12% fill, height, date axis and tooltip, with an automatic token-value y axis. `equity_history` of `GET /me/positions` includes balance movements, the user's buys and sells, other traders' price changes while shares are held, and settlements. The last value holds to the server's `until`. Exact amounts remain strings; the API also supplies a numeric plotting coordinate for each point. A text caption gives the starting and current equity.
 3. Tabs: **Positions** and **History**.
 4. Positions: position rows from `GET /me/positions` in API order, under the subheadings "Open" and "Settled"; a market is settled when its `status` is RESOLVED or VOID. A row names each holding whose `shares` is not `0` ("183.29 YES shares"), or "No shares held" when there is none, and says when the user entered the market: "Entered" with the date and time of `entered_at`, the user's first trade there. A settled row shows "Paid out" or "Refunded" with the token icon and `payout_cr` or `refund_cr` in place of `value_cr`. A row opens the market.
 5. History: trade rows from `GET /me/trades`, loading more with `next_cursor` as the user scrolls. A row opens its market.
 
-Empty: the empty-cup illustration and "No positions yet. Your cup is empty." with a primary "Browse markets" button. An empty History says "No trades yet." Loading: a skeleton summary card and five skeleton rows. Error: a banner with "Try again".
+Empty: the empty-cup illustration and "No positions yet. Your cup is empty." with a primary "Browse markets" button. The equity summary and chart still show the remaining tokens. An empty History says "No trades yet." Loading: a skeleton summary card, chart and five skeleton rows. Error: a banner with "Try again".
 
 "Paid out" and "Refunded" of a market that settles while the screen is open show without a reload: a settlement changes the caller's own (§14). The value of open positions is as read when the screen opened or the window got the focus back.
 
