@@ -6,6 +6,7 @@ FastAPI API (`app.main:create_app`) and the outbox relay (`python -m app.relay`)
 uv run pytest                      # unit + integration (needs Docker for Testcontainers)
 uv run pytest --numprocesses 4     # the same in four processes, as `make test-backend` runs it
 uv run pytest -m scylla            # the slow ScyllaDB tests
+uv run pytest -m media             # the image test of the media box (builds its image), as `make test-media` runs it
 uv run ruff check . && uv run ruff format .
 uv run mypy                        # strict
 uv run lint-imports                # the layer rules below, enforced
@@ -27,6 +28,7 @@ Imports only point downwards. `lint-imports` fails the build otherwise.
 | `app/services` | Business logic classes | Own the transaction. Never import FastAPI or Starlette. Raise `AppError` subclasses. |
 | `app/repositories` | Data-access classes and `UnitOfWork` | Queries only. Never commit, never raise `AppError`. |
 | `app/integrations` | Redis and ScyllaDB adapters | Each class states what happens when its backend is down. |
+| `app/integrations/media` | `MediaClient`, the API's side of the media box's socket | The standard library alone, and no code shared with `mediabox/`. Whatever it cannot read of the box is `MediaUnavailableError`; `ping` raises nothing. |
 | `app/models` | SQLAlchemy ORM models, the trigger and privilege SQL, the schema fingerprint | Tables, constraints, indexes. No behaviour. |
 | `app/db` | `Base`, `Database` (async engine) | |
 | `app/core` | Settings, enums, errors, units, clock, identity values, the degree catalogue | Imports nothing else from `app`. |
@@ -34,6 +36,8 @@ Imports only point downwards. `lint-imports` fails the build otherwise.
 | `app/pricing/lmsr.py` | LMSR maths | Pure functions, no I/O, imports only `app.core` (SPEC §4). |
 
 Schemas double as the data-transfer objects services return. Repositories and models never see them. `scripts/` holds what runs beside the application: `seed`, `export_openapi`, `check_schema` and `production_env`, which renders the deployed `.env` with the standard library alone.
+
+`mediabox/` is no layer of `app`: it is the media box, an image of its own (`mediabox/Dockerfile`, SPEC §9) in which a supervisor runs ffmpeg. It imports the standard library alone and nothing of `app`, nothing the API runs imports it, and the API's image leaves it out; `tests/unit/mediabox/test_imports.py` holds each of these. mypy checks it with the rest.
 
 ## Classes and wiring
 
@@ -94,6 +98,30 @@ A `message` is a sentence for the person in front of the screen, and the fronten
 
 Postgres through asyncpg (app, Alembic, tests, scripts). Redis through `redis.asyncio`. ScyllaDB through `ScyllaClient`, which bridges the driver's futures to asyncio and connects in a worker thread. Nothing may block the event loop.
 
+## Live stream and live chat
+
+A market's live stream and the chat beside it (SPEC §6, §9, A.12). No credit moves in either, and neither locks a market row or an account.
+
+| What | Where |
+| --- | --- |
+| The moves of a live stream, the upload of a piece, the proxy's question, the lists | `BroadcastService`, `app/services/broadcasts.py` |
+| What a row is to a caller: the effective status, the flags, the address of the playlist | `BroadcastView`, `app/services/broadcast_view.py` |
+| The places of the viewers | `BroadcastAudience`, `app/services/broadcast_audience.py` |
+| The chat: reading, writing, removing, clearing | `ChatService`, `app/services/chat.py` |
+| The queries | `app/repositories/broadcast.py`, `app/repositories/chat.py` |
+| The API's side of the media box | `MediaClient`, `app/integrations/media/client.py` |
+| The media box itself | `mediabox/` |
+| Routes and shapes | `app/api/routes/broadcasts.py`, `chat.py` and the two files of the same names under `routes/admin/`; `app/schemas/broadcasts.py`, `chat.py`, and the three events in `app/schemas/live.py` |
+
+- Every reader and writer is inside the market: `MarketAccess.get_inside` is the one seam, and its refusal is the 404 of an id no market has.
+- A row stored LIVE can be over by the clock, and no job stores that. Ask `BroadcastView` for the status, never the column alone. An operation that meets such a row stores the end in a transaction of its own and starts again.
+- A write of a live stream's life takes `uow.advisory_lock(BROADCAST_LOCK)` first, then one row of `broadcasts`, then the chat's lock inside `ChatService.clear`. A chat message takes `chat_lock(broadcast_id)` and no row lock.
+- Every transaction that stores an end calls `ChatService.clear(uow, broadcast_id)` once it has written the status: no message outlasts its live stream.
+- A change is announced inside the transaction that writes it, `uow.announce(...)`, never after the commit.
+- The media box is asked inside the transaction of a start, as its last step, so a start that cannot have its place writes nothing. Everything else the box is told follows a commit and is best effort.
+- A chat message is two short transactions with the rate limits between them: no Redis call runs inside a transaction.
+- A count of viewers is reported to nobody.
+
 ## Tests
 
 - `tests/unit` needs nothing external. `tests/integration` uses real Postgres and Redis through Testcontainers and is marked `integration`. ScyllaDB tests are marked `scylla` and are deselected by default.
@@ -104,6 +132,9 @@ Postgres through asyncpg (app, Alembic, tests, scripts). Redis through `redis.as
 - Expected prices, statuses and stakes come from `MarketView` and `app.pricing.lmsr`, not from arithmetic repeated in the test.
 - Every bullet of SPEC §12 has a test. Name tests after the rule they prove.
 - Property tests use Hypothesis.
+- In the suite the media box is down unless a test brings one: `BROADCAST_MEDIA_SOCKET` of `.example.env` names a path nothing listens on. `tests/support/media.py` has `FakeMediaBox`, a box on a Unix socket that speaks the box's lines and can be told to be full, busy, silent or gone, and `behind(settings, box, ...)`, which points settings at it. A test module that needs the box overrides the fixture `container_settings` with it, as the `tests/integration/test_broadcast_*.py` files do.
+- `tests/support/broadcasts.py` writes a row as the lifecycle leaves it (`broadcast(...)`) and makes the operations as requests (`Calls`); `tests/support/chat.py` has the chat's helpers (`go_live`, `write_messages`, `said`); `tests/support/streams.py` reads a stream of the hub (`listening(hub, viewer, topics)`).
+- `tests/unit/mediabox` runs the box against a stand-in for ffmpeg; the fixtures `settings` and `clock` in there are the box's own. The image test, `tests/integration/test_mediabox_image.py`, is marked `media` and deselected by default like `scylla`: it builds the image, runs it as `compose.yaml` does and feeds the real ffmpeg what browsers recorded (`tests/fixtures/broadcast/`, recorded by `frontend/e2e/record-fixtures.mjs`).
 
 ## Recipes
 

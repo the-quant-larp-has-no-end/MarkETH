@@ -31,6 +31,9 @@ import type {
   VoidMarketRequest,
 } from "./schema";
 import type { Serialised, Submission } from "./submissions";
+// What the writes of a live stream and of its chat add, in lines of their own.
+import { dropChatMessage, putChatMessage } from "./chat-cache";
+import type { MarketBroadcastResponse, RequestBroadcastRequest } from "./schema";
 
 /**
  * Every write of the product, each with what it does to the cache. This file is the
@@ -84,6 +87,24 @@ import type { Serialised, Submission } from "./submissions";
  * "After no answer" is awaited before the mutation stops being pending. A button that is
  * disabled while its mutation is pending therefore stays disabled until the screen shows
  * what the server recorded, which is what DESIGN.md §14 asks for.
+ *
+ * The writes of a live stream and of its chat. A piece of the recording is no write of
+ * this file: it goes out as bytes through `sendBroadcastChunk`
+ * (`lib/api/broadcast-upload.ts`) and changes nothing in the cache.
+ *
+ * | Write                            | After its answer                  | After no answer         |
+ * | -------------------------------- | --------------------------------- | ----------------------- |
+ * | `requestBroadcastMutation`,      | the live stream of the market is  | the live stream of the  |
+ * | `approveBroadcastMutation`,      | the answer; the live streams on   | market, the live        |
+ * | `refuseBroadcastMutation`        | air, the admin's live streams     | streams on air, the     |
+ * |                                  |                                   | admin's live streams    |
+ * | `startBroadcastMutation`,        | the same, and the chat of the     | the same, and the chat  |
+ * | `startBroadcastAsAdminMutation`, | market                            | of the market           |
+ * | `endBroadcastMutation`           |                                   |                         |
+ * | `postChatMessageMutation`        | the message joins the chat of the | the chat of the market  |
+ * |                                  | market, as its event puts it      |                         |
+ * | `removeChatMessageMutation`      | the message leaves the chat of    | the chat of the market  |
+ * |                                  | the market                        |                         |
  */
 
 /** Marks queries out of date; the ones on screen are asked again. Resolves when they answered. */
@@ -609,5 +630,187 @@ export const adjustUserBalanceMutation = mutationOptions({
     if (error.code === "INSUFFICIENT_BALANCE" || error.code === "NOT_FOUND") {
       void refresh(client, keys.admin.users.all);
     }
+  },
+});
+
+/* ---- Live stream ------------------------------------------------------------------ */
+
+/**
+ * What the six writes of a live stream share. Each names its market, and its answer is the
+ * live stream of that market as the caller may see it now, with what the caller may do
+ * next. The two lists a live stream stands in are read again, and with `chat` the live
+ * chat of the market, which the write opens or closes.
+ *
+ * After no answer the reads are awaited: the buttons stay disabled until the screen shows
+ * what the server recorded. A start that got no answer may be sent again; the API then
+ * answers with the live stream that is on.
+ */
+function broadcastAction({ chat }: { chat: boolean }) {
+  const beside = (marketId: string): QueryKey[] => [
+    keys.broadcasts.live,
+    keys.admin.broadcasts,
+    ...(chat ? [keys.markets.chat(marketId)] : []),
+  ];
+  return {
+    onSuccess: (
+      answer: MarketBroadcastResponse,
+      { marketId }: { marketId: string },
+      _result: unknown,
+      { client }: { client: QueryClient },
+    ) => {
+      client.setQueryData<MarketBroadcastResponse>(keys.markets.broadcast(marketId), answer);
+      void refresh(client, ...beside(marketId));
+    },
+    onError: (
+      error: ApiError,
+      { marketId }: { marketId: string },
+      _result: unknown,
+      { client }: { client: QueryClient },
+    ) => {
+      const reads = [keys.markets.broadcast(marketId), ...beside(marketId)];
+      if (error.outcomeUnknown) return refresh(client, ...reads);
+      // The live stream is not what the screen thought it was, or it is gone: show it as it is.
+      if (
+        error.code === "CONFLICT" ||
+        error.code === "LIMIT_EXCEEDED" ||
+        error.code === "FORBIDDEN" ||
+        error.code === "NOT_FOUND"
+      ) {
+        void refresh(client, ...reads);
+      }
+    },
+  };
+}
+
+/**
+ * `POST /markets/{market_id}/broadcast/request`: the proposer of a market asks for its live
+ * stream. `policy_accepted: true` is the tick of the form that sends it.
+ */
+export const requestBroadcastMutation = mutationOptions({
+  mutationFn: ({ marketId, policy_accepted }: { marketId: string } & RequestBroadcastRequest) =>
+    call((api) =>
+      api.POST("/api/markets/{market_id}/broadcast/request", {
+        params: { path: { market_id: marketId } },
+        body: { policy_accepted },
+      }),
+    ),
+  ...broadcastAction({ chat: false }),
+});
+
+/**
+ * `POST /broadcasts/{broadcast_id}/start`: the broadcaster goes live, with a live stream
+ * that is approved or with one that ended by itself. The answer holds the live stream that
+ * is on, whose id is the one the pieces of the recording are sent to.
+ */
+export const startBroadcastMutation = mutationOptions({
+  mutationFn: ({ broadcastId }: { marketId: string; broadcastId: string }) =>
+    call((api) =>
+      api.POST("/api/broadcasts/{broadcast_id}/start", {
+        params: { path: { broadcast_id: broadcastId } },
+      }),
+    ),
+  ...broadcastAction({ chat: true }),
+});
+
+/** `POST /admin/markets/{market_id}/broadcast`: an admin goes live on a market, without a request. */
+export const startBroadcastAsAdminMutation = mutationOptions({
+  mutationFn: ({ marketId }: { marketId: string }) =>
+    call((api) =>
+      api.POST("/api/admin/markets/{market_id}/broadcast", {
+        params: { path: { market_id: marketId } },
+      }),
+    ),
+  ...broadcastAction({ chat: true }),
+});
+
+/** `POST /broadcasts/{broadcast_id}/end`: the broadcaster or an admin ends a live stream that is on. */
+export const endBroadcastMutation = mutationOptions({
+  mutationFn: ({ broadcastId }: { marketId: string; broadcastId: string }) =>
+    call((api) =>
+      api.POST("/api/broadcasts/{broadcast_id}/end", {
+        params: { path: { broadcast_id: broadcastId } },
+      }),
+    ),
+  ...broadcastAction({ chat: true }),
+});
+
+/** `POST /admin/broadcasts/{broadcast_id}/approve`: the proposer may go live from here on. */
+export const approveBroadcastMutation = mutationOptions({
+  mutationFn: ({ broadcastId }: { marketId: string; broadcastId: string }) =>
+    call((api) =>
+      api.POST("/api/admin/broadcasts/{broadcast_id}/approve", {
+        params: { path: { broadcast_id: broadcastId } },
+      }),
+    ),
+  ...broadcastAction({ chat: false }),
+});
+
+/** `POST /admin/broadcasts/{broadcast_id}/refuse`, with the reason the proposer reads. */
+export const refuseBroadcastMutation = mutationOptions({
+  mutationFn: ({
+    broadcastId,
+    reason,
+  }: {
+    marketId: string;
+    broadcastId: string;
+    reason: string;
+  }) =>
+    call((api) =>
+      api.POST("/api/admin/broadcasts/{broadcast_id}/refuse", {
+        params: { path: { broadcast_id: broadcastId } },
+        body: { reason },
+      }),
+    ),
+  ...broadcastAction({ chat: false }),
+});
+
+/* ---- Live chat -------------------------------------------------------------------- */
+
+/**
+ * `POST /markets/{market_id}/chat`: one message, with the characters that were typed. The
+ * answer is the message as it is stored. It joins the chat of the market as its event
+ * `chat.message` puts it, so whichever of the two arrives first shows it, once. A chat the
+ * cache holds as closed is read instead: the cache is behind.
+ */
+export const postChatMessageMutation = mutationOptions({
+  mutationFn: ({ marketId, text }: { marketId: string; text: string }) =>
+    call((api) =>
+      api.POST("/api/markets/{market_id}/chat", {
+        params: { path: { market_id: marketId } },
+        body: { text },
+      }),
+    ),
+  onSuccess: (message, { marketId }, _result, { client }) => {
+    if (!putChatMessage(client, marketId, message)) {
+      void refresh(client, keys.markets.chat(marketId));
+    }
+  },
+  onError: (error: ApiError, { marketId }, _result, { client }) => {
+    if (error.outcomeUnknown) return refresh(client, keys.markets.chat(marketId));
+    // The chat is closed or the market is gone: the live stream on screen is behind too.
+    if (error.code === "CONFLICT" || error.code === "NOT_FOUND") {
+      void refresh(client, keys.markets.chat(marketId), keys.markets.broadcast(marketId));
+    }
+  },
+});
+
+/**
+ * `POST /admin/markets/{market_id}/chat/{message_id}/remove`: the message disappears for
+ * everyone. It leaves the chat of the market at once, as its event `chat.removed` takes it.
+ */
+export const removeChatMessageMutation = mutationOptions({
+  mutationFn: ({ marketId, messageId }: { marketId: string; messageId: string }) =>
+    call((api) =>
+      api.POST("/api/admin/markets/{market_id}/chat/{message_id}/remove", {
+        params: { path: { market_id: marketId, message_id: messageId } },
+      }),
+    ),
+  onSuccess: (removed, { marketId }, _result, { client }) => {
+    dropChatMessage(client, marketId, removed.id);
+  },
+  onError: (error: ApiError, { marketId }, _result, { client }) => {
+    if (error.outcomeUnknown) return refresh(client, keys.markets.chat(marketId));
+    // The message is gone already, or the chat is: show the chat as it is.
+    if (error.code === "NOT_FOUND") void refresh(client, keys.markets.chat(marketId));
   },
 });

@@ -67,6 +67,7 @@ Imports only point downwards. ESLint fails the build otherwise.
 | What a field keeps of what is typed | `typedWhole`, `typedDecimal` | `@/lib/format` |
 | Dates and times | `DateTime`, `Day`; `formatDateTime`, `formatDeadline` | `@/components/time`, `@/lib/format` |
 | A market in a list, the price, the status | `MarketCard`, `MarketCardSkeleton`, `Price`, `StatusBadge`, `Deadline` | `@/components/market` |
+| The mark of a live stream that is on | `LiveBadge` | `@/components/market` |
 | The words for a `status` and a `tier`; whether a market is a proposal (PROPOSED, REJECTED, EXPIRED) | `statusName`, `tierName`, `isProposal` | `@/components/market` |
 | Asking again when a market on screen reaches its `close_at` | `useAskAtClose(closeTimes, ask)` | `@/components/market` |
 | The trade controls | `OutcomeButtons`, `OutcomeToggle`, `SharesEntry`, `SharePresets`, `SellPresets`, `StakeLeftLine`, `QuotePanel` | `@/components/market` |
@@ -84,6 +85,11 @@ Imports only point downwards. ESLint fails the build otherwise.
 | Media queries, a debounced or throttled value, a countdown, the clock | `useMediaQuery`, `usePrefersReducedMotion`, `useDebouncedValue`, `useThrottledValue`, `useRetryAfter`, `useSecondsUntil`, `useNow` | `@/lib/hooks` |
 | What a form holds while it is away, in memory | `useDraft(name, empty)` | `@/lib/hooks` |
 | Keeping the pressed chip or the active tab of a strip in sight | `keepInSight` | `@/lib/keep-in-sight` |
+| The section "Live stream" of a market, with its video box and the live chat under it; "Live now" on Markets | `MarketBroadcast` (`marketId`, `pinnedButtons`, `onWatchingChange`, `onTypingChange`), `LiveNowRow` | `@/features/broadcast` |
+| The live chat of a market | `ChatPanel` | `@/features/chat` |
+| The reads of a live stream and of its chat | `marketBroadcastQuery`, `liveBroadcastsQuery`, `adminBroadcastsQuery`, `chatQuery` | `@/lib/api/queries` |
+| Sending a piece of a live stream's recording | `sendBroadcastChunk` | `@/lib/api/broadcast-upload` |
+| Putting a chat event into the cache | `putChatMessage`, `dropChatMessage` | `@/lib/api/chat-cache` |
 
 Two lengths of the shell are CSS variables, for what has to keep clear of the bars: `--top-bar-space` and `--tab-bar-space` (which is `0px` from 768 px). `bottom-(--tab-bar-space)` is "right above the tab bar". `Screen`'s `pinned` is as wide as the content column (the outcome buttons of Market detail); a bar across the whole window (the viewer's row of the Leaderboard) is the screen's own.
 
@@ -124,6 +130,9 @@ Every request goes out when it is made, whatever the browser says about the conn
 | Create or revoke codes, acknowledge an alert | Batches, risk; the codes of a revoked batch are forgotten | Batches, risk |
 | Suspend, reinstate, change a role | The user's row is the answer, in every list of users; the lists of users, and after the first two the leaderboard | The lists of users |
 | Adjust a user's tokens | The user's balance from the answer, in every list of users; risk, leaderboard | Nothing: the dialog sends the same request again |
+| Ask for, approve or refuse a live stream | The live stream of the market is the answer; the live streams on air, the admin's live streams | The same three reads |
+| Go live, go live as an admin, end a live stream | The same, and the chat of the market | The same, and the chat of the market |
+| Post or remove a chat message | The message joins or leaves the chat of the market, as its event puts it (`lib/api/chat-cache.ts`) | The chat of the market |
 
 "View codes" reads the codes of a batch once per opening and never again behind the admin's back: the API records every read.
 
@@ -156,7 +165,7 @@ The server pushes over one event stream, and `@/lib/live` is the app's side of i
 | `lib/live/client.ts` | `LiveClient`, a class without React: the `EventSource`, the topics that are wanted, the watchdog and the polling. One per page load; every stream it opens names the same `tab`. The only file that names `/api/stream` |
 | `lib/live/provider.tsx` | `LiveProvider`, mounted by `AppGate` around everything that has a profile; `useLive`, `useLiveTopic`, `useLiveEvent`. Outside a provider the three hooks do nothing and `live` is false |
 | `lib/live/rules.ts` | What an event does to the query cache: the table of DESIGN §14, the spread of `live_announce_spread_ms` and the viewer's read of `live_viewer_refresh_seconds`. It calls nothing but `invalidateQueries` and `setQueryData`, through the keys of `lib/api/keys.ts` |
-| `lib/live/topics.ts`, `events.ts` | `liveTopic` (`markets()`, `market(id)`, `leaderboard()`), `LIVE_EVENT_NAMES`, `LiveEventName`, `LiveEventOf` |
+| `lib/live/topics.ts`, `events.ts` | `liveTopic` (`markets()`, `market(id)`, `leaderboard()`, `broadcast(marketId)`), `LIVE_EVENT_NAMES`, `LiveEventName`, `LiveEventOf` |
 
 - A screen says which topic it shows, `useLiveTopic(liveTopic.market(marketId))`, and does nothing else: the client follows the union of what the mounted screens name, and what the cache holds follows the events. A screen never works a figure out from an event.
 - `useLiveEvent("market.status", handler)` is for what has to happen in front of the user (the bean drop of a payout), not for data.
@@ -169,6 +178,30 @@ The server pushes over one event stream, and `@/lib/live` is the app's side of i
 One thing no event says: that a market reached its `close_at`. `useAskAtClose(closeTimes, ask)` sets one timer for the earliest of the times it is given and asks again every `live_poll_fallback_seconds` while the answer still shows the same state. Market detail and the Markets list time the markets they show as open for trading; Market detail, My proposals and the admin's Markets screen time the proposals they show in review, which expire at that moment. The timer asks and decides nothing.
 
 Live are the Markets list, Market detail, the Leaderboard, the balance and the notices. A screen reads everything else when it opens and when the window gets the focus back.
+
+## Live stream and live chat
+
+The live stream of a market and the chat beside it (DESIGN §13 and §14; SPEC §6, §9).
+
+| Where | Holds |
+| --- | --- |
+| `features/broadcast` | `MarketBroadcast`, the section "Live stream" of Market detail, with the video box (`broadcast-player.tsx`, `player-engine.ts`) and the chat under it; `LiveNowRow`, "Live now" on Markets |
+| `features/broadcast-studio` | `BroadcastStudioScreen`, the page `/markets/[id]/live`. `studio.ts` is the camera, the recorder and the upload of one page, without React; `capture.ts` asks the browser for the camera and starts the recorder; `uploader.ts` sends the pieces, one request at a time |
+| `features/chat` | `ChatPanel`, the live chat |
+| `features/admin` | `BroadcastPanel`, the block "Live stream" of `/admin/markets/[id]`, and `BroadcastQueue`, the table "Live streams" of `/admin` |
+| `components/market/live-badge.tsx` | `LiveBadge` |
+| `lib/api/broadcast-upload.ts`, `lib/api/chat-cache.ts` | The upload of one piece; what a chat event does to the cache |
+
+- **These components follow the event stream through `@/lib/live`**, and they are what its client serves in the app. The section, the studio and the admin's block name `liveTopic.broadcast(marketId)`; "Live now" and the admin's table name `liveTopic.markets()`; the chat names `liveTopic.market(marketId)`. On `broadcast.changed`, `lib/live/rules.ts` reads the live stream of that market, "Live now" and the admin's table again. `chat.message` and `chat.removed` are the chat panel's: it hears them with `useLiveEvent` and writes its list (`putChatMessage`, `dropChatMessage`), the one place where an event is heard for data. Whenever a stream opens (`ready`) the rules read once what the tab's topics cover of this feature, the two lists for `markets` and the live stream of a market for `broadcast:{id}`, and the chat reads itself. No other screen names a topic or hears an event, and `rules.ts` acts on `ready` and `broadcast.changed` alone: prices reach a screen over the stream of one market (`lib/live/market-stream.ts`).
+- **The server says what a caller may do.** A button stands for a flag of `viewer` in the answer (`can_request`, `can_start`, `can_start_as_admin`, `can_approve`, `can_refuse`, `can_end`, `can_watch`, `full`) and a row for what a list holds. No component compares a role, a status or a clock, and none names a count of viewers.
+- **Every size and pace is a tunable of `GET /api/config`**: `broadcast` for the studio and the player, `chat_message_max_length` for the field of the chat, and `chat_backlog_size`, the number of messages `lib/api/chat-cache.ts` keeps of a chat.
+- **The upload is not `call()`.** `sendBroadcastChunk` leaves through `api()` of `lib/api/client.ts`, which stays the only file that calls `fetch`. It never throws and never reloads the page: it answers `ok`, `restart`, `repeat` or `stop`, and reports the portal's 401 as `repeat` with `signedOut`, on which the studio shows its sign-in banner. A piece is no write of the table above: it is sent again unchanged after no answer and changes nothing in the cache. `NOT_CALLED` of `lib/api/contract.test.ts` names it (`upload_broadcast_chunk`) and `admit_broadcast_viewer`, which nginx asks and no file of the app names.
+- **The studio sends nothing by itself but pieces.** A request, a start and an end are each a tap, through `useSubmit`.
+- **Video stays in memory.** A piece is a `Blob` until it is taken and is dropped with its part; nothing of it reaches browser storage (rule 10).
+- **hls.js is the one script loaded later than its page.** `player-engine.ts` loads it with a dynamic `import("hls.js")` when a browser that needs it plays, as a chunk of the app's own origin, and runs it with `enableWorker: false` (rule 9). Apple's engine, which is Safari and every browser on an iPhone or an iPad, plays the playlist itself and never gets it. Nothing else imports hls.js.
+- **A player asks before it tries again.** One that fails, or shows no picture for `broadcast.wait_notice_ms`, reads `GET /markets/{market_id}/broadcast` through `client.fetchQuery`; the answer decides between another player after `broadcast.player_retry_ms` and what the section shows.
+- **`MarketBroadcast` renders its parts without an element around them.** It stands directly in a flex column, because the video box of a viewer on a phone sticks under the top bar; an element around it takes `className="contents"`.
+- **Market detail makes room for a viewer on a phone.** While its viewer watches below 768 px, the section hides the tab bar and tells the screen (`onWatchingChange`), and the screen gives its `Screen` the class `[--tab-bar-space:env(safe-area-inset-bottom)]`: the one place where a screen sets a length of the shell. The pinned outcome buttons then stand on the lower edge, above the safe area, with the chat above them as tall as DESIGN §13 counts it. They are pinned whenever their place is not on screen whole between the video box and the lower edge (`useScrolledPast(element, { orBelow })`, `features/market-detail/use-scrolled-past.ts`), and give way while the composer of the chat has the focus (`onTypingChange`).
 
 ## Tests
 
@@ -184,6 +217,11 @@ Live are the Markets list, Market detail, the Leaderboard, the balance and the n
 - Assert on what the user sees and on what was sent. An expected amount is the string of the fixture, never arithmetic in the test.
 - A feature's helpers for its own tests live in the feature: `features/leaderboard/test-players.ts` (`player()`, `you()`), `features/market-detail/testing.tsx` (the stand-in for the trade feature). The admin's tests spy on `browser.print` and `browser.saveFile` (`features/admin/browser.ts`) and mock the QR component.
 - `src/test/design-rules.test.ts` fails on a forbidden class, colour, word or call in any file under `src/`.
+- A test stands in for the camera with `installFakeCapture()` (`@/test/capture`), called before it renders: the camera, the microphone and `MediaRecorder` are fakes from then on. `capture.recorder().emit(piece("one"))` inside `act()` hands a piece over, and `showPicture(preview)` gives the preview a picture, which enables "Go live". While it is installed the browser is named (Chrome unless told otherwise: jsdom alone calls its vendor Apple's) and `Blob` is Node's, so that a piece arrives at `mockApi` with its bytes.
+- jsdom plays nothing. A test of the player names its browser with `installBrowser(...)` and puts `FakeHls` in the place of hls.js (`features/broadcast/testing.tsx`); `showFrame(video, seconds)` moves the picture.
+- The tests of the section "Live stream" put a stand-in in the place of the chat panel (`chatFeature` of `features/broadcast/testing.tsx`).
+- The tests of a screen that mounts a part of the feature put a stand-in in its place, and one file runs the real part inside the real screen. Market detail takes `broadcastFeature` of `features/market-detail/testing.tsx` for the section: it shows nothing, and a test says with `liveStream.watching(true)` and `liveStream.typing(true)` what the section would tell the screen; `market-detail-with-broadcast.test.tsx` runs the real section and the real chat panel. The Markets screen puts nothing in the place of `LiveNowRow` (`vi.mock("@/features/broadcast", ...)`; `markets-screen-with-live-now.test.tsx`), and the admin's two screens nothing in the place of `BroadcastPanel` and `BroadcastQueue` (`vi.mock("./broadcast-panel", ...)`; `admin-market-screen-with-broadcast.test.tsx`, `admin-markets-screen-with-broadcasts.test.tsx`). A further test that renders one of those screens needs the stand-in or a route for the read of the component.
+- The fixtures of a live stream and its chat: `marketBroadcast`, `noBroadcast`, `broadcastItem`, `broadcastIn(status)`, `broadcastViewer`, `broadcastConfig`, `liveBroadcasts`, `adminBroadcasts`, `chat`, `closedChat`, `chatMessage`, and the events `chatMessageEvent`, `chatRemovedEvent` and `broadcastChangedEvent`.
 
 **The browser suite.** `npm run e2e` runs the specs of `e2e/` (`*.spec.ts`) in the Chrome that is installed, each at the projects "phone" (375 × 667) and "desktop" (1024 × 768), one after the other. It starts no stack: it drives the one at `E2E_BASE_URL` (`http://localhost:8080` when left out), which has to be up and seeded. `E2E_IDENTITY=cookies` (when left out) names a person with the cookies `dev_user_id` and `dev_user_name` of the development proxy; `E2E_IDENTITY=headers` sends `X-User-Id` and `X-User-Name` itself, for a stack of `compose.yaml` alone. `e2e/support/runner.ts` lists every variable the runner reads. vitest sees `src/**/*.test.{ts,tsx}` and nothing of `e2e/`.
 
@@ -191,6 +229,8 @@ Live are the Markets list, Market detail, the Leaderboard, the balance and the n
 - A spec reads the seeded people and markets and changes only what it made itself, so it passes again on the same database.
 - A spec ends with `expectLayoutHolds(page)` and `screenshot(page, testInfo, screen)` for each of its screens: nothing lies over anything else, the page does not scroll sideways, and the picture lies in the directory `E2E_SCREENSHOTS` names (`test-results/screens` when left out) as `<spec>.<screen>.<project>.png`. What the layout check measures and leaves out stands at the top of `e2e/support/layout.ts`.
 - A spec that counts requests for images (`e2e/images.spec.ts`) routes and intercepts no image request: that would switch the browser's cache off.
+- `e2e/broadcast.spec.ts` and `e2e/chat.spec.ts` act as the bootstrap admin of `.example.env` (`admin@ethz.ch`, who sets up the profile `e2e_admin` where it has none) on markets they make themselves, and take back what they leave: a live stream that is still on is ended, and the market is closed and voided. The stack has to take that address for an admin, to have the media box up and a place for a live stream free (`BROADCAST_MAX_LIVE`), and to refuse a person's twelfth chat message in a row at the latest (`CHAT_MESSAGE_LIMIT_PER_USER`). `broadcast.spec.ts` starts Chrome with its stand-in camera and microphone; `chat.spec.ts` starts its live streams through the API and needs none. On Market detail both leave the pinned outcome buttons out of the layout check (`ignore`), and `broadcast.spec.ts` measures the picture, the composer and the buttons where a viewer on a phone has them.
+- `e2e/record-fixtures.mjs` is no spec, and the runner does not collect it: `node e2e/record-fixtures.mjs` records what the recorder of the installed Chrome sends, as the fixtures the image test of the media box feeds to ffmpeg (`backend/tests/fixtures/broadcast/`). It needs no stack.
 
 ## Recipes
 
@@ -213,3 +253,5 @@ Live are the Markets list, Market detail, the Leaderboard, the balance and the n
 ## Versions that are pinned on purpose
 
 ESLint 9 (the plugins of `eslint-config-next` do not accept 10), TypeScript 5.9 (`openapi-typescript` needs 5), jsdom 29 and `@testing-library/jest-dom` 6.9.1 (later ones need Node 22), Recharts 3.8.0 (what the `chart` component was written for). `redocly.yaml` holds the rules `openapi-typescript` validates `backend/openapi.json` with, each with its reason. `next.config.ts` sets `agentRules: false`, so that `next dev` writes no rules file of its own beside this one. No combobox package is installed: the picker is written on `radix-ui`, `vaul` and `lucide-react`, which are.
+
+hls.js 1.6.19, exact: the release the player of a live stream was tried with in Chrome and held against WebKit's own player. It runs without its worker (rule 9).

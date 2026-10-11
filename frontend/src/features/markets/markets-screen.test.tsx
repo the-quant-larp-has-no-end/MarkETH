@@ -8,6 +8,11 @@ import { renderWithProviders } from "@/test/render";
 
 import { MarketsScreen } from "./index";
 
+// "Live now" reads the API by itself, and these tests are about the rest of the screen:
+// nothing stands in its place here. The screen with the real row is tested in
+// `markets-screen-with-live-now.test.tsx`.
+vi.mock("@/features/broadcast", () => ({ LiveNowRow: () => null }));
+
 const MARKETS: Route = "GET /api/markets";
 /** The window getting the focus back also reads the balance of the top bar again. */
 const ME: Route = "GET /api/me";

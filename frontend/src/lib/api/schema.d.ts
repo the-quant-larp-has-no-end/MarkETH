@@ -24,6 +24,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/admin/broadcasts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every live stream that is requested, approved or on, earliest request first
+         * @description Access: role ADMIN.
+         */
+        get: operations["list_admin_broadcasts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/broadcasts/{broadcast_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve a proposer's request for a live stream
+         * @description Access: role ADMIN.
+         */
+        post: operations["approve_broadcast"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/broadcasts/{broadcast_id}/refuse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refuse a request for a live stream, or take an approval back
+         * @description Access: role ADMIN.
+         */
+        post: operations["refuse_broadcast"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/admin/code-batches": {
         parameters: {
             query?: never;
@@ -122,6 +182,46 @@ export interface paths {
          * @description Access: role ADMIN.
          */
         post: operations["approve_market"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/markets/{market_id}/broadcast": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Go live on a market as an admin, without a request
+         * @description Access: role ADMIN.
+         */
+        post: operations["start_broadcast_as_admin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/admin/markets/{market_id}/chat/{message_id}/remove": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Remove a message from the live chat of a market
+         * @description Access: role ADMIN.
+         */
+        post: operations["remove_chat_message"];
         delete?: never;
         options?: never;
         head?: never;
@@ -388,6 +488,106 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/broadcasts/live": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The live streams that are on air in markets the caller is inside of
+         * @description Access: any registered user whose account is active.
+         */
+        get: operations["list_live_broadcasts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/broadcasts/{broadcast_id}/access": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Whether the caller may play a live stream: asked by the proxy, not by a screen
+         * @description Access: any registered user whose account is active.
+         */
+        get: operations["admit_broadcast_viewer"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/broadcasts/{broadcast_id}/chunks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send one piece of a live stream's recording
+         * @description Access: any registered user whose account is active.
+         */
+        post: operations["upload_broadcast_chunk"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/broadcasts/{broadcast_id}/end": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * End a live stream, as its broadcaster or as an admin
+         * @description Access: any registered user whose account is active.
+         */
+        post: operations["end_broadcast"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/broadcasts/{broadcast_id}/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Go live, as the broadcaster of an approved live stream
+         * @description Access: any registered user whose account is active.
+         */
+        post: operations["start_broadcast"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/codes/redeem": {
         parameters: {
             query?: never;
@@ -436,7 +636,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Report Postgres, Redis and ScyllaDB separately
+         * Report Postgres, Redis, ScyllaDB and the media box separately
          * @description Access: public. No identity is needed or looked at.
          */
         get: operations["get_health"];
@@ -506,6 +706,70 @@ export interface paths {
         get: operations["get_market"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/markets/{market_id}/broadcast": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The live stream of a market, and what the caller may do about it
+         * @description Access: any registered user whose account is active.
+         */
+        get: operations["get_market_broadcast"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/markets/{market_id}/broadcast/request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask for a live stream of a market, as its proposer
+         * @description Access: any registered user whose account is active.
+         */
+        post: operations["request_broadcast"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/markets/{market_id}/chat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The live chat of a market: whether it is open, and its latest messages
+         * @description Access: any registered user whose account is active.
+         */
+        get: operations["get_chat"];
+        put?: never;
+        /**
+         * Write a message in the live chat of a market
+         * @description Access: any registered user whose account is active.
+         */
+        post: operations["post_chat_message"];
         delete?: never;
         options?: never;
         head?: never;
@@ -855,6 +1119,70 @@ export interface components {
             reason: string;
         };
         /**
+         * AdminBroadcastItem
+         * @description A broadcast as the admin's list shows it, with the question of its market.
+         */
+        AdminBroadcastItem: {
+            /** @description Null until it has ended. */
+            end_reason: components["schemas"]["BroadcastEndReason"] | null;
+            /** Ended At */
+            ended_at: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Market Id
+             * Format: uuid
+             */
+            market_id: string;
+            /**
+             * On Air
+             * @description It is LIVE and there is something to play.
+             */
+            on_air: boolean;
+            /**
+             * Playlist Url
+             * @description Where its viewers play it, a path on the app's own origin
+             *     (`/api/broadcasts/{id}/hls/index.m3u8`) while it is on air; null otherwise.
+             */
+            playlist_url: string | null;
+            /** Question */
+            question: string;
+            /**
+             * Refusal Reason
+             * @description Why an admin refused it. Sent to its broadcaster and to admins, null for
+             *     everyone else and for a broadcast that was not refused.
+             */
+            refusal_reason: string | null;
+            /**
+             * Requested At
+             * Format: date-time
+             * @description When its proposer asked for it, or when an admin started it.
+             */
+            requested_at: string;
+            /** @description Who broadcasts. Sent to admins only, null for everyone else. */
+            requested_by: components["schemas"]["BroadcastPerson"] | null;
+            /** Started At */
+            started_at: string | null;
+            /**
+             * @description The effective status: a broadcast that ran for `broadcast.max_minutes`, or whose
+             *     studio sent nothing for `broadcast.stall_seconds` (`GET /config`), is ENDED from
+             *     that moment on.
+             */
+            status: components["schemas"]["BroadcastStatus"];
+        };
+        /**
+         * AdminBroadcastListResponse
+         * @description `GET /admin/broadcasts`: every broadcast that is requested, approved or live,
+         *     earliest request first.
+         */
+        AdminBroadcastListResponse: {
+            /** Items */
+            items: components["schemas"]["AdminBroadcastItem"][];
+        };
+        /**
          * AdminUserItem
          * @description A user as the admin panel shows them.
          */
@@ -1011,6 +1339,290 @@ export interface components {
             type: "beat";
         };
         /**
+         * BroadcastAccessResponse
+         * @description `GET /broadcasts/{id}/access`: the caller may play this broadcast. The proxy
+         *     asks it for every viewer before it serves a playlist or a segment.
+         */
+        BroadcastAccessResponse: {
+            /**
+             * Broadcast Id
+             * Format: uuid
+             */
+            broadcast_id: string;
+        };
+        /**
+         * BroadcastChangedEvent
+         * @description `event: broadcast.changed`. Something about the live stream of a market changed:
+         *     it was asked for, decided on, started, went on air or ended, or messages left its
+         *     chat. It says which market and nothing else; `GET /markets/{id}/broadcast` and the
+         *     chat of that market are read again.
+         */
+        BroadcastChangedEvent: {
+            /**
+             * Market Id
+             * Format: uuid
+             */
+            market_id: string;
+            /**
+             * Ts
+             * Format: date-time
+             */
+            ts: string;
+            /**
+             * Type
+             * @constant
+             */
+            type: "broadcast.changed";
+        };
+        /**
+         * BroadcastChunkResponse
+         * @description `POST /broadcasts/{id}/chunks`: what became of one piece.
+         */
+        BroadcastChunkResponse: {
+            /**
+             * Next Seq
+             * @description The `seq` to send next in this part; 0 with `restart`.
+             */
+            next_seq: number;
+            /**
+             * Restart
+             * @description False: the piece is taken. True: it is not, and the studio begins another
+             *     part with a recorder of its own.
+             */
+            restart: boolean;
+        };
+        /**
+         * BroadcastConfig
+         * @description `broadcast` of `GET /config`: what a studio and a player need to know before
+         *     they start.
+         */
+        BroadcastConfig: {
+            /**
+             * Capture Audio Bits Per Second
+             * @description What the recorder is asked to spend on picture and on sound.
+             */
+            capture_audio_bits_per_second: number;
+            /**
+             * Capture Fps
+             * @description The frames per second the camera is asked for.
+             */
+            capture_fps: number;
+            /**
+             * Capture Height
+             * @description The height in pixels the camera is asked for.
+             */
+            capture_height: number;
+            /**
+             * Capture Max Height
+             * @description The largest picture, in pixels, a studio records.
+             */
+            capture_max_height: number;
+            /** Capture Max Width */
+            capture_max_width: number;
+            /**
+             * Capture Mime Types
+             * @description What a studio may record as, in the order to try. A browser that supports none
+             *     of them cannot broadcast.
+             */
+            capture_mime_types: string[];
+            /** Capture Video Bits Per Second */
+            capture_video_bits_per_second: number;
+            /**
+             * Chunk Max Bytes
+             * @description The most bytes one upload request may carry. A larger piece is cut.
+             */
+            chunk_max_bytes: number;
+            /**
+             * Chunk Ms
+             * @description Milliseconds of recording in one piece: what the recorder is started with.
+             */
+            chunk_ms: number;
+            /**
+             * Max Minutes
+             * @description A broadcast ends once it ran for this long.
+             */
+            max_minutes: number;
+            /**
+             * Player Retry Ms
+             * @description Milliseconds after which a player that failed is built again.
+             */
+            player_retry_ms: number;
+            /**
+             * Restart Window Ms
+             * @description Three parts begun within this many milliseconds pause the studio.
+             */
+            restart_window_ms: number;
+            /**
+             * Stall Seconds
+             * @description A broadcast whose studio sends nothing for this long has ended.
+             */
+            stall_seconds: number;
+            /**
+             * Upload Backlog Bytes
+             * @description Bytes a studio queues while its connection is slow. Beyond them it drops what
+             *     waits and begins another part.
+             */
+            upload_backlog_bytes: number;
+            /**
+             * Upload Retry Ms
+             * @description Milliseconds a studio waits before it sends a piece again.
+             */
+            upload_retry_ms: number;
+            /**
+             * Upload Timeout Ms
+             * @description Milliseconds a studio waits for the answer to one piece.
+             */
+            upload_timeout_ms: number;
+            /**
+             * Wait Notice Ms
+             * @description Milliseconds without a picture after which a player says that it is waiting
+             *     and reads the broadcast again.
+             */
+            wait_notice_ms: number;
+        };
+        /**
+         * BroadcastEndReason
+         * @description Why a broadcast ended (`broadcasts.end_reason`).
+         * @enum {string}
+         */
+        BroadcastEndReason: "BROADCASTER" | "ADMIN" | "STALLED" | "TIME_LIMIT";
+        /**
+         * BroadcastItem
+         * @description One broadcast of a market.
+         */
+        BroadcastItem: {
+            /** @description Null until it has ended. */
+            end_reason: components["schemas"]["BroadcastEndReason"] | null;
+            /** Ended At */
+            ended_at: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Market Id
+             * Format: uuid
+             */
+            market_id: string;
+            /**
+             * On Air
+             * @description It is LIVE and there is something to play.
+             */
+            on_air: boolean;
+            /**
+             * Playlist Url
+             * @description Where its viewers play it, a path on the app's own origin
+             *     (`/api/broadcasts/{id}/hls/index.m3u8`) while it is on air; null otherwise.
+             */
+            playlist_url: string | null;
+            /**
+             * Refusal Reason
+             * @description Why an admin refused it. Sent to its broadcaster and to admins, null for
+             *     everyone else and for a broadcast that was not refused.
+             */
+            refusal_reason: string | null;
+            /**
+             * Requested At
+             * Format: date-time
+             * @description When its proposer asked for it, or when an admin started it.
+             */
+            requested_at: string;
+            /** @description Who broadcasts. Sent to admins only, null for everyone else. */
+            requested_by: components["schemas"]["BroadcastPerson"] | null;
+            /** Started At */
+            started_at: string | null;
+            /**
+             * @description The effective status: a broadcast that ran for `broadcast.max_minutes`, or whose
+             *     studio sent nothing for `broadcast.stall_seconds` (`GET /config`), is ENDED from
+             *     that moment on.
+             */
+            status: components["schemas"]["BroadcastStatus"];
+        };
+        /**
+         * BroadcastPerson
+         * @description Who asked for a broadcast, as an admin is told.
+         */
+        BroadcastPerson: {
+            /** Email */
+            email: string;
+            /** Username */
+            username: string;
+        };
+        /**
+         * BroadcastStatus
+         * @description Where a broadcast stands (`broadcasts.status`). A row holds every one of the five.
+         *
+         *     A proposer's broadcast is REQUESTED until an admin approves or refuses it; an
+         *     admin's own starts LIVE. REQUESTED, APPROVED and LIVE are open: a market has at
+         *     most one open broadcast.
+         * @enum {string}
+         */
+        BroadcastStatus: "REQUESTED" | "APPROVED" | "REFUSED" | "LIVE" | "ENDED";
+        /**
+         * BroadcastViewer
+         * @description What the caller may do about the live stream of a market right now. Each flag
+         *     agrees with what the operation would answer about this caller and this market;
+         *     how many live streams run at once, and how often a person asks in a day, is told
+         *     by the operation alone.
+         */
+        BroadcastViewer: {
+            /**
+             * Can Approve
+             * @description `POST /admin/broadcasts/{id}/approve` would pass: the caller is an admin, the
+             *     broadcast waits for a decision, and the market is open, paused or waiting for its
+             *     result.
+             */
+            can_approve: boolean;
+            /**
+             * Can End
+             * @description The broadcast is on and the caller is its broadcaster or an admin.
+             */
+            can_end: boolean;
+            /**
+             * Can Refuse
+             * @description `POST /admin/broadcasts/{id}/refuse` would pass: the caller is an admin, and the
+             *     broadcast waits for a decision or is approved and not started.
+             */
+            can_refuse: boolean;
+            /**
+             * Can Request
+             * @description `POST /markets/{id}/broadcast/request` would pass: the caller proposed the
+             *     market and is no admin, the market is open, paused or waiting for its result, and
+             *     it has no live stream and no request for one.
+             */
+            can_request: boolean;
+            /**
+             * Can Start
+             * @description `POST /broadcasts/{id}/start` would pass: the caller's own broadcast is
+             *     approved, or ended by itself and may go on, and the market is open, paused or
+             *     waiting for its result.
+             */
+            can_start: boolean;
+            /**
+             * Can Start As Admin
+             * @description `POST /admin/markets/{id}/broadcast` would pass: the caller is an admin, the
+             *     market is open, paused or waiting for its result, and it has no live stream and no
+             *     request for one.
+             */
+            can_start_as_admin: boolean;
+            /**
+             * Can Watch
+             * @description It is on air, and a place is free or the caller holds one.
+             */
+            can_watch: boolean;
+            /**
+             * Full
+             * @description It is on air, and every place is held by somebody else.
+             */
+            full: boolean;
+            /**
+             * Is Broadcaster
+             * @description The broadcast of the answer is the caller's own.
+             */
+            is_broadcaster: boolean;
+        };
+        /**
          * BuyEntry
          * @description What the viewer can buy of one outcome right now (SPEC §4, A.11). The server
          *     works it out with the market maker's prices, so the client prices and compares
@@ -1075,6 +1687,122 @@ export interface components {
              * @description `share_step` of `GET /config`.
              */
             step: number;
+        };
+        /**
+         * ChatMessageEvent
+         * @description `event: chat.message`. Somebody wrote in the live chat of a market. It carries the
+         *     message as `GET /markets/{id}/chat` lists it, so a panel that shows the chat of
+         *     `broadcast_id` puts it at the end of what it shows. The stream keeps no message: a
+         *     tab reads the chat whenever its stream opens.
+         */
+        ChatMessageEvent: {
+            /**
+             * Broadcast Id
+             * Format: uuid
+             * @description The live stream the chat belongs to: `ChatResponse.broadcast_id`.
+             */
+            broadcast_id: string;
+            /**
+             * Market Id
+             * Format: uuid
+             */
+            market_id: string;
+            message: components["schemas"]["ChatMessageItem"];
+            /**
+             * Ts
+             * Format: date-time
+             */
+            ts: string;
+            /**
+             * Type
+             * @constant
+             */
+            type: "chat.message";
+        };
+        /**
+         * ChatMessageItem
+         * @description One message of a chat.
+         */
+        ChatMessageItem: {
+            /**
+             * From Vis
+             * @description The author was an admin when the message was stored. The server says so; a
+             *     client shows it and decides nothing from a name.
+             */
+            from_vis: boolean;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Text */
+            text: string;
+            /**
+             * Username
+             * @description The author's username, as it reads when the request is answered.
+             */
+            username: string;
+        };
+        /**
+         * ChatRemovedEvent
+         * @description `event: chat.removed`. An admin removed a message from the live chat of a
+         *     market: whoever shows it takes it away. It carries the id and nothing of the
+         *     message.
+         */
+        ChatRemovedEvent: {
+            /**
+             * Broadcast Id
+             * Format: uuid
+             */
+            broadcast_id: string;
+            /**
+             * Market Id
+             * Format: uuid
+             */
+            market_id: string;
+            /**
+             * Message Id
+             * Format: uuid
+             */
+            message_id: string;
+            /**
+             * Ts
+             * Format: date-time
+             */
+            ts: string;
+            /**
+             * Type
+             * @constant
+             */
+            type: "chat.removed";
+        };
+        /**
+         * ChatResponse
+         * @description `GET /markets/{id}/chat`: the chat of a market as it stands.
+         */
+        ChatResponse: {
+            /**
+             * Broadcast Id
+             * @description The live stream the chat belongs to; null exactly when `open` is false. A
+             *     message that is pushed names it, so a client drops one of another live stream.
+             */
+            broadcast_id: string | null;
+            /**
+             * Can Remove
+             * @description The caller is an admin.
+             */
+            can_remove: boolean;
+            /**
+             * Items
+             * @description The latest messages, earliest first, at most `chat_backlog_size` of them
+             *     (`GET /config`). Empty while the chat is closed.
+             */
+            items: components["schemas"]["ChatMessageItem"][];
+            /**
+             * Open
+             * @description The market has a live stream that is on: messages can be read and written.
+             */
+            open: boolean;
         };
         /**
          * CloseMarketRequest
@@ -1279,16 +2007,21 @@ export interface components {
          *     * `LIMIT_EXCEEDED`: `limit`, which names the limit: `MAX_STAKE_PER_USER_MARKET`,
          *       `MAX_PROPOSALS_PER_USER_PER_DAY`, `MAX_OPEN_MARKETS`, `MAX_MARKET_BUDGET`,
          *       `MAX_AGGREGATE_LOSS_BUDGET`, `MAX_CODE_ISSUANCE_PER_MONTH`,
-         *       `ONE_CODE_PER_USER` or `MAX_ADMIN_ADJUSTMENT_CR`. With
+         *       `ONE_CODE_PER_USER`, `MAX_ADMIN_ADJUSTMENT_CR`, `MAX_LIVE_BROADCASTS` or
+         *       `MAX_BROADCAST_REQUESTS_PER_USER_PER_DAY`. With
          *       `MAX_STAKE_PER_USER_MARKET` also `stake_limit_cr`, `stake_left_cr` and
          *       `required_cr`, what the buy costs; with `MAX_CODE_ISSUANCE_PER_MONTH` also
          *       `issued_cr`, `requested_cr` and `cap_cr`; with `MAX_ADMIN_ADJUSTMENT_CR` also
          *       `requested_cr`, what the adjustment would add, and `cap_cr`, the most one
-         *       adjustment may add.
+         *       adjustment may add. The two limits of a live stream carry `limit` and nothing
+         *       beside it.
+         *     * `CONFLICT`, where a live stream is not in the state the request needs:
+         *       `status`, where the broadcast stands, for one that has not started; `status`
+         *       and `end_reason` for one that has ended.
          *     * `INSUFFICIENT_BALANCE`: `balance_cr` and `required_cr`. Where an admin debits
          *       somebody's balance, they are what that account holds and what the debit takes.
-         *     * `SERVICE_UNAVAILABLE`, from `GET /health` only: `postgres`, `redis` and
-         *       `scylla`, each `up` or `down`.
+         *     * `SERVICE_UNAVAILABLE`, from `GET /health` only: `postgres`, `redis`, `scylla`
+         *       and `media`, each `up` or `down`.
          *
          *     A quote is answered like its trade. `GET /markets/{id}/quote` gives a buy the
          *     caller could not make the error the trade would get, with the same message and
@@ -1318,9 +2051,14 @@ export interface components {
          * @description Answered with 200 whenever Postgres is up.
          *
          *     With Postgres down the endpoint answers 503 `SERVICE_UNAVAILABLE` instead, and
-         *     `details` carries the three `postgres`, `redis` and `scylla` values.
+         *     `details` carries the four `postgres`, `redis`, `scylla` and `media` values.
          */
         HealthResponse: {
+            /**
+             * @description The media box, which turns what a live stream uploads into what its viewers
+             *     play. While it is down no live stream starts or runs; everything else works.
+             */
+            media: components["schemas"]["DependencyStatus"];
             postgres: components["schemas"]["DependencyStatus"];
             redis: components["schemas"]["DependencyStatus"];
             scylla: components["schemas"]["DependencyStatus"];
@@ -1558,6 +2296,51 @@ export interface components {
             items: components["schemas"]["LedgerItem"][];
             /** Next Cursor */
             next_cursor: string | null;
+        };
+        /**
+         * LiveBroadcastItem
+         * @description A broadcast that is on air, with what a list shows of its market.
+         */
+        LiveBroadcastItem: {
+            /**
+             * Broadcast Id
+             * Format: uuid
+             */
+            broadcast_id: string;
+            /**
+             * Market Id
+             * Format: uuid
+             */
+            market_id: string;
+            /** Question */
+            question: string;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+        };
+        /**
+         * LiveBroadcastListResponse
+         * @description `GET /broadcasts/live`: the broadcasts that are on air in markets the caller is
+         *     inside of, earliest start first.
+         */
+        LiveBroadcastListResponse: {
+            /** Items */
+            items: components["schemas"]["LiveBroadcastItem"][];
+        };
+        /**
+         * MarketBroadcastResponse
+         * @description `GET /markets/{id}/broadcast`, and what every action on a broadcast answers.
+         */
+        MarketBroadcastResponse: {
+            /**
+             * @description The market's latest broadcast, to an admin, to its broadcaster, and to
+             *     everybody inside the market while it is LIVE. Null for everyone else, and for a
+             *     market that never had one.
+             */
+            broadcast: components["schemas"]["BroadcastItem"] | null;
+            viewer: components["schemas"]["BroadcastViewer"];
         };
         /**
          * MarketDetailResponse
@@ -2196,6 +2979,18 @@ export interface components {
             total_value_cr: string;
         };
         /**
+         * PostChatMessageRequest
+         * @description Body of `POST /markets/{id}/chat`.
+         */
+        PostChatMessageRequest: {
+            /**
+             * Text
+             * @description One line of at most `chat_message_max_length` characters (`GET /config`),
+             *     counted once the text is cleaned: every run of whitespace is one space.
+             */
+            text: string;
+        };
+        /**
          * ProfileSavedResponse
          * @description The profile as it is after the save, with everything `GET /me` returns.
          */
@@ -2373,6 +3168,20 @@ export interface components {
         };
         /** PublicConfigResponse */
         PublicConfigResponse: {
+            /** @description What the studio and the player of a live stream go by. */
+            broadcast: components["schemas"]["BroadcastConfig"];
+            /**
+             * Chat Backlog Size
+             * @description How many messages one read of a live chat returns at most: what a panel shows
+             *     at most.
+             */
+            chat_backlog_size: number;
+            /**
+             * Chat Message Max Length
+             * @description Characters a message of a live chat may have at most, counted once the text is
+             *     cleaned.
+             */
+            chat_message_max_length: number;
             /**
              * Code Batch Max Count
              * @description The most codes one batch may have: the upper bound of `count` in
@@ -2697,6 +3506,18 @@ export interface components {
             code: string;
         };
         /**
+         * RefuseBroadcastRequest
+         * @description Body of `POST /admin/broadcasts/{id}/refuse`.
+         */
+        RefuseBroadcastRequest: {
+            /**
+             * Reason
+             * @description Why, for the person who asked: 1 to `short_text_max_length` characters
+             *     (`GET /config`).
+             */
+            reason: string;
+        };
+        /**
          * ReinstateUserRequest
          * @description `POST /admin/users/{id}/reinstate`. The reason goes to the audit log.
          */
@@ -2711,6 +3532,35 @@ export interface components {
         RejectMarketRequest: {
             /** Reason */
             reason: string;
+        };
+        /**
+         * RemovedResponse
+         * @description What an admin removed, and when.
+         */
+        RemovedResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Removed At
+             * Format: date-time
+             */
+            removed_at: string;
+        };
+        /**
+         * RequestBroadcastRequest
+         * @description Body of `POST /markets/{id}/broadcast/request`.
+         */
+        RequestBroadcastRequest: {
+            /**
+             * Policy Accepted
+             * @description The proposer accepts the usage policy for this live stream, as for a proposal:
+             *     `true`, or the request is rejected on this field.
+             * @constant
+             */
+            policy_accepted: true;
         };
         /**
          * ResolutionOutcome
@@ -3498,6 +4348,8 @@ export interface components {
     pathItems: never;
 }
 export type AdjustBalanceRequest = components['schemas']['AdjustBalanceRequest'];
+export type AdminBroadcastItem = components['schemas']['AdminBroadcastItem'];
+export type AdminBroadcastListResponse = components['schemas']['AdminBroadcastListResponse'];
 export type AdminUserItem = components['schemas']['AdminUserItem'];
 export type AdminUserListResponse = components['schemas']['AdminUserListResponse'];
 export type AlertItem = components['schemas']['AlertItem'];
@@ -3505,9 +4357,22 @@ export type AlertSeverity = components['schemas']['AlertSeverity'];
 export type ApproveMarketRequest = components['schemas']['ApproveMarketRequest'];
 export type BalanceAdjustmentResponse = components['schemas']['BalanceAdjustmentResponse'];
 export type BeatEvent = components['schemas']['BeatEvent'];
+export type BroadcastAccessResponse = components['schemas']['BroadcastAccessResponse'];
+export type BroadcastChangedEvent = components['schemas']['BroadcastChangedEvent'];
+export type BroadcastChunkResponse = components['schemas']['BroadcastChunkResponse'];
+export type BroadcastConfig = components['schemas']['BroadcastConfig'];
+export type BroadcastEndReason = components['schemas']['BroadcastEndReason'];
+export type BroadcastItem = components['schemas']['BroadcastItem'];
+export type BroadcastPerson = components['schemas']['BroadcastPerson'];
+export type BroadcastStatus = components['schemas']['BroadcastStatus'];
+export type BroadcastViewer = components['schemas']['BroadcastViewer'];
 export type BuyEntry = components['schemas']['BuyEntry'];
 export type BuyPreset = components['schemas']['BuyPreset'];
 export type BuySlider = components['schemas']['BuySlider'];
+export type ChatMessageEvent = components['schemas']['ChatMessageEvent'];
+export type ChatMessageItem = components['schemas']['ChatMessageItem'];
+export type ChatRemovedEvent = components['schemas']['ChatRemovedEvent'];
+export type ChatResponse = components['schemas']['ChatResponse'];
 export type CloseMarketRequest = components['schemas']['CloseMarketRequest'];
 export type CodeBatchCodesResponse = components['schemas']['CodeBatchCodesResponse'];
 export type CodeBatchCreatedResponse = components['schemas']['CodeBatchCreatedResponse'];
@@ -3535,6 +4400,9 @@ export type LeaderboardResponse = components['schemas']['LeaderboardResponse'];
 export type LeaderboardSort = components['schemas']['LeaderboardSort'];
 export type LedgerItem = components['schemas']['LedgerItem'];
 export type LedgerListResponse = components['schemas']['LedgerListResponse'];
+export type LiveBroadcastItem = components['schemas']['LiveBroadcastItem'];
+export type LiveBroadcastListResponse = components['schemas']['LiveBroadcastListResponse'];
+export type MarketBroadcastResponse = components['schemas']['MarketBroadcastResponse'];
 export type MarketDetailResponse = components['schemas']['MarketDetailResponse'];
 export type MarketListResponse = components['schemas']['MarketListResponse'];
 export type MarketQuoteEvent = components['schemas']['MarketQuoteEvent'];
@@ -3553,6 +4421,7 @@ export type Obligations = components['schemas']['Obligations'];
 export type Outcome = components['schemas']['Outcome'];
 export type PortfolioEntry = components['schemas']['PortfolioEntry'];
 export type PortfolioResponse = components['schemas']['PortfolioResponse'];
+export type PostChatMessageRequest = components['schemas']['PostChatMessageRequest'];
 export type ProfileSavedResponse = components['schemas']['ProfileSavedResponse'];
 export type ProposalItem = components['schemas']['ProposalItem'];
 export type ProposalListResponse = components['schemas']['ProposalListResponse'];
@@ -3564,8 +4433,11 @@ export type ReadyEvent = components['schemas']['ReadyEvent'];
 export type RedeemCodeRequest = components['schemas']['RedeemCodeRequest'];
 export type RedeemCodeResponse = components['schemas']['RedeemCodeResponse'];
 export type RedeemVoucherRequest = components['schemas']['RedeemVoucherRequest'];
+export type RefuseBroadcastRequest = components['schemas']['RefuseBroadcastRequest'];
 export type ReinstateUserRequest = components['schemas']['ReinstateUserRequest'];
 export type RejectMarketRequest = components['schemas']['RejectMarketRequest'];
+export type RemovedResponse = components['schemas']['RemovedResponse'];
+export type RequestBroadcastRequest = components['schemas']['RequestBroadcastRequest'];
 export type ResolutionOutcome = components['schemas']['ResolutionOutcome'];
 export type ResolveMarketRequest = components['schemas']['ResolveMarketRequest'];
 export type ResumeMarketRequest = components['schemas']['ResumeMarketRequest'];
@@ -3621,6 +4493,101 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AlertItem"];
+                };
+            };
+            /** @description Any error: `code` says which, `message` is for the user. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_admin_broadcasts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminBroadcastListResponse"];
+                };
+            };
+            /** @description Any error: `code` says which, `message` is for the user. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    approve_broadcast: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                broadcast_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketBroadcastResponse"];
+                };
+            };
+            /** @description Any error: `code` says which, `message` is for the user. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    refuse_broadcast: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                broadcast_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RefuseBroadcastRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketBroadcastResponse"];
                 };
             };
             /** @description Any error: `code` says which, `message` is for the user. */
@@ -3813,6 +4780,69 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MarketDetailResponse"];
+                };
+            };
+            /** @description Any error: `code` says which, `message` is for the user. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    start_broadcast_as_admin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                market_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketBroadcastResponse"];
+                };
+            };
+            /** @description Any error: `code` says which, `message` is for the user. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    remove_chat_message: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                market_id: string;
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RemovedResponse"];
                 };
             };
             /** @description Any error: `code` says which, `message` is for the user. */
@@ -4285,6 +5315,176 @@ export interface operations {
             };
         };
     };
+    list_live_broadcasts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LiveBroadcastListResponse"];
+                };
+            };
+            /** @description Any error: `code` says which, `message` is for the user. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    admit_broadcast_viewer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                broadcast_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BroadcastAccessResponse"];
+                };
+            };
+            /** @description Any error: `code` says which, `message` is for the user. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    upload_broadcast_chunk: {
+        parameters: {
+            query: {
+                /**
+                 * @description The part the piece belongs to: an id the studio makes whenever its recorder
+                 *     starts. The pieces of one part are one recording, cut in the order they were
+                 *     made.
+                 */
+                part: string;
+                /**
+                 * @description The place of the piece in its part, counted from 0. A piece that is sent again
+                 *     carries the same number and the same bytes.
+                 */
+                seq: number;
+            };
+            header?: never;
+            path: {
+                broadcast_id: string;
+            };
+            cookie?: never;
+        };
+        /** @description One piece of the studio's recording, as the recorder hands it over: bytes, at most `broadcast.chunk_max_bytes` of `GET /config`. */
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BroadcastChunkResponse"];
+                };
+            };
+            /** @description Any error: `code` says which, `message` is for the user. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    end_broadcast: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                broadcast_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketBroadcastResponse"];
+                };
+            };
+            /** @description Any error: `code` says which, `message` is for the user. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    start_broadcast: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                broadcast_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketBroadcastResponse"];
+                };
+            };
+            /** @description Any error: `code` says which, `message` is for the user. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     redeem_code: {
         parameters: {
             query?: never;
@@ -4522,6 +5722,138 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MarketDetailResponse"];
+                };
+            };
+            /** @description Any error: `code` says which, `message` is for the user. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_market_broadcast: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                market_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketBroadcastResponse"];
+                };
+            };
+            /** @description Any error: `code` says which, `message` is for the user. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    request_broadcast: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                market_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RequestBroadcastRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketBroadcastResponse"];
+                };
+            };
+            /** @description Any error: `code` says which, `message` is for the user. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_chat: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                market_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatResponse"];
+                };
+            };
+            /** @description Any error: `code` says which, `message` is for the user. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    post_chat_message: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                market_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PostChatMessageRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatMessageItem"];
                 };
             };
             /** @description Any error: `code` says which, `message` is for the user. */
@@ -4948,7 +6280,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/event-stream": components["schemas"]["ReadyEvent"] | components["schemas"]["BeatEvent"] | components["schemas"]["MarketQuoteEvent"] | components["schemas"]["MarketStatusEvent"] | components["schemas"]["LeaderboardChangedEvent"] | components["schemas"]["MeChangedEvent"];
+                    "text/event-stream": components["schemas"]["ReadyEvent"] | components["schemas"]["BeatEvent"] | components["schemas"]["MarketQuoteEvent"] | components["schemas"]["MarketStatusEvent"] | components["schemas"]["LeaderboardChangedEvent"] | components["schemas"]["MeChangedEvent"] | components["schemas"]["ChatMessageEvent"] | components["schemas"]["ChatRemovedEvent"] | components["schemas"]["BroadcastChangedEvent"];
                 };
             };
             /** @description Any error: `code` says which, `message` is for the user. */

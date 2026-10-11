@@ -1,7 +1,10 @@
-"""`GET /health`: is each data store answering (SPEC §9, Appendix A.2, A.10).
+"""`GET /health`: is each data store answering, and the media box (SPEC §9, Appendix
+A.2, A.10).
 
 Compose uses this as the API's healthcheck. Only Postgres decides the verdict: with
-Redis or ScyllaDB down the API still trades, so it stays healthy and reports the outage.
+Redis, ScyllaDB or the media box down the API still trades, so it stays healthy and
+reports the outage. Without the media box no live stream starts or runs, and the
+operations of a live stream say so themselves (503): this answer is no gate for them.
 """
 
 import asyncio
@@ -9,6 +12,7 @@ from typing import Final
 
 from app.core.errors import ServiceUnavailableError
 from app.db.database import Database
+from app.integrations.media.client import MediaClient
 from app.integrations.redis.client import RedisClient
 from app.integrations.scylla.client import ScyllaClient, ScyllaUnavailableError
 from app.schemas.health import DependencyStatus, HealthResponse, HealthStatus
@@ -18,36 +22,42 @@ SCYLLA_PROBE: Final[str] = "SELECT now() FROM system.local"
 
 
 class HealthService:
-    def __init__(self, database: Database, redis: RedisClient, scylla: ScyllaClient) -> None:
+    def __init__(
+        self, database: Database, redis: RedisClient, scylla: ScyllaClient, media: MediaClient
+    ) -> None:
         self._database = database
         self._redis = redis
         self._scylla = scylla
+        self._media = media
 
     async def check(self) -> HealthResponse:
-        """Probe the three stores at once and report each.
+        """Probe the three stores and the media box at once and report each.
 
-        Postgres up: `status` is `ok` when Redis and ScyllaDB answer too, else
-        `degraded`. Postgres down: raises `ServiceUnavailableError` (503) whose details
-        carry the three statuses. Each probe is bounded by its client's own timeout, so
-        the slowest answer takes about one ScyllaDB request timeout while the pool has
-        a connection free. While every connection of the pool is in use, the probe
-        of Postgres waits for one like any request, `POSTGRES_POOL_TIMEOUT_SECONDS`
-        at most, and then reports Postgres down.
+        Postgres up: `status` is `ok` when Redis, ScyllaDB and the media box answer
+        too, else `degraded`. Postgres down: raises `ServiceUnavailableError` (503)
+        whose details carry the four statuses. The media box never decides between the
+        two: it is `up` or `down` in either answer. Each probe is bounded by its
+        client's own timeout, so the slowest answer takes about one ScyllaDB request
+        timeout or one `BROADCAST_MEDIA_TIMEOUT_MS`, whichever is longer, while the
+        pool has a connection free. While every connection of the pool is in use, the
+        probe of Postgres waits for one like any request,
+        `POSTGRES_POOL_TIMEOUT_SECONDS` at most, and then reports Postgres down.
         """
-        postgres, redis, scylla = await asyncio.gather(
-            self._database.ping(), self._redis.ping(), self._scylla_answers()
+        postgres, redis, scylla, media = await asyncio.gather(
+            self._database.ping(), self._redis.ping(), self._scylla_answers(), self._media.ping()
         )
         statuses = {
             "postgres": _status(postgres),
             "redis": _status(redis),
             "scylla": _status(scylla),
+            "media": _status(media),
         }
         if not postgres:
             raise ServiceUnavailableError(
                 "The database is unreachable.",
                 details={name: status.value for name, status in statuses.items()},
             )
-        overall = HealthStatus.OK if redis and scylla else HealthStatus.DEGRADED
+        overall = HealthStatus.OK if redis and scylla and media else HealthStatus.DEGRADED
         return HealthResponse(status=overall, **statuses)
 
     async def _scylla_answers(self) -> bool:

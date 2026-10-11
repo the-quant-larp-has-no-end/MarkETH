@@ -16,6 +16,9 @@ htmlcov/
 # Tests need Docker (Testcontainers) and run on the host, never in the image
 tests/
 
+# The media box is an image of its own, built from mediabox/ (SPEC §9)
+mediabox/
+
 # Not needed at runtime
 *.md
 *.env

@@ -24,6 +24,9 @@ name and whose `ts` is the instant of what it reports:
     event: market.status         a market's status changed    data: MarketStatusEvent
     event: leaderboard.changed   the ranking moved            data: LeaderboardChangedEvent
     event: me.changed            something of the caller's    data: MeChangedEvent
+    event: chat.message          a message of a live chat     data: ChatMessageEvent
+    event: chat.removed          a message was removed        data: ChatRemovedEvent
+    event: broadcast.changed     a market's live stream       data: BroadcastChangedEvent
 
 An event is a hint to redraw or to read again, never a source of truth: a client ignores
 a price whose `version` is not newer than what it shows, and reads every
@@ -40,6 +43,7 @@ from pydantic import Field
 
 from app.core.enums import MarketStatus
 from app.core.live import TOPIC_MAX_LENGTH, TOPIC_PATTERN, TOPICS_HARD_MAX, Topic, parse_topic
+from app.schemas.chat import ChatMessageItem
 from app.schemas.common import CreditAmount, Probability, RequestModel, ResponseModel
 
 
@@ -198,6 +202,44 @@ class MeChangedEvent(ResponseModel):
     ts: datetime
 
 
+class ChatMessageEvent(ResponseModel):
+    """`event: chat.message`. Somebody wrote in the live chat of a market. It carries the
+    message as `GET /markets/{id}/chat` lists it, so a panel that shows the chat of
+    `broadcast_id` puts it at the end of what it shows. The stream keeps no message: a
+    tab reads the chat whenever its stream opens."""
+
+    type: Literal["chat.message"]
+    market_id: UUID
+    broadcast_id: UUID
+    """The live stream the chat belongs to: `ChatResponse.broadcast_id`."""
+
+    message: ChatMessageItem
+    ts: datetime
+
+
+class ChatRemovedEvent(ResponseModel):
+    """`event: chat.removed`. An admin removed a message from the live chat of a
+    market: whoever shows it takes it away. It carries the id and nothing of the
+    message."""
+
+    type: Literal["chat.removed"]
+    market_id: UUID
+    broadcast_id: UUID
+    message_id: UUID
+    ts: datetime
+
+
+class BroadcastChangedEvent(ResponseModel):
+    """`event: broadcast.changed`. Something about the live stream of a market changed:
+    it was asked for, decided on, started, went on air or ended, or messages left its
+    chat. It says which market and nothing else; `GET /markets/{id}/broadcast` and the
+    chat of that market are read again."""
+
+    type: Literal["broadcast.changed"]
+    market_id: UUID
+    ts: datetime
+
+
 LIVE_EVENTS: Final[tuple[type[ResponseModel], ...]] = (
     ReadyEvent,
     BeatEvent,
@@ -205,6 +247,9 @@ LIVE_EVENTS: Final[tuple[type[ResponseModel], ...]] = (
     MarketStatusEvent,
     LeaderboardChangedEvent,
     MeChangedEvent,
+    ChatMessageEvent,
+    ChatRemovedEvent,
+    BroadcastChangedEvent,
 )
 """Every event model of the event stream. The name of an event is the `type` of its
 model, and no two models share one."""

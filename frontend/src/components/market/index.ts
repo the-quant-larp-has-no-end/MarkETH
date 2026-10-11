@@ -1,5 +1,6 @@
 export { useAskAtClose } from "./close-time";
 export { Deadline } from "./deadline";
+export { LiveBadge, type LiveBadgeProps } from "./live-badge";
 export { MarketCard, MarketCardSkeleton } from "./market-card";
 export { OutcomeButtons, OutcomeToggle } from "./outcome-buttons";
 export { SellPresets, StakeLeftLine, StakePresets } from "./presets";

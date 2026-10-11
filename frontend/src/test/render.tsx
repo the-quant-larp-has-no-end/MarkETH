@@ -13,6 +13,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { keys } from "@/lib/api/keys";
 import { createQueryClient } from "@/lib/api/query-client";
 import type { MeResponse, PublicConfigResponse } from "@/lib/api/schema";
+import { LiveProvider } from "@/lib/live/provider";
 
 import * as fixtures from "./fixtures";
 
@@ -34,18 +35,33 @@ export type ProvidersOptions = {
   me?: MeResponse | null;
   /** A client of your own, to look into its cache or to share it between renders. */
   client?: QueryClient;
+  /**
+   * True mounts `LiveProvider` where the app has it, around the shell: the live hooks
+   * then follow the event stream, which the test plays (`installFakeEventSource`, before
+   * rendering). Left out, the hooks are inert: no test opens a stream or polls unless it
+   * asks to.
+   */
+  live?: boolean;
 };
 
-function providers({ config, me, client = createTestQueryClient() }: ProvidersOptions) {
+function providers({
+  config,
+  me,
+  client = createTestQueryClient(),
+  live = false,
+}: ProvidersOptions) {
   if (config !== null) client.setQueryData(keys.config, config ?? fixtures.config());
   if (me !== null) client.setQueryData(keys.me, me ?? fixtures.me());
 
-  const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>
-      <ShellProvider>{children}</ShellProvider>
-      <Toaster />
-    </QueryClientProvider>
-  );
+  const wrapper = ({ children }: { children: ReactNode }) => {
+    const shell = <ShellProvider>{children}</ShellProvider>;
+    return (
+      <QueryClientProvider client={client}>
+        {live ? <LiveProvider>{shell}</LiveProvider> : shell}
+        <Toaster />
+      </QueryClientProvider>
+    );
+  };
   return { client, wrapper };
 }
 
@@ -58,15 +74,22 @@ function providers({ config, me, client = createTestQueryClient() }: ProvidersOp
  *     const { user } = renderWithProviders(<PortfolioScreen />, { me: me({ role: "ADMIN" }) });
  *     await user.click(await screen.findByRole("tab", { name: "History" }));
  *
+ * A test of a value that follows the event stream asks for it:
+ *
+ *     const streams = installFakeEventSource();
+ *     renderWithProviders(<MarketsScreen />, { live: true });
+ *     streams.latest().open();
+ *     streams.latest().send(readyEvent());
+ *
  * A component that reads the API needs `mockApi` first. `useMe()` and `useConfig()` read
  * the cache and ask for nothing; a screen that calls `useQuery(meQuery)` itself does ask,
  * and needs a route for `GET /api/me`.
  */
 export function renderWithProviders(
   ui: ReactElement,
-  { config, me, client, ...options }: ProvidersOptions & Omit<RenderOptions, "wrapper"> = {},
+  { config, me, client, live, ...options }: ProvidersOptions & Omit<RenderOptions, "wrapper"> = {},
 ) {
-  const made = providers({ config, me, client });
+  const made = providers({ config, me, client, live });
   return {
     ...render(ui, { wrapper: made.wrapper, ...options }),
     client: made.client,
@@ -81,9 +104,10 @@ export function renderHookWithProviders<Result, Props>(
     config,
     me,
     client,
+    live,
     ...options
   }: ProvidersOptions & Omit<RenderHookOptions<Props>, "wrapper"> = {},
 ) {
-  const made = providers({ config, me, client });
+  const made = providers({ config, me, client, live });
   return { ...renderHook(hook, { wrapper: made.wrapper, ...options }), client: made.client };
 }

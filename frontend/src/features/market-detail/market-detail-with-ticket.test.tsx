@@ -20,6 +20,8 @@ import { renderWithProviders } from "@/test/render";
 
 import { MarketDetailScreen } from "./index";
 
+vi.mock("@/features/broadcast", async () => (await import("./testing")).broadcastFeature);
+
 /**
  * The trade ticket of `@/features/trade` inside this screen: neither side is a stand-in.
  * The other tests of the two features each put a stand-in in place of the other; this is

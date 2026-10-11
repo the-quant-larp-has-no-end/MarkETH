@@ -56,8 +56,18 @@ function load(): { contract: Contract; operations: Operation[] } {
 /**
  * Operations the app does not call through the client: the two no screen calls
  * (DESIGN.md §13), and the event streams, which `lib/live` opens as an `EventSource`.
+ * Of a live stream, two more have no query and no mutation: the question whether a caller
+ * may watch, which nginx asks before it serves a playlist or a segment and no screen ever
+ * does, and the upload of a piece, which goes out as bytes through a function of its own.
  */
-const NOT_CALLED = new Set(["get_health", "run_monthly_grants", "stream_live", "stream_market"]);
+const NOT_CALLED = new Set([
+  "get_health",
+  "run_monthly_grants",
+  "stream_live",
+  "stream_market",
+  "admit_broadcast_viewer",
+  "upload_broadcast_chunk",
+]);
 
 /** The code of the app: every file under `src/` but the tests, their helpers and the generated types. */
 function appFiles(): { path: string; text: string }[] {
@@ -202,5 +212,46 @@ describe.skipIf(!existsSync(CONTRACT))("lib/api covers the contract", () => {
 
   test("no query sets a page size: a list is as long as the API makes it", () => {
     expect(queries).not.toMatch(/\blimit\b\s*:/);
+  });
+
+  test("the question whether a caller may watch a live stream is nginx's: no file of the app names its path", () => {
+    const { operations } = load();
+    const access = operations.find(
+      (operation) => operation.operationId === "admit_broadcast_viewer",
+    );
+
+    expect(access?.method).toBe("get");
+    expect(NOT_CALLED.has("admit_broadcast_viewer")).toBe(true);
+    const naming = appFiles()
+      .filter((file) => addressOf(access!.path).test(file.text))
+      .map((file) => file.path);
+    expect(naming).toEqual([]);
+  });
+
+  test("a piece of a live stream goes out as bytes: one function beside the client sends it, and no mutation does", () => {
+    const { contract, operations } = load();
+    const upload = operations.find(
+      (operation) => operation.operationId === "upload_broadcast_chunk",
+    );
+    /** The media types an operation takes as its body; none for an operation without one. */
+    const bodyTypes = ({ path, method }: Operation): string[] => {
+      const operation = contract.paths[path]?.[method] as
+        { requestBody?: { content?: Record<string, unknown> } } | undefined;
+      return Object.keys(operation?.requestBody?.content ?? {});
+    };
+
+    // It is the one operation of the contract whose body is no JSON.
+    expect(bodyTypes(upload!)).toEqual(["application/octet-stream"]);
+    const notJson = operations.filter((operation) =>
+      bodyTypes(operation).some((type) => type !== "application/json"),
+    );
+    expect(notJson.map((operation) => operation.operationId)).toEqual(["upload_broadcast_chunk"]);
+
+    expect(NOT_CALLED.has("upload_broadcast_chunk")).toBe(true);
+    expect(mutations).not.toContain(`api.POST("${upload!.path}"`);
+    const naming = appFiles()
+      .filter((file) => file.text.includes(`api().POST("${upload!.path}"`))
+      .map((file) => file.path);
+    expect(naming).toEqual(["src/lib/api/broadcast-upload.ts"]);
   });
 });

@@ -39,6 +39,7 @@ from app.db.database import Database
 from app.main import create_app
 from app.schemas.common import MAX_ERRORS_LISTED
 from app.schemas.markets import Holding
+from app.services.broadcasts import NOT_AVAILABLE_MESSAGE
 from app.services.codes import ADMIN_REDEEM_MESSAGE, OWN_BATCH_MESSAGE
 from app.services.market_lifecycle import SELF_DEALING_MESSAGE
 from app.services.profile import RESERVED_USERNAME_MESSAGE
@@ -69,9 +70,15 @@ PATH_VALUES: Final[dict[str, str]] = {
     "{user_id}": str(uuid7()),
     "{alert_id}": "1",
     "{notice_id}": str(uuid7()),
+    "{message_id}": str(uuid7()),
+    "{broadcast_id}": str(uuid7()),
 }
 """A value for every path parameter the API has. None of them is a code: a code travels
 in a body."""
+
+BROADCAST_ACCESS: Final[Operation] = ("GET", "/api/broadcasts/{broadcast_id}/access")
+"""What the proxy asks for every viewer of a live stream. Its service answers 403 where
+any other would answer 404: the proxy reads nothing else as a no."""
 
 BARISTA_ROUTE: Final[str] = "/api/barista/vouchers/redeem"
 SCANNED: Final[dict[str, str]] = {"code": "ABCD-EFGH"}
@@ -484,7 +491,7 @@ async def test_every_route_that_is_not_public_answers_401_when_the_portal_names_
     client: httpx.AsyncClient, app: FastAPI
 ) -> None:
     routes = protected(app)
-    assert len(routes) == 41, "every operation but /health and /config"
+    assert len(routes) == 55, "every operation but /health and /config"
     assert PROFILE_OPERATION in routes
     for method, path in routes:
         response = await client.request(method, concrete(path))
@@ -749,7 +756,7 @@ async def test_every_member_route_answers_403_profile_required_to_an_identity_wi
 ) -> None:
     as_user(NEWCOMER)
     routes = member_operations(app)
-    assert len(routes) == 40, "every protected operation but the one that saves a profile"
+    assert len(routes) == 54, "every protected operation but the one that saves a profile"
     for method, path in routes:
         response = await client.request(method, concrete(path))
         details = assert_error(response, 403, "PROFILE_REQUIRED")
@@ -855,20 +862,28 @@ async def test_the_guard_of_the_event_stream_runs_before_the_hub_opens_a_stream(
 async def test_every_route_that_asks_for_no_role_lets_a_registered_user_through(
     client: httpx.AsyncClient, app: FastAPI, factory: Factory, as_user: ActAs
 ) -> None:
-    """Twenty operations are open to every registered user. No guard may turn a plain
-    user away from one of them; what the service then answers is not the point here."""
+    """Twenty-nine operations are open to every registered user. No guard may turn a
+    plain user away from one of them; what the service then answers is not the point
+    here. One service answers 403 itself: a live stream nobody may play is refused in
+    its own words, which no guard says."""
     as_user(await factory.user())
     routes = [
         (method, path)
         for method, path in member_operations(app)
         if not path.startswith(("/api/admin/", "/api/barista/"))
     ]
-    assert len(routes) == 20
+    assert len(routes) == 29
     assert ("GET", "/api/leaderboard") in routes
     assert ("GET", "/api/stream") in routes
     assert ("POST", "/api/me/notices/{notice_id}/seen") in routes
+    assert ("POST", "/api/broadcasts/{broadcast_id}/chunks") in routes
+    assert BROADCAST_ACCESS in routes
     for method, path in routes:
         response = await client.request(method, concrete(path))
+        if (method, path) == BROADCAST_ACCESS:
+            assert assert_error(response, 403, "FORBIDDEN") == {}
+            assert response.json()["message"] == NOT_AVAILABLE_MESSAGE
+            continue
         assert response.status_code not in (401, 403), (method, path, response.text)
 
 
@@ -878,7 +893,7 @@ async def test_admin_routes_answer_403_to_anyone_but_an_admin(
 ) -> None:
     as_user(someone(role))
     routes = protected(app, "/api/admin/")
-    assert len(routes) == 19
+    assert len(routes) == 24
     for method, path in routes:
         response = await client.request(method, concrete(path))
         assert_error(response, 403, "FORBIDDEN")
@@ -1324,7 +1339,7 @@ async def test_health_reports_postgres_down_once_it_waited_for_the_pool_in_vain(
 ) -> None:
     """The probe of Postgres takes a connection of the pool like any request. With none
     free it waits POSTGRES_POOL_TIMEOUT_SECONDS at most, and the answer says that
-    Postgres did not answer: 503 with the three statuses."""
+    Postgres did not answer: 503 with the four statuses."""
     container: Container = crowded_app.state.container
     transport = httpx.ASGITransport(app=crowded_app)
 

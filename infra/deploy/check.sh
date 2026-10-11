@@ -32,6 +32,16 @@
 #  10. With APP_ENV=production: the development identity files are absent, the running
 #      proxy has no trace of them, and nginx is the only container with a published
 #      port, bound to the one address .env names.
+#  11. The media box, which turns what a broadcaster sends into a live stream, is
+#      healthy and runs as compose.yaml asks: no network, a read-only root, and no
+#      variable of a store or of an admin in its environment. GET /api/health says
+#      that the API reaches it.
+#  12. A playlist of a live stream is served to nobody the API did not admit: 401 without
+#      identity headers, 403 for a caller the API refuses, and 403 from the proxy itself
+#      for a request another site makes and for the web app's container.
+#  13. The one location with a body limit of its own takes a piece of a live stream that
+#      every other address refuses as too large, and refuses one above
+#      BROADCAST_CHUNK_MAX_BYTES.
 #  14. The running nginx and api have the limits of open files .env names
 #      (NGINX_NOFILE_LIMIT, API_NOFILE_LIMIT), and one process serves the API: what the
 #      API keeps in its own memory, such as the orders it counts per user while Redis
@@ -43,6 +53,8 @@
 set -eu
 
 HEALTH_WAIT_SECONDS=120
+# The media box ends with its last live stream and starts again empty: about a second.
+BOX_WAIT_SECONDS=30
 REQUEST_SECONDS=10
 OUTSIDE_CONNECT_SECONDS=8
 
@@ -348,6 +360,77 @@ if [ "$APP_ENV" = "production" ]; then
 else
     echo "skipped the checks of a production tree (APP_ENV=$APP_ENV)"
 fi
+
+# 11. The media box --------------------------------------------------------------------
+# ffmpeg reads bytes a person chose, so the box is the one container that must reach
+# nothing. What Docker says about the running container is held against what
+# compose.yaml asks for. A variable of a store or of an admin would be in its
+# environment only if somebody handed it the env file; names are printed, never values.
+
+box=$(docker compose -f compose.yaml ps --quiet media < /dev/null) || fail "could not ask Compose for the media container"
+[ -n "$box" ] || fail "no media container is running"
+waited=0
+until [ "$(docker inspect --format '{{ .State.Health.Status }}' "$box" < /dev/null)" = "healthy" ]; do
+    [ "$waited" -lt "$BOX_WAIT_SECONDS" ] \
+        || fail "the media box is not healthy after $BOX_WAIT_SECONDS seconds: docker compose -f compose.yaml logs media"
+    sleep 2
+    waited=$((waited + 2))
+done
+passed "the media box is healthy"
+
+isolation=$(docker inspect --format '{{ .HostConfig.NetworkMode }} {{ .HostConfig.ReadonlyRootfs }}' "$box" < /dev/null) \
+    || fail "could not read how the media container runs"
+[ "$isolation" = "none true" ] \
+    || fail "the media box runs with network mode and read-only root '$isolation', not 'none true'"
+docker inspect --format '{{ range .Config.Env }}{{ println . }}{{ end }}' "$box" < /dev/null > "$WORK/box.env" \
+    || fail "could not read the environment of the media container"
+handed=$(grep -E '^((POSTGRES|REDIS|SCYLLA)[A-Z0-9_]*|ADMIN_EMAILS)=' "$WORK/box.env" | cut -d= -f1 | tr '\n' ' ')
+[ -z "$handed" ] || fail "the media box is handed variables that are none of its own: $handed"
+passed "it has no network, a read-only root, and no variable of a store or of an admin"
+
+request "$BASE/api/health"
+[ "$STATUS" = "200" ] || fail "GET /api/health answered $STATUS: $(body_excerpt)"
+[ "$(jq -r '.media?' "$WORK/body")" = "up" ] || fail "the API does not reach the media box: $(body_excerpt)"
+passed "the API reaches it: $(jq -c . "$WORK/body")"
+
+# 12. Video is served to nobody the API did not admit -------------------------------------
+# The proxy asks the API about the caller of every playlist and every segment before it
+# serves one. The broadcast is made up: nothing is there to serve, and each answer is
+# about the caller. A request without identity headers gets the API's 401, so a 403 for
+# such a request is the proxy's own.
+
+PLAYLIST=/api/broadcasts/00000000-0000-0000-0000-000000000000/hls/index.m3u8
+request "$BASE$PLAYLIST"
+expect 401 UNAUTHENTICATED "a playlist is refused to a request without identity headers"
+request --header "X-User-Id: deploy.check@$DOMAIN" "$BASE$PLAYLIST"
+expect 403 FORBIDDEN "and to a caller the API does not let watch"
+request --header 'Sec-Fetch-Site: cross-site' --header 'Sec-Fetch-Mode: no-cors' \
+    --header 'Sec-Fetch-Dest: video' "$BASE$PLAYLIST"
+expect 403 FORBIDDEN "a playlist another site puts into its page is refused by the proxy"
+from_the_web_app "$PLAYLIST"
+expect 403 FORBIDDEN "and so is the web app's container"
+
+# 13. The body limit of a piece of a live stream -------------------------------------------
+# The body of check 8, just above the limit of the server, is too large everywhere but at
+# the address of a piece. The caller is made up and has no profile: the API refuses the
+# piece, which is an answer of the API and so no 413 of the proxy.
+
+PIECE_LIMIT=$(setting BROADCAST_CHUNK_MAX_BYTES)
+[ -n "$PIECE_LIMIT" ] || fail ".env has no BROADCAST_CHUNK_MAX_BYTES"
+[ "$PIECE_LIMIT" -gt "$((LIMIT + 1024))" ] \
+    || fail "BROADCAST_CHUNK_MAX_BYTES=$PIECE_LIMIT is not above NGINX_CLIENT_MAX_BODY_SIZE: the check has no body between the two"
+PIECES="$BASE/api/broadcasts/00000000-0000-0000-0000-000000000000/chunks?part=deploy-check&seq=0"
+head -c "$((PIECE_LIMIT + 1024))" /dev/zero > "$WORK/above-a-piece"
+request --request PUT --header "Origin: $ORIGIN" --header 'Content-Type: application/json' \
+    --data-binary "@$WORK/above" "$BASE/api/me/profile"
+[ "$STATUS" = "413" ] || fail "a body of $((LIMIT + 1024)) bytes at /api/me/profile: expected 413, got $STATUS $(body_excerpt)"
+request --request POST --header "Origin: $ORIGIN" --header 'Content-Type: application/octet-stream' \
+    --header "X-User-Id: deploy.check@$DOMAIN" --data-binary "@$WORK/above" "$PIECES"
+[ "$STATUS" != "413" ] || fail "a piece of $((LIMIT + 1024)) bytes was refused as too large"
+passed "a body the proxy refuses elsewhere (413) reaches the API as a piece of a live stream ($STATUS)"
+request --request POST --header "Origin: $ORIGIN" --header 'Content-Type: application/octet-stream' \
+    --header "X-User-Id: deploy.check@$DOMAIN" --data-binary "@$WORK/above-a-piece" "$PIECES"
+expect 413 VALIDATION_ERROR "a piece above BROADCAST_CHUNK_MAX_BYTES=$PIECE_LIMIT is refused by the proxy"
 
 # 14. Open files, and the one API process ---------------------------------------------
 # A limit is read from the process it holds for, in /proc. For nginx that is process 1,

@@ -171,7 +171,8 @@ export function ProfileForm({
       />
 
       <p className="type-body-sm text-muted-foreground">
-        Other players can see your username, your degree, your tokens and your trading record.
+        Other players can see your username, your degree, your tokens, your trading record, and what
+        you write in live chats.
       </p>
 
       {creating && (

@@ -386,16 +386,21 @@ class ErrorResponse(ResponseModel):
     * `LIMIT_EXCEEDED`: `limit`, which names the limit: `MAX_STAKE_PER_USER_MARKET`,
       `MAX_PROPOSALS_PER_USER_PER_DAY`, `MAX_OPEN_MARKETS`, `MAX_MARKET_BUDGET`,
       `MAX_AGGREGATE_LOSS_BUDGET`, `MAX_CODE_ISSUANCE_PER_MONTH`,
-      `ONE_CODE_PER_USER` or `MAX_ADMIN_ADJUSTMENT_CR`. With
+      `ONE_CODE_PER_USER`, `MAX_ADMIN_ADJUSTMENT_CR`, `MAX_LIVE_BROADCASTS` or
+      `MAX_BROADCAST_REQUESTS_PER_USER_PER_DAY`. With
       `MAX_STAKE_PER_USER_MARKET` also `stake_limit_cr`, `stake_left_cr` and
       `required_cr`, what the buy costs; with `MAX_CODE_ISSUANCE_PER_MONTH` also
       `issued_cr`, `requested_cr` and `cap_cr`; with `MAX_ADMIN_ADJUSTMENT_CR` also
       `requested_cr`, what the adjustment would add, and `cap_cr`, the most one
-      adjustment may add.
+      adjustment may add. The two limits of a live stream carry `limit` and nothing
+      beside it.
+    * `CONFLICT`, where a live stream is not in the state the request needs:
+      `status`, where the broadcast stands, for one that has not started; `status`
+      and `end_reason` for one that has ended.
     * `INSUFFICIENT_BALANCE`: `balance_cr` and `required_cr`. Where an admin debits
       somebody's balance, they are what that account holds and what the debit takes.
-    * `SERVICE_UNAVAILABLE`, from `GET /health` only: `postgres`, `redis` and
-      `scylla`, each `up` or `down`.
+    * `SERVICE_UNAVAILABLE`, from `GET /health` only: `postgres`, `redis`, `scylla`
+      and `media`, each `up` or `down`.
 
     A quote is answered like its trade. `GET /markets/{id}/quote` gives a buy the
     caller could not make the error the trade would get, with the same message and

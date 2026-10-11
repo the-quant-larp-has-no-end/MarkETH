@@ -69,6 +69,10 @@ x-needs-schema: &needs-schema
 #
 # Each service also names its networks (they are at the end of this file): nginx is on
 # both, the web app on `edge` alone, everything else on `core` alone.
+#
+# One service names none: the media box, which has no network at all. The API reaches
+# it through a Unix socket and the proxy reads the files it writes, each on one of the
+# two volumes that are memory (under `volumes:` below).
 services:
   # Waits for nobody: it resolves web and api per request and answers /api/ with a JSON
   # 503 while the API starts.
@@ -97,6 +101,12 @@ services:
       NGINX_RATE_LIMIT_BURST: ${NGINX_RATE_LIMIT_BURST:?}
       NGINX_SSE_READ_TIMEOUT: ${NGINX_SSE_READ_TIMEOUT:?}
       NGINX_SSE_STREAMS_PER_CALLER: ${NGINX_SSE_STREAMS_PER_CALLER:?}
+      # Live video. The largest piece a broadcaster sends and the seconds a "yes, this
+      # caller may watch" is remembered are settings of the API, handed to the proxy
+      # under names of its own: the two have to agree.
+      NGINX_BROADCAST_UPLOADS_PER_CALLER: ${NGINX_BROADCAST_UPLOADS_PER_CALLER:?}
+      NGINX_BROADCAST_CHUNK_MAX_BYTES: ${BROADCAST_CHUNK_MAX_BYTES:?}
+      NGINX_BROADCAST_ACCESS_CACHE_SECONDS: ${BROADCAST_ACCESS_CACHE_SECONDS:?}
       NGINX_CONTENT_SECURITY_POLICY: ${NGINX_CONTENT_SECURITY_POLICY:?}
       # The `edge` network as it is defined at the end of this file. The proxy answers
       # nothing under /api/ to a peer on it other than its gateway.
@@ -113,6 +123,9 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      # The playlist and the segments of a live stream, as the media box writes them.
+      # The proxy serves them from here and writes nothing.
+      - media-hls:/var/lib/marketh/hls:ro
     ports:
       - "${NGINX_HTTP_BIND:?}:${NGINX_HTTP_PORT:?}:80"
     healthcheck:
@@ -177,6 +190,12 @@ services:
         hard: ${API_NOFILE_LIMIT:?}
     networks:
       - core
+    # The directory of the media box's socket (BROADCAST_MEDIA_SOCKET). Read-only:
+    # connecting to a socket writes nothing to the file system it lies in. The API does
+    # not wait for the box; without it a live stream does not start and everything else
+    # works.
+    volumes:
+      - media-socket:/run/marketh-media:ro
     depends_on: *needs-schema
     healthcheck:
       test:
@@ -220,6 +239,70 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+
+  # The media box (backend/mediabox): ffmpeg behind a supervisor. It turns the pieces a
+  # broadcaster sends into the playlist and the segments people watch. ffmpeg reads
+  # bytes a person chose, so the box is built as the place where somebody may one day
+  # run code of their own: no network at all, a read-only root, no capability, no
+  # memory shared with anything, a ceiling on its processes, its memory and its share
+  # of the CPUs, and an environment of the fifteen variables below. It has no env_file:
+  # no password and no admin of .env is in it.
+  #
+  # The API hands it the pieces through a Unix socket on a volume the two share, and
+  # the proxy reads what it writes on a second one. Nobody waits for it: without the
+  # box the stack starts and trades, and a live stream does not start.
+  #
+  # No `init`: the supervisor has to be process 1. The kernel delivers neither SIGKILL
+  # nor SIGSTOP to the first process of a container from inside it, so nothing ffmpeg
+  # is made to run can end or freeze it. The process ends by itself when its last live
+  # stream has ended, and the restart policy brings an empty box back: whatever one
+  # live stream did to the container, the next one starts in another.
+  media:
+    build:
+      context: ./backend/mediabox
+    restart: unless-stopped
+    network_mode: none
+    read_only: true
+    # A read-only root alone leaves /dev/shm a memory disk the container may write.
+    ipc: none
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: ${MEDIA_PIDS_LIMIT:?}
+    mem_limit: ${MEDIA_MEMORY_LIMIT:?}
+    cpus: ${MEDIA_CPUS:?}
+    # If the host itself runs out of memory, video goes first: before the price history.
+    oom_score_adj: 800
+    logging: *logging
+    environment:
+      BROADCAST_MEDIA_SOCKET: ${BROADCAST_MEDIA_SOCKET:?}
+      BROADCAST_MAX_LIVE: ${BROADCAST_MAX_LIVE:?}
+      BROADCAST_MAX_MINUTES: ${BROADCAST_MAX_MINUTES:?}
+      BROADCAST_STALL_SECONDS: ${BROADCAST_STALL_SECONDS:?}
+      BROADCAST_CHUNK_MAX_BYTES: ${BROADCAST_CHUNK_MAX_BYTES:?}
+      BROADCAST_INPUT_MAX_WIDTH: ${BROADCAST_INPUT_MAX_WIDTH:?}
+      BROADCAST_INPUT_MAX_HEIGHT: ${BROADCAST_INPUT_MAX_HEIGHT:?}
+      BROADCAST_VIDEO_HEIGHT: ${BROADCAST_VIDEO_HEIGHT:?}
+      BROADCAST_VIDEO_FPS: ${BROADCAST_VIDEO_FPS:?}
+      BROADCAST_VIDEO_KBPS: ${BROADCAST_VIDEO_KBPS:?}
+      BROADCAST_AUDIO_KBPS: ${BROADCAST_AUDIO_KBPS:?}
+      BROADCAST_HLS_SEGMENT_SECONDS: ${BROADCAST_HLS_SEGMENT_SECONDS:?}
+      BROADCAST_HLS_PLAYLIST_SEGMENTS: ${BROADCAST_HLS_PLAYLIST_SEGMENTS:?}
+      MEDIA_FFMPEG_THREADS: ${MEDIA_FFMPEG_THREADS:?}
+      MEDIA_X264_PRESET: ${MEDIA_X264_PRESET:?}
+    volumes:
+      # The directory of BROADCAST_MEDIA_SOCKET, and where the box writes a live stream.
+      - media-socket:/run/marketh-media
+      - media-hls:/var/lib/marketh/hls
+    healthcheck:
+      # Asks the socket for the box's status. In the second between the end of its last
+      # live stream and the restart the box answers nothing.
+      test: ["CMD", "python", "-m", "mediabox.probe"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
 
   postgres:
     image: postgres:18-alpine
@@ -312,6 +395,25 @@ services:
 volumes:
   postgres-data:
   scylla-data:
+  # The two volumes of the media box are memory: no picture and no sound of a live
+  # stream reaches a disk, and both are empty again once their containers are gone.
+  # Each belongs to the user of the box (10001, backend/mediabox/Dockerfile).
+  #
+  # The socket: the group of the API's image (1000, backend/Dockerfile) may enter the
+  # directory and nobody else. The box tells a peer of its own user nothing but its
+  # status, so the two users have to differ.
+  media-socket:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=64k,mode=0750,uid=10001,gid=1000"
+  # Playlists and segments: the box writes, everybody may read, which is how the proxy
+  # serves them.
+  media-hls:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=${MEDIA_HLS_TMPFS_SIZE:?},mode=0755,uid=10001,gid=10001"
 
 # Two networks, so that the web app shares one with the proxy and with nothing else. It
 # serves the same pages to everybody and needs neither the API nor a store, so it cannot

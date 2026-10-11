@@ -107,7 +107,7 @@ describe("what the screen shows", () => {
     expect(programme()).toHaveValue("MSc Data Science");
     expect(
       screen.getByText(
-        "Other players can see your username, your degree, your tokens and your trading record.",
+        "Other players can see your username, your degree, your tokens, your trading record, and what you write in live chats.",
       ),
     ).toBeInTheDocument();
   });
