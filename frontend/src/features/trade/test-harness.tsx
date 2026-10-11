@@ -151,17 +151,17 @@ export function openTicket({
 export const ticketFrame = () => document.querySelector<HTMLElement>("[data-slot=trade-ticket]");
 export const sideSegment = (name: "Buy" | "Sell") => screen.getByRole("radio", { name });
 export const outcomeSegment = (name: "YES" | "NO") => screen.getByRole("button", { name });
-/** The amount field of the stake entry. */
-export const stakeField = () =>
-  screen.getByRole<HTMLInputElement>("textbox", { name: "Stake in tokens" });
-/** The slider of the stake entry: its thumb is what has the role. */
-export const stakeSlider = () => screen.getByRole("slider", { name: "Stake in whole tokens" });
-/** A preset of the stake entry, by its amount: its name is the amount and the word, "25 tokens". */
-export const stakeChip = (amount: string) =>
-  screen.getByRole("button", { name: `${amount} tokens` });
-/** What the server said about the amount, where the stake entry shows it. */
-export const stakeRefusal = () =>
-  document.querySelector<HTMLElement>("[data-slot=stake-entry] [data-slot=inline-error]");
+/** The whole-shares field of a buy. */
+export const buySharesField = () =>
+  screen.getByRole<HTMLInputElement>("textbox", { name: "Number of shares" });
+/** The slider of the shares entry: its thumb is what has the role. */
+export const buySharesSlider = () => screen.getByRole("slider", { name: "Whole shares" });
+/** A buy shortcut, named by its share count: "25 shares". */
+export const shareChip = (amount: string) =>
+  screen.getByRole("button", { name: `${amount} shares` });
+/** The server's refusal of the buy share count. */
+export const buySharesRefusal = () =>
+  document.querySelector<HTMLElement>("[data-slot=shares-entry] [data-slot=inline-error]");
 /** The shares field of the shares entry of a sell. */
 export const sharesField = () =>
   screen.getByRole<HTMLInputElement>("textbox", { name: "Number of shares" });
@@ -174,7 +174,8 @@ export const sellChip = (portion: "Half" | "All") =>
   screen.getByRole("button", { name: new RegExp(`^${portion}`) });
 export const button = (name: string) => screen.getByRole("button", { name });
 /** The row of a label and its value: of the quote panel, of the receipt, the balance line. */
-export const row = (label: string) => screen.getByText(label).parentElement!;
+export const row = (label: string) =>
+  screen.getByText(label, label === "Shares" ? { selector: "dt" } : undefined).parentElement!;
 
 /* ---- What went out ------------------------------------------------------------------ */
 

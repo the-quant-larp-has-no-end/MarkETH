@@ -2,10 +2,9 @@
 
 import type { ReactNode } from "react";
 
-import { Amount } from "@/components/money";
 import { Toggle } from "@/components/ui/toggle";
-import type { Outcome, SellPortion, SellPreset, StakePreset } from "@/lib/api/schema";
-import { formatAmount, formatShares, formatTokens } from "@/lib/format";
+import type { BuyPreset, Outcome, SellPortion, SellPreset } from "@/lib/api/schema";
+import { formatAmount, formatShares, formatTokens, shareWord } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 /**
@@ -15,11 +14,13 @@ import { cn } from "@/lib/utils";
  * the ones for "not chosen".
  */
 function PresetChip({
+  label,
   selected,
   disabled,
   onSelect,
   children,
 }: {
+  label?: string;
   selected: boolean;
   disabled: boolean;
   onSelect: () => void;
@@ -27,6 +28,7 @@ function PresetChip({
 }) {
   return (
     <Toggle
+      aria-label={label}
       pressed={selected}
       onPressedChange={(pressed) => {
         if (pressed) onSelect();
@@ -46,27 +48,22 @@ function PresetChip({
 }
 
 /**
- * The presets of the stake entry (DESIGN.md §12): a row of equal chips from
- * `viewer.stake_presets`, each with the token icon and its `amount_cr`. They are shortcuts:
- * a tap hands on the preset's `amount_cr`, as the string it arrived as, for the amount
- * field to hold. A chip is selected while `value`, the text of that field, is exactly its
- * `amount_cr`: a test of two strings for equality, nothing is read as a number.
- *
- * A preset with `allowed: false` is disabled: that flag is the server's, and the frontend
- * never decides it from the balance or the limit.
+ * The shortcuts of the shares entry (DESIGN.md §12), from the selected outcome of
+ * `viewer.buy`. A tap passes the preset's shares unchanged; string equality selects it.
+ * `allowed` is the server's answer, never a comparison with the balance or stake limit.
  */
-export function StakePresets({
+export function SharePresets({
   presets,
   value,
   onChange,
   disabled = false,
   className,
 }: {
-  /** `viewer.stake_presets`, in the API's order. */
-  presets: readonly StakePreset[];
-  /** What the amount field holds. */
+  /** `presets` of the selected outcome of `viewer.buy`, in the API's order. */
+  presets: readonly BuyPreset[];
+  /** What the shares field holds. */
   value: string;
-  onChange: (amount_cr: string) => void;
+  onChange: (shares: string) => void;
   /** Switches the whole row off, for example while a trade waits for its answer. */
   disabled?: boolean;
   className?: string;
@@ -74,18 +71,20 @@ export function StakePresets({
   return (
     <div
       role="group"
-      aria-label="Quick amounts"
-      data-slot="stake-presets"
+      aria-label="Shortcuts"
+      data-slot="share-presets"
       className={cn("grid auto-cols-fr grid-flow-col gap-2", className)}
     >
       {presets.map((preset) => (
         <PresetChip
-          key={preset.amount_cr}
-          selected={preset.amount_cr === value}
+          key={preset.shares}
+          label={formatShares(preset.shares)}
+          selected={preset.shares === value}
           disabled={disabled || !preset.allowed}
-          onSelect={() => onChange(preset.amount_cr)}
+          onSelect={() => onChange(preset.shares)}
         >
-          <Amount value={preset.amount_cr} />
+          <span className="type-label">{formatAmount(preset.shares)}</span>
+          <span className="type-caption">{shareWord(preset.shares)}</span>
         </PresetChip>
       ))}
     </div>
@@ -146,7 +145,7 @@ export function SellPresets({
 }
 
 /**
- * The stake-left line of the stake entry and of "Your position" (DESIGN.md §12):
+ * The stake-left line of the shares entry and of "Your position" (DESIGN.md §12):
  * "{stake_left_cr} of {stake_limit_cr} tokens left in this market". Both amounts come
  * from the market's `viewer`, or from the `details` of a `LIMIT_EXCEEDED` answer.
  */
@@ -156,7 +155,7 @@ export function StakeLeftLine({
   stakeLimitCr,
   className,
 }: {
-  /** For what the line describes: the stake entry names it in `aria-describedby`. */
+  /** For what the line describes: the shares entry names it in `aria-describedby`. */
   id?: string;
   stakeLeftCr: string;
   stakeLimitCr: string;

@@ -10,7 +10,7 @@ import { useConfig } from "@/lib/api/session";
 import { useDebouncedValue } from "@/lib/hooks";
 
 /** Keys the query while there is nothing to quote. It is never asked for. */
-const NOTHING_TO_QUOTE: QuoteRequest = { side: "BUY", outcome: "YES", amount_cr: "" };
+const NOTHING_TO_QUOTE: QuoteRequest = { side: "BUY", outcome: "YES", shares: "" };
 
 export type QuoteRead = {
   /** The quote for exactly the request in hand, or null: nothing to quote, on its way, failed. */
@@ -26,19 +26,22 @@ export type QuoteRead = {
 /**
  * The quote of the trade sheet (DESIGN.md §13): `GET /markets/{market_id}/quote`, asked
  * for `quote_debounce_ms` (from `/config`) after the last change of the input, with the
- * side, the outcome and either the text of the amount field or the preset's shares, as
- * they stand.
+ * side, the outcome and the text of the shares field, as they stand.
  *
  * The quote is about the caller: it applies the stake limit, the balance and the smallest
- * trade, and answers the error the trade itself would get. That is how a typed amount is
- * judged, by the server; `error` carries its verdict.
+ * trade, and answers the error the trade itself would get. That is how a typed number
+ * of shares is judged, by the server; `error` carries its verdict.
  *
  * Only an answer for the input as it is now counts, so Confirm stays disabled from a
  * change until the quote for it has arrived. Nothing asks again behind the user's back:
  * not the focus, not a stream event. The user confirms what they were shown, and the
  * server answers `QUOTE_STALE` if the price has moved since (DESIGN.md §14).
  */
-export function useQuote(marketId: string, request: QuoteRequest | null): QuoteRead {
+export function useQuote(
+  marketId: string,
+  request: QuoteRequest | null,
+  enabled = true,
+): QuoteRead {
   const { quote_debounce_ms } = useConfig();
   // As text, equal requests are equal values, whichever object they arrive in.
   const wanted = request === null ? null : JSON.stringify(request);
@@ -47,7 +50,7 @@ export function useQuote(marketId: string, request: QuoteRequest | null): QuoteR
 
   const query = useQuery({
     ...quoteQuery(marketId, asked ?? NOTHING_TO_QUOTE),
-    enabled: asked !== null,
+    enabled: asked !== null && enabled,
   });
 
   // An answer counts once it is the latest one for the input as it is now. A quote that
@@ -60,7 +63,7 @@ export function useQuote(marketId: string, request: QuoteRequest | null): QuoteR
   return {
     quote,
     error,
-    loading: wanted !== null && quote === null && error === null,
+    loading: enabled && wanted !== null && quote === null && error === null,
     retry: () => void query.refetch(),
   };
 }

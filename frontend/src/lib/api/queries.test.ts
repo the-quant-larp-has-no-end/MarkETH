@@ -43,7 +43,7 @@ describe("reads", () => {
     const loadedConfig = await queries.fetchQuery(configQuery);
     const loadedMe = await queries.fetchQuery(meQuery);
 
-    expect(loadedConfig.share_presets).toEqual(["10", "50", "100"]);
+    expect(loadedConfig.share_presets).toEqual(["25", "50", "100"]);
     expect(loadedMe.balance_cr).toBe("240");
   });
 

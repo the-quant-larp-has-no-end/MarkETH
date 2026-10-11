@@ -39,8 +39,7 @@ const buy: Order = {
   intent: { side: "BUY", outcome: "YES" },
   request: { side: "BUY", outcome: "YES", amount_cr: "25" },
   quote: quote(),
-  stakePresets: viewer.stake_presets,
-  buySlider: viewer.buy_slider,
+  buy: viewer.buy,
   sellPresets: viewer.sell_presets,
   sell: viewer.sell,
 };
@@ -50,8 +49,7 @@ const sell: Order = {
   intent: { side: "SELL", outcome: "YES" },
   request: { side: "SELL", outcome: "YES", shares: "45.8225" },
   quote: quote({ side: "SELL", shares: "45.8225", amount_cr: "23.874512", quote_version: 9 }),
-  stakePresets: viewer.stake_presets,
-  buySlider: viewer.buy_slider,
+  buy: viewer.buy,
   sellPresets: viewer.sell_presets,
   sell: viewer.sell,
 };
@@ -103,7 +101,21 @@ describe("Confirm", () => {
     });
   });
 
-  test("a buy is guarded by the quote's shares, a sell by the quote's amount", async () => {
+  test("a share-sized buy keeps the request's shares and is guarded by the quoted cost", async () => {
+    const { store, api } = setup(deferred().handler);
+    store.confirm(MARKET_ID, {
+      ...buy,
+      request: { side: "BUY", outcome: "YES", shares: "0025" },
+      quote: quote({ shares: "25", amount_cr: "13.100001", quote_version: 9 }),
+    });
+
+    await vi.waitFor(() => expect(api.calls(TRADE)).toHaveLength(1));
+    expect(api.lastCall(TRADE)?.rawBody).toBe(
+      '{"side":"BUY","outcome":"YES","shares":"0025","max_cost_cr":"13.100001","quote_version":9}',
+    );
+  });
+
+  test("a sell is guarded by the quote's proceeds", async () => {
     const { store, api } = setup(deferred().handler);
 
     store.confirm(MARKET_ID, sell);
@@ -134,7 +146,7 @@ describe("Confirm", () => {
 
   test("keeps what the ticket showed, so the trade can be shown unchanged while it waits", () => {
     const { store } = setup(deferred().handler);
-    store.choose(MARKET_ID, { stake: "25" });
+    store.choose(MARKET_ID, { buyShares: "25" });
 
     store.confirm(MARKET_ID, buy);
 
@@ -142,8 +154,7 @@ describe("Confirm", () => {
       intent: buy.intent,
       request: buy.request,
       quote: buy.quote,
-      stakePresets: buy.stakePresets,
-      buySlider: buy.buySlider,
+      buy: buy.buy,
       sellPresets: buy.sellPresets,
       choiceKey: "BUY:YES:25",
     });
@@ -264,10 +275,10 @@ describe.each(NO_VERDICT)("after %s", (_name, answer, message) => {
     const waiting = store.read(MARKET_ID).attempt;
 
     store.confirm(MARKET_ID, { ...buy, quote: quote({ shares: "44", quote_version: 8 }) });
-    store.choose(MARKET_ID, { stake: "50" });
+    store.choose(MARKET_ID, { buyShares: "50" });
 
     expect(store.read(MARKET_ID).attempt).toBe(waiting);
-    expect(store.read(MARKET_ID).choice.stake).toBe("");
+    expect(store.read(MARKET_ID).choice.buyShares).toBe("");
     expect(wire()).toHaveLength(1);
   });
 });
@@ -394,7 +405,7 @@ const REFUSALS: [name: string, answer: Response][] = [
 describe.each(REFUSALS)("after a %s", (_name, answer) => {
   test("the body and its key are dropped, and the next Confirm has another key", async () => {
     const { store, wire } = setup(answer);
-    store.choose(MARKET_ID, { stake: "25" });
+    store.choose(MARKET_ID, { buyShares: "25" });
 
     store.confirm(MARKET_ID, buy);
     await answered(store);
@@ -404,7 +415,7 @@ describe.each(REFUSALS)("after a %s", (_name, answer) => {
     expect(ticket.refusal?.error.status).toBe(answer.status);
     expect(ticket.refusal?.choiceKey).toBe("BUY:YES:25");
     // The form is as it was: the input is kept.
-    expect(ticket.choice.stake).toBe("25");
+    expect(ticket.choice.buyShares).toBe("25");
 
     // Nothing waits, so Try again has nothing to send.
     store.retry(MARKET_ID);
@@ -578,13 +589,13 @@ describe("a 2xx", () => {
   test("is the receipt, and the form behind it is empty again", async () => {
     const { store } = setup(json(201, tradeResponse()));
     store.watch(MARKET_ID, () => {});
-    store.choose(MARKET_ID, { stake: "25" });
+    store.choose(MARKET_ID, { buyShares: "25" });
 
     store.confirm(MARKET_ID, buy);
     await answered(store);
 
     expect(store.read(MARKET_ID)).toEqual({
-      choice: { stake: "", shares: "" },
+      choice: { buyShares: "", shares: "" },
       attempt: null,
       refusal: null,
       receipt: tradeResponse(),
@@ -598,8 +609,8 @@ describe("a 2xx", () => {
     await answered(store);
 
     store.confirm(MARKET_ID, buy);
-    store.choose(MARKET_ID, { stake: "50" });
-    expect(store.read(MARKET_ID).choice.stake).toBe("");
+    store.choose(MARKET_ID, { buyShares: "50" });
+    expect(store.read(MARKET_ID).choice.buyShares).toBe("");
     expect(wire()).toHaveLength(1);
 
     store.done(MARKET_ID);
@@ -613,7 +624,7 @@ describe("a 2xx", () => {
     await answered(store);
 
     expect(store.read(MARKET_ID)).toEqual({
-      choice: { stake: "", shares: "" },
+      choice: { buyShares: "", shares: "" },
       attempt: null,
       refusal: null,
       receipt: null,
@@ -635,9 +646,9 @@ describe("a 2xx", () => {
 describe("the form's state", () => {
   test("what is entered is kept per side, and changing the form drops the refusal", async () => {
     const { store } = setup(apiError(409, "INSUFFICIENT_BALANCE", "Not enough tokens for this."));
-    store.choose(MARKET_ID, { stake: "25" });
+    store.choose(MARKET_ID, { buyShares: "25" });
     store.choose(MARKET_ID, { shares: "45.8225" });
-    expect(store.read(MARKET_ID).choice).toEqual({ stake: "25", shares: "45.8225" });
+    expect(store.read(MARKET_ID).choice).toEqual({ buyShares: "25", shares: "45.8225" });
 
     store.confirm(MARKET_ID, buy);
     await answered(store);
@@ -646,7 +657,7 @@ describe("the form's state", () => {
     // A refusal is about what was sent.
     store.choose(MARKET_ID);
     expect(store.read(MARKET_ID).refusal).toBeNull();
-    expect(store.read(MARKET_ID).choice).toEqual({ stake: "25", shares: "45.8225" });
+    expect(store.read(MARKET_ID).choice).toEqual({ buyShares: "25", shares: "45.8225" });
   });
 
   test("tells its watchers of every change, and hands out the same object in between", () => {
@@ -656,7 +667,7 @@ describe("the form's state", () => {
     const before = store.read(MARKET_ID);
     expect(store.read(MARKET_ID)).toBe(before);
 
-    store.choose(MARKET_ID, { stake: "50" });
+    store.choose(MARKET_ID, { buyShares: "50" });
 
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(store.read(MARKET_ID)).not.toBe(before);
@@ -667,24 +678,24 @@ describe("the form's state", () => {
   test("is forgotten once the ticket has left the screen", async () => {
     const { store } = setup(deferred().handler);
     const stop = store.watch(MARKET_ID, () => {});
-    store.choose(MARKET_ID, { stake: "50" });
+    store.choose(MARKET_ID, { buyShares: "50" });
 
     stop();
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    expect(store.read(MARKET_ID).choice.stake).toBe("");
+    expect(store.read(MARKET_ID).choice.buyShares).toBe("");
   });
 
   test("is kept when the ticket is back within the same breath: the sheet became a dialog", async () => {
     const { store } = setup(deferred().handler);
     const stop = store.watch(MARKET_ID, () => {});
-    store.choose(MARKET_ID, { stake: "50" });
+    store.choose(MARKET_ID, { buyShares: "50" });
 
     stop();
     store.watch(MARKET_ID, () => {});
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    expect(store.read(MARKET_ID).choice.stake).toBe("50");
+    expect(store.read(MARKET_ID).choice.buyShares).toBe("50");
   });
 
   test("lives with its query client: another client starts empty", async () => {
@@ -702,11 +713,11 @@ describe("the form's state", () => {
 
 describe("choiceKey", () => {
   test("names the side, the outcome and what is entered for that side", () => {
-    const choice = { stake: "25", shares: "91.645" } as const;
+    const choice = { buyShares: "25", shares: "91.645" } as const;
 
     expect(choiceKey({ side: "BUY", outcome: "NO" }, choice)).toBe("BUY:NO:25");
     expect(choiceKey({ side: "SELL", outcome: "YES" }, choice)).toBe("SELL:YES:91.645");
-    expect(choiceKey({ side: "SELL", outcome: "YES" }, { stake: "25", shares: "" })).toBe(
+    expect(choiceKey({ side: "SELL", outcome: "YES" }, { buyShares: "25", shares: "" })).toBe(
       "SELL:YES:",
     );
   });
@@ -714,9 +725,9 @@ describe("choiceKey", () => {
   test("an amount is named by its characters: two texts for one figure are two choices", () => {
     const buying = { side: "BUY", outcome: "YES" } as const;
 
-    expect(choiceKey(buying, { stake: "37.5", shares: "" })).toBe("BUY:YES:37.5");
-    expect(choiceKey(buying, { stake: "37.50", shares: "" })).toBe("BUY:YES:37.50");
-    expect(choiceKey(buying, { stake: "", shares: "" })).toBe("BUY:YES:");
+    expect(choiceKey(buying, { buyShares: "37.5", shares: "" })).toBe("BUY:YES:37.5");
+    expect(choiceKey(buying, { buyShares: "37.50", shares: "" })).toBe("BUY:YES:37.50");
+    expect(choiceKey(buying, { buyShares: "", shares: "" })).toBe("BUY:YES:");
   });
 });
 
@@ -727,9 +738,9 @@ describe("the amount of a buy", () => {
     // More digits than a float keeps, and zeros a number would drop.
     const typed = "007.100000000000000000000000000001";
 
-    store.choose(MARKET_ID, { stake: typed });
+    store.choose(MARKET_ID, { buyShares: typed });
 
-    expect(store.read(MARKET_ID).choice.stake).toBe(typed);
+    expect(store.read(MARKET_ID).choice.buyShares).toBe(typed);
   });
 
   test("goes into the body exactly as the quote was asked for it", async () => {
@@ -752,7 +763,7 @@ describe("the amount of a buy", () => {
   test("a refusal is about the amount that was sent: it is named by that text", async () => {
     const { store } = setup(apiError(409, "LIMIT_EXCEEDED", "This would exceed a limit."));
     store.watch(MARKET_ID, () => {});
-    store.choose(MARKET_ID, { stake: "37.5" });
+    store.choose(MARKET_ID, { buyShares: "37.5" });
 
     store.confirm(MARKET_ID, {
       ...buy,
@@ -762,21 +773,21 @@ describe("the amount of a buy", () => {
 
     expect(store.read(MARKET_ID).refusal?.choiceKey).toBe("BUY:YES:37.5");
     // Another amount is another choice: the refusal goes with the change.
-    store.choose(MARKET_ID, { stake: "37" });
+    store.choose(MARKET_ID, { buyShares: "37" });
     expect(store.read(MARKET_ID).refusal).toBeNull();
-    expect(store.read(MARKET_ID).choice.stake).toBe("37");
+    expect(store.read(MARKET_ID).choice.buyShares).toBe("37");
   });
 
   test("cannot be changed while a trade waits: what was sent stays what is shown", async () => {
     const { store } = setup(noAnswer);
     store.watch(MARKET_ID, () => {});
-    store.choose(MARKET_ID, { stake: "25" });
+    store.choose(MARKET_ID, { buyShares: "25" });
     store.confirm(MARKET_ID, buy);
     await answered(store);
 
-    store.choose(MARKET_ID, { stake: "100" });
+    store.choose(MARKET_ID, { buyShares: "100" });
 
-    expect(store.read(MARKET_ID).choice.stake).toBe("25");
+    expect(store.read(MARKET_ID).choice.buyShares).toBe("25");
     expect(store.read(MARKET_ID).attempt?.request).toEqual(buy.request);
   });
 });

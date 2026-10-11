@@ -31,7 +31,7 @@ export type SliderProps = {
 };
 
 /**
- * The slider of DESIGN.md §12 (Stake entry): one thumb on a 4 px `--border-strong` track
+ * The slider of DESIGN.md §12 (Shares entry): one thumb on a 4 px `--border-strong` track
  * with rounded ends. The part up to the thumb is `--foreground`; the thumb is a 24 px
  * `--foreground` disc inside a 44 px target. Arrow keys move it one step, Home and End
  * take it to its ends. It is never green or red.

@@ -5,7 +5,7 @@ import { type KeyboardEvent, useMemo, useRef, useState } from "react";
 import { Slider } from "@/components/ui/slider";
 import type { BuySlider, SellSlider } from "@/lib/api/schema";
 
-/** Where a slider runs, as the API sends it: `viewer.buy_slider`, or `slider` of `viewer.sell`. */
+/** Where a slider runs, as the API sends it: `slider` of `viewer.buy`, or `slider` of `viewer.sell`. */
 export type SliderRange = BuySlider | SellSlider;
 
 /**
@@ -35,7 +35,7 @@ const SLIDER_KEYS = new Set([
 
 /**
  * The slider of an entry of the trade ticket (DESIGN.md §12), beside the field it fills:
- * over the whole tokens of `viewer.buy_slider` when buying, over the whole shares of an
+ * over the whole shares of `viewer.buy` when buying, over the whole shares of an
  * entry of `viewer.sell` when selling. It takes the width the field leaves.
  *
  * Moving it writes the step it stands on into the field as plain digits. The thumb stands
@@ -56,9 +56,9 @@ export function EntrySlider({
   /** The text of the field beside it. */
   value: string;
   onChange: (value: string) => void;
-  /** Names the slider for a screen reader: "Stake in whole tokens". */
+  /** Names the slider for a screen reader: "Whole shares". */
   label: string;
-  /** What a screen reader hears for the digits of a step: "40 tokens". */
+  /** What a screen reader hears for the digits of a step: "40 shares". */
   valueText: (digits: string) => string;
   disabled: boolean;
   /** The ids of what describes the slider: its help text, its error. */

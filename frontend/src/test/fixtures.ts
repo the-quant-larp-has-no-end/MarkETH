@@ -98,7 +98,7 @@ export function config(overrides: Partial<PublicConfigResponse> = {}): PublicCon
     signup_grant_cr: "500",
     monthly_grant_cr: "200",
     max_stake_per_market_cr: "100",
-    share_presets: ["10", "50", "100"],
+    share_presets: ["25", "50", "100"],
     share_step: "1",
     stake_presets_cr: ["25", "50", "100"],
     stake_step_cr: "1",
@@ -221,7 +221,7 @@ export function holdings(yes: Partial<Holding> = {}, no: Partial<Holding> = {}):
  */
 export function buyEntries(yes: Partial<BuyEntry> = {}, no: Partial<BuyEntry> = {}): BuyEntry[] {
   const presets = () => [
-    { shares: "10", allowed: true },
+    { shares: "25", allowed: true },
     { shares: "50", allowed: true },
     { shares: "100", allowed: true },
   ];
@@ -287,7 +287,7 @@ export function marketViewerWithPosition(overrides: Partial<MarketViewer> = {}):
       {
         slider: { min: 1, max: 89, step: 1 },
         presets: [
-          { shares: "10", allowed: true },
+          { shares: "25", allowed: true },
           { shares: "50", allowed: true },
           { shares: "100", allowed: false },
         ],
