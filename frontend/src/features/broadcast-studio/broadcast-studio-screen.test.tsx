@@ -35,6 +35,7 @@ import {
   MARKET_ID,
   marketBroadcast,
   marketDetail,
+  me,
   noBroadcast,
   OTHER_MARKET_ID,
   readyEvent,
@@ -50,6 +51,7 @@ import {
   type Route,
 } from "@/test/http";
 import { renderWithProviders } from "@/test/render";
+import { navigation } from "@/test/navigation";
 
 import { BroadcastStudioScreen } from "./broadcast-studio-screen";
 
@@ -158,6 +160,92 @@ const hand = (capture: FakeCapture, blob: Blob) => act(() => capture.recorder().
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+/** Whether closing or reloading the document requests the browser's confirmation. */
+function unloadIsGuarded() {
+  const event = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(event);
+  return event.defaultPrevented;
+}
+
+describe("leaving the studio", () => {
+  test("set-up does not ask before unloading or navigating", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const { user } = renderStudio({
+      answer: adminMayStart(),
+      routes: { "GET /api/me": json(200, me()) },
+    });
+    await screen.findByRole("button", { name: "Go live" });
+
+    expect(unloadIsGuarded()).toBe(false);
+    await user.click(screen.getByRole("link", { name: "Profile" }));
+    expect(navigation.pathname).toBe("/profile");
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  test("live links and Back ask; cancellation keeps the camera, recorder and uploads running", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const { capture, api, user } = await goLiveAsAdmin();
+
+    expect(unloadIsGuarded()).toBe(true);
+    await user.click(screen.getByRole("link", { name: "Profile" }));
+    await user.click(screen.getByRole("button", { name: "Back" }));
+
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expect(confirm).toHaveBeenCalledWith(
+      "Leave the live stream? Leaving this page stops your broadcast. Stay here to keep streaming.",
+    );
+    expect(navigation.router.push).not.toHaveBeenCalled();
+    expect(navigation.router.back).not.toHaveBeenCalled();
+    expect(capture.stream().released).toBe(false);
+    expect(capture.recorder().state).toBe("recording");
+    hand(capture, piece("still streaming"));
+    await waitFor(() => expect(api.calls(UPLOAD)).toHaveLength(1));
+  });
+
+  test("accepting navigation leaves; unmount releases the camera and unload guard", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const { capture, user, unmount } = await goLiveAsAdmin({
+      routes: { "GET /api/me": json(200, me()) },
+    });
+
+    await user.click(screen.getByRole("link", { name: "Profile" }));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(navigation.pathname).toBe("/profile");
+    unmount();
+    expect(capture.stream().released).toBe(true);
+    expect(capture.recorder().state).toBe("inactive");
+    expect(unloadIsGuarded()).toBe(false);
+  });
+
+  test("pausing keeps the leave confirmation", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const { capture, user } = await goLiveAsAdmin();
+    act(() => capture.stream().video.end());
+    await screen.findByRole("heading", { name: "Your live stream is paused." });
+
+    expect(unloadIsGuarded()).toBe(true);
+    await user.click(screen.getByRole("link", { name: "Profile" }));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(navigation.router.push).not.toHaveBeenCalled();
+  });
+
+  test("ending the stream releases both leave confirmations", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const { user } = await goLiveAsAdmin({
+      routes: { [END]: json(200, own("ENDED")), "GET /api/me": json(200, me()) },
+    });
+    await user.click(screen.getByRole("button", { name: "End stream" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: "End stream" }));
+    await screen.findByRole("heading", { name: "The live stream has ended." });
+
+    expect(unloadIsGuarded()).toBe(false);
+    await user.click(screen.getByRole("link", { name: "Back to the market" }));
+    expect(navigation.pathname).toBe(`/markets/${MARKET_ID}`);
+    expect(confirm).not.toHaveBeenCalled();
+  });
 });
 
 describe("before the studio knows what the caller may do", () => {

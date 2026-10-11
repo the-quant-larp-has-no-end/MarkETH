@@ -93,6 +93,7 @@ export function TopBar({ variant, title, backTo = "/" }: TopBarProps) {
               type="button"
               aria-label="Back"
               onClick={() => {
+                if (!store.confirmLeaving()) return;
                 // One step back in the history; a screen that was opened directly has
                 // none inside the app, and goes where its route says.
                 if (store.canGoBack()) router.back();

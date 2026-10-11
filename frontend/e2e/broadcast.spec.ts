@@ -336,6 +336,24 @@ test("an admin goes live from the camera, a second person watches, and the end r
     await looks.at(studio, "studio-set-up");
     await goLive(studio);
     const wentLive = Date.now();
+    // Leaving through the app and closing the tab both ask before the camera is lost.
+    const leavingViaLink = studio.waitForEvent("dialog", { timeout: FOLLOWS_MS });
+    const profileClick = studio.getByRole("link", { name: "Profile", exact: true }).click();
+    const leaveDialog = await leavingViaLink;
+    expect(leaveDialog.type()).toBe("confirm");
+    expect(leaveDialog.message()).toContain("Leaving this page stops your broadcast.");
+    await leaveDialog.dismiss();
+    await profileClick;
+    await expect(studio).toHaveURL(new RegExp(`/markets/${market.id}/live$`));
+    await expect(studio.getByRole("heading", { name: "You are live" })).toBeVisible();
+
+    const leavingViaClose = studio.waitForEvent("dialog", { timeout: FOLLOWS_MS });
+    const close = studio.close({ runBeforeUnload: true });
+    const closeDialog = await leavingViaClose;
+    expect(closeDialog.type()).toBe("beforeunload");
+    await closeDialog.dismiss();
+    await close;
+    await expect(studio.getByRole("heading", { name: "You are live" })).toBeVisible();
     const studioChat = studio.getByRole("region", { name: "Live chat" });
     await expect(studioChat).toHaveAttribute("data-state", "open");
     await expect(studio.getByRole("button", { name: "End stream", exact: true })).toBeVisible();

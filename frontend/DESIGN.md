@@ -1327,6 +1327,8 @@ The preview is the box of §12 for the broadcaster's own picture: `--radius-lg`,
 
 **Ended.** "The live stream has ended." (`h2`); the API's `message` when an upload was refused; the sentence of the end reason when the answer names one (above); "No picture and no sound is kept."; and a secondary "Back to the market". For a broadcaster whose `can_start` is true, a primary "Go live again" stands before it: a stream that ended by itself, for lack of video or at the time limit, is started again without asking VIS. It sends what "Go live" sends.
 
+**Leaving the studio.** While live or paused, navigating through an app link or the top bar's back arrow asks in a browser confirmation: "Leave the live stream? Leaving this page stops your broadcast. Stay here to keep streaming." Cancel keeps the studio, camera, recorder and uploads running. Closing or reloading the tab asks through the browser's own leave-page dialog, whose text the browser chooses. Setting up and ended streams have no leave confirmation; the guard is released when the stream ends or the studio unmounts. Opening another tab and scrolling within the page ask nothing.
+
 **What the browser refuses.** A banner in place of the preview, one of four:
 
 | The browser | The banner |

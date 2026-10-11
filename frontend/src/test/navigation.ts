@@ -180,6 +180,7 @@ type LinkProps = {
   replace?: boolean;
   children?: ReactNode;
   onClick?: (event: MouseEvent<HTMLAnchorElement>) => void;
+  onNavigate?: (event: { preventDefault(): void }) => void;
   // What only the real link understands.
   prefetch?: unknown;
   scroll?: unknown;
@@ -191,6 +192,7 @@ function Link({
   href,
   replace,
   onClick,
+  onNavigate,
   prefetch: _prefetch,
   scroll: _scroll,
   ...rest
@@ -200,6 +202,10 @@ function Link({
     href,
     onClick: (event: MouseEvent<HTMLAnchorElement>) => {
       onClick?.(event);
+      if (event.defaultPrevented) return;
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      if (rest.target === "_blank" || rest.download !== undefined) return;
+      onNavigate?.({ preventDefault: () => event.preventDefault() });
       if (event.defaultPrevented) return;
       event.preventDefault();
       if (replace) router.replace(href);
