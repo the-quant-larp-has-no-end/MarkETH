@@ -384,7 +384,7 @@ What lies on the VM:
 
 | Path | What it is |
 | --- | --- |
-| `~/marketh` | A mirror of this repository's tree, without `.git`, `compose.override.yaml` and `infra/nginx/dev/`. The images are built from it, on the VM (the laptop has another CPU architecture) |
+| `~/marketh` | A mirror of this repository's tree, without `.git`, `compose.dev.yaml` and `infra/nginx/dev/`. The images are built from it, on the VM (the laptop has another CPU architecture) |
 | `~/marketh/.env` | Rendered on the VM at every deploy from `.example.env`, `infra/deploy/env.production` and the file below. Never copied from a laptop |
 | `~/marketh.env` | What only the VM knows: the two Postgres passwords, generated there at the first deploy, and the ids of the bootstrap admins. Readable by `viscon` only (and by the organizers, who have root) |
 | `~/marketh-backups/` | One `pg_dump` file per deploy and per wipe |

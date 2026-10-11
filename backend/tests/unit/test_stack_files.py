@@ -1,4 +1,4 @@
-"""The stack files (SPEC §9, A.10): `compose.yaml`, `compose.override.yaml` and the proxy
+"""The stack files (SPEC §9, A.10): `compose.yaml`, `compose.dev.yaml` and the proxy
 configuration under `infra/nginx/`.
 
 The tests read the files and hold the rules whose breach nobody would notice until it
@@ -41,7 +41,7 @@ PROXY_DIRECTORY: Final[Path] = REPO_ROOT / "infra" / "nginx" / "conf.d"
 DEVELOPMENT_DIRECTORY: Final[Path] = REPO_ROOT / "infra" / "nginx" / "dev"
 
 COMPOSE: Final[str] = (REPO_ROOT / "compose.yaml").read_text(encoding="utf-8")
-OVERRIDE: Final[str] = (REPO_ROOT / "compose.override.yaml").read_text(encoding="utf-8")
+DEV_COMPOSE: Final[str] = (REPO_ROOT / "compose.dev.yaml").read_text(encoding="utf-8")
 EXAMPLE_ENV: Final[str] = (REPO_ROOT / ".example.env").read_text(encoding="utf-8")
 PRODUCTION_ENV: Final[str] = (REPO_ROOT / "infra" / "deploy" / "env.production").read_text(
     encoding="utf-8"
@@ -225,7 +225,7 @@ def networks_of(compose: str) -> list[str]:
 
 
 STACK: Final[dict[str, str]] = services_of(COMPOSE)
-OVERLAY: Final[dict[str, str]] = services_of(OVERRIDE)
+OVERLAY: Final[dict[str, str]] = services_of(DEV_COMPOSE)
 
 
 # --- Reading the nginx files ----------------------------------------------------------
@@ -524,7 +524,7 @@ def test_compose_yaml_alone_knows_nothing_of_mail() -> None:
 
 
 @pytest.mark.parametrize(
-    "compose", [COMPOSE, OVERRIDE], ids=["compose.yaml", "compose.override.yaml"]
+    "compose", [COMPOSE, DEV_COMPOSE], ids=["compose.yaml", "compose.dev.yaml"]
 )
 def test_every_variable_compose_reads_is_in_the_example_env_and_has_no_default(
     compose: str,
@@ -555,7 +555,7 @@ line that reads it; the test below fails for a member that something reads."""
 
 
 def test_every_infra_only_variable_is_read_by_compose_or_by_the_makefile() -> None:
-    read_by_compose = {name for name, _ in references(COMPOSE) + references(OVERRIDE)}
+    read_by_compose = {name for name, _ in references(COMPOSE) + references(DEV_COMPOSE)}
 
     def read(name: str) -> bool:
         return name in read_by_compose or re.search(rf"\b{name}\b", MAKEFILE) is not None
@@ -652,7 +652,7 @@ def test_nginx_and_the_api_have_their_limit_of_open_files_from_the_env() -> None
         [(soft, hard)] = NOFILE.findall(STACK[name])
         assert soft == hard == f"${{{variable}:?}}", name
     assert "ulimits" not in anchor_of(COMPOSE, "backend")
-    assert "ulimits" not in code_of(OVERRIDE)
+    assert "ulimits" not in code_of(DEV_COMPOSE)
 
 
 @pytest.mark.parametrize("environment", [EXAMPLE, DEPLOYED], ids=["example", "production"])
@@ -735,10 +735,10 @@ def test_one_process_serves_the_api() -> None:
         assert not any(word.startswith("--workers") for word in command), command
     for variable in UVICORN_WORKER_VARIABLES:
         assert variable not in EXAMPLE, variable
-        assert variable not in code_of(COMPOSE) + code_of(OVERRIDE), variable
+        assert variable not in code_of(COMPOSE) + code_of(DEV_COMPOSE), variable
     for services in (STACK, OVERLAY):
         assert [name for name, service in services.items() if "app.main" in service] == ["api"]
-    for compose in (COMPOSE, OVERRIDE):
+    for compose in (COMPOSE, DEV_COMPOSE):
         for word in ("replicas", "scale:", "deploy:"):
             assert word not in code_of(compose), word
 
@@ -883,10 +883,10 @@ def test_the_gateway_of_the_edge_network_is_a_peer_the_proxy_believes(
 def test_nothing_reaches_around_the_two_networks() -> None:
     """No service joins the host's network or another container's, none is linked to
     another, and the overlay leaves every service on the networks it has."""
-    for compose in (COMPOSE, OVERRIDE):
+    for compose in (COMPOSE, DEV_COMPOSE):
         for word in ("network_mode", "links:", "external", "extra_hosts"):
             assert word not in code_of(compose), word
-    assert networks_of(OVERRIDE) == []
+    assert networks_of(DEV_COMPOSE) == []
     for name, service in OVERLAY.items():
         assert "networks:" not in service, name
 
@@ -914,7 +914,7 @@ def test_only_migrate_receives_the_password_of_the_owner_role() -> None:
     reading_it = {name for name, service in STACK.items() if "POSTGRES_PASSWORD" in service}
     assert reading_it == {"postgres"}, "the database itself, which is created with it"
 
-    assert "POSTGRES_PASSWORD" not in code_of(OVERRIDE)
+    assert "POSTGRES_PASSWORD" not in code_of(DEV_COMPOSE)
     for name in ("api", "relay"):
         assert "environment:" not in OVERLAY[name], name
         assert "env_file" not in OVERLAY[name], name
@@ -932,6 +932,20 @@ def test_the_suite_runs_the_images_and_the_scylla_flags_of_the_stack() -> None:
 
 
 # --- The commands of the Makefile ---------------------------------------------------------
+
+
+def test_the_overlay_is_merged_only_where_a_command_names_it() -> None:
+    """Compose merges a file called `compose.override.yaml` over `compose.yaml` without
+    being told to. The tree has none, so a plain `docker compose` is the deployed stack;
+    the Makefile names the overlay for this machine and `compose.yaml` alone for the VM."""
+    for name in ("compose.override.yaml", "compose.override.yml", "docker-compose.override.yml"):
+        assert not (REPO_ROOT / name).exists(), name
+    local = re.search(r"^COMPOSE := (.*)$", MAKEFILE, re.MULTILINE)
+    assert local is not None
+    assert local.group(1) == "docker compose -f compose.yaml -f compose.dev.yaml"
+    on_vm = re.search(r"^VM_COMPOSE = (.*)$", MAKEFILE, re.MULTILINE)
+    assert on_vm is not None
+    assert on_vm.group(1).endswith("docker compose -f compose.yaml")
 
 
 def make_target(name: str) -> tuple[list[str], str, list[str]]:

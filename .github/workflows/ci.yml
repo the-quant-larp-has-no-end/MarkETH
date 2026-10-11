@@ -105,14 +105,14 @@ jobs:
           ! grep --word-regexp ssh "$RUNNER_TEMP/local-deploy.txt"
       - name: Both compose variants resolve
         run: |
-          docker compose config --quiet
           docker compose -f compose.yaml config --quiet
+          docker compose -f compose.yaml -f compose.dev.yaml config --quiet
       # What a YAML merge and an env_file add up to is Compose's to say, so it is asked:
       # the web app is on the edge network alone, and of api, relay and migrate only
       # migrate is handed the password of the owner role.
       - name: Compose keeps the web app off the core network and the owner password with migrate
         run: |
-          for files in "--file compose.yaml" "--file compose.yaml --file compose.override.yaml"; do
+          for files in "--file compose.yaml" "--file compose.yaml --file compose.dev.yaml"; do
             docker compose $files config --format json | jq --exit-status '
               (.services.web.networks | keys) == ["edge"]
               and (.services.nginx.networks | keys) == ["core", "edge"]
@@ -147,7 +147,7 @@ jobs:
             docker run "$@" "$(jq --raw-output '.services.nginx.image' "$RUNNER_TEMP/stack.json")" nginx -t
           }
           nginx_test --file compose.yaml
-          nginx_test --file compose.yaml --file compose.override.yaml
+          nginx_test --file compose.yaml --file compose.dev.yaml
           nginx_test --env-file "$RUNNER_TEMP/production.env" --file compose.yaml
 
   # backend/openapi.json and the frontend's generated types are committed. This job

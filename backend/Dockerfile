@@ -4,7 +4,7 @@
 # compose.yaml runs all three from this one image and only changes the command.
 #
 #   prod  runtime dependencies only, source baked in (the default target)
-#   dev   adds the dev dependency group; compose.override.yaml mounts the source over /app
+#   dev   adds the dev dependency group; compose.dev.yaml mounts the source over /app
 #
 # The virtualenv lives in /opt/venv, outside /app, so the dev bind mount cannot hide it and
 # the host's own backend/.venv (built for another OS) is never used.

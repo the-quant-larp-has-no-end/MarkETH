@@ -4,7 +4,7 @@
 #
 #   prod  `next build` with output: 'standalone', then only the standalone server
 #         (the default target)
-#   dev   every dependency and `next dev`; compose.override.yaml mounts the source over
+#   dev   every dependency and `next dev`; compose.dev.yaml mounts the source over
 #         /app and keeps node_modules and .next in volumes
 #
 # Everything runs as the image's unprivileged `node` user. The app reads no environment
