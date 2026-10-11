@@ -8,6 +8,7 @@ import { LiveBadge } from "@/components/market";
 import { Link, NotFoundScreen, Screen, useHideTabBar } from "@/components/shell";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ChatPanel } from "@/features/chat";
 import { type ApiError, messageOf } from "@/lib/api/errors";
 import { startBroadcastAsAdminMutation, startBroadcastMutation } from "@/lib/api/mutations";
 import { marketBroadcastQuery, marketQuery } from "@/lib/api/queries";
@@ -114,7 +115,12 @@ function StudioOf({ marketId }: { marketId: string }) {
   if (view === "none") return <NotFoundScreen />;
 
   const frame = (children: ReactNode) => (
-    <Screen top="inner" title="Live stream" backTo={`/markets/${marketId}`} width="narrow">
+    <Screen
+      top="inner"
+      title="Live stream"
+      backTo={`/markets/${marketId}`}
+      width={view === "live" || view === "paused" ? "default" : "narrow"}
+    >
       {children}
     </Screen>
   );
@@ -200,49 +206,75 @@ function StudioOf({ marketId }: { marketId: string }) {
     );
   }
 
-  if (view === "live" && broadcast !== null) {
+  if ((view === "live" || view === "paused") && broadcast !== null) {
     return frame(
       <>
-        <div className="flex flex-col gap-1">
-          <div className="flex items-center gap-2">
-            <LiveBadge />
-            <h2 className="type-h2">You are live</h2>
+        <div
+          key={broadcast.id}
+          data-slot="studio-session"
+          className={
+            state.signedOut
+              ? "flex min-w-0 flex-col"
+              : "grid min-h-[calc(100dvh-var(--top-bar-space)-var(--tab-bar-space)-2rem)] min-w-0 grid-rows-[auto_minmax(12.5rem,1fr)] gap-4 lg:min-h-0 lg:grid-cols-[minmax(0,2fr)_minmax(20rem,1fr)] lg:grid-rows-1"
+          }
+        >
+          <div className="flex min-w-0 flex-col gap-4">
+            {view === "live" ? (
+              <>
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-2">
+                    <LiveBadge />
+                    <h2 className="type-h2">You are live</h2>
+                  </div>
+                  {broadcast.started_at !== null && <Since startedAt={broadcast.started_at} />}
+                </div>
+                <PreviewOrRefusal
+                  state={state}
+                  onPicture={setPictured}
+                  onResize={(width, height) => studio.reshaped(width, height)}
+                />
+              </>
+            ) : (
+              <>
+                <div className="flex flex-col gap-2">
+                  <h2 className="type-h2">Your live stream is paused.</h2>
+                  <p className="type-body-sm text-muted-foreground">
+                    It ends by itself {secondsOf(config.stall_seconds)} after the last picture
+                    arrived.
+                  </p>
+                </div>
+                {state.refusal !== null && <RefusalBanner refusal={state.refusal} />}
+              </>
+            )}
+            <div data-slot="studio-controls" className="flex flex-col gap-3 md:flex-row">
+              {view === "paused" && (
+                <Button loading={state.asking} onClick={() => void studio.resume(broadcast.id)}>
+                  Resume
+                </Button>
+              )}
+              <EndStream
+                marketId={marketId}
+                broadcastId={broadcast.id}
+                onEnded={() => studio.finish()}
+              />
+            </div>
           </div>
-          {broadcast.started_at !== null && <Since startedAt={broadcast.started_at} />}
+          {!state.signedOut && (
+            // The grid sets the chat's height; arriving messages scroll inside it.
+            <div className="relative min-h-50 min-w-0 lg:min-h-90">
+              <ChatPanel
+                marketId={marketId}
+                broadcastId={broadcast.id}
+                className="absolute inset-0 h-full min-w-0 md:h-full"
+              />
+            </div>
+          )}
         </div>
-        <PreviewOrRefusal
-          state={state}
-          onPicture={setPictured}
-          onResize={(width, height) => studio.reshaped(width, height)}
-        />
-        <Banner>Keep this page open and in front. The stream pauses while it is hidden.</Banner>
+        {view === "live" && (
+          <Banner>Keep this page open and in front. The stream pauses while it is hidden.</Banner>
+        )}
         {state.slow && <Banner>Your connection is slow. Viewers may see pauses.</Banner>}
         {state.signedOut && <SignInBanner />}
-        <EndStream marketId={marketId} broadcastId={broadcast.id} onEnded={() => studio.finish()} />
-      </>,
-    );
-  }
-
-  if (view === "paused" && broadcast !== null) {
-    return frame(
-      <>
-        <div className="flex flex-col gap-2">
-          <h2 className="type-h2">Your live stream is paused.</h2>
-          <p className="type-body-sm text-muted-foreground">
-            It ends by itself {secondsOf(config.stall_seconds)} after the last picture arrived.
-          </p>
-        </div>
-        {state.refusal !== null && <RefusalBanner refusal={state.refusal} />}
-        <div className="flex flex-col gap-3 md:flex-row">
-          <Button loading={state.asking} onClick={() => void studio.resume(broadcast.id)}>
-            Resume
-          </Button>
-          <EndStream
-            marketId={marketId}
-            broadcastId={broadcast.id}
-            onEnded={() => studio.finish()}
-          />
-        </div>
       </>,
     );
   }
