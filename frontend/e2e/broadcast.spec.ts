@@ -336,6 +336,20 @@ test("an admin goes live from the camera, a second person watches, and the end r
     await looks.at(studio, "studio-set-up");
     await goLive(studio);
     const wentLive = Date.now();
+    const studioChat = studio.getByRole("region", { name: "Live chat" });
+    await expect(studioChat).toHaveAttribute("data-state", "open");
+    await expect(studio.getByRole("button", { name: "End stream", exact: true })).toBeVisible();
+    if (isPhone(studio)) {
+      await studio.evaluate(() => window.scrollTo(0, 0));
+      await expectOnScreenTogether(studio, [
+        { name: "the preview", part: studio.locator('video[aria-label="Preview"]') },
+        {
+          name: "the stream controls",
+          part: studio.getByRole("button", { name: "End stream", exact: true }),
+        },
+        { name: "the chat composer", part: studioChat.getByRole("textbox", { name: "Message" }) },
+      ]);
+    }
     await looks.at(studio, "studio-live");
 
     // "Live now" reaches the page that is open, without a reload.
@@ -351,7 +365,9 @@ test("an admin goes live from the camera, a second person watches, and the end r
     await expect(page).toHaveURL(new RegExp(`/markets/${market.id}$`));
     const section = page.locator('section[data-slot="live-stream"]');
     const box = page.locator('[data-slot="video-box"]');
-    await expect(section.getByRole("button", { name: "Watch live" })).toBeVisible();
+    await expect(section.getByRole("button", { name: "Watch live" })).toBeVisible({
+      timeout: ON_AIR_MS,
+    });
     await expect(box).toHaveCount(0);
     await section.getByRole("button", { name: "Watch live" }).click();
 
@@ -367,6 +383,7 @@ test("an admin goes live from the camera, a second person watches, and the end r
     // The chat stands under the picture while the stream is on.
     const chat = page.getByRole("region", { name: "Live chat" });
     await expect(chat.getByRole("textbox", { name: "Message" })).toBeVisible();
+
     if (isPhone(page)) {
       // Below 768 px the tab bar is out of the way, and the picture, the composer of the
       // chat and the two outcome buttons are on screen together.
@@ -380,6 +397,18 @@ test("an admin goes live from the camera, a second person watches, and the end r
     }
     await looks.at(page, "market-watching", ON_MARKET_DETAIL);
 
+    // The broadcaster reads and writes in the same chat without leaving the camera's page.
+    const viewerMessage = "Can you see this in the studio?";
+    await chat.getByRole("textbox", { name: "Message" }).fill(viewerMessage);
+    await chat.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(studioChat.getByRole("log")).toContainText(viewerMessage, { timeout: FOLLOWS_MS });
+    const broadcasterMessage = "Yes, welcome to the stream!";
+    await studioChat.getByRole("textbox", { name: "Message" }).fill(broadcasterMessage);
+    await studioChat.getByRole("button", { name: "Send", exact: true }).click();
+    await expect(chat.getByRole("log")).toContainText(broadcasterMessage, { timeout: FOLLOWS_MS });
+    await expect(studio.getByRole("heading", { name: "You are live" })).toBeVisible();
+    await looks.at(studio, "studio-live-chat");
+
     const { broadcast } = await broadcastOf(viewer.context, market.id);
     const playlist = broadcast?.playlist_url;
     if (typeof playlist !== "string") {
@@ -388,6 +417,7 @@ test("an admin goes live from the camera, a second person watches, and the end r
 
     // "End stream" in the studio ends it for the viewer, who taps nothing.
     await endStream(studio);
+    await expect(studioChat).toHaveCount(0);
     await looks.at(studio, "studio-ended");
     await expect(section.getByText("The live stream has ended.", { exact: true })).toBeVisible({
       timeout: FOLLOWS_MS,

@@ -1243,7 +1243,7 @@ At both widths nothing of the section lies over anything else, and the page does
 
 While a market has a live stream, it has a live chat: one line at a time, shown at once to everybody who can see the market. The chat begins with the stream and ends with it, and its messages are deleted then; a stream that starts later on the same market starts with an empty chat. No message outlasts its stream on screen. What VIS keeps is the record of a message it removed.
 
-The panel is `ChatPanel` of `features/chat`. The section "Live stream" mounts it directly under itself while the status of the stream is LIVE and takes it away when it is not. It reads `GET /markets/{market_id}/chat`, and it is absent whenever that read answers `NOT_FOUND`.
+The panel is `ChatPanel` of `features/chat`. The section "Live stream" mounts it directly under itself while the status of the stream is LIVE and takes it away when it is not. The broadcaster's studio mounts the same panel while live or paused (below). It reads `GET /markets/{market_id}/chat`, and it is absent whenever that read answers `NOT_FOUND`.
 
 One `--card` with `--radius-lg`, a 1 px `--border` and no shadow, as wide as what it stands in. It is 320 px tall below 768 px and 360 px from 768 px; while its viewer watches on a phone it takes the height that is left (above). Top to bottom:
 
@@ -1288,15 +1288,18 @@ The chat stands under the player at both widths. Beside it there is no room that
 
 ### Live stream studio (`/markets/[id]/live`)
 
-Where a live stream is sent from: an inner screen titled "Live stream", in one column at every width (from 768 px the 720 px column of §6). The back arrow leads to the market, and for an admin who came from the admin view of the market, back to that. The browser records the camera and the microphone and sends the video up in small pieces, and the server relays it to the viewers. No picture and no sound is kept, in the browser or on the server.
+Where a live stream is sent from: an inner screen titled "Live stream". Setting up, requests and ended streams use the 720 px column of §6. While live or paused, the screen uses the default column: below 1024 px the preview and stream controls stand above the live chat; from 1024 px they stand in the left column with the chat beside them, separated by 16 px. The left column takes two parts of the width, and the chat one part, at least 320 px. The back arrow leads to the market, and for an admin who came from the admin view of the market, back to that. The browser records the camera and the microphone and sends the video up in small pieces, and the server relays it to the viewers. No picture and no sound is kept, in the browser or on the server.
 
 The screen is for a caller whose `viewer` of `GET /markets/{market_id}/broadcast` has `can_start` or `can_start_as_admin`, or `is_broadcaster` of a stream that is LIVE: the proposer whose request was approved, an admin, and whoever is on air. Anybody else gets the "not found" screen. While the studio is live the tab bar is hidden, as on the Barista scanner (§11).
 
 | Part | 375 px | 1024 px |
 | --- | --- | --- |
-| Column | 343 px | 688 px |
-| Preview | 343 x 193 px | 688 x 387 px |
+| Column | 343 px | 688 px while setting up; 992 px while live or paused |
+| Preview | 343 x 193 px | 688 x 387 px while setting up; about 651 x 366 px while live |
 | Buttons | As wide as the column | As wide as their label |
+| Live chat | Below the controls, 343 px wide and as tall as the screen leaves, at least 200 px | Beside the preview and controls, about 325 px wide and as tall as their column, at least 360 px |
+
+Below 1024 px the preview, controls and chat fill at least the screen less the top bar, tab bar and 16 px above and below. The chat takes the remaining height, at least 200 px; shorter screens scroll the page. Its log scrolls inside this space, so arriving messages never move the controls or increase the page's height.
 
 The preview is the box of §12 for the broadcaster's own picture: `--radius-lg`, on `--card`, `object-contain`, muted, without controls, named "Preview". The studio broadcasts the camera the browser gives it, with the microphone. It has five states.
 
@@ -1314,12 +1317,13 @@ The preview is the box of §12 for the broadcaster's own picture: `--radius-lg`,
 1. The Live badge (§12) and "You are live" (`h2`).
 2. "Since {started_at}", a time of day (§10).
 3. The preview.
-4. A neutral banner: "Keep this page open and in front. The stream pauses while it is hidden."
-5. While the pieces that wait to be sent hold more than half of `upload_backlog_bytes` (`/config` `broadcast`), a second neutral banner: "Your connection is slow. Viewers may see pauses."
-6. While an upload was answered with the portal's 401, **the sign-in banner**, neutral: "Your ETH sign-in has ended. Sign in again in another tab; the stream goes on from here." with the button "Sign in again", which opens `/` in a tab of its own. The portal signs the broadcaster in there, and the studio keeps its recorder, its pieces and its page meanwhile: this is the one place where the portal's 401 reloads nothing (§14). The banner goes with the next upload that is answered.
-7. A destructive "End stream". It opens a confirmation dialog (§12): the title "End the live stream?", the text "Viewers see that it has ended. No picture and no sound is kept.", a `destructive` "End stream", "Cancel" and the close cross. It sends `POST /broadcasts/{broadcast_id}/end`.
+4. A destructive "End stream", directly below the preview. It opens a confirmation dialog (§12): the title "End the live stream?", the text "Viewers see that it has ended. No picture and no sound is kept.", a `destructive` "End stream", "Cancel" and the close cross. It sends `POST /broadcasts/{broadcast_id}/end`.
+5. The live chat (§13, above), beside this column from 1024 px and below it otherwise. Its log scrolls inside its own panel, leaving the stream controls in place.
+6. Below the preview, controls and chat, a neutral banner: "Keep this page open and in front. The stream pauses while it is hidden."
+7. While the pieces that wait to be sent hold more than half of `upload_backlog_bytes` (`/config` `broadcast`), a second neutral banner: "Your connection is slow. Viewers may see pauses."
+8. While an upload was answered with the portal's 401, **the sign-in banner**, neutral: "Your ETH sign-in has ended. Sign in again in another tab; the stream goes on from here." with the button "Sign in again", which opens `/` in a tab of its own. The portal signs the broadcaster in there, and the studio keeps its recorder, its pieces and its page meanwhile: this is the one place where the portal's 401 reloads nothing (§14). The chat is taken away meanwhile so it makes no reads or writes that would reload the studio, and returns with the next answered upload, when the banner goes.
 
-**Paused.** The state after a reload, after the camera went away, after the upload had to start over three times within `restart_window_ms` (§14), and on a return to the studio while the stream is LIVE: "Your live stream is paused." (`h2`), "It ends by itself {stall_seconds} seconds after the last picture arrived.", a primary "Resume", which asks for the camera again and goes on sending, and the destructive "End stream".
+**Paused.** The state after a reload, after the camera went away, after the upload had to start over three times within `restart_window_ms` (§14), and on a return to the studio while the stream is LIVE: "Your live stream is paused." (`h2`), "It ends by itself {stall_seconds} seconds after the last picture arrived.", a primary "Resume", which asks for the camera again and goes on sending, and the destructive "End stream". The same live chat stays on screen, with its messages and any text in its composer, while this stream is still LIVE. Ending the stream takes the chat away; a new stream starts with its own empty composer and messages.
 
 **Ended.** "The live stream has ended." (`h2`); the API's `message` when an upload was refused; the sentence of the end reason when the answer names one (above); "No picture and no sound is kept."; and a secondary "Back to the market". For a broadcaster whose `can_start` is true, a primary "Go live again" stands before it: a stream that ended by itself, for lack of video or at the time limit, is started again without asking VIS. It sends what "Go live" sends.
 
