@@ -8,7 +8,7 @@ balance under every answer. Every price, value, payout and refund a test expects
 asked of `MarketView`.
 """
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -39,6 +39,7 @@ from app.core.security import generate_code, hash_code
 from app.core.units import MICRO, format_cr, to_cr
 from app.models import Market, Position, Resolution, Trade, User, Voucher
 from app.pricing import lmsr
+from app.repositories.unit_of_work import UnitOfWork
 from app.schemas.common import PageQuery
 from app.schemas.me import LedgerItem, PortfolioEntry, TradeItem
 from app.services.account import LEDGER_DESCRIPTIONS, MAX_POSTING_ID
@@ -533,6 +534,87 @@ async def test_a_user_without_positions_has_an_empty_portfolio(
     portfolio = await container.account.portfolio(factory.identity(user))
 
     assert (portfolio.items, portfolio.total_value_cr) == ([], to_cr(0))
+    assert portfolio.balance_cr == portfolio.total_equity_cr == to_cr(STARTING)
+    assert portfolio.equity_history[-1].total_equity_cr == portfolio.total_equity_cr
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_equity_history_includes_other_traders_sales_settlement_and_voucher_spending(
+    container: Container, factory: Factory, clock: FrozenClock
+) -> None:
+    alice = await factory.user(balance_micro=STARTING)
+    bob = await factory.user(balance_micro=STARTING)
+    admin = await factory.admin()
+    market = await factory.market()
+    snapshots = [(clock.now(), to_cr(STARTING))]
+
+    async def remember() -> None:
+        portfolio = await container.account.portfolio(factory.identity(alice))
+        assert portfolio.total_equity_cr == portfolio.balance_cr + portfolio.total_value_cr
+        snapshots.append((clock.now(), portfolio.total_equity_cr))
+
+    clock.advance(timedelta(hours=1))
+    await factory.position(alice, market, Outcome.YES, shares_micro=40 * MICRO)
+    await remember()
+    clock.advance(timedelta(hours=1))
+    await factory.position(bob, market, Outcome.NO, shares_micro=80 * MICRO)
+    await remember()
+    assert snapshots[-1][1] < snapshots[-2][1]
+    clock.advance(timedelta(hours=1))
+    await sell(container, alice, market, Outcome.YES, 20 * MICRO)
+    await remember()
+    clock.advance(timedelta(hours=1))
+    await settle(container, market, ResolutionOutcome.YES, admin)
+    await remember()
+    clock.advance(timedelta(hours=1))
+    await issue_voucher(container, alice, product("Mate"))
+    await remember()
+    clock.advance(timedelta(hours=1))
+
+    portfolio = await container.account.portfolio(factory.identity(alice))
+    history = {point.t: point.total_equity_cr for point in portfolio.equity_history}
+    for at, total in snapshots:
+        assert history[at] == total
+    assert portfolio.total_value_cr == 0
+    assert portfolio.total_equity_cr == to_cr(await factory.balance_micro(alice))
+    assert history[clock.now()] == portfolio.total_equity_cr
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_equity_does_not_mix_an_old_balance_with_new_positions(
+    container: Container, factory: Factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    alice = await factory.user(balance_micro=STARTING)
+    market = await factory.market()
+    traded = False
+
+    def interleaved_read() -> UnitOfWork:
+        uow = container.uow_factory()
+        list_positions = uow.positions.list_for_user
+
+        async def positions_after_trade(user_id: UUID) -> Sequence[Position]:
+            nonlocal traded
+            if not traded:
+                # Commit on another connection after the reader has seen the balance,
+                # but before it asks for positions and historical trade events.
+                await factory.position(alice, market, Outcome.YES, shares_micro=40 * MICRO)
+                traded = True
+            return await list_positions(user_id)
+
+        monkeypatch.setattr(uow.positions, "list_for_user", positions_after_trade)
+        return uow
+
+    monkeypatch.setattr(container.account, "_uow_factory", interleaved_read)
+    before = await container.account.portfolio(factory.identity(alice))
+    assert before.items == []
+    assert before.total_equity_cr == before.balance_cr == to_cr(STARTING)
+    assert before.equity_history[-1].total_equity_cr == to_cr(STARTING)
+
+    after = await container.account.portfolio(factory.identity(alice))
+    assert len(after.items) == 1
+    assert after.balance_cr < before.balance_cr
+    assert after.total_value_cr > 0
+    assert after.total_equity_cr == after.balance_cr + after.total_value_cr
     await assert_books_balance(container.uow_factory)
 
 
@@ -839,11 +921,11 @@ async def test_a_position_is_entered_at_the_users_first_trade_in_its_market(
     await assert_books_balance(container.uow_factory)
 
 
-async def test_the_portfolio_asks_postgres_the_same_four_things_for_one_market_as_for_many(
+async def test_the_portfolio_uses_a_fixed_number_of_queries_for_one_market_as_for_many(
     container: Container, factory: Factory
 ) -> None:
-    """The positions, the markets, the resolutions and the first trades: one query
-    each, whatever the number of markets."""
+    """Profile, account, positions, markets, resolutions, first trades and equity
+    events: one query each, whatever the number of markets."""
     admin = await factory.admin()
     one = await factory.user(balance_micro=STARTING)
     many = await factory.user(balance_micro=STARTING)
@@ -859,7 +941,7 @@ async def test_the_portfolio_asks_postgres_the_same_four_things_for_one_market_a
     with recorded_selects(container) as for_many:
         assert len((await container.account.portfolio(factory.identity(many))).items) == 5
 
-    assert len(for_one) == len(for_many) == 4
+    assert len(for_one) == len(for_many) == 7
     await assert_books_balance(container.uow_factory)
 
 

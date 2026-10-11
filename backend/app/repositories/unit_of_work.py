@@ -38,7 +38,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from types import TracebackType
 from typing import Self
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction, async_sessionmaker
 
 from app.core.live import LiveEvent
@@ -46,6 +46,7 @@ from app.repositories.broadcast import BroadcastRepository
 from app.repositories.chat import ChatMessageRepository
 from app.repositories.code import CodeBatchRepository, CodeRepository
 from app.repositories.discussion import QuestionRepository
+from app.repositories.equity import EquityRepository
 from app.repositories.grant import GrantRepository
 from app.repositories.leaderboard import LeaderboardRepository
 from app.repositories.ledger import AccountRepository, JournalRepository
@@ -79,6 +80,7 @@ class UnitOfWork:
         self.trades = TradeRepository(self._session)
         self.idempotency = IdempotencyRepository(self._session)
         self.accounts = AccountRepository(self._session)
+        self.equity = EquityRepository(self._session)
         self.journal = JournalRepository(self._session)
         self.grants = GrantRepository(self._session)
         self.code_batches = CodeBatchRepository(self._session)
@@ -178,6 +180,16 @@ class UnitOfWork:
     async def flush(self) -> None:
         """Send pending changes to Postgres without committing, e.g. before a raw query."""
         await self._session.flush()
+
+    async def read_snapshot(self) -> None:
+        """Use one consistent, read-only snapshot. Call before the first data read.
+
+        An equity read spans accounts, positions and trade history; a concurrent
+        trade must be visible in all three or none of them.
+        """
+        await self._session.execute(
+            text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        )
 
     async def advisory_lock(self, name: str) -> None:
         """Hold a named lock until this transaction ends.

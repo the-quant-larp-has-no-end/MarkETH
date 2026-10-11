@@ -564,7 +564,7 @@ Next.js with TypeScript, mobile-first; the frontend only shows numbers the serve
 | Markets | Cards with question, YES %, close date |
 | Market detail | Price, live chart, rules, deadline, own position, stake left |
 | Trade sheet | Bottom sheet: YES/NO toggle, the buy buttons, slider and number field, when selling the sell buttons, slider and shares field, live quote (`QUOTE_DEBOUNCE_MS=300`) showing shares, average price and the probability after the trade, Confirm |
-| Portfolio | Open positions, when each was entered, value at current price, resolved results |
+| Portfolio | Total equity (remaining tokens plus open-position value), equity history, open positions, when each was entered, value at current price, resolved results |
 | Wallet | Balance, ledger, "Redeem code" (typed or camera QR), getting a voucher for a product and its QR |
 | Leaderboard | The ranking by credits, win rate, trades or payout ratio, with its filters |
 | Propose market | Form with all required fields |
@@ -885,3 +885,4 @@ Negative or zero inputs raise `ValueError`. So does a b too large for the precis
 - **Locks.** Every write of a live stream's life takes one advisory lock first, then one row of `broadcasts`, then the advisory lock of the chat when it stores an end. A chat message takes the lock of its chat and no row lock, in a transaction of its own after the rate limits, so that no Redis call runs inside a transaction. Neither locks a market row or an account: the order of §8 is not touched.
 - **No count of viewers** is told to anybody. Places are counted in the one API process, to bound what a live stream takes of the portal, and an API that starts again counts afresh.
 - **A piece the portal refuses reloads nothing.** A reload would end the camera and with it the live stream, so the portal's 401 to a piece counts as no answer: the studio shows a banner to sign in again in another tab and sends the same piece again, and the live stream goes on if that takes less than `BROADCAST_STALL_SECONDS`. Every other request of the studio meets the portal's 401 as A.11 says.
+- **Leaving the studio needs confirmation while live or paused.** App links and the top bar's back arrow ask before navigation; closing or reloading the tab requests the browser's leave-page dialog. Cancelling keeps the studio running. No leave guard remains during set-up, after the stream ends or after the studio unmounts. Opening another tab and scrolling within the studio do not interrupt the stream and ask nothing.

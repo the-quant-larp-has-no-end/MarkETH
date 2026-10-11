@@ -10,14 +10,16 @@ function counted(count: number, one: string, many: string): string {
   return `${formatCount(count)} ${count === 1 ? one : many}`;
 }
 
-/** One section of the policy: a heading in `h3`, 8 px, then its text. */
-function Section({ title, children }: { title: string; children: ReactNode }) {
+/** One section of the policy: an optional heading in `h3`, 8 px, then its text. */
+function Section({ title, children }: { title?: string; children: ReactNode }) {
   const id = useId();
   return (
-    <section aria-labelledby={id} className="flex flex-col gap-2">
-      <h2 id={id} className="type-h3">
-        {title}
-      </h2>
+    <section aria-labelledby={title ? id : undefined} className="flex flex-col gap-2">
+      {title ? (
+        <h2 id={id} className="type-h3">
+          {title}
+        </h2>
+      ) : null}
       {children}
     </section>
   );
@@ -29,8 +31,8 @@ function Points({ children }: { children: ReactNode }) {
 }
 
 /**
- * The usage policy (DESIGN.md §13): the rules of MarkETH as plain text, under nine
- * headings. The words are those of DESIGN.md, which is where VIS changes them.
+ * The usage policy (DESIGN.md §13): the rules of MarkETH as plain text, under eight
+ * headings. The words follow USAGE_POLICY.md, the source VIS maintains.
  *
  * It asks the API for nothing. Its figures are fields of the `/config` that start-up
  * read, and a noun after a figure follows its number. It needs no profile: a visitor
@@ -45,7 +47,7 @@ export function PolicyText() {
 
   return (
     <div data-slot="policy-text" className="flex flex-col gap-6 type-body text-foreground">
-      <Section title="What MarkETH is">
+      <Section>
         <p>
           MarkETH is a prediction game for people at ETH Zurich, run by VIS. You trade YES and NO
           shares on questions about campus life. When a market is decided, a share of the outcome
@@ -71,20 +73,19 @@ export function PolicyText() {
         </p>
         <Points>
           <li>
-            asks a question with two outcomes, YES and NO, that facts will decide and opinions will
-            not;
-          </li>
-          <li>says what counts as YES and what counts as NO, so that no case is left open;</li>
-          <li>
-            names its source: a public page, an official announcement or a count that anyone can
-            check;
+            asks a question with two outcomes, YES and NO, which must be clearly defined so that
+            every possible result can be resolved;
           </li>
           <li>
-            has its dates: when trading closes, and by when the result is known. Trading runs for at
-            most {lifetime}, and the result has to be known at most {delay} after trading closes.
+            names a verifiable source, such as a public page, an official announcement or a count
+            that anyone can check;
+          </li>
+          <li>
+            has a clear trading deadline and resolution date. Trading runs for at most {lifetime},
+            and the result must be known within {delay} after trading closes.
           </li>
         </Points>
-        <p>You can propose {proposals} a day.</p>
+        <p>You can propose up to {proposals} a day.</p>
       </Section>
 
       <Section title="Markets you may not propose">
@@ -92,18 +93,30 @@ export function PolicyText() {
         <Points>
           <li>
             the private matters of a person who is named or can be identified: their health, their
-            relationships, their money, their conduct;
+            relationships, or sensitive personal information;
           </li>
-          <li>anyone&apos;s grades or exam results, your own included;</li>
-          <li>an outcome that one trader can decide alone, or bring about by what they do;</li>
-          <li>party politics, elections and votes;</li>
+          <li>
+            anyone&apos;s grades or exam results, your own included, or other confidential academic
+            information;
+          </li>
+          <li>an outcome that one trader can decide alone or deliberately influence;</li>
+          <li>political events, including elections and votes;</li>
           <li>religion.</li>
         </Points>
         <p>VIS is a student association within VSETH and takes no side in politics or religion.</p>
       </Section>
 
       <Section title="Fair play">
+        <p>
+          MarkETH is intended to be a fun and welcoming space for everyone in the ETH community. By
+          participating, you agree to the following rules:
+        </p>
         <Points>
+          <li>
+            Treat others with respect and consideration, regardless of their background, identity,
+            beliefs or opinions. Discrimination, harassment, intimidation and behaviour that
+            undermines the dignity or privacy of others are not tolerated.
+          </li>
           <li>
             One account per person. Your account belongs to your ETH sign-in: do not trade through
             another person&apos;s account, and do not let anyone trade through yours.

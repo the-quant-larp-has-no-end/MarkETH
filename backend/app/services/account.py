@@ -31,6 +31,7 @@ from app.schemas.me import (
     TradeListResponse,
 )
 from app.services import UowFactory
+from app.services.equity import equity_history
 from app.services.grants import GrantService
 from app.services.ledger import LedgerRef
 from app.services.market_view import SETTLED_STATUSES, MarketView
@@ -100,6 +101,7 @@ class AccountService:
         self._grants = grants
         self._view = view
         self._notices = notices
+        self._history_max_points = settings.scylla.history_max_points
 
     async def me(self, user: AuthenticatedUser) -> MeResponse:
         """Profile, balance, the next monthly grant and what the user has not been told
@@ -175,18 +177,38 @@ class AccountService:
            settled ones, latest `close_at` first; ties by market id.
 
         `total_value_cr` sums `value_cr` over the markets that are not settled.
+        `total_equity_cr` adds the remaining account balance. The bounded equity
+        history replays immutable ledger, trade and settlement events. All reads
+        use one repeatable, read-only snapshot so concurrent trades stay atomic.
         """
         now = self._clock.now()
         async with self._uow_factory() as uow:
+            await uow.read_snapshot()
+            row = await uow.users.get(user.id)
+            account = await uow.accounts.get_user_account(user.id)
+            if row is None or account is None:
+                raise LookupError(f"user {user.id} has no profile or ledger account")
+            balance_micro = account.balance_micro
             by_market: dict[UUID, list[Position]] = {}
             for position in await uow.positions.list_for_user(user.id):
                 by_market.setdefault(position.market_id, []).append(position)
-            if not by_market:
-                return PortfolioResponse(items=[], total_value_cr=to_cr(0))
             market_ids = list(by_market)
-            markets = await uow.markets.get_many(market_ids)
-            resolutions = await uow.resolutions.get_many_by_market(market_ids)
-            entered_at = await uow.trades.first_trade_at_by_market(user.id)
+            markets = await uow.markets.get_many(market_ids) if market_ids else {}
+            resolutions = await uow.resolutions.get_many_by_market(market_ids) if market_ids else {}
+            entered_at = await uow.trades.first_trade_at_by_market(user.id) if market_ids else {}
+            current_micro = balance_micro + sum(
+                to_micro(holding.value_cr)
+                for market_id, positions in by_market.items()
+                if markets[market_id].status not in SETTLED_STATUSES
+                for holding in self._view.holdings(markets[market_id], positions, None)
+            )
+            history = await equity_history(
+                uow.equity.events(user.id, now),
+                start=row.created_at,
+                until=now,
+                current_micro=current_micro,
+                max_points=self._history_max_points,
+            )
 
         rows: list[_PortfolioRow] = []
         for market_id, positions in by_market.items():
@@ -218,6 +240,10 @@ class AccountService:
         return PortfolioResponse(
             items=[row.entry for row in (*unsettled, *settled_rows)],
             total_value_cr=to_cr(sum(row.value_micro for row in unsettled)),
+            balance_cr=to_cr(balance_micro),
+            total_equity_cr=to_cr(current_micro),
+            equity_history=history,
+            until=now,
         )
 
     async def trades(self, user: AuthenticatedUser, page: PageQuery) -> TradeListResponse:

@@ -5,7 +5,13 @@ import { type ReactNode, useEffect, useState, useSyncExternalStore } from "react
 
 import { Banner, ErrorBanner, SubmitError } from "@/components/feedback";
 import { LiveBadge } from "@/components/market";
-import { Link, NotFoundScreen, Screen, useHideTabBar } from "@/components/shell";
+import {
+  Link,
+  NotFoundScreen,
+  Screen,
+  useHideTabBar,
+  useLeaveConfirmation,
+} from "@/components/shell";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ChatPanel } from "@/features/chat";
@@ -92,6 +98,10 @@ function StudioOf({ marketId }: { marketId: string }) {
   // any other call would reload the page, and a reload ends the camera (DESIGN.md §14).
   useLiveTopic(state.signedOut ? null : liveTopic.broadcast(marketId));
   useHideTabBar(view === "live");
+  useLeaveConfirmation(
+    view === "live" || view === "paused",
+    "Leave the live stream? Leaving this page stops your broadcast. Stay here to keep streaming.",
+  );
 
   // The screen is left: the camera and the upload are let go.
   useEffect(() => () => studio.close(), [studio]);

@@ -953,12 +953,10 @@ The rules of MarkETH on one page of plain text. Whoever creates a profile accept
 
 The page asks the API for nothing: its figures are fields of the `/config` that start-up read, written below as placeholders. A noun after a placeholder follows its number, as "tokens" does (§10). There is no illustration, no campus line and no button on the page. It is read, and left with the back arrow.
 
-**Decision:** the policy is copy of this file, like every other sentence of the app. VIS changes it here.
+**Decision:** `frontend/USAGE_POLICY.md` is the authoritative policy copy. This section records the page wording, with live configuration values shown as placeholders.
 
-The text of the page:
+The text of the page (with configuration values shown as placeholders):
 
-> **What MarkETH is**
->
 > MarkETH is a prediction game for people at ETH Zurich, run by VIS. You trade YES and NO shares on questions about campus life. When a market is decided, a share of the outcome that came true pays one token and a share of the other outcome pays nothing.
 >
 > Tokens are free. You get {signup_grant_cr} welcome tokens when you create your profile and {monthly_grant_cr} monthly tokens every month, counted from that day. VIS also hands out codes, which you redeem for tokens in the Wallet.
@@ -969,27 +967,29 @@ The text of the page:
 >
 > Anyone with a profile can propose a market. VIS reads every proposal and opens the ones that fit this policy. A market you may propose:
 >
-> - asks a question with two outcomes, YES and NO, that facts will decide and opinions will not;
-> - says what counts as YES and what counts as NO, so that no case is left open;
-> - names its source: a public page, an official announcement or a count that anyone can check;
-> - has its dates: when trading closes, and by when the result is known. Trading runs for at most {max_market_lifetime_days} days, and the result has to be known at most {max_resolution_delay_days} days after trading closes.
+> - asks a question with two outcomes, YES and NO, which must be clearly defined so that every possible result can be resolved;
+> - names a verifiable source, such as a public page, an official announcement or a count that anyone can check;
+> - has a clear trading deadline and resolution date. Trading runs for at most {max_market_lifetime_days} days, and the result must be known within {max_resolution_delay_days} days after trading closes.
 >
-> You can propose {max_proposals_per_day} markets a day.
+> You can propose up to {max_proposals_per_day} markets a day.
 >
 > **Markets you may not propose**
 >
 > VIS opens no market about:
 >
-> - the private matters of a person who is named or can be identified: their health, their relationships, their money, their conduct;
-> - anyone's grades or exam results, your own included;
-> - an outcome that one trader can decide alone, or bring about by what they do;
-> - party politics, elections and votes;
+> - the private matters of a person who is named or can be identified: their health, their relationships, or sensitive personal information;
+> - anyone's grades or exam results, your own included, or other confidential academic information;
+> - an outcome that one trader can decide alone or deliberately influence;
+> - political events, including elections and votes;
 > - religion.
 >
 > VIS is a student association within VSETH and takes no side in politics or religion.
 >
 > **Fair play**
 >
+> MarkETH is intended to be a fun and welcoming space for everyone in the ETH community. By participating, you agree to the following rules:
+>
+> - Treat others with respect and consideration, regardless of their background, identity, beliefs or opinions. Discrimination, harassment, intimidation and behaviour that undermines the dignity or privacy of others are not tolerated.
 > - One account per person. Your account belongs to your ETH sign-in: do not trade through another person's account, and do not let anyone trade through yours.
 > - You cannot trade a market you proposed.
 > - Do not manipulate an outcome. Do not trade a market whose result you can decide or influence, and do nothing to make a market end your way.
@@ -1327,6 +1327,8 @@ The preview is the box of §12 for the broadcaster's own picture: `--radius-lg`,
 
 **Ended.** "The live stream has ended." (`h2`); the API's `message` when an upload was refused; the sentence of the end reason when the answer names one (above); "No picture and no sound is kept."; and a secondary "Back to the market". For a broadcaster whose `can_start` is true, a primary "Go live again" stands before it: a stream that ended by itself, for lack of video or at the time limit, is started again without asking VIS. It sends what "Go live" sends.
 
+**Leaving the studio.** While live or paused, navigating through an app link or the top bar's back arrow asks in a browser confirmation: "Leave the live stream? Leaving this page stops your broadcast. Stay here to keep streaming." Cancel keeps the studio, camera, recorder and uploads running. Closing or reloading the tab asks through the browser's own leave-page dialog, whose text the browser chooses. Setting up and ended streams have no leave confirmation; the guard is released when the stream ends or the studio unmounts. Opening another tab and scrolling within the page ask nothing.
+
 **What the browser refuses.** A banner in place of the preview, one of four:
 
 | The browser | The banner |
@@ -1343,12 +1345,12 @@ No sentence of the studio is a joke, and nothing in it names an amount of tokens
 ### Portfolio (`/portfolio`)
 
 1. Top bar.
-2. A summary card: "Value of open positions" with `total_value_cr` in `number-lg`.
+2. A summary card: "Total equity" with `total_equity_cr` in `number-lg`, followed by "Value of open positions" (`total_value_cr`) and "Remaining tokens" (`balance_cr`). Total equity is the server's sum of the two, excluding settled positions. Below the figures, an equity chart uses the probability chart's step line, colour, 12% fill, height, date axis and tooltip, with an automatic token-value y axis. `equity_history` of `GET /me/positions` includes balance movements, the user's buys and sells, other traders' price changes while shares are held, and settlements. The last value holds to the server's `until`. Exact amounts remain strings; the API also supplies a numeric plotting coordinate for each point. A text caption gives the starting and current equity.
 3. Tabs: **Positions** and **History**.
 4. Positions: position rows from `GET /me/positions` in API order, under the subheadings "Open" and "Settled"; a market is settled when its `status` is RESOLVED or VOID. A row names each holding whose `shares` is not `0` ("183.29 YES shares"), or "No shares held" when there is none, and says when the user entered the market: "Entered" with the date and time of `entered_at`, the user's first trade there. A settled row shows "Paid out" or "Refunded" with the token icon and `payout_cr` or `refund_cr` in place of `value_cr`. A row opens the market.
 5. History: trade rows from `GET /me/trades`, loading more with `next_cursor` as the user scrolls. A row opens its market.
 
-Empty: the empty-cup illustration and "No positions yet. Your cup is empty." with a primary "Browse markets" button. An empty History says "No trades yet." Loading: a skeleton summary card and five skeleton rows. Error: a banner with "Try again".
+Empty: the empty-cup illustration and "No positions yet. Your cup is empty." with a primary "Browse markets" button. The equity summary and chart still show the remaining tokens. An empty History says "No trades yet." Loading: a skeleton summary card, chart and five skeleton rows. Error: a banner with "Try again".
 
 "Paid out" and "Refunded" of a market that settles while the screen is open show without a reload: a settlement changes the caller's own (§14). The value of open positions is as read when the screen opened or the window got the focus back.
 

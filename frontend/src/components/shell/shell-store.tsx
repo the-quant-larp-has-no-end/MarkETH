@@ -32,6 +32,9 @@ export type ShellStore = {
   noteRoute(pathname: string): boolean;
   /** Whether one step back in the history stays inside the app. */
   canGoBack(): boolean;
+  /** Asks before leaving until the returned function releases the request. */
+  guardLeaving(message: string): () => void;
+  confirmLeaving(): boolean;
 };
 
 const AT_REST: ShellState = { tabBarHidden: false, navigating: false };
@@ -43,6 +46,7 @@ export function createShellStore(): ShellStore {
   let moved = false;
   let state = AT_REST;
   const listeners = new Set<() => void>();
+  const leaveGuards = new Set<{ message: string }>();
 
   const update = () => {
     const next = { tabBarHidden: hiding > 0, navigating: navigating > 0 };
@@ -86,6 +90,15 @@ export function createShellStore(): ShellStore {
       if (typeof browser?.canGoBack === "boolean") return browser.canGoBack;
       return moved;
     },
+    guardLeaving(message) {
+      const guard = { message };
+      leaveGuards.add(guard);
+      return () => leaveGuards.delete(guard);
+    },
+    confirmLeaving() {
+      const guard = leaveGuards.values().next().value;
+      return guard === undefined || window.confirm(guard.message);
+    },
   };
 }
 
@@ -116,4 +129,23 @@ export function useHideTabBar(active: boolean): void {
     if (!active) return;
     return store.hideTabBar();
   }, [active, store]);
+}
+
+/** Confirms app navigation and document unload while the screen needs to stay open. */
+export function useLeaveConfirmation(active: boolean, message: string): void {
+  const store = useShellStore();
+  useEffect(() => {
+    if (!active) return;
+    const release = store.guardLeaving(message);
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      // Browsers choose the unload dialog's text; returnValue supports older versions.
+      event.returnValue = message;
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+    return () => {
+      release();
+      window.removeEventListener("beforeunload", beforeUnload);
+    };
+  }, [active, message, store]);
 }
