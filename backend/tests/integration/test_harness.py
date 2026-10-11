@@ -850,6 +850,7 @@ async def test_redis_down_gives_the_same_fixtures_an_application_without_redis(
         "postgres": "up",
         "redis": "down",
         "scylla": "down",
+        "media": "down",
     }
     with pytest.raises(RedisUnavailableError):
         await container.rate_limiter.hit(RULE, "someone")
@@ -876,7 +877,12 @@ async def test_postgres_down_gives_an_application_whose_database_is_unreachable(
     assert not await container.database.ping()
     response = await client.get("/api/health")
     assert response.status_code == 503
-    assert response.json()["details"] == {"postgres": "down", "redis": "up", "scylla": "down"}
+    assert response.json()["details"] == {
+        "postgres": "down",
+        "redis": "up",
+        "scylla": "down",
+        "media": "down",
+    }
 
 
 @pytest.mark.redis_down
@@ -884,7 +890,12 @@ async def test_postgres_down_gives_an_application_whose_database_is_unreachable(
 async def test_the_outage_markers_combine(client: httpx.AsyncClient) -> None:
     response = await client.get("/api/health")
     assert response.status_code == 503
-    assert response.json()["details"] == {"postgres": "down", "redis": "down", "scylla": "down"}
+    assert response.json()["details"] == {
+        "postgres": "down",
+        "redis": "down",
+        "scylla": "down",
+        "media": "down",
+    }
 
 
 async def wait_for_scylla(client: httpx.AsyncClient, wanted: str) -> None:
@@ -908,11 +919,14 @@ async def test_scylla_proxy_puts_the_application_on_a_scylla_that_can_die_and_re
     """The shape of §12's "with Scylla stopped trades succeed and the chart catches up
     after restart": the node goes away, Postgres work goes on, the node comes back."""
     assert app.state.container.settings.scylla.port == scylla_proxy.port
+    # Nothing listens on the socket of the media box in the suite, so the status is
+    # `degraded` with every store up.
     assert await health(client) == {
-        "status": "ok",
+        "status": "degraded",
         "postgres": "up",
         "redis": "up",
         "scylla": "up",
+        "media": "down",
     }
 
     scylla_proxy.cut()

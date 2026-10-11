@@ -1,0 +1,62 @@
+{
+  "fixture": "webkit-mp4",
+  "browser": "webkit 27.2",
+  "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15",
+  "asked": "video/mp4;codecs=avc1.42E01F,mp4a.40.2",
+  "recorded": "video/mp4;codecs=avc1.42E01F,mp4a.40.2",
+  "source": "canvas",
+  "width": 320,
+  "height": 180,
+  "frame_rate": 24,
+  "sound": false,
+  "timeslice_ms": 1000,
+  "video_bits_per_second": 250000,
+  "audio_bits_per_second": 64000,
+  "pieces": [
+    {
+      "file": "000.bin",
+      "bytes": 14682,
+      "at_ms": 2016
+    },
+    {
+      "file": "001.bin",
+      "bytes": 8496,
+      "at_ms": 3024
+    },
+    {
+      "file": "002.bin",
+      "bytes": 7377,
+      "at_ms": 4026
+    },
+    {
+      "file": "003.bin",
+      "bytes": 8402,
+      "at_ms": 5038
+    },
+    {
+      "file": "004.bin",
+      "bytes": 9147,
+      "at_ms": 6050
+    },
+    {
+      "file": "005.bin",
+      "bytes": 8246,
+      "at_ms": 7055
+    },
+    {
+      "file": "006.bin",
+      "bytes": 9732,
+      "at_ms": 8057
+    },
+    {
+      "file": "007.bin",
+      "bytes": 8760,
+      "at_ms": 9066
+    },
+    {
+      "file": "008.bin",
+      "bytes": 7803,
+      "at_ms": 10012
+    }
+  ]
+}

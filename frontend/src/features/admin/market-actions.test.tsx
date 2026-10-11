@@ -8,6 +8,11 @@ import { renderWithProviders } from "@/test/render";
 
 import { AdminMarketScreen } from "./admin-market-screen";
 
+// The block "Live stream" reads the API by itself, and these tests are about the actions
+// of the market: nothing stands in its place here. The screen with the real block is
+// tested in `admin-market-screen-with-broadcast.test.tsx`.
+vi.mock("./broadcast-panel", () => ({ BroadcastPanel: () => null }));
+
 const MARKET: Route = "GET /api/markets/{market_id}";
 const ME: Route = "GET /api/me";
 const APPROVE: Route = "POST /api/admin/markets/{market_id}/approve";

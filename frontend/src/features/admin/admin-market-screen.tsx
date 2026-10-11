@@ -11,6 +11,7 @@ import type { ApiError } from "@/lib/api/errors";
 import { marketQuery } from "@/lib/api/queries";
 import type { MarketDetailResponse } from "@/lib/api/schema";
 
+import { BroadcastPanel } from "./broadcast-panel";
 import { MarketActions } from "./market-actions";
 import { MarketFacts, MarketRules, Resolution } from "./market-view";
 
@@ -81,6 +82,8 @@ function AdminMarket({ market }: { market: MarketDetailResponse }) {
           <MarketFacts market={market} />
         </div>
       </div>
+      {/* A section of its own, or nothing: a wrapper here would stay when the block is absent. */}
+      <BroadcastPanel marketId={market.id} />
       <MarketActions market={market} returnFocusTo={question} />
     </>
   );
@@ -92,9 +95,13 @@ function AdminMarket({ market }: { market: MarketDetailResponse }) {
  * which is the screen's `h1`, the status badge, the rules as on Market detail, the
  * resolution when there is one, the facts only an admin needs, then the action bar.
  *
- * The answer of every action is the market, so the screen updates from it. Nothing here
- * is live: the market is read when the screen opens and when the window gets the focus
+ * The answer of every action is the market, so the screen updates from it. The market
+ * is not live: it is read when the screen opens and when the window gets the focus
  * back.
+ *
+ * Between the facts and the action bar stands the block "Live stream" (`BroadcastPanel`),
+ * for every market, whatever its status. It reads the live stream of the market, follows
+ * it and writes by itself: the screen hands it the market's id and nothing else.
  */
 export function AdminMarketScreen({ marketId }: AdminMarketScreenProps) {
   const market = useQuery(marketQuery(marketId));

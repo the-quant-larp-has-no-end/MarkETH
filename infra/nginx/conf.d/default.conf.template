@@ -50,8 +50,8 @@ real_ip_recursive off;
 # request the web app's container sends here never passed the portal, so whoever gets
 # to run code in that container could name anybody.
 #
-# Nothing under /api/ is therefore answered to a peer on `edge`: the two /api/ locations
-# below refuse it. The web app serves pages and asks the API nothing; a browser does.
+# Nothing under /api/ is therefore answered to a peer on `edge`: every /api/ location
+# below refuses it. The web app serves pages and asks the API nothing; a browser does.
 # One address of that network is not refused, its gateway, the address the host has on
 # it. Depending on how Docker passes on what arrives on the published port, this
 # container sees it coming from the gateway of one of its two networks, and which of
@@ -111,7 +111,7 @@ map $http_upgrade $connection_upgrade {
 # every other team's app is, and `cross-site` anything else.
 #
 # The API answers this app's own pages. What another site makes a browser ask of it is
-# refused in the two /api/ locations below, before it counts against the limits of the
+# refused in every /api/ location below, before it counts against the limits of the
 # visitor whose browser was used. One request of that kind is let through: the visitor's
 # own window opening an address (Sec-Fetch-Mode `navigate` into Sec-Fetch-Dest
 # `document`), which is how a link from elsewhere and the way back from the sign-in
@@ -150,7 +150,27 @@ map $api_caller $caller {
 limit_req_zone  $caller zone=api_per_caller:10m rate=${NGINX_RATE_LIMIT};
 limit_req_status 429;
 limit_conn_zone $caller zone=streams_per_caller:10m;
+# Pieces of a live stream one caller has on their way up at once.
+limit_conn_zone $caller zone=uploads_per_caller:1m;
 limit_conn_status 429;
+
+# --- Live video ----------------------------------------------------------------------
+# A broadcaster's browser posts its recording in pieces, the API hands them to the media
+# box, and the box writes a playlist and segments into a volume this container mounts
+# read-only (compose.yaml). The three locations of the server block below are the piece
+# on its way up, the playlist and the segments on their way down, and the question this
+# proxy asks the API before it serves either.
+#
+# The broadcast a request for video is about. Read from the address as it arrived, so
+# that the question to the API names the broadcast whose files are served.
+map $request_uri $broadcast_of_request {
+    default "";
+    "~^/api/broadcasts/(?<broadcast_in_uri>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/hls/" $broadcast_in_uri;
+}
+# What the API answered to that question, kept per broadcast and caller for as long as
+# the location below says. A few short JSON bodies: the limits are far above them.
+proxy_cache_path /var/cache/nginx/broadcast_access levels=1 keys_zone=broadcast_access:1m
+                 max_size=4m inactive=1m use_temp_path=off;
 
 # --- Access log --------------------------------------------------------------------
 # One JSON object per request, without the query string, the Referer and the cookies. A
@@ -224,8 +244,8 @@ server {
     add_header X-Request-Id $request_ref always;
 
     # Request headers for the API. nginx has no `merge` for these: a location that sets
-    # one gets none of the server's. The two /api/ locations set none, so this list is
-    # theirs. The location of the web app needs two lines more and repeats the list;
+    # one gets none of the server's. No location that asks the API sets one, so this list
+    # is theirs. The location of the web app needs two lines more and repeats the list;
     # backend/tests/unit/test_stack_files.py keeps both the same.
     proxy_http_version 1.1;
     proxy_set_header Host              $http_host;
@@ -336,26 +356,144 @@ server {
         proxy_pass http://$api_upstream;
     }
 
+    # Pieces of a live stream on their way up. The one location with a body limit of its
+    # own: the largest piece the API takes (BROADCAST_CHUNK_MAX_BYTES), where everything
+    # else keeps the limit of the server. The body is passed on as it arrives and never
+    # collected here, so what this proxy holds of an upload is its default buffer of two
+    # memory pages, whatever the size of a piece and whoever sends it. A caller has a
+    # limited number of pieces on their way at once, and each one counts against the
+    # request limit like any other call. The two refusals stand here again, as in every
+    # regex location.
+    location ~ "^/api/broadcasts/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/chunks$" {
+        if ($from_the_web_network) {
+            return 403;
+        }
+        if ($foreign_request) {
+            return 403;
+        }
+        limit_req zone=api_per_caller burst=${NGINX_RATE_LIMIT_BURST} nodelay;
+        limit_conn uploads_per_caller ${NGINX_BROADCAST_UPLOADS_PER_CALLER};
+        client_max_body_size ${NGINX_BROADCAST_CHUNK_MAX_BYTES};
+        proxy_request_buffering off;
+        error_page 403 = @api_forbidden;
+        error_page 413 = @api_too_large;
+        error_page 429 = @api_rate_limited;
+        error_page 502 504 = @api_unavailable;
+        proxy_pass http://$api_upstream;
+    }
+
+    # The playlist and the segments of a live stream, read from the volume the media box
+    # writes. Nothing is served before the API said yes for this caller and this
+    # broadcast (auth_request): knowing the address of a playlist gives nothing. The API
+    # is no part of serving the bytes.
+    #
+    # The address names two files and no other: the playlist, and a segment by its
+    # number. Both are read, never written or listed, a link out of the volume is not
+    # followed, and no browser or proxy keeps a copy. The access log leaves the location
+    # out: a hundred viewers would write a hundred lines a second and push every other
+    # line out of the container's bounded log. What is refused here is answered by a
+    # named location below, and those requests are logged.
+    location ~ "^/api/broadcasts/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/hls/(?<hls_file>index\.m3u8|seg-[0-9]{6}\.ts)$" {
+        if ($from_the_web_network) {
+            return 403;
+        }
+        if ($foreign_request) {
+            return 403;
+        }
+        limit_req zone=api_per_caller burst=${NGINX_RATE_LIMIT_BURST} nodelay;
+        limit_except GET {
+            deny all;
+        }
+        auth_request /_broadcast_access;
+        access_log off;
+        disable_symlinks on;
+        alias /var/lib/marketh/hls/$broadcast_of_request/$hls_file;
+        types {
+            application/vnd.apple.mpegurl m3u8;
+            video/mp2t ts;
+        }
+        add_header Cache-Control no-store always;
+        error_page 401 = @api_unauthenticated;
+        error_page 403 = @broadcast_refused;
+        error_page 404 = @api_not_found;
+        error_page 413 = @api_too_large;
+        error_page 429 = @api_rate_limited;
+        error_page 500 502 503 504 = @api_unavailable;
+    }
+
+    # The question behind the location above: may this caller watch this broadcast? No
+    # browser reaches it. It sets no request header, so the API is asked with the list of
+    # the server block and the two identity headers exactly as they arrived (on a laptop,
+    # as the development file sets them), and judges the caller as it judges every call.
+    #
+    # A yes is remembered per broadcast and caller for BROADCAST_ACCESS_CACHE_SECONDS, so
+    # a viewer costs the API one question in that time and not one per file. Only a yes:
+    # a refusal is asked again with the next request, and so is the first request after
+    # the time is over, which is how the end of a live stream, and the end of a person's
+    # leave to watch it, reach the people who play it.
+    location = /_broadcast_access {
+        internal;
+        proxy_pass_request_body off;
+        proxy_cache broadcast_access;
+        proxy_cache_key "$broadcast_of_request $api_caller";
+        proxy_cache_valid 200 ${NGINX_BROADCAST_ACCESS_CACHE_SECONDS}s;
+        proxy_cache_lock on;
+        proxy_pass http://$api_upstream/api/broadcasts/$broadcast_of_request/access;
+    }
+
     # What nginx itself answers under /api/ keeps the API's error shape (SPEC A.2). The
     # API's own answers pass through untouched, a 403 of its own included.
+    #
+    # Each of these bodies is JSON whatever the address of the request ends in. nginx
+    # names the type of a body it writes after the extension of the address before it
+    # looks at `default_type`, and the address of a playlist ends in .m3u8, that of a
+    # segment in .ts: the empty `types` leaves it nothing to find.
     location @api_forbidden {
+        types { }
         default_type application/json;
         return 403 '{"code":"FORBIDDEN","message":"This request did not come from the MarkETH app.","details":{}}';
     }
 
     location @api_too_large {
+        types { }
         default_type application/json;
         return 413 '{"code":"VALIDATION_ERROR","message":"The request is too large.","details":{}}';
     }
 
     location @api_rate_limited {
+        types { }
         default_type application/json;
         add_header Retry-After 1 always;
         return 429 '{"code":"RATE_LIMITED","message":"Too many attempts. Try again later.","details":{"retry_after_seconds":1}}';
     }
 
     location @api_unavailable {
+        types { }
         default_type application/json;
         return 503 '{"code":"SERVICE_UNAVAILABLE","message":"This is temporarily unavailable. Try again shortly.","details":{}}';
+    }
+
+    # The three answers of the location that serves a live stream. The API said them
+    # first, to the question this proxy asked, and nginx hands on the status of that
+    # answer without its body: a caller nobody named (401), and a caller who may not
+    # watch (403), with the one sentence the API has for every reason. A playlist or a
+    # segment that is not there, because the live stream has not begun or the segment
+    # is gone from the playlist, is 404. Each body is the API's own for that status.
+    location @api_unauthenticated {
+        types { }
+        default_type application/json;
+        return 401 '{"code":"UNAUTHENTICATED","message":"Sign in through the ETH portal to continue.","details":{}}';
+    }
+
+    location @api_not_found {
+        types { }
+        default_type application/json;
+        return 404 '{"code":"NOT_FOUND","message":"Not found.","details":{}}';
+    }
+
+    location @broadcast_refused {
+        types { }
+        default_type application/json;
+        return 403 '{"code":"FORBIDDEN","message":"This live stream is not available.","details":{}}';
     }
 }

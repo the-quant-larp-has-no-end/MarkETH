@@ -186,6 +186,7 @@ Rules that keep it from getting tiresome:
 - References are to places and shared experiences (HG, CAB, Polyterrasse, Polybahn, Mensa, ASVZ, exam session). Never to named people, departments' reputations, grades of anyone, politics or religion: what the usage policy keeps out of markets (§13, SPEC §6) stays out of our copy too.
 - Jokes are written once and reviewed like any other copy. They are static strings, not generated.
 - Nothing playful blocks a tap, delays a response or replaces a label.
+- No campus line stands in the live stream of a market, in its chat or in its studio.
 
 ### Voice
 
@@ -194,6 +195,7 @@ Rules that keep it from getting tiresome:
 - The unit is called **tokens** everywhere in the interface. The words "credits" and "CR" do not appear on screen, and "voucher" is never the name of the unit. Figures carry the token icon; sentences say "token" or "tokens" (§10).
 - One word, one meaning. A **code** is what VIS hands out and a user redeems for tokens ("Redeem code"). A **voucher** is what tokens turn into: the QR a user shows at the bar. The characters under that QR are the "voucher code", never "code" alone. A voucher is for one **product**, called by the name the API sends ("Coffee", "Mate"). Tokens that arrive by rule are "Welcome tokens" and "Monthly tokens".
 - Say "market", "shares", "YES" and "NO" (capitals). Do not say "bet", "odds", "gamble" or "win money".
+- A market's live video is a **live stream**, and "the stream" where a sentence has named it: "Watch live", "Go live", "End stream". In the API it is a broadcast, which is not its name on screen. The chat beside it is the **live chat**, and what is written there is a "message".
 - Buttons are verbs: "Confirm", "Redeem code", "Get a voucher". Sentence case everywhere, no full stop on buttons or headings.
 
 ## 4. Colour
@@ -268,6 +270,7 @@ What follows from the numbers:
 - **White is the accent.** The primary button is a white fill with a navy label. The active tab, the focus ring and the selected segment are white.
 - **Green and red are reserved** for exactly these: the YES and NO buttons and toggle, a YES or NO probability figure, the chart line, the sign of a ledger or payout amount, a resolved outcome, error text and destructive buttons.
 - Green and red are **never** used for navigation, links, generic buttons, borders of neutral cards, icons without an outcome meaning, illustrations or the status badges of OPEN, CLOSED, HALTED and VOID markets.
+- **A live stream has no colour of its own.** The fill of the Live badge is white, the accent, and the badge "VIS" of a live chat is neutral: neither green nor red says that a live stream is on or who writes in a chat (§12, §13).
 - **Colour never carries meaning alone.** A YES figure carries the label "YES", an amount carries its sign, an error carries an icon and text.
 - Full-strength `--yes` and `--no` fills are rare: the outcome buttons on Market detail, the selected toggle segment, the Confirm button and the barista result. Lists use the soft tints (`--yes-soft`, `--no-soft`) with the text tints, as on the market card.
 - No gradients, no glows, no coloured shadows, anywhere (§1, "What MarkETH must not look like").
@@ -297,7 +300,7 @@ Both are loaded with `next/font/google`, which downloads them at build time and 
 - Every number uses Barlow with `font-variant-numeric: tabular-nums`, so live prices do not shift the layout.
 - Form inputs are 16 px. Anything smaller makes iOS zoom the page on focus.
 - Text is left aligned. Numbers in a column are right aligned.
-- No all-caps text except "YES", "NO" and status badges. No italics.
+- No all-caps text except "YES", "NO", status badges and the Live badge (§12). No italics.
 - Market questions wrap to at most three lines on a card and are never truncated on the detail screen.
 
 ## 6. Layout and spacing
@@ -367,8 +370,10 @@ Admin screens are the one exception: their tables are designed for 1024 px and s
 
 - Icons are `lucide-react`, the set shadcn/ui ships with. Stroke 2 px; 20 px inline, 24 px in bars.
 - An icon alone is never a control's only label, except the back arrow, the close cross and the tab bar, which all carry an `aria-label` (the tab bar also shows text).
+- Three more controls are an icon alone, each with its name as an `aria-label`: the profile button of the top bar (the lucide `user-round`, "Profile", §11), the send button of the live chat (`send-horizontal`, "Send") and the remove button of a chat row (`trash-2`, "Remove the message from {username}") (§13). The `radio` icon of the Live badge is decoration beside its word, in the colour of that word, and no control (§12).
 - Icons are `--foreground` or `--muted-foreground`. An icon is green or red only inside an element that already is.
 - Markets have no images and there is no photography. Illustration is pixel art only, from the short list in §3; empty states use one illustration (or a 32 px icon until it is drawn) and a sentence.
+- **Live video is the one moving picture of the product.** It plays in a box of its own with the browser's own controls, on the page of its market and nowhere else, and only after the viewer asked for it (§12, §13). No picture of a live stream stands on a card, in a list or in a row: "Live now" names a stream with the Live badge and the question. No poster, thumbnail or still of a stream is made or shown.
 - The only raster images are the logo, the token icon, the trophies, the pixel illustrations (§3) and generated QR codes.
 - A brand image is fetched once per page session. However many components show the token icon, a logo, a trophy or an illustration, and however often they mount, render again or scroll into view, the browser asks the server for each file at most once between two page loads, and an image that has loaded is in its element when that element is first painted: no empty disc and no flash on a later mount. The files stay in `public/brand` on the app's own origin, and a file that changed reaches a browser by the next page load after a deployment.
 
@@ -498,7 +503,7 @@ The API sends display-ready values. The frontend may format them and must not de
 | Price per share (`average_price` of a quote or a trade) | Number in [0, 1], already rounded | The token icon, then the decimal: (bean) `0.524`. In a sentence it is followed by "per share" |
 | What shares pay (`payout_cr` of a quote), what a sale brings in (`proceeds_cr` of a sell shortcut) | Decimal string | The token icon, then the string: (bean) `50` |
 | Signed amount (ledger `amount_cr`) | Signed decimal string | Sign, token icon, figure: `+` (bean) `200` in `--yes-text`, `−` (bean) `25` in `--foreground` |
-| Date and time | ISO 8601 | In the `/config` `timezone`, as `14 Oct 2026, 18:00`. An instant keeps its time of day also where the day alone would do: `next_monthly_grant_at`, `policy_accepted_at`. The time of day stands alone, as "18:02", in one place: the Barista's result for a voucher that was redeemed a moment ago (§13) |
+| Date and time | ISO 8601 | In the `/config` `timezone`, as `14 Oct 2026, 18:00`. An instant keeps its time of day also where the day alone would do: `next_monthly_grant_at`, `policy_accepted_at`. The time of day stands alone, as "18:02", in two places: the Barista's result for a voucher that was redeemed a moment ago, and the `started_at` of a live stream that is on, in the studio ("Since 18:02") and in the admin's block ("Live since 18:02.") (§13) |
 | Deadline (`close_at`) in a list | ISO 8601 | Relative when under 7 days ("Closes in 3 days", "Closes today, 18:00"), otherwise the date. When `trading_open` is false, the date alone |
 | Code | `code_length` characters (`/config`) | Groups of four, `XXXX-XXXX-XXXX`, Barlow, letter-spacing 0.08em |
 | Voucher code | `voucher_code_length` characters (`/config`) | `XXXX-XXXX`, same style |
@@ -524,6 +529,10 @@ Rules:
 - **Keys are not copy.** `status`, `tier`, `role`, `degree_level`, `sort`, `side`, `severity` and the `kind` of a notice arrive as keys. The words for them are in this file (the badges of §12, the names in §13) or in `/config` (`degrees`). Only "YES" and "NO" are shown as they arrive.
 - **Server text.** API messages, ledger labels and product names are shown as sent. They are written in this file's vocabulary ("Not enough tokens for this.", "Welcome tokens", "Voucher: Coffee"); wording is corrected in the backend, never on screen.
 - **People.** A player is shown by `username` and degree. A real name or an email address is shown in two places only: the viewer's own, on the profile set-up and Profile screens, and in the admin area, which shows `proposer_email` on a market and `name` and `email` in the Users tab. No other screen, row, toast or message shows either.
+- **People in a live stream.** A line of a live chat shows the `username` of its writer, with the badge "VIS" where an admin of VIS wrote it. A live stream names nobody: its page does not say who streams, and whoever is on camera shows themselves. The admin area shows the `username` and the `email` of whoever asked for a live stream, and no other screen does.
+- **What a user wrote is text.** A chat message is shown character for character as the API sends it, as text. Nothing in it is markup, no part of it becomes a link, and no address is built from one.
+- **What a viewer may do with a live stream is the server's.** The flags of `viewer` in the answer about a market's live stream (`can_request`, `can_start`, `can_start_as_admin`, `can_approve`, `can_refuse`, `can_end`, `can_watch`, `full`, `is_broadcaster`) say it, and `open` and `can_remove` say it for the chat. A screen reads them and holds no role, no status of a market and no clock against anything. No count of viewers is sent, and none is shown. The `status` and the `end_reason` of a live stream arrive as keys like every other, and §13 has their words.
+- **The tunables of a live stream and of its chat** come from `/config` like every other: the length of a chat message and the number of messages a chat shows (`chat_message_max_length`, `chat_backlog_size`), and under `broadcast` how long a live stream may run, how long it lasts without video, and the paces of its player and of its upload (§14).
 - Locale is fixed to `en-GB` for numbers and dates. The minus sign is U+2212, the en dash of a missing figure U+2013 and the multiplication sign of a ratio U+00D7.
 
 ## 11. App shell and navigation
@@ -553,12 +562,15 @@ The Leaderboard tab reads "Ranking" in the tab bar of a phone and "Leaderboard" 
 
 The role comes from `MeResponse.role`. Everyone starts as a plain user. A barista, like a further admin, is appointed by an admin in the Users tab of the admin area (§13); the first admins are named in the server's configuration, and the API marks them `bootstrap_admin`. Admins reach the scanner from the Admin screen. There are never more than five tabs. The tab bar is hidden on the screens that stand in front of the app (start-up, profile set-up, the full-screen message, and the usage policy for a visitor without a profile), on the Barista scanner while the camera is live, and while the trade sheet is open.
 
+The tab bar is hidden as well in the studio of a live stream while it is live, and on a phone while a viewer watches a live stream (§13).
+
 ### Routes
 
 | Route | Screen | Top bar | Fixed by |
 | --- | --- | --- | --- |
 | `/` | Markets | Main | this file |
 | `/markets/[id]` | Market detail; the Trade sheet opens over it | Inner, no title | this file |
+| `/markets/[id]/live` | Live stream studio | Inner, "Live stream" | this file |
 | `/portfolio` | Portfolio | Main | this file |
 | `/wallet` | Wallet; `?code=...` opens the redeem sheet with the code filled in | Main | SPEC A.6 |
 | `/leaderboard` | Leaderboard; sort and filters live in the query string | Main | this file |
@@ -576,6 +588,7 @@ The role comes from `MeResponse.role`. Everyone starts as a plain user. A barist
 
 - A visitor without a profile sees the profile set-up screen in place of whatever route they opened and continues to that route once it is saved. The address is kept meanwhile, so someone who scanned a code card arrives in the Wallet with the code. **Decision:** `/policy` is the one route the set-up does not stand in front of, because the policy is read before it is accepted.
 - A user without the role sees the "not found" screen, not a permission lecture.
+- The studio is for whoever has a live stream to send there; anybody else sees the "not found" screen (§13). Its back arrow goes one step back in the history; where the studio was opened directly, it leads to its market.
 - Three routes read their query string. `/wallet` reads `?code=...` (§13, Wallet). `/markets/[id]` reads `?buy=YES`, `?buy=NO`, `?sell=YES` and `?sell=NO`, which open the trade sheet on that side and outcome. `/leaderboard` keeps its sort and filters there.
 
 ## 12. Components
@@ -589,7 +602,7 @@ Each component lives in `frontend/src/components/` and builds on the shadcn/ui p
 | `primary` | `--primary` fill, `--primary-foreground` label | The one main action of a screen |
 | `secondary` | Transparent, 1 px `--border-strong`, white label | Any other action |
 | `ghost` | No outline, white label | Low-emphasis actions, "Cancel" |
-| `destructive` | `--no` fill, `--ink` label | Reject, void, revoke, suspend. Always behind a confirmation dialog |
+| `destructive` | `--no` fill, `--ink` label | Reject, void, revoke, suspend, remove a chat message, refuse a request for a live stream, end a live stream. Always behind a confirmation dialog |
 | `yes` / `no` | `--yes` or `--no` fill, `--ink` label | Outcome buttons, and the Confirm button of a buy |
 
 Height 48 px (56 px for the trade Confirm), `--radius-md`, `label` text style, full width on phones. A loading button keeps its width, shows a spinner in place of its label and is disabled.
@@ -638,6 +651,36 @@ The card itself links to the market; the two buttons are separate links inside i
 | EXPIRED | "Expired" | `--raised` fill, `--muted-foreground` text |
 
 The badge shows the `status` the API sends, which is already the effective status (an OPEN market past its close time arrives as CLOSED, and a proposal that was not decided before its close time as EXPIRED). Whether trading is possible is read from `trading_open`, never from the clock. The clock has one job: when the `close_at` of a market that is shown as open for trading, or of a proposal that is shown in review, passes, the screen asks the API again (§14) and shows what the answer says.
+
+### Live badge
+
+Marks a live stream that is on, wherever one is named: beside the heading "Live stream" of Market detail, in a "Live now" row of Markets, in the studio and in the admin area (§13). The component is `LiveBadge` of `components/market`.
+
+- The word "Live" in `caption`, in capitals, with a 12 px lucide `radio` icon before it; `--radius-sm`, 4 x 8 px padding; a `--foreground` fill with `--primary-foreground` text and icon.
+- White is the accent of this system, and green and red stay what they mean (§4): the Live badge is never red and has no colour of its own.
+- It does not pulse, blink or move (§7).
+- The icon is decorative. A screen reader hears "Live".
+- It shows what the API says: a live stream whose `status` is LIVE. No screen works out from a clock whether a stream is on.
+
+### Video box
+
+Live video is the one moving picture of the product (§8). A viewer's picture plays in a box of its own: 16:9, as wide as what it stands in, `--radius-md`, on `--background`, with the picture fitted into it whole (`object-contain`). A picture of another shape leaves `--background` at its sides and is never cropped.
+
+- The element is the browser's video element with the browser's own controls (`controls`, `playsInline`, `preload="none"`). No control of ours lies over the picture.
+- **Video starts on a tap and never by itself** ("Watch live", §13): a live stream costs megabytes of mobile data a minute, and a page that plays one unasked spends them for its viewer.
+- The picture is played by the browser itself where its engine plays a live playlist (Safari, and every browser on an iPhone), and otherwise by a player the app serves itself and loads with the first "Watch live". The Content-Security-Policy allows no remote script and no worker.
+- In place of the picture the box shows one of four things:
+
+  | When | The box shows |
+  | --- | --- |
+  | Until the first frame | A skeleton as large as the box, with the hidden text "Connecting to the live stream" |
+  | No picture for `wait_notice_ms` of `/config` `broadcast` | "Waiting for the live stream…" in `body-sm`, over the last frame |
+  | The browser can play a live stream in no way | "This browser cannot play the live stream." in `body-sm` |
+  | The player failed and cannot be built again | An error banner (Feedback, below): "The live stream could not be played." with "Try again" |
+
+- The box is named "Live stream: {question}" (§15).
+
+The preview of the studio is the same kind of box for the broadcaster's own camera: 16:9, `--radius-lg`, on `--card`, `object-contain`, muted and without controls, named "Preview" (§13).
 
 ### Probability chart
 
@@ -700,7 +743,7 @@ Labels are `body-sm` `--muted-foreground`; values are `number`, right aligned. E
 - **Close cross:** every sheet and every dialog has one at its top right: a 24 px cross in `--foreground` inside a 44 x 44 px target that stands 4 px from the top and from the right edge, with the `aria-label` "Close". It is there in addition to the other ways out, never in place of one: dragging a sheet down, a tap on the scrim, the Escape key, and a "Done" or "Cancel" button where the surface has one.
 - Nothing lies under the cross and nothing scrolls under it. Every sheet and every dialog has a header row for the cross, which does not scroll. A title in that row ends 48 px before the right edge. Where the title is for screen readers only, the row stands all the same, as tall as the cross: it holds one line that says what the surface is about (the question on the trade sheet), which ends 48 px before the right edge too, or nothing.
 - **A surface that reports a finished action** has the cross as well: an issued voucher, the welcome dialog. There the cross does what "Done" does. The trade sheet reports a finished trade without such a surface: its receipt is a banner over the form (§13), and the cross closes the sheet as it always does.
-- **Confirmation dialog** (`alert-dialog`): the dialog of an admin action that is destructive or cannot be taken back. Its cross does what "Cancel" does. It is the one surface that a tap on the scrim does not close, so that such an action is neither confirmed nor dropped by a stray tap.
+- **Confirmation dialog** (`alert-dialog`): the dialog of an action that is destructive or cannot be taken back: an admin's, and the end of a live stream by whoever streams it. Its cross does what "Cancel" does. It is the one surface that a tap on the scrim does not close, so that such an action is neither confirmed nor dropped by a stray tap.
 - **While a request is on its way.** A surface that has to show what became of a request it sent (a trade, issuing a voucher, redeeming a code, an admin action) cannot be closed for as long as that request is out: no drag, no tap on the scrim and no Escape closes it. For that time its cross stays in its place, disabled in `--subtle` like its other buttons. It is never taken away. A sheet that the address opened (the trade sheet) also holds against the phone's Back: a step back while its request is out puts the sheet's address back, and the sheet stays.
 - The sticky trade panel of §6 is neither a sheet nor a dialog. It is part of the page, there is nothing to close, and it has no cross.
 
@@ -806,7 +849,7 @@ The tables of the admin area, and the ranking of the Leaderboard from 768 px, bu
 | Inline error | | Under the field or above the action button it concerns |
 | Result | Bottom sheet or dialog | A finished action that leaves something to keep: an issued voucher. It stays until "Done" or the close cross |
 | Receipt banner | shadcn `alert` | What became of the trade that was just made, at the top of the trade ticket, above a form that is ready for the next one (§13). It has no button and no cross: there is nothing to dismiss |
-| Confirmation dialog | shadcn `alert-dialog` | Confirmation of destructive or irreversible admin actions only |
+| Confirmation dialog | shadcn `alert-dialog` | Confirmation of destructive or irreversible actions only: those of an admin, and the end of a live stream |
 | Skeleton | shadcn `skeleton` | Loading. Shapes match the content they replace |
 | Empty state | | One pixel illustration (§3), one sentence, and at most one button |
 
@@ -831,17 +874,24 @@ Each screen lists its content from top to bottom. Field names are those of the A
 | Profile set-up, Profile | | `PUT /me/profile` |
 | Usage policy | | |
 | Markets | `GET /markets` | |
+| "Live now", on Markets | `GET /broadcasts/live` | |
 | Every screen inside the app shell | `GET /stream`, the app's one event stream (§14); `GET /me`, with its `notices` | `POST /me/notices/{notice_id}/seen` |
 | Market detail | `GET /markets/{market_id}`, `GET /markets/{market_id}/history` | |
 | Trade sheet | `GET /markets/{market_id}/quote` | `POST /markets/{market_id}/trades` |
+| Live stream, on Market detail | `GET /markets/{market_id}/broadcast`; the player fetches the playlist of `playlist_url` and its segments | `POST /markets/{market_id}/broadcast/request` |
+| Live chat, on Market detail | `GET /markets/{market_id}/chat` | `POST /markets/{market_id}/chat`, `POST /admin/markets/{market_id}/chat/{message_id}/remove` |
+| Live stream studio | `GET /markets/{market_id}`, `GET /markets/{market_id}/broadcast` | `POST /broadcasts/{broadcast_id}/start`, `POST /admin/markets/{market_id}/broadcast`, `POST /broadcasts/{broadcast_id}/chunks`, `POST /broadcasts/{broadcast_id}/end` |
 | Portfolio | `GET /me/positions`, `GET /me/trades` | |
 | Wallet | `GET /me`, `GET /me/vouchers`, `GET /me/ledger`, `GET /vouchers/products` | `POST /vouchers`, `POST /vouchers/{voucher_id}/code`, `POST /codes/redeem` |
 | Leaderboard | `GET /leaderboard` | |
 | Propose market | `GET /me/proposals` | `POST /markets` |
 | Admin | `GET /markets`, `GET /markets/{market_id}`, `GET /admin/code-batches`, `GET /admin/code-batches/{batch_id}/codes`, `GET /admin/risk`, `GET /admin/users` | The seven market actions and the four user actions listed there, `POST /admin/code-batches`, `POST /admin/code-batches/{batch_id}/revoke`, `POST /admin/alerts/{alert_id}/ack` |
+| Live streams, in the admin area | `GET /admin/broadcasts`, `GET /markets/{market_id}/broadcast` | `POST /admin/broadcasts/{broadcast_id}/approve`, `POST /admin/broadcasts/{broadcast_id}/refuse`, `POST /broadcasts/{broadcast_id}/end` |
 | Barista | | `POST /barista/vouchers/redeem` |
 
 No screen calls `GET /health` or `POST /admin/grants/monthly`. No screen opens a stream of its own: a screen says which topic it shows, and the app's one stream follows what the screens on it name (§14).
+
+No screen calls `GET /broadcasts/{broadcast_id}/access` either: the proxy asks it for every viewer before it serves a piece of video (§14).
 
 **Notices.** `notices` of `GET /me` lists what the user is told once, oldest first. The one kind is an approval: VIS opened a market the user proposed. Each notice shows as a toast (§12), "Your market is open: {question}", with the text link "View", which leads to the market. It appears by itself on whatever screen is open, because `/me` is read again whenever something of the caller's own changed (§14). The notice is then marked seen with `POST /me/notices/{notice_id}/seen`, after which `/me` lists it no more. A page tells a notice once, also when marking it seen got no answer (§14).
 
@@ -896,7 +946,7 @@ States as on the set-up screen. Success shows the toast "Profile saved" and stay
 
 ### Usage policy (`/policy`)
 
-The rules of MarkETH on one page of plain text. Whoever creates a profile accepts it, and whoever proposes a market accepts it again with that proposal: both requests carry `policy_accepted: true`. Four places link to it: the checkbox of the profile set-up, the checkbox of the propose form, the card of the Profile screen and the footer of the Wallet.
+The rules of MarkETH on one page of plain text. Whoever creates a profile accepts it, whoever proposes a market accepts it again with that proposal, and whoever asks for a live stream accepts it with that request: all three requests carry `policy_accepted: true`. Five places link to it: the checkbox of the profile set-up, the checkbox of the propose form, the checkbox of a request for a live stream, the card of the Profile screen and the footer of the Wallet.
 
 1. Top bar with a back arrow and the title "Usage policy". No tab is active. A visitor without a profile gets the frame of the boot screen in its place: the top bar with the logo and nothing on its right, no tab bar, and the title as a heading above the text. There the logo leads to the profile set-up: for a visitor who came from the set-up it is one step back, to the address the set-up stood at.
 2. The text below, in a column of at most 720 px. A heading is set in `h3`, a paragraph in `body` and `--foreground`, a list as a plain bulleted list. 24 px separate two sections, 8 px a heading and its text.
@@ -947,6 +997,23 @@ The text of the page:
 > - Admins of VIS settle the markets. After trading closes, an admin resolves a market to YES or NO from its source and states the evidence, which is shown on the market's page. An admin who traded a market does not settle it.
 > - An admin may void a market that cannot be decided fairly, for example when its source disappears or its question proves unclear. A voided market pays nobody: every trader gets back their net stake, which is what they paid for shares minus what they received for selling, and never less than zero.
 >
+> **Live chat**
+>
+> While a market has a live stream, it has a live chat. What you write there is shown at once, with your username, to everyone who can see the market. The chat ends with the stream, and its messages are deleted then.
+>
+> An admin of VIS writes in a live chat with the badge VIS.
+>
+> In a live chat:
+>
+> - write about the market;
+> - do not insult, threaten or harass anyone;
+> - do not post the private matters of a person, advertising, or the same thing again and again;
+> - do not try to mislead other traders about an outcome.
+>
+> What you write is shown as plain text. Links in it cannot be tapped.
+>
+> VIS removes messages that break this policy. What is removed disappears for everyone. VIS keeps removed messages on record.
+>
 > **Vouchers**
 >
 > Tokens can be turned into a voucher for one product at the bar: a coffee, a drink or a snack. The Wallet lists the products and the tokens each one takes.
@@ -957,11 +1024,19 @@ The text of the page:
 >
 > Vouchers are not for sale and cannot be exchanged for money.
 >
+> **Live streams**
+>
+> Whoever proposed a market can ask VIS to stream it live, from a camera. An admin decides on every request, and VIS can end a live stream at any moment.
+>
+> A live stream shows what its market is about. Film nobody who has not agreed to it, and show nothing this policy keeps out of markets.
+>
+> Viewers see a live stream a few seconds late. No picture and no sound is kept; that a stream took place is.
+>
 > **What other players can see about you**
 >
-> Other players see your username, your degree programme and your record on the leaderboard: the tokens you hold, the number of your trades, your win rate and your payout ratio.
+> Other players see your username, your degree programme and your record on the leaderboard: the tokens you hold, the number of your trades, your win rate and your payout ratio. They also see what you write in a live chat. If you stream a market live, viewers see and hear what your camera shows.
 >
-> They do not see your name or your email address. Both come from your ETH sign-in and are shown to you and to the admins of VIS only. They do not see which markets you trade or what you hold in them, and a market does not show who proposed it.
+> They do not see your name or your email address. Both come from your ETH sign-in and are shown to you and to the admins of VIS only. They are not shown which markets you trade or what you hold in them, and a market does not show who proposed it, unless you stream it live yourself.
 >
 > VIS keeps a record of every movement of tokens and of every action an admin takes.
 >
@@ -971,6 +1046,7 @@ The text of the page:
 >
 > - reject a proposal, or change its wording and its dates before it opens. You see the reason for a rejection;
 > - pause trading in a market, close it early or void it;
+> - remove a chat message that breaks this policy;
 > - correct a balance that is wrong, with the reason on record;
 > - suspend an account that breaks this policy. A suspended account is locked out of MarkETH until VIS reinstates it;
 > - change this policy. This page shows the policy in force.
@@ -989,6 +1065,8 @@ The text of the page:
 
 3. Market cards, in the order the API returns them.
 4. A secondary "Propose a market" button after the list, leading to `/propose`.
+
+**"Live now"** (`LiveNowRow` of `features/broadcast`) stands between the top bar and the filter chips, only while a live stream is on: one row per item of `GET /broadcasts/live`, in the order the API returns them, 8 px apart. A row is one link, 44 px tall and as wide as the content column: `--card`, `--radius-lg`, 1 px `--border`, 16 px at its sides. On its one line stand the Live badge (§12), the `question` in `h3`, cut with an ellipsis, and at the right a lucide `chevron-right`. It leads to `/markets/{market_id}` and is named "Live now: {question}". A row is one line, so that several markets stay in sight on a phone while a live stream is on (§1). **Decision:** the row has content or is absent. While the read loads, answers no item or fails, nothing is shown and nothing is said: no skeleton, no banner and no sentence. The list under it has its own four states, and a market's own page shows its live stream either way. "Live now" follows `broadcast.changed`: when a live stream starts, is on or ends, `GET /broadcasts/live` is read again (§14).
 
 States: six skeleton cards while loading. Empty: the dome illustration and "No markets yet. Quieter than the HG on a Sunday." with the propose button. Error: a banner with "Try again".
 
@@ -1012,6 +1090,8 @@ The answer of `GET /markets/{market_id}` always carries its `viewer` block, beca
 7. **Rules:** "YES means" (`yes_definition`), "NO means" (`no_definition`), "How it is decided" (`resolution_criteria`), "Source" (`resolution_source`), "Trading closes" (`close_at`) and "Decided by" (`resolve_by`).
 8. **If the market is voided:** the `void_rule` text, shown in full and not collapsed. SPEC §6 requires it to be visible before anyone trades.
 9. **Resolution** (when the market is RESOLVED or VOID): the outcome badge, and `evidence` and `resolved_at` of `resolution`.
+
+**Live stream.** Between the Price and the banner of the market's status, above the chart, stands the section "Live stream" with the live chat directly under it, present only while it has something to say (below). From 1024 px both stand in the content column: the right-hand column is the trade panel and nothing else.
 
 States by status:
 
@@ -1076,6 +1156,185 @@ Behaviour:
 - **Nothing that arrives by itself touches an open quote.** An event of the stream, a poll and the close time read the market, and with it the slider, the shortcuts and the sell chips; the quote on screen stays what the server gave for the input (§14).
 
 No sentence of the ticket is a joke, and none names a tier, a liquidity figure or a loss bound (§10).
+
+### Live stream (`/markets/[id]`)
+
+A section of Market detail, between the Price and the banner of the market's status. A market can have a live stream: video from the camera of its proposer or of an admin of VIS, relayed by the server and seen a few seconds late by everybody who can see the market. The proposer asks for one and an admin decides; an admin goes live without asking. On screen it is always a "live stream". In the API it is a broadcast, because "stream" there is the app's event stream (§14).
+
+The section is `MarketBroadcast` of `features/broadcast`, which takes the id of its market. It shows what `GET /markets/{market_id}/broadcast` says: `broadcast`, the market's latest live stream as far as the viewer is shown it, and `viewer`, the flags that say what this viewer may do. The section reads the flags and holds no role, no status of the market and no clock against anything.
+
+**It is absent** while it has nothing to say, and whenever that read answers `NOT_FOUND`, as it does for a proposal: nothing stands in its place then, no frame, no banner and no sentence. Nothing of it stands in the trade sheet, the dialog or the trade panel, and nothing of it lies over the pinned outcome buttons.
+
+It looks like the other sections of the screen: a `--card` with `--radius-lg`, a 1 px `--border` and 16 px padding. Top to bottom: the heading "Live stream", an `h2` element in the `h3` look, with the Live badge (§12) beside it while `status` is LIVE; then one of the states below.
+
+**For every viewer:**
+
+| The answer says | The section shows |
+| --- | --- |
+| No live stream that is LIVE, and none was LIVE while this screen was open | Nothing of this table. Without a row of the next table either, the section is absent |
+| `status` is LIVE and `on_air` is false | "The live stream is starting." in `body-sm` `--muted-foreground` |
+| LIVE, and `viewer.can_watch` is true | "A live stream is on for this market." and a secondary "Watch live" |
+| After "Watch live" | The video box (§12), which plays `playlist_url`; under it "Live, a few seconds behind." in `caption` and a ghost "Stop watching" |
+| LIVE, and `viewer.full` is true | "The live stream is full right now. Try again in a moment." and a secondary "Try again", which reads the answer again |
+| It was LIVE while this screen was open, and the answer says otherwise | "The live stream has ended." It stays until the screen is left |
+
+- **Video starts on "Watch live" and never by itself** (§12): no playlist is asked for before the tap. "Stop watching" takes the player away and brings the row with "Watch live" back.
+- **A player that fails,** or shows no picture for `wait_notice_ms`, asks the API again. While the answer is LIVE with `can_watch`, the player is built again after `player_retry_ms`, as often as it takes while the screen is open; otherwise the section shows what the answer says. Both paces are fields of `/config` `broadcast` (§14).
+- **Nobody is named and nobody is counted.** The section does not say who streams, and no screen shows how many people watch. A stream has a limited number of places; the viewer beyond them gets the "full" row and can trade, chat and read as anybody.
+- A live stream does not end because its market is closed, resolved or voided: a result can be told on air. The section therefore shows on a market of every status but a proposal.
+
+**For the proposer, and for whoever streams,** in the same section. The rows above apply as well once the stream is LIVE.
+
+| The answer says | The section shows |
+| --- | --- |
+| `viewer.can_request` is true, and no live stream of the viewer's is shown | "Ask VIS to let you stream this market live, from your camera. An admin decides on every request.", the checkbox "I accept the usage policy" (§12), not ticked, and a secondary "Request a live stream", disabled until the box is ticked. It sends `POST /markets/{market_id}/broadcast/request` with `policy_accepted: true`. Success: the toast "Request sent. VIS decides on it." |
+| REQUESTED, the viewer's own | The badge "In review" (the status badge of a proposal in review, §12) and "You asked for a live stream. VIS decides on it." |
+| APPROVED, the viewer's own | "Your live stream is approved. Start it when you are ready." and a secondary "Set up the live stream", a link to `/markets/{id}/live` |
+| REFUSED, the viewer's own | "Your request was not approved." with `refusal_reason` under it, then the first row again while `can_request` is true |
+| LIVE, the viewer's own | "You are live." and the text link "Open the studio", which leads to `/markets/{id}/live` |
+| ENDED, the viewer's own, and `viewer.can_start` is true | "Your live stream has ended.", the sentence of its end reason, "You can go live again without asking." and the secondary "Set up the live stream". The server says so after a stream that ended by itself, for lack of video or at the time limit |
+| ENDED, the viewer's own, otherwise | "Your live stream has ended." and the sentence of its end reason, then the first row again while `can_request` is true |
+
+"The viewer's own" is `viewer.is_broadcaster`. A status arrives as a key (§10), and these are its words:
+
+| `status` | To whoever streams | In the admin area |
+| --- | --- | --- |
+| REQUESTED | "In review" | "Requested" |
+| APPROVED | "Approved" | "Approved" |
+| REFUSED | "Not approved" | "Not approved" |
+| LIVE | "Live", as the Live badge | "Live" |
+| ENDED | "Ended" | "Ended" |
+
+The sentence of an end reason, from `end_reason` with the two figures of `/config` `broadcast`:
+
+| `end_reason` | Sentence |
+| --- | --- |
+| STALLED | "No video arrived for {stall_seconds} seconds." |
+| TIME_LIMIT | "It reached the limit of {max_minutes} minutes." |
+| ADMIN | "VIS ended it." |
+| BROADCASTER | None |
+
+A refusal of the request shows the API's `message` above the button; one that names `policy_accepted` stands under the checkbox (§14). The link "usage policy" of the checkbox leads to `/policy` in the same tab, as every text link does (§12), and the box is not ticked for whoever comes back. An approval or a refusal reaches the page of the proposer by itself, without a reload, and nobody is sent a notice about either.
+
+States. **Decision:** like "Live now" on Markets, the section has content or is absent. While its read loads or fails, nothing is shown in its place and nothing is said: no skeleton, no banner. The page under it has its own states, and the read is asked again whenever the app's stream opens and at every poll (§14).
+
+Live: the section names `broadcast:{id}` to the app's stream, and a `broadcast.changed` of its market reads `GET /markets/{market_id}/broadcast` and the chat again. That is how "The live stream is starting." turns into "Watch live", how a viewer learns that a stream ended, and how an approval reaches the page of the proposer.
+
+| Part | 375 px | 1024 px |
+| --- | --- | --- |
+| The section | A card 343 px wide, 311 px inside | A card in the content column: 608 px wide beside the 360 px trade panel while the market trades, 688 px otherwise |
+| The video box | 343 x 193 px: as wide as the content column, under the top bar (below). The box is on screen only while its viewer watches, so on a phone it never stands inside the card | Inside the card: 576 x 324 px beside the trade panel, 656 x 369 px otherwise |
+| "Watch live", "Try again", "Request a live stream", "Set up the live stream" | As wide as the inside of the card | As wide as its label |
+| The live chat | Directly under the section, 343 px wide | Directly under it, as wide as it |
+
+**Watching on a phone.** Below 768 px, from "Watch live" until "Stop watching" or the end of the stream, the screen is laid out so that the picture, the latest messages, the composer of the chat and the two outcome buttons are on screen together:
+
+- The video box is as wide as the content column, 343 x 193 px at 375 px, and sticks directly under the top bar at every scroll position.
+- The tab bar is hidden, as on the Barista scanner while its camera is live (§11).
+- While the market trades, the outcome buttons are on screen at every scroll position: in their place, or pinned above the lower edge of the screen whenever their place is out of view, above it or below it.
+- The chat panel under the box takes the height that is left between the box and the pinned buttons, and never less than 200 px. On a 375 x 667 phone the top bar takes 56 px, the box 193 px and the pinned buttons 73 px, which leaves 345 px for what stands under the box.
+- While the composer has the focus, the pinned buttons give way to the keyboard: they are not pinned until the field loses the focus.
+
+From 768 px nothing sticks and nothing is hidden: the section, the box and the chat stand in the content column, and the trade ticket has its own surface (§6).
+
+At both widths nothing of the section lies over anything else, and the page does not scroll sideways.
+
+### Live chat (`/markets/[id]`)
+
+While a market has a live stream, it has a live chat: one line at a time, shown at once to everybody who can see the market. The chat begins with the stream and ends with it, and its messages are deleted then; a stream that starts later on the same market starts with an empty chat. No message outlasts its stream on screen. What VIS keeps is the record of a message it removed.
+
+The panel is `ChatPanel` of `features/chat`. The section "Live stream" mounts it directly under itself while the status of the stream is LIVE and takes it away when it is not. It reads `GET /markets/{market_id}/chat`, and it is absent whenever that read answers `NOT_FOUND`.
+
+One `--card` with `--radius-lg`, a 1 px `--border` and no shadow, as wide as what it stands in. It is 320 px tall below 768 px and 360 px from 768 px; while its viewer watches on a phone it takes the height that is left (above). Top to bottom:
+
+1. **A header row** 44 px tall with 12 px at its sides: "Live chat", an `h2` element in the `h3` look. It does not scroll.
+2. **The log.** It takes the height that is left and scrolls inside the panel, and the page behind does not move when the log reaches an end. One row per entry of `items`, in the order they arrive, 4 px apart, with 12 px at the sides: the `username` in `caption` `--muted-foreground`, the badge "VIS" after it when `from_vis` is true, a space, then the `text` in `body-sm`. A row is one line that wraps, a string without a space included, and it clips what would leave it.
+3. **The composer,** under a 1 px `--border` line, with 8 px padding: a one-line text field 48 px tall with the placeholder "Write a message", which takes no more than `chat_message_max_length` characters (`/config`); 8 px beside it, a secondary button 48 px square that holds the lucide `send-horizontal`. The two are one form: Enter sends. It sends `POST /markets/{market_id}/chat` with the text.
+
+**The badge "VIS"** marks a message whose author was an admin of VIS when it was written. The server sets `from_vis`; the frontend reads no role for it and marks nothing else: a proposer's line looks like any other. A username is a name anybody can pick; the badge is what says that VIS speaks. **Decision:** the badge is the word "VIS" in `caption` on a `--raised` fill with `--foreground` text, `--radius-sm`, with 4 px at its sides and none above or below, so that it is as tall as the line of the username and a row with it is as tall as one without. It is neither green nor red.
+
+**Removing a message.** For a viewer with `can_remove` each row ends in a ghost icon button, the lucide `trash-2` in a 44 px target, which makes those rows at least 44 px tall. It opens a confirmation dialog (§12): the title "Remove this message?", the text "It disappears for everyone. This cannot be taken back.", a `destructive` "Remove message", "Cancel" and the close cross. It sends `POST /admin/markets/{market_id}/chat/{message_id}/remove`. Success: the toast "Message removed". The dialog cannot be closed while its request is out (§12).
+
+Behaviour:
+
+- **The log stays at its end** while the reader is there: a message that arrives is in sight. Once the reader has scrolled up, so that the end of the log is out of sight, arriving messages do not move the view, and a secondary button "Latest messages", 44 px tall, stands centred at the foot of the log. A tap takes the log to its end.
+- **Sending.** The button is disabled while the field is empty and from the tap until the answer, and Enter does nothing in that time. The field keeps its text until the answer says the message was taken, and is empty after it. A message shows once, whether its answer or its event arrives first.
+- The panel shows at most `chat_backlog_size` messages (`/config`); the earliest leave at the top. The chat has no pages and no way back beyond that.
+- A removed message leaves the log at once, for everybody who has it on screen.
+- **What a user wrote is text** (§10): a message is shown character for character as the API sends it, as text. Nothing in it is markup, no part of it becomes a link, and no address is built from one.
+- **Who may do what is the server's answer:** `open` says whether there is a chat, `can_remove` whether the viewer removes. Whoever reads the chat may write in it.
+
+| State | What the panel shows |
+| --- | --- |
+| Loading | Six skeleton bars of two widths in the log; the composer disabled |
+| Empty | "No messages yet." in `body-sm` `--muted-foreground`, centred in the log |
+| Closed (`open` is false, or a send was answered `CONFLICT`) | "The live chat is closed." in place of the content of the log, and no composer |
+| Error of the read | An error banner with "Try again" in the log; the composer stays |
+| Content | The rows |
+
+A refusal of a message shows under the composer: the API's `message` in `body-sm` `--no-text`, and after `RATE_LIMITED` sending is disabled for `details.retry_after_seconds`, with the countdown (§14).
+
+Live: the panel names the topic of its market (`market:{id}`) to the app's stream (§14). A `chat.message` event carries its message, which is put at the end of the log; a `chat.removed` event takes the message of its id out. Neither asks the API for anything. The chat is read again when the panel mounts, whenever the app's stream opens, on a `broadcast.changed` of its market, at every poll and when the window gets the focus back: the server sends no message a second time, so the read is what closes a gap (§14). A message that arrives while such a read is on its way is not lost: the list is what the read returned, with what arrived meanwhile added in the order it arrived.
+
+The chat has no campus line, no avatar, no emoji picker and no time per row. No animation plays when a row appears or leaves (§7).
+
+| Part | 375 px | 1024 px |
+| --- | --- | --- |
+| The panel | Directly under the section "Live stream", 343 px wide, 320 px tall; while its viewer watches, the height that is left and at least 200 px | Directly under it, as wide as it, 360 px tall |
+| A row for a viewer who removes | The text in what the 44 px button leaves | The same |
+| The confirmation | A dialog, never wider than the screen less 16 px on each side | A dialog, 420 px wide |
+
+The chat stands under the player at both widths. Beside it there is no room that would serve it: from 1024 px the right-hand column is the trade panel, and a player that shared the 608 px content column with a chat would be narrower than the one a 375 px phone has. At both widths nothing of the panel lies over anything else, and the page does not scroll sideways.
+
+### Live stream studio (`/markets/[id]/live`)
+
+Where a live stream is sent from: an inner screen titled "Live stream", in one column at every width (from 768 px the 720 px column of §6). The back arrow leads to the market, and for an admin who came from the admin view of the market, back to that. The browser records the camera and the microphone and sends the video up in small pieces, and the server relays it to the viewers. No picture and no sound is kept, in the browser or on the server.
+
+The screen is for a caller whose `viewer` of `GET /markets/{market_id}/broadcast` has `can_start` or `can_start_as_admin`, or `is_broadcaster` of a stream that is LIVE: the proposer whose request was approved, an admin, and whoever is on air. Anybody else gets the "not found" screen. While the studio is live the tab bar is hidden, as on the Barista scanner (§11).
+
+| Part | 375 px | 1024 px |
+| --- | --- | --- |
+| Column | 343 px | 688 px |
+| Preview | 343 x 193 px | 688 x 387 px |
+| Buttons | As wide as the column | As wide as their label |
+
+The preview is the box of §12 for the broadcaster's own picture: `--radius-lg`, on `--card`, `object-contain`, muted, without controls, named "Preview". The studio broadcasts the camera the browser gives it, with the microphone. It has five states.
+
+**Setting up.** Top to bottom:
+
+1. The question of the market on one line, in `body-sm` `--muted-foreground`, cut with an ellipsis.
+2. The preview.
+3. A primary "Go live", disabled until the preview shows a picture.
+4. Two notes in `body-sm` `--muted-foreground`: "Viewers see you a few seconds later. No picture and no sound is kept after it ends." and "It ends by itself after {max_minutes} minutes, or {stall_seconds} seconds after the last picture arrived.", with the two figures of `/config` `broadcast`.
+
+"Go live" sends `POST /admin/markets/{market_id}/broadcast` when `can_start_as_admin` is true and `POST /broadcasts/{broadcast_id}/start` when `can_start` is. The recorder starts only after the answer says the stream is LIVE. A refusal shows the API's `message` above the button and keeps the preview (§14).
+
+**Live.** Top to bottom:
+
+1. The Live badge (§12) and "You are live" (`h2`).
+2. "Since {started_at}", a time of day (§10).
+3. The preview.
+4. A neutral banner: "Keep this page open and in front. The stream pauses while it is hidden."
+5. While the pieces that wait to be sent hold more than half of `upload_backlog_bytes` (`/config` `broadcast`), a second neutral banner: "Your connection is slow. Viewers may see pauses."
+6. While an upload was answered with the portal's 401, **the sign-in banner**, neutral: "Your ETH sign-in has ended. Sign in again in another tab; the stream goes on from here." with the button "Sign in again", which opens `/` in a tab of its own. The portal signs the broadcaster in there, and the studio keeps its recorder, its pieces and its page meanwhile: this is the one place where the portal's 401 reloads nothing (§14). The banner goes with the next upload that is answered.
+7. A destructive "End stream". It opens a confirmation dialog (§12): the title "End the live stream?", the text "Viewers see that it has ended. No picture and no sound is kept.", a `destructive` "End stream", "Cancel" and the close cross. It sends `POST /broadcasts/{broadcast_id}/end`.
+
+**Paused.** The state after a reload, after the camera went away, after the upload had to start over three times within `restart_window_ms` (§14), and on a return to the studio while the stream is LIVE: "Your live stream is paused." (`h2`), "It ends by itself {stall_seconds} seconds after the last picture arrived.", a primary "Resume", which asks for the camera again and goes on sending, and the destructive "End stream".
+
+**Ended.** "The live stream has ended." (`h2`); the API's `message` when an upload was refused; the sentence of the end reason when the answer names one (above); "No picture and no sound is kept."; and a secondary "Back to the market". For a broadcaster whose `can_start` is true, a primary "Go live again" stands before it: a stream that ended by itself, for lack of video or at the time limit, is started again without asking VIS. It sends what "Go live" sends.
+
+**What the browser refuses.** A banner in place of the preview, one of four:
+
+| The browser | The banner |
+| --- | --- |
+| Was refused the camera or the microphone | "Camera and microphone access was refused. Allow both in your browser settings." |
+| Has no secure connection | "The camera needs a secure connection (HTTPS)." |
+| Finds no camera or no microphone | "No camera or microphone is available." |
+| Cannot record what the server takes | "This browser cannot broadcast. Use a current Chrome, Edge, Firefox or Safari." |
+
+States: while the read loads, a skeleton in the shape of the preview and of the button. Error of the read: a banner with "Try again". Live: the studio names `broadcast:{id}` like the section of Market detail, and a `broadcast.changed` reads the answer again: a stream that an admin ended, or that ended by itself, shows as ended without a tap.
+
+No sentence of the studio is a joke, and nothing in it names an amount of tokens: a live stream moves none. At both widths nothing lies over anything else, and the page does not scroll sideways.
 
 ### Portfolio (`/portfolio`)
 
@@ -1250,6 +1509,16 @@ An inner screen with the title "Propose a market". A single-column form, one fie
 For role ADMIN; anyone else sees the "not found" screen. Four tabs under the top bar, each a link to its route: **Markets**, **Codes**, **Risk**, **Users**. Beside them a "Scan vouchers" link leads to the Barista screen. Designed for 1024 px; usable on a phone with horizontal scrolling tables. Density is higher here: rows are 44 px and `body-sm`, and a row with two lines in a cell is as tall as those need. Every dialog of the admin area has the close cross of §12.
 
 - **Markets (`/admin`):** a "Proposals" queue first, from `GET /markets` with `status` PROPOSED, then all markets with a status select, labelled "Status", that has one option per status, "Expired" among them. Each choice of the select sends its one `status`; "All" sends all eight, because a request without `status` leaves PROPOSED, REJECTED and EXPIRED out, and a proposal that expired is listed under EXPIRED and nowhere else. A row shows `question`, the status badge, `p_yes`, `volume_cr` and `close_at`, and opens the admin view of the market. A row in review turns EXPIRED at its `close_at`, and no event says so: the screen reads both lists again at the earliest `close_at` among the rows in review of its two tables (§14).
+  - **Live streams** (`BroadcastQueue` of `features/admin`): a table above "Proposals", from `GET /admin/broadcasts`, which lists every live stream that is asked for, approved or on, the earliest request first.
+
+    | Column | Shows |
+    | --- | --- |
+    | "Market" | `question` |
+    | "Status" | The word for `status`: "Requested", "Approved" or "Live" |
+    | "Requested by" | `username`, and under it `email` in `caption`, from `requested_by` |
+    | "Requested" | `requested_at` |
+
+    A row opens the admin view of its market, where the request is decided. The table fits 1024 px and scrolls inside its own box below that (§12). It is there while the answer has rows: with none, the table and its heading are absent, and unlike the other tables of the admin area (States, below) no sentence stands in their place. Loading: skeleton rows. Error: a banner with "Try again". It follows `broadcast.changed`, so a request shows without a reload (§14).
 - **One market (`/admin/markets/[id]`):** an inner screen from `GET /markets/{market_id}`: the question, the status badge, the rules as on Market detail, the `resolution` when there is one, and the facts only an admin needs: `proposer_email`, `created_at`, `opened_at`, `closed_at`, `rejection_reason`, and how the market is priced, which the API sends to admins alone: the `tier` as "Tier", `b_cr` as "Liquidity b" and `max_loss_cr` as "Loss budget". A market has the three from its approval on; before that each shows an en dash. Tiers are named "Tight", "Default", "Medium" and "Custom". Then an action bar with the actions the market's `status` allows (SPEC §6):
 
   | Action | For `status` | Asks for | Sends |
@@ -1267,6 +1536,17 @@ For role ADMIN; anyone else sees the "not found" screen. Four tabs under the top
   - **Who may settle.** Resolve and Void follow `viewer.can_settle`. When it is false, both buttons are disabled and a neutral banner above the action bar reads "You traded this market, so another admin has to settle it.", the sentence the API answers both actions with. If one of them is answered `FORBIDDEN` all the same, the dialog shows the API's `message` and the market is refetched.
   - **The void dialog** shows the market's `void_rule` as the consequence and, labelled "What a void costs VIS now", the `void_cost_cr` of the market itself, which `GET /markets/{market_id}` sends to admins. The market is read afresh when the dialog opens. While that read is on its way the figure is a skeleton and the confirm button is disabled; if it fails, the dialog shows the banner of §14 and cannot be confirmed.
   - The answer of every action is the market; the screen updates from it. `CONFLICT` and `LIMIT_EXCEEDED` show the API's `message` in the dialog, and the market is refetched.
+  - **The block "Live stream"** (`BroadcastPanel` of `features/admin`) stands under the facts and above the action bar, from `GET /markets/{market_id}/broadcast`. It is absent while that read answers `NOT_FOUND`, as it does for a proposal.
+
+    | The answer says | The block shows | Buttons, each while its flag of `viewer` is true |
+    | --- | --- | --- |
+    | No live stream, or the latest is REFUSED | "No live stream." | A secondary "Start a live stream", a link to the studio (`can_start_as_admin`) |
+    | The latest is ENDED | "The last live stream ended on {ended_at}.", a date and time (§10) | The same |
+    | REQUESTED | "Requested by {username} ({email}) on {requested_at}.", from `requested_by` | A secondary "Approve" (`can_approve`) and a destructive "Refuse" (`can_refuse`) |
+    | APPROVED | "Approved. {username} can go live." | A destructive "Refuse" (`can_refuse`) |
+    | LIVE | The Live badge (§12), "Live since {started_at}.", a time of day (§10), and the text link "Watch", which leads to the market's page | A destructive "End stream" (`can_end`) |
+
+    "Approve" sends `POST /admin/broadcasts/{broadcast_id}/approve`. "Refuse" opens a confirmation dialog (§12) with a reason field that takes `short_text_max_length` characters, the text "The requester sees your reason." and a `destructive` "Refuse request"; it sends `POST /admin/broadcasts/{broadcast_id}/refuse` with `reason`. "End stream" opens the dialog of the studio (above) and sends `POST /broadcasts/{broadcast_id}/end`. Toasts: "Request approved", "Request refused", "Live stream ended". A refusal of the API shows its `message` in the dialog, or above the buttons where there is none, and the block is read again. The block shows no count of viewers. It follows `broadcast.changed` like the section of Market detail (§14).
 - **Codes (`/admin/codes`):** a table of batches from `GET /admin/code-batches` (`label`, `value_cr`, `count`, `active_count`, `redeemed_count`, `revoked_count`, `expires_at`) and "New batch". The dialog asks for `label` (which counts down `code_label_max_length`), `count` (a whole number, with the help text "At most {code_batch_max_count} codes"), `value_cr` (filled in with `code_default_value_cr`, with the help text "Between {code_min_value_cr} and {code_max_value_cr} tokens"), `expires_at` and "One code per person" (`one_per_user`), and sends `POST /admin/code-batches`. Each batch has two buttons at the end of its row: "View codes" and "Revoke". "Revoke" is enabled while `can_revoke` of the batch is true: the server says whether a code is left that a revocation would stop. Nothing here names a price for a code.
   - **The codes of a batch** are shown in a dialog titled with the batch's `label`: one line that says how many codes it shows, "Download CSV" and "Print QR sheet", the codes in code style (§10) in a box that scrolls, and "Done"; "Done" and the close cross both close it. It opens by itself with the `codes` of the answer that created a batch. "View codes" opens it for any batch: it asks `GET /admin/code-batches/{batch_id}/codes` and shows the codes of the batch that can be redeemed. A code that was redeemed or revoked is not among them. When none is left, the dialog says "Every code of this batch is redeemed or revoked.", or "The codes of this batch have expired." for a batch whose `expired` is true, and its two buttons are disabled.
   - The API records every "View codes" in its audit log, and the dialog says so in `caption`: "Viewing codes is recorded." The line shows when the codes were read with "View codes", and not over the codes of the answer that created a batch, which is no recorded view.
@@ -1355,6 +1635,8 @@ Inside the app shell: the Polybahn car, "This page does not exist. Not even in t
 
 Loading (skeletons), empty (icon, sentence, at most one button), error (banner with "Try again") and content. A screen is not finished until all four exist. A screen that asks the API for nothing has content alone: the usage policy, and "not found".
 
+Three parts of a screen have content or are absent, by decision: "Live now" on Markets, the section "Live stream" of Market detail, and the admin's table of live streams when it has no row (§13). Each stands above something that has its own four states.
+
 ### Errors
 
 The API returns `{code, message, details}`. The `message` is written for the user and is shown as sent; the frontend branches on `code` only to decide where and how to show it.
@@ -1383,6 +1665,20 @@ The API returns `{code, message, details}`. The `message` is written for the use
 Two answers are not the API's and are told apart by their body. Every API call asks for JSON (`Accept: application/json`), and the portal answers such a call it has no session for with a 401 whose body is the empty object `{}`. That 401 means reload: the page reloads once, the portal signs the visitor in and returns to the same address. If the reload brings the same answer, the full-screen message of §13 is shown. Any other answer without a `code` (an error page of the proxy, a body that is not JSON) is treated as `SERVICE_UNAVAILABLE`, with the banner "This is temporarily unavailable. Try again shortly."
 
 A network failure with no response uses the same banner: "No connection. Try again."
+
+One request is the exception to the reload: an upload of the studio of a live stream. A reload would end the recorder and with it the stream, so the studio treats the portal's 401 on an upload as no answer: the page stays, the same piece of video is sent again, and the sign-in banner offers a tab in which the portal signs the broadcaster in (§13, "Live video" below).
+
+**The refusals of a live stream and of its chat** carry the codes of the table above and are shown as it says. Where each stands:
+
+| Code | Where it appears | Treatment |
+| --- | --- | --- |
+| `RATE_LIMITED` | A chat message | The API's message under the composer, whether the viewer wrote too fast or the chat as a whole is busy. The field keeps its text, and sending is disabled for `details.retry_after_seconds` with the countdown |
+| `VALIDATION_ERROR` | The composer of the live chat, the request for a live stream | In the composer the sentence stands under the field. The field `policy_accepted` is the checkbox of the request |
+| `LIMIT_EXCEEDED` | The request for a live stream, the studio | Above "Request a live stream": the viewer asked as often as a day allows. Above "Go live": another live stream is on, and the sentence names no market |
+| `FORBIDDEN` | The request for a live stream, the studio, the admin's block | The API's message where the request was made: above "Request a live stream", above the button of the studio, and in the dialog or above the buttons of the admin's block, which then reads the live stream of the market again |
+| `NOT_FOUND` | The live stream and the chat of a market, the removal of a chat message | When the live stream or the chat of a market answers `NOT_FOUND` as a whole, that section is not shown, and nothing says so (§13). For a chat message, inline in the dialog, then the chat is read again: the message is gone |
+| `CONFLICT` | The composer of the live chat, the request for a live stream, the studio, the admin's block | For a chat message it means that the chat is closed: the panel shows its closed state. For a live stream it means that the market or the stream is in another state than the screen showed (a request that was decided already, a stream that ended, a market that has one already): the API's message stands where the request was made, which is above "Request a live stream", above "Go live", or in the dialog or above the buttons of the admin's block, and the admin's block then reads the live stream of the market again |
+| `SERVICE_UNAVAILABLE` | "Go live" | A live stream needs the part of the server that relays video. While that does not answer, "Go live" shows the API's message above the button ("Live video is unavailable right now. Try again shortly."), and trading and everything else work as they do |
 
 ### A submitted trade
 
@@ -1415,10 +1711,16 @@ A write whose answer never arrived (no connection, a 5xx) may or may not have ha
 | Another admin action | The market or the risk page it acts on is refetched |
 | `POST /vouchers/{voucher_id}/code`, `PUT /me/profile` | Nothing: sending either again is harmless |
 | `POST /barista/vouchers/redeem` | Nothing can be refetched. The barista scans the voucher again: if the first scan redeemed it, the API answers `repeat: true` for a short time, and §13 says what the scanner shows |
+| `POST /markets/{market_id}/chat` | `GET /markets/{market_id}/chat` is read again, and the field keeps its text. A message that was taken is in the log; sending one twice does no harm |
+| `POST /admin/markets/{market_id}/chat/{message_id}/remove` | The chat is read again: a message that was removed is gone from it |
+| Asking for a live stream, starting one, ending one, approving and refusing a request | `GET /markets/{market_id}/broadcast` is read again, and the screen shows the status the server holds. A start may be sent again: the server answers the stream that is LIVE and starts no second one, as it answers an end for a stream that has ended |
+| `POST /broadcasts/{broadcast_id}/chunks` | Nothing is read. The same piece is sent again, unchanged ("Live video", below) |
 
 ### Live data
 
 The server pushes over one event stream, `GET /stream`, and a tab holds one stream for everything it shows. Nothing on screen says whether the stream is open: no indicator, no banner, no badge, no control, and no sentence. A live value looks like the same value read a moment later.
+
+**Who follows the event stream.** The components of a live stream and of its chat follow it, through `LiveProvider` of `@/lib/live`, which holds the tab's one stream: the section "Live stream", the studio and the admin's block name the live stream of their market (`broadcast:{id}`), the chat panel names its market (`market:{id}`), and "Live now" and the admin's table of live streams name `markets`. No other screen names a topic to it: Market detail keeps the stream of its one market, `GET /markets/{market_id}/stream`, for its Price, its chart and its status.
 
 - **One stream per tab.** A tab holds its stream while its page is visible. A screen says which topic it shows, and the stream follows what the screens on the page name together: the Markets list names `markets`, Market detail its market (`market:{id}`), the Leaderboard `leaderboard`. What is the caller's own arrives on every stream without being named. When the topics change (a navigation), the tab ends its stream and opens one for the changed set.
 - **Events are hints, not truth.** A screen never works a figure out from an event. A price an event carries is written as it arrived, and only where its `version` is newer than what is on screen; everything else is asked for again.
@@ -1429,8 +1731,12 @@ The server pushes over one event stream, `GET /stream`, and a tab holds one stre
   | `market.status` | Nothing | The market and its chart; every list of markets |
   | `leaderboard.changed` | Nothing | The leaderboard: every row the list has loaded, the podium and the pinned row |
   | `me.changed` | Nothing | `/me` and everything under it, the products of the voucher sheet, and the market that is on screen |
+  | `chat.message` | The message, at the end of the chat of that market: where its `broadcast_id` is that of the chat on screen and no message of its `id` is there. The list then keeps its last `chat_backlog_size` messages | Nothing |
+  | `chat.removed` | The message of that id leaves the chat | Nothing |
+  | `broadcast.changed` | Nothing: the event carries the market and nothing of a live stream | The live stream of that market and its chat; "Live now" on Markets; the admin's table of live streams |
 
 - **Whenever a stream opens** (the first of a page, one that follows a loss, one for changed topics), the tab reads once what its topics cover, `/me` with everything under it, and the products. Nothing that was pushed before is sent again, so this read is what closes the gap.
+- **What the opening of a stream reads of a live stream.** Each component of the feature reads once what its topic covers: "Live now" and the admin's table of live streams their lists, the section "Live stream", the studio and the admin's block the live stream of their market, and the chat panel its chat. A poll reads the same.
 - **The spread.** An announcement is answered after a random wait of up to `live_announce_spread_ms` (from `/config`), and one read answers every announcement of the same thing that arrives during the wait or the read. The people who watch one thing therefore do not all ask in the same instant. The read that follows a trade of the user's own does not wait (§13).
 - **The viewer's side.** While a market is on screen and the viewer has bought into it, a `market.quote` is followed by one read of the market, because what a holding is worth (`value_cr`) and the sell chips are the server's to work out: after a random wait of up to `live_viewer_refresh_seconds`, once, however many quotes arrive meanwhile. If quotes overtook that answer, the newer price stays on screen.
 - **An open quote is never touched.** No event and no poll replaces or drops a quote of the trade sheet. The user confirms what they were shown, and the server answers `QUOTE_STALE` if the price moved past the guard.
@@ -1440,11 +1746,43 @@ The server pushes over one event stream, `GET /stream`, and a tab holds one stre
 - A poll is an ordinary API call, so it doubles as a check of the portal's session: if the portal answers it with its 401, the page reloads (§ Errors).
 - **A hidden page** neither holds a stream nor polls. When it is shown again its stream opens, and the read that follows brings what was missed.
 - **Close time.** No event says that a market has reached its `close_at`: `market.status` follows what admins and the circuit breaker do. A screen that shows a market as open for trading therefore asks again at that moment: Market detail at the `close_at` of its market, the Markets list at the earliest `close_at` among the cards it shows with `trading_open` true (§13). A proposal in review turns EXPIRED at its `close_at`, and no event says that either: Market detail asks at the `close_at` of a proposal it shows, My proposals at the `close_at` of its rows in review, and the admin's Markets screen at those of the rows in review in both of its tables, reading both lists again. A row those two screens show as open is not timed. The timer runs by the device's clock, asks the API and decides nothing, and it asks again every `live_poll_fallback_seconds` while the answer still shows the same state. What the screen shows afterwards is the answer's `status` and `trading_open`, never the device's clock.
+- **The live chat** holds what it read and what arrived since. It is read when the panel mounts, whenever the stream opens, on a `broadcast.changed` of its market, at every poll and when the window gets the focus back. A read of the chat replaces the list, and messages that arrived while that read was on its way are put back in the order they arrived: they can be later than what the read saw. The server sends a chat message once and keeps none to send again, so the read is the only way a message that was missed arrives. The frontend orders nothing: a list is shown in the order it arrives, an event appends, and ids are held against each other for equality alone.
 - Live are the Markets list, Market detail, the Leaderboard, the balance and the notices. Every other figure is read when its screen opens and when the window regains focus.
+
+### Live video
+
+Video is not part of the event stream. A broadcaster's browser sends it up in pieces, one request at a time, and a viewer's player fetches a playlist and its segments; both are ordinary requests of the app's own origin. Every pace of the two is a field of `/config` `broadcast`, and no screen holds a figure of its own for one.
+
+| Field of `/config` `broadcast` | What it paces |
+| --- | --- |
+| `wait_notice_ms` | Without a picture for this long, the video box says "Waiting for the live stream…" and the API is asked what became of the stream |
+| `player_retry_ms` | A player that failed is built again after this, while the API says the stream is on and the viewer may watch |
+| `chunk_ms` | The length of one piece the recorder hands over |
+| `chunk_max_bytes` | The most one upload carries |
+| `upload_timeout_ms` | How long one upload may take |
+| `upload_retry_ms` | The wait before the same piece is sent again |
+| `upload_backlog_bytes` | The most that may wait to be sent. Above half of it the studio says that the connection is slow; above all of it the upload starts over |
+| `restart_window_ms` | An upload that starts over three times within this pauses the studio |
+| `stall_seconds`, `max_minutes` | When the server ends a stream by itself: so long after the last video arrived, and so long after the start. The studio and the section of Market detail name them in their sentences |
+
+What the studio does with the answer to an upload:
+
+| An upload is answered | The studio |
+| --- | --- |
+| 2xx, taken | Sends the next piece |
+| 2xx with `restart: true` | Starts over: the recorder begins anew on the same camera, and what waited to be sent is dropped |
+| A 4xx other than 429 | Stops for good and shows its ended state with the API's `message`: the stream has ended, or it is not this caller's to send |
+| A 5xx, a 429, no answer, or none within `upload_timeout_ms` | Sends the same piece again, unchanged, after `upload_retry_ms`, and after a 429 after `details.retry_after_seconds` |
+| The portal's 401 | The same as no answer, and the sign-in banner shows until the next upload is answered. The page is not reloaded (§ Errors) |
+
+- A viewer's player asks for video only after "Watch live", and stops asking with "Stop watching", with the end of the stream and when the screen is left.
+- A player that is refused video fails like any other: the live stream of the market is read again, and the section shows what the answer says, which is the "full" row when every place is taken and "The live stream has ended." when it is over (§13). The player shows no sentence of the proxy.
+- A hidden page sends no video: the browser pauses the recorder, and the studio says so before it happens ("Keep this page open and in front."). A stream that gets no video for `stall_seconds` is ended by the server.
+- No piece of video is written to browser storage, by the studio or by the player.
 
 ### Buttons that change state
 
-Every button that posts is disabled from tap until response. Destructive admin actions additionally go through a confirmation dialog. Nothing in the product is submitted by a page load or a prefilled field alone: there is always a deliberate act, which is a tap or, at the bar, the scan of a voucher. A select, a picker, a slider and a checkbox post nothing by being changed: they set what a button then sends. The one write no act sends is the mark of a notice: when the app has shown a notice, it tells the API so (§13).
+Every button that posts is disabled from tap until response. Destructive admin actions additionally go through a confirmation dialog, and so does the end of a live stream. Nothing in the product is submitted by a page load or a prefilled field alone: there is always a deliberate act, which is a tap or, at the bar, the scan of a voucher. A select, a picker, a slider and a checkbox post nothing by being changed: they set what a button then sends. Two writes are sent without an act of their own. One is the mark of a notice: when the app has shown a notice, it tells the API so (§13). The other is the video of a live stream: after the tap on "Go live" the studio sends its pieces by itself until the stream ends ("Live video", above).
 
 **A second submit is stopped where it is made.** The disabled button is what the user sees. It is not the guard: the screen learns that its request went out a moment after it did, and two submits in that moment (Enter and a click, a tap that lands twice) would both find the button enabled. Every submit therefore asks, in the same step in which it would send, whether a request of that write is out: the cache of writes that are on their way, or a mark the handler set itself. What the last render knew is never the check. A trade and an adjustment of tokens are guarded by the request they keep (above).
 
@@ -1467,6 +1805,9 @@ Every button that posts is disabled from tap until response. Destructive admin a
 - **Podium:** read as a list of three in the order first, second, third. A name that is cut on screen is read whole, and an empty place is hidden from a screen reader.
 - **Leaderboard rows:** a row of the ranking, a filled place of the podium and the pinned row are each a `button` with `aria-haspopup="dialog"`, named by what it shows; it opens the statistics of its player (§13).
 - **Toast:** the link "View" of a notice is a text link of its own, a 44 px target that the keyboard reaches.
+- **Live stream:** the video is named "Live stream: {question}" and keeps the browser's own controls, which the keyboard reaches. The lines "The live stream is starting.", "The live stream has ended." and "Waiting for the live stream…" stand in a `role="status"` region, so a change is told without taking the focus; the skeleton of the box is such a region with the hidden text "Connecting to the live stream". The Live badge reads "Live", and its icon is hidden. A row of "Live now" is one link named "Live now: {question}". Nothing plays, and nothing makes a sound, before "Watch live".
+- **Live chat:** the panel is a region named "Live chat". Its log is `role="log"` with the same name: a message that arrives is told politely, and what was there when the panel opened is not read out. A row reads its username, "VIS" where the badge stands, and its text. The field of the composer is named "Message" and its button "Send"; "Latest messages" is a button of that name. The remove button of a row is named "Remove the message from {username}". The confirmation takes the focus and returns it as every dialog does.
+- **Studio:** the preview is named "Preview" and is muted, so a broadcaster does not hear themselves. The state of the studio is said by its heading ("You are live", "Your live stream is paused.", "The live stream has ended."), and the banner that names what the browser refused stands where the preview would. "End stream" is confirmed in a dialog, which takes the focus and returns it, and whose cross is named "Close". The button "Sign in again" tells a screen reader that it opens another tab.
 - **Screen-reader text for figures:** the Price reads "YES 54.8 percent". An amount reads "25 tokens". A price per share reads "0.506 tokens per share". A missing rate reads "none yet", not the dash.
 - **Chart:** an `aria-label` summarises it ("YES probability over time, now 54.8 percent, opened at 50 percent"), and the same information is always present as text on the screen.
 - **Text size:** layouts hold at 200% browser zoom and with large system text; type is set in `rem`.
@@ -1489,6 +1830,10 @@ Do:
 - Check the Leaderboard at 375 px, 768 px and 1024 px with a username of the greatest length and with one, two and three players: nothing lies over anything else.
 - Give every amount of tokens its token icon, on a sell as on a buy; give a number of shares its word and no icon.
 - Leave the trade sheet open after a trade, with its receipt as a banner and its form ready.
+- Start video only on a tap, and give the studio its paused state.
+- Check Market detail at 375 x 667 while a live stream is watched: the picture, the composer of the chat and the two outcome buttons are on screen together, and nothing lies over anything else.
+- Show a chat message as text, and check the chat at 375 px and at 1024 px with a message of the greatest length that holds no space: it stays inside its row.
+- Give every control that is an icon alone its name as an `aria-label`.
 
 Don't:
 
@@ -1519,3 +1864,9 @@ Don't:
 - Keep a code or a voucher code in browser storage, or leave a code in the address.
 - Rebuild the body of a trade or of an adjustment of tokens that got no answer, or give it another Idempotency-Key.
 - Leave a `dark:` class, a shadow or a raw colour in a component copied from shadcn/ui.
+- Turn a chat message into markup or a link, or build an address from one.
+- Make the Live badge red, or let it pulse.
+- Start video without a tap, put a picture of a live stream on a card or in a list, or store a piece of video anywhere in the browser.
+- Show how many people watch a live stream, or say who streams it.
+- Decide in the frontend who may ask for, start, watch or end a live stream, or who removes a chat message: the flags of the answer say it.
+- Reload the page while a live stream is sent from it.

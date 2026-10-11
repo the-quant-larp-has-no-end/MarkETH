@@ -35,6 +35,24 @@ import type {
   VoucherProductItem,
   VoucherRedeemResponse,
 } from "@/lib/api/schema";
+// The shapes of a live stream and of its chat, in lines of their own.
+import type {
+  AdminBroadcastItem,
+  AdminBroadcastListResponse,
+  BroadcastAccessResponse,
+  BroadcastChunkResponse,
+  BroadcastConfig,
+  BroadcastItem,
+  BroadcastPerson,
+  BroadcastStatus,
+  BroadcastViewer,
+  ChatMessageItem,
+  ChatResponse,
+  LiveBroadcastItem,
+  LiveBroadcastListResponse,
+  MarketBroadcastResponse,
+  RemovedResponse,
+} from "@/lib/api/schema";
 import type { LiveEventOf } from "@/lib/live/events";
 
 /**
@@ -124,6 +142,9 @@ export function config(overrides: Partial<PublicConfigResponse> = {}): PublicCon
       { level: "DOCTORATE", name: "Doctorate", programmes: ["Doctorate Computer Science"] },
       { level: "OTHER", name: "Other", programmes: ["Exchange student", "ETH staff", "Other"] },
     ],
+    chat_message_max_length: 200,
+    chat_backlog_size: 100,
+    broadcast: broadcastConfig(),
     ...overrides,
   };
 }
@@ -832,4 +853,267 @@ export function meChangedEvent(
   overrides: Partial<LiveEventOf<"me.changed">> = {},
 ): LiveEventOf<"me.changed"> {
   return { type: "me.changed", ts: "2026-10-04T10:00:00Z", ...overrides };
+}
+
+/*
+ * A live stream and its chat. `marketBroadcast()` is the market of `marketSummary()` with
+ * a live stream on air that the viewer may watch; `broadcastIn(status)` is a live stream
+ * in another status, with the fields that go with it; `chat()` is the chat of that live
+ * stream.
+ */
+
+export const BROADCAST_ID = "5c8e1f3a-9b2d-4e6f-8a1c-3d5e7f9a1b2c";
+export const CHAT_MESSAGE_ID = "a7c9e1f3-2b4d-4f6a-8c0e-1f3a5b7c9d0e";
+export const OTHER_CHAT_MESSAGE_ID = "d1e3f5a7-4c6b-4a8d-9e0f-2b4c6d8e0f1a";
+
+/** `broadcast` of `GET /config`, with the figures of `.example.env`. */
+export function broadcastConfig(overrides: Partial<BroadcastConfig> = {}): BroadcastConfig {
+  return {
+    chunk_ms: 1000,
+    chunk_max_bytes: 1048576,
+    upload_backlog_bytes: 3495000,
+    capture_height: 720,
+    capture_fps: 24,
+    capture_max_width: 1920,
+    capture_max_height: 1080,
+    capture_video_bits_per_second: 1800000,
+    capture_audio_bits_per_second: 64000,
+    capture_mime_types: [
+      "video/webm;codecs=vp8,opus",
+      "video/webm",
+      "video/mp4;codecs=avc1.42E01F,mp4a.40.2",
+      "video/mp4",
+    ],
+    stall_seconds: 120,
+    max_minutes: 120,
+    upload_timeout_ms: 10000,
+    upload_retry_ms: 1000,
+    restart_window_ms: 30000,
+    wait_notice_ms: 4000,
+    player_retry_ms: 2000,
+    ...overrides,
+  };
+}
+
+/** Who asked for a live stream, as an admin sees them: the player of `adminUser()`. */
+export function broadcastPerson(overrides: Partial<BroadcastPerson> = {}): BroadcastPerson {
+  return { username: "cab_coffee", email: "bea.beispiel@ethz.ch", ...overrides };
+}
+
+/**
+ * The live stream of `marketSummary()`, on air, as somebody sees it who is neither its
+ * broadcaster nor an admin: no reason of a refusal and nobody who asked.
+ */
+export function broadcastItem(overrides: Partial<BroadcastItem> = {}): BroadcastItem {
+  return {
+    id: BROADCAST_ID,
+    market_id: MARKET_ID,
+    status: "LIVE",
+    on_air: true,
+    playlist_url: `/api/broadcasts/${BROADCAST_ID}/hls/index.m3u8`,
+    requested_at: "2026-10-11T08:30:00Z",
+    started_at: "2026-10-11T09:45:00Z",
+    ended_at: null,
+    end_reason: null,
+    refusal_reason: null,
+    requested_by: null,
+    ...overrides,
+  };
+}
+
+/**
+ * A live stream in one status, with the fields that go with that status: a playlist only
+ * while it is on air, a start once it was live, an end and its reason once it has ended,
+ * the admin's reason once it is refused. One that is LIVE and not on air yet is
+ * `broadcastIn("LIVE", { on_air: false, playlist_url: null })`.
+ */
+export function broadcastIn(
+  status: BroadcastStatus,
+  overrides: Partial<BroadcastItem> = {},
+): BroadcastItem {
+  const notStarted = { on_air: false, playlist_url: null, started_at: null };
+  const fields: Record<BroadcastStatus, Partial<BroadcastItem>> = {
+    REQUESTED: notStarted,
+    APPROVED: notStarted,
+    REFUSED: { ...notStarted, refusal_reason: "The market closes before the event starts." },
+    LIVE: {},
+    ENDED: {
+      on_air: false,
+      playlist_url: null,
+      ended_at: "2026-10-11T09:58:00Z",
+      end_reason: "BROADCASTER",
+    },
+  };
+  return broadcastItem({ status, ...fields[status], ...overrides });
+}
+
+/** What the viewer may do about a live stream: watch it, and nothing else. */
+export function broadcastViewer(overrides: Partial<BroadcastViewer> = {}): BroadcastViewer {
+  return {
+    is_broadcaster: false,
+    can_request: false,
+    can_start: false,
+    can_start_as_admin: false,
+    can_approve: false,
+    can_refuse: false,
+    can_end: false,
+    can_watch: true,
+    full: false,
+    ...overrides,
+  };
+}
+
+/** The answer of `GET /markets/{market_id}/broadcast`, and of every write of a live stream. */
+export function marketBroadcast(
+  overrides: Partial<MarketBroadcastResponse> = {},
+): MarketBroadcastResponse {
+  return { broadcast: broadcastItem(), viewer: broadcastViewer(), ...overrides };
+}
+
+/**
+ * The same answer for a market that has no live stream the viewer may see. Nothing is to
+ * watch, and `viewer` takes what the viewer may do instead:
+ * `noBroadcast({ can_request: true })` is what the proposer of the market gets.
+ */
+export function noBroadcast(viewer: Partial<BroadcastViewer> = {}): MarketBroadcastResponse {
+  return { broadcast: null, viewer: broadcastViewer({ can_watch: false, ...viewer }) };
+}
+
+/** The answer of `POST /broadcasts/{broadcast_id}/chunks`: the first piece of a part is taken. */
+export function broadcastChunk(
+  overrides: Partial<BroadcastChunkResponse> = {},
+): BroadcastChunkResponse {
+  return { restart: false, next_seq: 1, ...overrides };
+}
+
+/** The answer of `GET /broadcasts/{broadcast_id}/access`, which nginx asks for and no screen does. */
+export function broadcastAccess(
+  overrides: Partial<BroadcastAccessResponse> = {},
+): BroadcastAccessResponse {
+  return { broadcast_id: BROADCAST_ID, ...overrides };
+}
+
+/** A row of `GET /broadcasts/live`: the live stream of `marketSummary()`. */
+export function liveBroadcast(overrides: Partial<LiveBroadcastItem> = {}): LiveBroadcastItem {
+  return {
+    broadcast_id: BROADCAST_ID,
+    market_id: MARKET_ID,
+    question: "Will the Polybahn run without interruption during the exam session?",
+    started_at: "2026-10-11T09:45:00Z",
+    ...overrides,
+  };
+}
+
+/** The answer of `GET /broadcasts/live`: one live stream is on air. */
+export function liveBroadcasts(
+  overrides: Partial<LiveBroadcastListResponse> = {},
+): LiveBroadcastListResponse {
+  return { items: [liveBroadcast()], ...overrides };
+}
+
+/** A row of `GET /admin/broadcasts`: a request that waits for an admin, with who asked. */
+export function adminBroadcast(overrides: Partial<AdminBroadcastItem> = {}): AdminBroadcastItem {
+  return {
+    ...broadcastIn("REQUESTED", { requested_by: broadcastPerson() }),
+    question: "Will the Polybahn run without interruption during the exam session?",
+    ...overrides,
+  };
+}
+
+/** The answer of `GET /admin/broadcasts`: one request waits. */
+export function adminBroadcasts(
+  overrides: Partial<AdminBroadcastListResponse> = {},
+): AdminBroadcastListResponse {
+  return { items: [adminBroadcast()], ...overrides };
+}
+
+/** A message of the live chat, from a player. */
+export function chatMessage(overrides: Partial<ChatMessageItem> = {}): ChatMessageItem {
+  return {
+    id: CHAT_MESSAGE_ID,
+    username: "cab_coffee",
+    text: "Is that the upper station?",
+    from_vis: false,
+    ...overrides,
+  };
+}
+
+/**
+ * The answer of `GET /markets/{market_id}/chat`: the chat of the live stream of
+ * `broadcastItem()`, open, with a message of a player and one of an admin, as somebody
+ * reads it who removes no message.
+ */
+export function chat(overrides: Partial<ChatResponse> = {}): ChatResponse {
+  return {
+    open: true,
+    broadcast_id: BROADCAST_ID,
+    can_remove: false,
+    items: [
+      chatMessage(),
+      chatMessage({
+        id: OTHER_CHAT_MESSAGE_ID,
+        username: "vis_moritz",
+        text: "Yes, and the cabin leaves in a minute.",
+        from_vis: true,
+      }),
+    ],
+    ...overrides,
+  };
+}
+
+/** The same answer while no live stream is on: the chat is closed and holds nothing. */
+export function closedChat(overrides: Partial<ChatResponse> = {}): ChatResponse {
+  return { open: false, broadcast_id: null, can_remove: false, items: [], ...overrides };
+}
+
+/** The answer of `POST /admin/markets/{market_id}/chat/{message_id}/remove`. */
+export function chatMessageRemoved(overrides: Partial<RemovedResponse> = {}): RemovedResponse {
+  return { id: CHAT_MESSAGE_ID, removed_at: "2026-10-11T09:50:00Z", ...overrides };
+}
+
+/** `chat.message`: the viewer of `me()` wrote into the chat of `chat()`. */
+export function chatMessageEvent(
+  overrides: Partial<LiveEventOf<"chat.message">> = {},
+): LiveEventOf<"chat.message"> {
+  return {
+    type: "chat.message",
+    market_id: MARKET_ID,
+    broadcast_id: BROADCAST_ID,
+    message: chatMessage({
+      id: "f3a5b7c9-6d8e-4b0f-a1c2-4d6e8f0a2b3c",
+      username: "anna_m",
+      text: "There it goes.",
+    }),
+    ts: "2026-10-11T09:51:00Z",
+    ...overrides,
+  };
+}
+
+/** `chat.removed`: an admin removed the first message of `chat()`. */
+export function chatRemovedEvent(
+  overrides: Partial<LiveEventOf<"chat.removed">> = {},
+): LiveEventOf<"chat.removed"> {
+  return {
+    type: "chat.removed",
+    market_id: MARKET_ID,
+    broadcast_id: BROADCAST_ID,
+    message_id: CHAT_MESSAGE_ID,
+    ts: "2026-10-11T09:52:00Z",
+    ...overrides,
+  };
+}
+
+/**
+ * `broadcast.changed`: something about the live stream of `marketSummary()` changed. It
+ * names the market and carries nothing of the live stream.
+ */
+export function broadcastChangedEvent(
+  overrides: Partial<LiveEventOf<"broadcast.changed">> = {},
+): LiveEventOf<"broadcast.changed"> {
+  return {
+    type: "broadcast.changed",
+    market_id: MARKET_ID,
+    ts: "2026-10-11T09:45:00Z",
+    ...overrides,
+  };
 }

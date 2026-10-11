@@ -16,7 +16,9 @@ const HEADINGS = [
   "Markets you may propose",
   "Markets you may not propose",
   "Fair play",
+  "Live chat",
   "Vouchers",
+  "Live streams",
   "What other players can see about you",
   "What VIS may do",
 ];
@@ -24,9 +26,14 @@ const HEADINGS = [
 const sections = () =>
   screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent);
 const text = () => document.querySelector("[data-slot=policy-text]") as HTMLElement;
+/** One section of the text, which its heading names. */
+const section = (title: string) => screen.getByRole("region", { name: title });
+/** What stands under a heading, line by line: its paragraphs and the points of its lists. */
+const lines = (title: string) =>
+  Array.from(section(title).querySelectorAll("p, li")).map((line) => line.textContent);
 
 describe("Usage policy", () => {
-  test("is an inner screen titled Usage policy, with the text under its seven headings", () => {
+  test("is an inner screen titled Usage policy, with the text under its nine headings", () => {
     navigation.go("/policy");
     renderWithProviders(
       <AppShell>
@@ -136,10 +143,59 @@ describe("Usage policy", () => {
       "They do not see your name or your email address. Both come from your ETH sign-in and are shown to you and to the admins of VIS only.",
     );
     expect(text()).toHaveTextContent("change this policy. This page shows the policy in force.");
-    // The lists are plain bulleted lists: 4, 5, 6 and 5 points.
+    // The lists are plain bulleted lists: 4, 5, 6, 4 and 6 points.
     expect(
       screen.getAllByRole("list").map((list) => within(list).getAllByRole("listitem").length),
-    ).toEqual([4, 5, 6, 5]);
+    ).toEqual([4, 5, 6, 4, 6]);
+  });
+
+  test("Live chat says who reads a message, how VIS writes, the four rules, and that a removed message is kept on record", () => {
+    renderWithProviders(<PolicyScreen />);
+
+    expect(lines("Live chat")).toEqual([
+      "While a market has a live stream, it has a live chat. What you write there is shown at once, with your username, to everyone who can see the market. The chat ends with the stream, and its messages are deleted then.",
+      "An admin of VIS writes in a live chat with the badge VIS.",
+      "In a live chat:",
+      "write about the market;",
+      "do not insult, threaten or harass anyone;",
+      "do not post the private matters of a person, advertising, or the same thing again and again;",
+      "do not try to mislead other traders about an outcome.",
+      "What you write is shown as plain text. Links in it cannot be tapped.",
+      "VIS removes messages that break this policy. What is removed disappears for everyone. VIS keeps removed messages on record.",
+    ]);
+    // The four rules are the one list of the section.
+    expect(within(section("Live chat")).getAllByRole("listitem")).toHaveLength(4);
+  });
+
+  test("Live streams says who may ask for one, what it may show, and that no picture and no sound is kept", () => {
+    renderWithProviders(<PolicyScreen />);
+
+    expect(lines("Live streams")).toEqual([
+      "Whoever proposed a market can ask VIS to stream it live, from a camera. An admin decides on every request, and VIS can end a live stream at any moment.",
+      "A live stream shows what its market is about. Film nobody who has not agreed to it, and show nothing this policy keeps out of markets.",
+      "Viewers see a live stream a few seconds late. No picture and no sound is kept; that a stream took place is.",
+    ]);
+  });
+
+  test("what others can see names a chat message, the camera of whoever streams, and the proposer who streams", () => {
+    renderWithProviders(<PolicyScreen />);
+
+    const [shown, hidden] = lines("What other players can see about you");
+    expect(shown).toMatch(
+      / They also see what you write in a live chat\. If you stream a market live, viewers see and hear what your camera shows\.$/,
+    );
+    expect(hidden).toMatch(
+      / They are not shown which markets you trade or what you hold in them, and a market does not show who proposed it, unless you stream it live yourself\.$/,
+    );
+  });
+
+  test("VIS may remove a chat message: the third point of what VIS may do", () => {
+    renderWithProviders(<PolicyScreen />);
+
+    const points = within(section("What VIS may do"))
+      .getAllByRole("listitem")
+      .map((point) => point.textContent);
+    expect(points[2]).toBe("remove a chat message that breaks this policy;");
   });
 
   test("is read, and left with the back arrow: no illustration, no campus line, no button of its own", () => {

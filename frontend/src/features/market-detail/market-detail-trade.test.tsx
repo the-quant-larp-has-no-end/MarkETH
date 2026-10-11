@@ -31,6 +31,7 @@ import {
   sendTrade,
 } from "./testing";
 
+vi.mock("@/features/broadcast", async () => (await import("./testing")).broadcastFeature);
 vi.mock("@/features/trade", async () => (await import("./testing")).tradeFeature);
 
 const QUESTION = "Will the Polybahn run without interruption during the exam session?";

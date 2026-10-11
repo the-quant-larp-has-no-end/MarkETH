@@ -38,6 +38,8 @@ from app.core.errors import (
 from app.core.identity import AuthenticatedUser, Caller, PortalIdentity, display_name
 from app.services.account import AccountService
 from app.services.admin_users import AdminUserService
+from app.services.broadcasts import BroadcastService
+from app.services.chat import ChatService
 from app.services.codes import CodeService
 from app.services.grants import GrantService
 from app.services.health import HealthService
@@ -112,6 +114,14 @@ def _live_quotes(container: ContainerDep) -> LiveQuoteService:
     return container.live_quotes
 
 
+def _chat(container: ContainerDep) -> ChatService:
+    return container.chat
+
+
+def _broadcasts(container: ContainerDep) -> BroadcastService:
+    return container.broadcasts
+
+
 def _codes(container: ContainerDep) -> CodeService:
     return container.codes
 
@@ -152,6 +162,8 @@ TradingServiceDep = Annotated[TradingService, Depends(_trading)]
 HistoryServiceDep = Annotated[HistoryService, Depends(_history)]
 LiveHubDep = Annotated[LiveHub, Depends(_live_hub)]
 LiveQuoteServiceDep = Annotated[LiveQuoteService, Depends(_live_quotes)]
+ChatServiceDep = Annotated[ChatService, Depends(_chat)]
+BroadcastServiceDep = Annotated[BroadcastService, Depends(_broadcasts)]
 CodeServiceDep = Annotated[CodeService, Depends(_codes)]
 VoucherServiceDep = Annotated[VoucherService, Depends(_vouchers)]
 LeaderboardServiceDep = Annotated[LeaderboardService, Depends(_leaderboard)]

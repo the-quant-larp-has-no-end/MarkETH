@@ -30,7 +30,11 @@
 #                         POST /api/barista/vouchers/redeem, GET /api/me/vouchers
 #   8. A code             POST /api/admin/code-batches, POST /api/codes/redeem
 #   9. The leaderboard    GET /api/leaderboard
-#  10. The books          every account of the ledger sums to zero (SPEC §1)
+#  10. A live stream      POST /api/admin/markets/{id}/broadcast,
+#                         POST /api/broadcasts/{id}/chunks, GET /api/markets/{id}/broadcast,
+#                         GET /api/broadcasts/{id}/hls/index.m3u8 and a segment,
+#                         POST /api/broadcasts/{id}/end
+#  11. The books          every account of the ledger sums to zero (SPEC §1)
 #
 # Who is who. The admin is the first address of ADMIN_EMAILS, a bootstrap admin: an admin
 # by the stack's configuration, from the first request on. Nobody else has a role until
@@ -41,6 +45,12 @@
 # Expected amounts are taken from the API's own answers (the grant from /api/config, a
 # balance from the trade that changed it), never from numbers written here.
 #
+# The live stream of step 10 runs on a market of its own, because the first one is
+# resolved by then, and it stays behind, open, with its ended live stream. What goes
+# on air is no camera: the image of the media box makes a clip with its own ffmpeg (a
+# test picture and a tone, as VP8 and Opus in WebM, which is what a browser records),
+# and the walk posts it in pieces as a studio does. No token moves in that step.
+#
 # Needs curl, jq, python3 and docker.
 
 # shellcheck disable=SC2016  # a "$name" in single quotes is jq's or the container's
@@ -48,6 +58,11 @@ set -eu
 
 REQUEST_SECONDS=15
 STREAM_SECONDS=5
+# The clip of step 10: its length, and the pieces it is posted in, one a second. A live
+# stream is on air once its playlist names three segments; the clip is longer than that
+# takes, so that a slow machine has pieces left to send.
+CLIP_SECONDS=20
+CLIP_PIECES=20
 
 STEP="start"
 
@@ -202,6 +217,34 @@ role_of() {
 # the code travels in no address.
 scan_of() {
     jq -cn --arg code "$1" '{code: $code}'
+}
+
+# send_piece <broadcast> <part> <number> <file>: post one piece of a recording as the
+# admin, the way a studio does: the bytes are the body, which piece it is stands in the
+# query. STATUS holds the HTTP status, $WORK/body the body.
+send_piece() {
+    CALL="POST /api/broadcasts/$1/chunks?part=$2&seq=$3 as admin"
+    STATUS=$(curl --silent --show-error --max-time "$REQUEST_SECONDS" --output "$WORK/body" \
+        --write-out '%{http_code}' --request POST --header 'Accept: application/json' \
+        --header "Origin: $ORIGIN" --header "X-User-Id: $ADMIN_ID" --header 'X-User-Name: Ada%20Smoke' \
+        --header 'Content-Type: application/octet-stream' --data-binary "@$4" \
+        "$BASE/api/broadcasts/$1/chunks?part=$2&seq=$3") || fail "$CALL: no answer"
+}
+
+# watch <caller id> <path>: GET a playlist or a segment as a player does, which asks
+# for no JSON. STATUS holds the HTTP status, $WORK/body the body and $WORK/video.headers
+# the headers of the answer.
+watch() {
+    CALL="GET $2 as $1"
+    STATUS=$(curl --silent --show-error --max-time "$REQUEST_SECONDS" --output "$WORK/body" \
+        --dump-header "$WORK/video.headers" --write-out '%{http_code}' \
+        --header "X-User-Id: $1" "$BASE$2") || fail "$CALL: no answer"
+}
+
+# answered_with <header> <value>: the last `watch` was answered with that header.
+answered_with() {
+    grep -q -i "^$1: $2" "$WORK/video.headers" \
+        || fail "$CALL: the answer has no '$1: $2' among its headers: $(tr -d '\r' < "$WORK/video.headers" | tr '\n' ' ')"
 }
 
 cd "$(dirname "$0")/../.."
@@ -511,8 +554,104 @@ holds "the trader's row does not show one trade and one market, won" \
 holds "the trader is not on the list" '[.items[].username] | index("smoke_trader") != null'
 passed "the leaderboard lists the trader with one trade and one market, won"
 
-# --- 10. The books ---------------------------------------------------------------------
-STEP="10 (the books)"
+# --- 10. A live stream -----------------------------------------------------------------
+STEP="10 (a live stream)"
+
+ACCESS_SECONDS=$(setting BROADCAST_ACCESS_CACHE_SECONDS)
+[ -n "$ACCESS_SECONDS" ] || fail ".env has no BROADCAST_ACCESS_CACHE_SECONDS"
+
+call maker POST /api/markets "$(proposal_of true)"
+expect 201
+STAGE=$(field '.id')
+call admin POST "/api/admin/markets/$STAGE/approve" '{"tier":"DEFAULT"}'
+expect 200
+holds "the market of the live stream is not open" '.status == "OPEN"'
+
+# The clip, made in a container of the media box's image beside the running box, and
+# cut into pieces of one size. Only the first piece begins as a file does; every other
+# one begins in the middle of the recording, as the pieces of a recorder do.
+CALL="docker compose run media ffmpeg"
+docker compose -f compose.yaml run --rm --no-deps -T media ffmpeg -nostdin -hide_banner -loglevel error \
+    -f lavfi -i 'testsrc2=size=320x180:rate=24' -f lavfi -i 'sine=frequency=440:sample_rate=48000' \
+    -t "$CLIP_SECONDS" -c:v libvpx -deadline realtime -cpu-used 8 -b:v 300k -g 24 \
+    -c:a libopus -b:a 32k -f webm pipe:1 < /dev/null > "$WORK/clip.webm" 2> "$WORK/clip.log" \
+    || fail "$CALL: the image of the media box made no clip: $(tail -n 5 "$WORK/clip.log" | tr '\n' ' ')"
+python3 -c 'import sys
+clip = open(sys.argv[1], "rb").read()
+pieces = int(sys.argv[2])
+if clip[:4] != bytes.fromhex("1a45dfa3") or len(clip) < pieces:
+    sys.exit("no WebM file")
+for number in range(pieces):
+    with open(f"{sys.argv[1]}.{number}", "wb") as piece:
+        piece.write(clip[number * len(clip) // pieces : (number + 1) * len(clip) // pieces])' \
+    "$WORK/clip.webm" "$CLIP_PIECES" \
+    || fail "$CALL: what the image of the media box made is no WebM clip"
+passed "the image of the media box made a clip of $CLIP_SECONDS seconds"
+
+call trader POST "/api/admin/markets/$STAGE/broadcast"
+expect 403 FORBIDDEN
+call admin POST "/api/admin/markets/$STAGE/broadcast"
+expect 201
+BROADCAST=$(field '.broadcast.id')
+holds "the live stream is not live, or says it is on air before anything was sent" \
+    '.broadcast.status == "LIVE" and .broadcast.on_air == false and .broadcast.playlist_url == null'
+passed "only the admin could go live on market $STAGE"
+
+PART="smoke-$(new_key | cut -c 1-8)"
+sent=0
+on_air=false
+while [ "$sent" -lt "$CLIP_PIECES" ] && [ "$on_air" != "true" ]; do
+    send_piece "$BROADCAST" "$PART" "$sent" "$WORK/clip.webm.$sent"
+    expect 200
+    holds "the media box did not take the piece" '.restart == false'
+    sent=$((sent + 1))
+    sleep 1
+    call admin GET "/api/markets/$STAGE/broadcast"
+    expect 200
+    on_air=$(jq -r '.broadcast.on_air' "$WORK/body")
+done
+[ "$on_air" = "true" ] \
+    || fail "$CALL: the live stream is not on air after $sent pieces of the clip: $(body_excerpt)"
+passed "the admin sent $sent pieces of the clip, one a second, and the live stream is on air"
+
+call trader GET "/api/markets/$STAGE/broadcast"
+expect 200
+holds "a person inside the market is not told that the live stream is theirs to watch" \
+    '.broadcast.on_air == true and .viewer.can_watch == true'
+PLAYLIST=$(field '.broadcast.playlist_url')
+watch "$TRADER_ID" "$PLAYLIST"
+expect 200
+answered_with content-type application/vnd.apple.mpegurl
+answered_with cache-control no-store
+SEGMENT=$(tr -d '\r' < "$WORK/body" | grep '^seg-[0-9]*\.ts$' | tail -n 1)
+[ -n "$SEGMENT" ] || fail "$CALL: the playlist names no segment: $(body_excerpt)"
+watch "$TRADER_ID" "${PLAYLIST%/*}/$SEGMENT"
+expect 200
+answered_with content-type video/mp2t
+answered_with cache-control no-store
+[ "$(head -c 1 "$WORK/body")" = "G" ] || fail "$CALL: the segment does not begin as an MPEG transport stream does"
+passed "the trader got the playlist and its last segment, $SEGMENT, neither of them to be kept"
+
+watch "smoke.stranger@$DOMAIN" "$PLAYLIST"
+expect 403 FORBIDDEN
+passed "a caller without a profile gets no playlist"
+
+call admin POST "/api/broadcasts/$BROADCAST/end"
+expect 200
+holds "the live stream has not ended" \
+    '.broadcast.status == "ENDED" and .broadcast.on_air == false and .broadcast.playlist_url == null'
+# The proxy remembers for some seconds that the API let the trader watch.
+sleep "$((ACCESS_SECONDS + 1))"
+watch "$TRADER_ID" "$PLAYLIST"
+expect 403 FORBIDDEN
+CALL="ls /var/lib/marketh/hls in the nginx container"
+KEPT=$(docker compose -f compose.yaml exec -T nginx ls -A /var/lib/marketh/hls < /dev/null) \
+    || fail "$CALL: could not look into the volume of the media box"
+[ -z "$KEPT" ] || fail "$CALL: something of the live stream is kept: $KEPT"
+passed "the admin ended it: the playlist is refused, and nothing of the live stream is kept"
+
+# --- 11. The books ---------------------------------------------------------------------
+STEP="11 (the books)"
 
 CALL="SELECT sum(balance_micro) FROM accounts"
 TOTAL=$(docker compose -f compose.yaml exec -T postgres sh -c \

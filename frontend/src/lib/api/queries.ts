@@ -207,3 +207,51 @@ export const adminUsersQuery = (params: AdminUsersParams = {}) =>
     initialPageParam: null as string | null,
     getNextPageParam: (page) => page.next_cursor ?? undefined,
   });
+
+/**
+ * `GET /markets/{market_id}/broadcast`: the live stream of a market as this caller may see
+ * it, or none, and `viewer`: what the caller may do about it. A screen shows a button
+ * exactly when its flag is true. `playlist_url` is a path on the page's own origin while
+ * the stream is on air.
+ */
+export const marketBroadcastQuery = (marketId: string) =>
+  queryOptions({
+    queryKey: keys.markets.broadcast(marketId),
+    queryFn: ({ signal }) =>
+      call((api) =>
+        api.GET("/api/markets/{market_id}/broadcast", {
+          params: { path: { market_id: marketId } },
+          signal,
+        }),
+      ),
+  });
+
+/** `GET /broadcasts/live`: the live streams on air in the markets the caller sees, earliest first. */
+export const liveBroadcastsQuery = queryOptions({
+  queryKey: keys.broadcasts.live,
+  queryFn: ({ signal }) => call((api) => api.GET("/api/broadcasts/live", { signal })),
+});
+
+/** `GET /admin/broadcasts`: every live stream that is asked for, approved or on air. */
+export const adminBroadcastsQuery = queryOptions({
+  queryKey: keys.admin.broadcasts,
+  queryFn: ({ signal }) => call((api) => api.GET("/api/admin/broadcasts", { signal })),
+});
+
+/**
+ * `GET /markets/{market_id}/chat`: whether the live chat of a market is open, the live
+ * stream it belongs to and its latest messages, in the order to show them. What happens
+ * between two reads arrives as events and is put into this answer by `putChatMessage`
+ * and `dropChatMessage` (`lib/api/chat-cache.ts`).
+ */
+export const chatQuery = (marketId: string) =>
+  queryOptions({
+    queryKey: keys.markets.chat(marketId),
+    queryFn: ({ signal }) =>
+      call((api) =>
+        api.GET("/api/markets/{market_id}/chat", {
+          params: { path: { market_id: marketId } },
+          signal,
+        }),
+      ),
+  });

@@ -1,0 +1,67 @@
+{
+  "fixture": "chrome-webm",
+  "browser": "chrome 154.0.8037.98",
+  "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36",
+  "asked": "video/webm;codecs=vp8,opus",
+  "recorded": "video/webm;codecs=vp8,opus",
+  "source": "camera",
+  "width": 320,
+  "height": 180,
+  "frame_rate": 20,
+  "sound": true,
+  "timeslice_ms": 1000,
+  "video_bits_per_second": 250000,
+  "audio_bits_per_second": 64000,
+  "pieces": [
+    {
+      "file": "000.bin",
+      "bytes": 21044,
+      "at_ms": 1023
+    },
+    {
+      "file": "001.bin",
+      "bytes": 35172,
+      "at_ms": 2045
+    },
+    {
+      "file": "002.bin",
+      "bytes": 37575,
+      "at_ms": 3063
+    },
+    {
+      "file": "003.bin",
+      "bytes": 37211,
+      "at_ms": 4083
+    },
+    {
+      "file": "004.bin",
+      "bytes": 36346,
+      "at_ms": 5103
+    },
+    {
+      "file": "005.bin",
+      "bytes": 35595,
+      "at_ms": 6124
+    },
+    {
+      "file": "006.bin",
+      "bytes": 28404,
+      "at_ms": 7142
+    },
+    {
+      "file": "007.bin",
+      "bytes": 30725,
+      "at_ms": 8162
+    },
+    {
+      "file": "008.bin",
+      "bytes": 31563,
+      "at_ms": 9183
+    },
+    {
+      "file": "009.bin",
+      "bytes": 26672,
+      "at_ms": 10003
+    }
+  ]
+}

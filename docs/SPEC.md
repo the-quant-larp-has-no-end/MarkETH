@@ -242,6 +242,47 @@ Admins can halt an open market and resume it; a halted market is closed before i
 - **Who settles:** only an admin resolves or voids a market, and not an admin who traded it. Another admin has to (A.4).
 - **Content rules:** the usage policy states them. No questions about the private matters of a person who is named or can be identified, about anyone's grades or about outcomes a trader can decide alone. No party-political or religious questions, as VSETH requires Fachvereine to stay neutral there. The proposer of a market does not trade it.
 
+### Live stream
+
+A market can have a live stream: one person shows a camera, and whoever can read the market watches it about nine seconds behind (§9, "Live video"). The proposer of a market asks for one and an admin approves or refuses; an admin goes live on a market without asking. No credit moves in any of it.
+
+```mermaid
+stateDiagram
+    [*] --> REQUESTED: request (proposer)
+    REQUESTED --> APPROVED: approve (admin)
+    REQUESTED --> REFUSED: refuse (admin)
+    APPROVED --> REFUSED: refuse (admin)
+    APPROVED --> LIVE: start (proposer)
+    [*] --> LIVE: start (admin)
+    LIVE --> ENDED: end / time limit / no piece
+    REFUSED --> [*]
+    ENDED --> [*]
+```
+
+REFUSED and ENDED are final: the next live stream of a market is another row of `broadcasts`.
+
+- **Who.** Every operation of a live stream needs the caller to be inside the market. One place says who is, `MarketAccess` of `backend/app/services/market_access.py`: once a market is opened, everybody with a profile. Nobody is inside a proposal, which has no live stream: its operations answer 404, like an id no market has.
+- **Which market.** A live stream is asked for, approved and started while the effective status of its market is OPEN, HALTED or CLOSED. Refusing, ending and watching ask nothing of the market: a live stream that runs goes on when its market is closed, resolved or voided.
+- **One per market, one at a time.** A market has at most one live stream that is REQUESTED, APPROVED or LIVE; one more is 409 `CONFLICT`. At most `BROADCAST_MAX_LIVE=1` are LIVE at once, and a start beyond that is `LIMIT_EXCEEDED`.
+- **The request.** The proposer of the market asks, with `policy_accepted: true`, at most `BROADCAST_REQUESTS_PER_USER_PER_DAY=3` times per calendar day of `APP_TIMEZONE`; a request that is refused counts. An admin does not ask: an admin starts. An admin approves a request, or refuses it with a reason the proposer is shown, and takes an approval back the same way until the live stream has started.
+- **On air.** The broadcaster's browser sends its recording in pieces (§9). A live stream is on air from the first piece after which the media box says that its playlist can be played; before that it has no address to play.
+- **The end.** Its broadcaster or an admin ends a live stream. It also ends by itself, `BROADCAST_MAX_MINUTES=120` minutes after its start (`TIME_LIMIT`) or `BROADCAST_STALL_SECONDS=120` seconds after the last piece that was noted (`STALLED`), whichever comes first. No job stores such an end: every answer reports it from that instant, and the first operation that meets the row stores it, in a transaction of its own, before it goes on. The time of the last piece is written at most once per quarter of `BROADCAST_STALL_SECONDS`, so the stall rule can end a live stream up to that much early and never late.
+- **Going on.** A proposer whose live stream ended by itself goes live again on the approval it ran on, without asking: what follows is another row, which names the ended one in `resumed_from` and does not count against the day's requests. After an end by a person the proposer asks again.
+- **Watching.** At most `BROADCAST_MAX_VIEWERS=100` people hold a place in one live stream; whoever comes beyond them is told that it is full. A place is taken when video is asked for and kept while the viewer goes on playing (§9), and the end of the live stream gives every place back. Nobody is told how many watch.
+- **What is told to whom.** `GET /markets/{market_id}/broadcast` answers with the latest live stream of the market for an admin and for its broadcaster, and for everybody else only while it is LIVE. Who broadcasts is told to admins alone, and the reason of a refusal to the broadcaster and to admins. The answer says what the caller may do right now (`can_request`, `can_start`, `can_start_as_admin`, `can_approve`, `can_refuse`, `can_end`, `can_watch`, `full`), so no screen compares a role, a status or a clock.
+- **Audit.** An approval, a refusal, a start by an admin and an end by an admin each write an `audit_log` row in their transaction. What a proposer does, and an end the clock brought, write none.
+
+### Live chat
+
+Beside a live stream runs a chat. The chat of a market is open exactly while the market has a live stream that is LIVE. A message belongs to that live stream, and a live stream that starts later on the same market starts with an empty chat.
+
+- **Who.** Whoever is inside the market reads and writes. A message of an admin carries `from_vis`: the server sets it from the role its author has in effect when the message is stored, and no request can.
+- **A message** is one line of plain text of at most `CHAT_MESSAGE_MAX_LENGTH=200` characters. Control and format characters are dropped and every run of whitespace becomes one space; what is left is stored and returned character for character.
+- **Reading.** `GET /markets/{market_id}/chat` says whether the chat is open and returns its latest `CHAT_BACKLOG_SIZE=100` messages, earliest first, without pages. What is written after that arrives as an event (§9).
+- **Limits.** One user writes at most `CHAT_MESSAGE_LIMIT_PER_USER=5` messages per `CHAT_MESSAGE_LIMIT_PER_USER_WINDOW_SECONDS=10`, and one chat takes at most `CHAT_ROOM_MESSAGE_LIMIT=20` per `CHAT_ROOM_MESSAGE_LIMIT_WINDOW_SECONDS=10` from everybody together. Both are 429 `RATE_LIMITED`. They are counted in Redis and, while Redis cannot be reached, in the API process with the same rule. A message for a chat that is closed is 409 `CONFLICT`.
+- **Removal.** An admin removes a message, and the audit row keeps what it said. Suspending an account deletes what it wrote in the chats that run, in the transaction of the suspension, with one audit row per live stream.
+- **Nothing is kept.** A row of `chat_messages` exists exactly while its message can be read: the transaction that stores the end of a live stream deletes its chat, and a removed message is deleted on the spot. What remains of a chat is the audit rows of removals.
+
 ## 7. Data model (PostgreSQL, Alembic)
 
 Postgres holds every balance, position and ledger entry; all amounts are BIGINT micro-units. The models in `backend/app/models/` are the schema, and the Alembic revisions of `backend/migrations/versions/` are how a database gets it: the baseline builds the schema as it was first deployed, and every change to a model since comes with a revision (A.10).
@@ -264,8 +305,12 @@ Postgres holds every balance, position and ledger entry; all amounts are BIGINT 
 | `outbox` | id (BIGINT identity), topic, payload JSONB, created\_at, published\_at |
 | `audit_log` | id, actor\_id, action, target, before, after, created\_at |
 | `alerts` | id, severity, message, context, created\_at, acked\_by, acked\_at |
+| `broadcasts` | id, market\_id, broadcaster\_id, status, requested\_at, decided\_by, decided\_at, refusal\_reason, resumed\_from, started\_at, on\_air\_at, last\_chunk\_at, ended\_at, ended\_by, end\_reason |
+| `chat_messages` | id, market\_id, broadcast\_id, user\_id, text, from\_vis, created\_at |
 
 A user's net stake in a market is `cost_micro − proceeds_micro` summed over both outcomes. `journal_entries` and `postings` are append-only: the app role has no UPDATE or DELETE on them. A voucher row copies the id, the name and the price of its product.
+
+`broadcasts` has one row per time somebody asked to go live or went live (§6): the record of what was asked, decided and ended, from which the app role cannot DELETE. At most one row per market is REQUESTED, APPROVED or LIVE, which a partial unique index holds whatever two requests do at the same moment. Nothing of the video is stored, there or anywhere else. A message of `chat_messages` is never edited: the app role has no UPDATE on that table.
 
 System accounts: `vis:issuance` (source of every granted, coded and adjusted credit, may go negative), `vis:mm_pnl` (takes the result of every settled market, may go negative), `vis:redemption_pending`, `vis:redeemed`, and `market:{id}`, one per market, which takes in costs and pays out proceeds and never goes below zero (A.7).
 
@@ -295,7 +340,7 @@ Every other transaction that touches a market also locks the market row first, t
 
 ## 9. Infrastructure
 
-The stack: Nginx in front, Next.js and FastAPI behind it, Postgres as the only source of truth, Redis for speed and limits, ScyllaDB for price history. One `make up` starts nginx, web, api, relay, migrate, postgres, redis and scylla.
+The stack: Nginx in front, Next.js and FastAPI behind it, Postgres as the only source of truth, Redis for speed and limits, ScyllaDB for price history. One `make up` starts nginx, web, api, relay, migrate, media, postgres, redis and scylla.
 
 ```mermaid
 flowchart LR
@@ -309,11 +354,15 @@ flowchart LR
     relay[relay · outbox] --> postgres
     relay -.-> scylla
     migrate[migrate · one-shot] --> postgres
+    api -.->|pieces of a live stream| media[media · ffmpeg, no network]
+    media -.->|playlist and segments| nginx
 ```
 
 Solid arrows are required for a trade to commit; dashed arrows degrade gracefully.
 
 If Redis or ScyllaDB fails, trades still commit in Postgres. Only speed, limits and charts degrade.
+
+The media box (`media`) turns what a broadcaster sends into the live stream people watch, and decides nothing. Without it trades still commit and everything but live video works: a live stream does not start ([Live video](#live-video)).
 
 ### Compose
 
@@ -326,15 +375,17 @@ If Redis or ScyllaDB fails, trades still commit in Postgres. Only speed, limits 
 | `api` | uvicorn with the FastAPI app, port 8000 | core | `API_MEMORY_LIMIT=768m` |
 | `relay` | `python -m app.relay` | core | `BACKEND_WORKER_MEMORY_LIMIT=256m` |
 | `migrate` | One-shot, as the owner role: `alembic upgrade head`, `alembic check`, `python -m scripts.check_schema` | core | `BACKEND_WORKER_MEMORY_LIMIT=256m` |
+| `media` | The media box: a supervisor in front of ffmpeg, which turns the pieces of a live stream into HLS | none | `MEDIA_MEMORY_LIMIT=512m` |
 | `postgres` | Postgres 18, with the volume that holds every balance | core | `POSTGRES_MEMORY_LIMIT=1g` |
 | `redis` | Redis 8.8, nothing persisted | core | `REDIS_MEMORY_LIMIT=128m` |
 | `scylla` | ScyllaDB 2026.1, one node | core | `SCYLLA_MEMORY_LIMIT=4g` |
 
-- **Two networks.** `edge` holds nginx and the web app, `core` holds nginx and everything else. The web app serves the same pages to everybody and can open a connection to nothing but the proxy. `edge` has a fixed range, `EDGE_SUBNET=192.168.209.0/28` with Docker's own address `EDGE_GATEWAY=192.168.209.1`, so that the proxy can tell the web container from a request that came in from outside.
+- **Two networks.** `edge` holds nginx and the web app, `core` holds nginx and everything else but `media`, which is on no network. The web app serves the same pages to everybody and can open a connection to nothing but the proxy. `edge` has a fixed range, `EDGE_SUBNET=192.168.209.0/28` with Docker's own address `EDGE_GATEWAY=192.168.209.1`, so that the proxy can tell the web container from a request that came in from outside.
 - **Who gets which password.** `api` and `relay` connect as the app role and are handed an empty password for the owner role; `migrate` alone gets it.
 - **Start order.** `api` and `relay` wait for Postgres and for `migrate` to succeed, and for neither Redis nor ScyllaDB. nginx waits for nobody and answers `/api/` with a JSON 503 until the API is up.
-- **Resources.** Every container has a hard memory limit and a bounded log (`CONTAINER_LOG_MAX_SIZE=10m`, `CONTAINER_LOG_MAX_FILES=3`). `WEB_MEMORY_LIMIT` is sized for the development server; `infra/deploy/env.production` sets a smaller one for the built app. If the host runs out of memory all the same, ScyllaDB goes first and Postgres last.
+- **Resources.** Every container has a hard memory limit and a bounded log (`CONTAINER_LOG_MAX_SIZE=10m`, `CONTAINER_LOG_MAX_FILES=3`). `WEB_MEMORY_LIMIT` is sized for the development server; `infra/deploy/env.production` sets a smaller one for the built app. If the host runs out of memory all the same, the media box goes first, then ScyllaDB, and Postgres last.
 - **Stopping the API.** A stop waits `API_SHUTDOWN_TIMEOUT_SECONDS=5` for requests in flight, because an open event stream never ends by itself.
+- **The media box.** `media` is the one container built on the assumption that somebody gets to run code in it: ffmpeg reads bytes a person chose (A.12). It is on no network (`network_mode: none`), has a read-only root, no capability and no shared memory, runs as a user of its own (10001) and gets no `.env`: Compose hands it the fifteen variables its settings read. `MEDIA_PIDS_LIMIT=128`, `MEDIA_MEMORY_LIMIT` and `MEDIA_CPUS=1.5` bound it. What it shares with the stack is two volumes, both memory (tmpfs): the directory of its socket, which `api` mounts read-only, and the directory of the playlists and segments (`MEDIA_HLS_TMPFS_SIZE=64m`), which `nginx` mounts read-only. Its supervisor is process 1 of the container. Nobody waits for it.
 
 ### Nginx
 
@@ -347,6 +398,8 @@ If Redis or ScyllaDB fails, trades still commit in Postgres. Only speed, limits 
 - **The web container.** `/api/` is refused for a peer on the `edge` network other than its gateway, so the web container cannot speak to the API through the proxy.
 - **Access log.** One JSON object per request, without the query string, the Referer and the cookies: a code to redeem arrives as `/wallet?code=…`. One field says whether a cookie of the portal's sign-in came along, which it never should. The deployed API writes no access log of its own.
 - What nginx itself answers under `/api/` (a refusal, a body above the limit, the rate limit, an API that does not answer) has the API's error shape (A.2).
+- **Pieces of a live stream.** `/api/broadcasts/*/chunks` is the one location with a body limit of its own, `BROADCAST_CHUNK_MAX_BYTES`, and its body is relayed to the API unbuffered. A caller has at most `NGINX_BROADCAST_UPLOADS_PER_CALLER=2` pieces on their way at once.
+- **Video.** `/api/broadcasts/*/hls/index.m3u8` and `seg-<number>.ts` beside it are files nginx reads from the volume of the media box, after it asked the API whether this caller may watch this live stream (`auth_request` to `GET /api/broadcasts/{broadcast_id}/access`). A yes is remembered per caller and live stream for `BROADCAST_ACCESS_CACHE_SECONDS=5`, a refusal not at all. The files are sent with `Cache-Control: no-store`, and a refusal has the API's error shape.
 
 ### Redis
 
@@ -374,15 +427,47 @@ CREATE TABLE quotes_by_market_day (
 - Writes are upserts keyed by `version`, so delivering a row twice is harmless.
 - `GET /api/markets/{market_id}/history` reads Scylla and falls back to the Postgres `trades` table when Scylla is down or behind. Neither store is asked for more than `HISTORY_READ_LIMIT=5000` points, the latest ones, and what is read is thinned evenly to `HISTORY_MAX_POINTS=500`, keeping its first and its latest point. The answer names the right edge of the chart (`until`): the server's clock while the market can still trade, else the moment trading ended.
 
+### Live video
+
+Only HTTP reaches the app (A.12), so a live stream goes up as ordinary requests and comes down as files a browser downloads.
+
+1. **Up.** The broadcaster's browser records the camera and the microphone with `MediaRecorder` and posts a piece every `BROADCAST_CHUNK_MS=1000` milliseconds: `POST /api/broadcasts/{broadcast_id}/chunks`, with `part` and `seq` in the query and the bytes as the body, at most `BROADCAST_CHUNK_MAX_BYTES=1048576` of them. A part is one run of the recorder, and `seq` counts its pieces from 0. The studio records `BROADCAST_CAPTURE_VIDEO_KBPS=1800` kbit/s of video and `BROADCAST_AUDIO_KBPS=64` of sound.
+2. **Through the API.** The API judges the caller before it reads a byte of the body, then hands the piece to the media box over a Unix socket (`BROADCAST_MEDIA_SOCKET=/run/marketh-media/box.sock`), one request per connection, and waits at most `BROADCAST_MEDIA_TIMEOUT_MS=2000` for the answer. A piece is taken once, however often it is sent. The answer says which `seq` comes next, or `restart`: the studio then begins another part.
+3. **The media box** runs one ffmpeg process per part. The first bytes of a part say how it is read, as WebM or as MP4; anything else is answered `restart`, and no ffmpeg runs. ffmpeg decodes VP8, H.264, Opus and AAC, takes a picture of up to `BROADCAST_INPUT_MAX_WIDTH=1920` by `BROADCAST_INPUT_MAX_HEIGHT=1080` pixels and writes what people watch: `BROADCAST_VIDEO_HEIGHT=720` lines at `BROADCAST_VIDEO_FPS=24` frames per second and `BROADCAST_VIDEO_KBPS=1200` kbit/s, encoded with `MEDIA_FFMPEG_THREADS=2` and `MEDIA_X264_PRESET=veryfast`, as HLS with segments of `BROADCAST_HLS_SEGMENT_SECONDS=2` seconds and a playlist of `BROADCAST_HLS_PLAYLIST_SEGMENTS=6` of them. A later part continues the playlist and marks one discontinuity.
+4. **Down.** nginx serves the playlist and the segments from the volume the box writes to, after asking the API about the caller ([Nginx](#nginx)). They are no operations of the API.
+5. **Playing.** Apple's engine, which is Safari and every browser on an iPhone or an iPad, plays the playlist itself; every other browser plays it through hls.js, a script of the app's own origin. A viewer is about nine seconds behind the camera (A.12).
+
+What holds beside that path:
+
+- **A start asks the box.** The API asks the media box for a place inside the transaction of a start, as its last step: a box that does not answer in time, or has no place, makes the start 503 and nothing is written. Everything else the box is told follows a commit and is best effort.
+- **A stop** kills ffmpeg at once and deletes the files of the live stream. With the stop of its last live stream the process of the box ends and Compose starts an empty container, which takes about a second; a start in that second is 503.
+- **The box's own timers.** The box stops by itself a live stream that got no piece for `BROADCAST_STALL_SECONDS` and one that is older than `BROADCAST_MAX_MINUTES` plus a minute, so nothing runs on that the API never stopped. An ffmpeg that was fed for 15 seconds without writing its playlist is killed, and its part with it.
+- **The box down.** Starts and pieces are 503 "Live video is unavailable right now. Try again shortly."; ends, reads and everything else of the application work. A box that started again is given the live stream again by the next piece, unless the live stream has ended meanwhile.
+- **Places.** The `BROADCAST_MAX_VIEWERS` places of a live stream are counted in the one API process. A yes to the proxy's question gives or keeps a place for `BROADCAST_ACCESS_CACHE_SECONDS` plus the length of a playlist, 17 seconds with the values above. An API that starts again counts afresh.
+- **The studio and the player** read their paces from `GET /config` (`broadcast`). A studio queues `BROADCAST_UPLOAD_BACKLOG_SECONDS=15` seconds of video while its connection is slow, waits `BROADCAST_UPLOAD_TIMEOUT_MS=10000` for the answer to a piece and `BROADCAST_UPLOAD_RETRY_MS=1000` before it sends one again, and pauses when it began three parts within `BROADCAST_RESTART_WINDOW_MS=30000`. A player that fails, or shows no picture for `BROADCAST_WAIT_NOTICE_MS=4000`, says that it is waiting and asks the API: while the answer is the same live stream, on and open to the viewer, another player is built after `BROADCAST_PLAYER_RETRY_MS=2000`, and every other answer takes the player away.
+
+**What is pushed.** A change of a live stream or of its chat is announced inside the transaction that writes it (`uow.announce`) and reaches the open tabs over the event stream, `GET /api/stream`, on the topics a tab names:
+
+| Event | Topic | To whom | Carries |
+| --- | --- | --- | --- |
+| `chat.message` | `market:{market_id}` | Whoever is inside the market | The message, as the POST answered it |
+| `chat.removed` | `market:{market_id}` | The same | The id of the message and nothing of its text |
+| `broadcast.changed` | `broadcast:{market_id}`, and `markets` for the lists | A request, an approval and a refusal: the broadcaster, on the first topic, and the admins. A start, the moment a live stream is on air and every stored end: whoever is inside the market | Which market, and nothing else: the tab reads again what it shows |
+
+A suspension that deleted messages announces one `broadcast.changed` per market on `broadcast:{market_id}`, and no `chat.removed` per message. No event is kept or sent a second time: a tab reads the live stream and the chat when its stream opens. `LIVE_EVENT_MAX_BYTES=4096` is sized so that the longest chat message fits one event.
+
 ### When a dependency fails
 
 | Down | Trading | Effect |
 | --- | --- | --- |
 | ScyllaDB | Works | Charts fall back to Postgres; the outbox backs up and drains once Scylla is back |
 | Redis | Works | Code redemption fails closed (503); trade rate limit falls back to in-process; cache bypassed; live updates fall back to 10-second polling (`LIVE_POLL_FALLBACK_SECONDS=10`) |
+| Media box | Works | A live stream does not start and takes no piece (503); ending one and every read work, and so does everything else |
 | Postgres | Stops | Everything returns 503; nothing financial is decided anywhere else |
 
 The API answers 503 `SERVICE_UNAVAILABLE` when Postgres cannot serve a request: it is unreachable, starting up or shutting down; the connection is lost; no connection of the pool comes free within `POSTGRES_POOL_TIMEOUT_SECONDS=10` (the pool holds `POSTGRES_POOL_SIZE=30` connections and `POSTGRES_MAX_OVERFLOW=0` more); a lock is not granted within `POSTGRES_LOCK_TIMEOUT_MS`; or Postgres ends the transaction because of a deadlock or a serialization failure. In each case nothing is committed and the same request can succeed a moment later, so a client sends it again. While the API itself does not answer, nginx answers `/api/` with the same 503.
+
+`GET /health` reports Postgres, Redis, ScyllaDB and the media box separately, each `up` or `down`. Only Postgres decides between 200 and 503; `status` is `ok` when the other three answer too, and `degraded` otherwise.
 
 ### The schema
 
@@ -435,6 +520,8 @@ Who may call what, for all 41 (A.2):
 | STAFF | Role BARISTA or ADMIN | 1: `POST /barista/vouchers/redeem` |
 | ADMIN | Role ADMIN | 19: the seven market actions, the four operations under `/admin/code-batches`, `GET /admin/risk`, `POST /admin/alerts/{alert_id}/ack`, `POST /admin/grants/monthly` and the five under `/admin/users` |
 
+**Live stream and live chat.** Fourteen more operations belong to the live stream of a market and to its chat (§6, §9); A.2 lists them. Nine need a profile (MEMBER) and five the role ADMIN. `POST /broadcasts/{broadcast_id}/chunks` is the one operation whose body is no JSON: it takes `application/octet-stream`, with `part` and `seq` in the query. `GET /broadcasts/{broadcast_id}/access` is asked by the proxy for every viewer and by no screen, and answers 200 or 403, never 404. A request, a decision, a start and an end answer with the live stream of the market as the caller sees it. A `CONFLICT` about a live stream carries its `status` in `details`, and its `end_reason` once it has ended; its two limits are `LIMIT_EXCEEDED` with `details.limit` `MAX_LIVE_BROADCASTS` or `MAX_BROADCAST_REQUESTS_PER_USER_PER_DAY`.
+
 Errors share one shape, `{code, message, details}`. `message` is a sentence for the user and is shown as it is.
 
 | Code | Status | When |
@@ -482,6 +569,8 @@ Next.js with TypeScript, mobile-first; the frontend only shows numbers the serve
 | Propose market | Form with all required fields |
 | Admin | Approve and resolve markets, create, open and revoke code batches, risk panel, users |
 | Barista | Camera scanner for vouchers |
+| Live stream | A section of Market detail while the market has a live stream: "Watch live", the video box and the live chat under it. "Live now" on Markets lists the live streams that are on air. An admin approves, refuses and ends from the admin area |
+| Live stream studio | The broadcaster's page of a market: the proposer's request and what became of it, the camera's preview, "Go live" and the end of the live stream |
 
 Tap targets are at least 44 px. After `QUOTE_STALE` the sheet shows the fresh quote and asks to confirm again. The Confirm button disables itself and reuses one Idempotency-Key until a response arrives.
 
@@ -504,6 +593,7 @@ The product is ready when the acceptance criteria below pass on a phone and the 
 - **Leaderboard:** every sort and filter; users without a rate come last; ranks count within the filters; the viewer's row.
 - **Contract and stack:** the 41 operations with their access levels, one error shape and amounts as strings; the committed `backend/openapi.json` equals the code; the models, the schema and its fingerprint agree; the stack files keep identity, passwords and networks where they belong.
 - **Failures:** with Scylla stopped trades succeed and the chart catches up after restart; with Redis stopped trades succeed and code redemption returns 503.
+- **Live stream and live chat:** every move of a live stream and who may make it; one open live stream per market and `BROADCAST_MAX_LIVE` at once; an end by the time limit and by the stall rule is reported from its instant and stored by the first operation that meets it; a piece is taken once; with the media box down a start and a piece are 503 and everything else works; the proxy's question admits nobody outside the market and nobody beyond `BROADCAST_MAX_VIEWERS`; a chat is open exactly while its live stream is LIVE, both of its limits hold with and without Redis, and the end of a live stream leaves no message; the stack files keep the media box without a network, a secret or a writable root. `make test-media` builds the image of the media box and has its ffmpeg make a playlist of what a browser recorded.
 
 ### Acceptance criteria
 
@@ -516,8 +606,16 @@ The product is ready when the acceptance criteria below pass on a phone and the 
 - [ ] Stopping Scylla mid-demo leaves trading working; the chart backfills after restart.
 - [ ] `/admin/risk` shows open markets, summed loss budgets against the cap and outstanding obligations.
 - [ ] A voucher for a product is scanned on the barista screen and is used up; a scan by anybody else after that is rejected.
+- [ ] An admin goes live on a market from a camera; somebody else opens the market, taps "Watch live" and sees and hears the live stream about nine seconds behind.
+- [ ] A live stream ends by a tap, after `BROADCAST_MAX_MINUTES` and when no piece arrived for `BROADCAST_STALL_SECONDS`; each time its viewers are told and nothing plays on.
+- [ ] A message written in the live chat appears for the other viewers without a reload; when the live stream ends the chat is closed and its messages are gone.
+- [ ] The proposer of a market asks for a live stream, an admin approves it and the proposer goes live; a refusal shows its reason.
+- [ ] "Live now" on Markets lists a live stream while it is on air.
+- [ ] With the media box stopped, trading works and a live stream does not start.
 
 On the VM, `make deploy-check` and `make deploy-smoke` prove the deployed stack from the inside (`docs/SERVER_INFRASTRUCTURE.md` §14).
+
+What only signed-in people can show of live video, a live stream on two phones and one that outlasts the portal's session, are the checks P14 and P15 of `docs/SERVER_INFRASTRUCTURE.md` §13.1.
 
 ---
 
@@ -529,6 +627,7 @@ Sections 1 to 12 say what the system does. This appendix records the decisions b
 
 - Built: everything sections 1 to 12 describe, with vouchers for a list of products, the barista scanner, the printable QR sheet, the leaderboard and the admin area with user management.
 - Not built: stop-loss auto-halt; comments, categories, search and market images. Payments, a sign-in of its own, multi-outcome markets, order books, limit orders and short selling are out of scope.
+- Built with the live stream of a market: one camera as its source, one live stream at a time, and the live chat beside it. Not built: sharing a screen, switching cameras while live, keeping the phone awake, a count of viewers, a recording.
 
 ### A.2 API conventions
 
@@ -536,7 +635,7 @@ Sections 1 to 12 say what the system does. This appendix records the decisions b
 - **Probabilities** are JSON numbers in [0, 1], already rounded for display to `PRICE_DISPLAY_DECIMALS + 2` places. `p_no` is always `1 - p_yes` computed from the rounded value, so the two never show 100.1%.
 - **Errors** use `{code, message, details}` for every non-2xx response, including validation (422 `VALIDATION_ERROR`) and unknown routes, so a client parses one kind of error. What `details` holds for each code is listed in the `ErrorResponse` schema of the OpenAPI document; a `LIMIT_EXCEEDED` names the limit it ran into in `details.limit`. A wrong method on an existing path is 405 with code `NOT_FOUND`. With Postgres unreachable every route that needs it answers 503 `SERVICE_UNAVAILABLE` (§9); the API's error handlers translate that once, no service does. What nginx answers under `/api/` by itself has the same shape and the API's own codes, and the API's own words wherever the API has a sentence for the case: a refusal, the rate limit, an API that does not answer.
 - **Validation sentences.** A 422 for a request that does not match its schema lists one `{loc, msg, type}` per field in `details.errors`. The `msg` is a sentence for the person who filled in the form, never the framework's wording. One table, in `backend/app/api/validation.py`, makes it from the rule that was broken ("Enter a whole number.", "This is required."), and a field says it in its own words where the rule alone cannot: the characters of a username, a leaderboard rate that is typed in percent, an amount. A rule a service checks answers with its sentence as the `message` and the field in `details.field`: a lower bound above its upper bound, the value and the expiry of a code batch, a date of a market. The JSON schema keeps its patterns and bounds.
-- **Status codes.** What creates something answers 201: a market proposal, a trade, a voucher, a code batch, a balance adjustment. Everything else answers 200.
+- **Status codes.** What creates something answers 201: a market proposal, a trade, a voucher, a code batch, a balance adjustment, a chat message, a request for a live stream, a live stream an admin starts. Everything else answers 200.
 - **Who may call what.** Five access levels, each read off the guard a route uses, so the OpenAPI document cannot say one thing while the route does another:
 
   | Access | Guard | Who |
@@ -554,7 +653,7 @@ Sections 1 to 12 say what the system does. This appendix records the decisions b
 
 | Method | Path | Access | Why |
 | --- | --- | --- | --- |
-| GET | `/health` | PUBLIC | Compose healthcheck; reports Postgres, Redis and Scylla separately. Only Postgres decides the verdict |
+| GET | `/health` | PUBLIC | Compose healthcheck; reports Postgres, Redis, Scylla and the media box separately. Only Postgres decides the verdict |
 | GET | `/config` | PUBLIC | Public tunables for the UI, so the frontend reads no environment; the degree catalogue, the text limits of the forms and the bounds of a code batch travel with it |
 | PUT | `/me/profile` | IDENTITY | How a person the portal named gets a profile, and changes it |
 | GET | `/me/proposals` | MEMBER | A proposer sees the status of their proposals |
@@ -571,13 +670,27 @@ Sections 1 to 12 say what the system does. This appendix records the decisions b
 | POST | `/admin/users/{user_id}/reinstate` | ADMIN | Lift a suspension |
 | POST | `/admin/users/{user_id}/role` | ADMIN | How every admin beyond the bootstrap list and every barista gets the role |
 | POST | `/admin/users/{user_id}/adjustments` | ADMIN | Correct a balance that is wrong, with the reason on record |
+| GET | `/markets/{market_id}/broadcast` | MEMBER | The live stream of a market, and what the caller may do about it |
+| POST | `/markets/{market_id}/broadcast/request` | MEMBER | The proposer of a market asks for its live stream, with `policy_accepted: true` |
+| POST | `/broadcasts/{broadcast_id}/start` | MEMBER | The broadcaster of an approved live stream goes live |
+| POST | `/broadcasts/{broadcast_id}/chunks` | MEMBER | One piece of the recording: how video comes in where only HTTP does |
+| POST | `/broadcasts/{broadcast_id}/end` | MEMBER | The broadcaster, or an admin, ends a live stream |
+| GET | `/broadcasts/live` | MEMBER | "Live now": the live streams on air in the markets the caller is inside of |
+| GET | `/broadcasts/{broadcast_id}/access` | MEMBER | The proxy asks it before it serves video; no screen does |
+| GET | `/admin/broadcasts` | ADMIN | Every live stream that is requested, approved or on, earliest request first |
+| POST | `/admin/broadcasts/{broadcast_id}/approve` | ADMIN | Approve a proposer's request. Audit-logged, like the two below |
+| POST | `/admin/broadcasts/{broadcast_id}/refuse` | ADMIN | Refuse a request with a reason, or take an approval back |
+| POST | `/admin/markets/{market_id}/broadcast` | ADMIN | An admin goes live on a market without a request |
+| GET | `/markets/{market_id}/chat` | MEMBER | Whether the live chat of a market is open, and its latest messages |
+| POST | `/markets/{market_id}/chat` | MEMBER | Write a message in the live chat of a market |
+| POST | `/admin/markets/{market_id}/chat/{message_id}/remove` | ADMIN | Remove a message from a live chat; audit-logged with what it said |
 
 - **Leaderboard.** `GET /leaderboard` ranks every user whose status is ACTIVE, whether or not they ever traded, by one of four measures. Nothing is stored or cached for it: one statement computes the ranking from the accounts, trades, positions and resolutions as they are.
   - *Credits* are the balance of the account. *Trades* is the number of the user's trade rows.
   - The two rates are taken over the RESOLVED markets the user put credits into; a VOID market counts for nobody. For each such market, `returned` is what the user's sells brought in plus the shares they hold of the winning outcome, and the market is a win when `returned > cost`, strictly. `win_rate` = floor(wins · 10⁶ / markets). `avg_payout_ratio` = floor(Σ returned · 10⁶ / Σ cost), the cost-weighted mean: a market weighs as much as was put into it, so a trade of the minimum size cannot move it. The database computes both in NUMERIC.
   - The API sends `win_rate` rounded like every probability and the ratio cut to two places, never rounded up. A user without such a market has no rate: both are null, the user sorts last in both directions and is left out by any filter on a rate.
   - Filters are inclusive bounds on the four measures, compared with the exact values and not with what a row shows, plus the degree level and programme. Rank is the position in the filtered, sorted list, ties broken by `created_at` and then by id. The cursor is the rank a page ended at. `viewer` is the caller's own row under the same filters, wherever it ranks, and null when the filters leave the caller out.
-  - A row shows a username and a degree, never a name or an address, and the profile set-up says beforehand what other players can see: the username, the degree, the tokens and the trading record. The number of trades can be raised by buying and selling the smallest amount; each such pair costs a millionth of a credit and `MAX_ORDERS_PER_MINUTE` bounds it, which is accepted.
+  - A row shows a username and a degree, never a name or an address, and the profile set-up says beforehand what other players can see: the username, the degree, the tokens, the trading record and what is written in live chats. The number of trades can be raised by buying and selling the smallest amount; each such pair costs a millionth of a credit and `MAX_ORDERS_PER_MINUTE` bounds it, which is accepted.
 
 ### A.3 Identity, profiles and upkeep
 
@@ -757,3 +870,17 @@ Negative or zero inputs raise `ValueError`. So does a b too large for the precis
 - A submitted trade keeps its serialised body and its Idempotency-Key until an answer says what became of it: a 2xx, or a 4xx other than 429. Any 5xx, any 429, the portal's 401 and a network error keep both, and "Try again" sends the stored body with the stored key.
 - The chart is drawn up to the `until` the server names, not up to a clock of the device.
 - No code and no trade is stored in the browser: a code is read from `?code=` and removed from the address at once, a voucher's code lives in memory while its view is open, and a trade without an answer is kept in memory until it has one. The one thing the browser's storage holds is a flag that the page has reloaded for the portal's 401.
+
+### A.12 Live stream and live chat
+
+- **Only HTTP reaches the app.** The portal is the one way in and carries HTTP alone, without WebSockets, and the firewall lets in nothing beside the portal and SSH, so no UDP arrives either (`docs/SERVER_INFRASTRUCTURE.md` §6, §12). None of the usual ways to send live video reaches the VM, so a live stream is built from requests like any other: the recording goes up as a POST about every second and comes down as HLS, a playlist and segments a browser downloads.
+- **The box is isolated.** ffmpeg parses bytes a person chose, an admin or a proposer whom an admin let go live, and a fault of a decoder there is that person's code running. So the transcode has a container of its own, with no network, no store, no identity header to forge and no secret in its environment; it imports nothing of `app`, and the API's image does not hold it. Its process ends with its last live stream, so every live stream begins in an empty box. The API reaches it over a Unix socket and takes every answer it cannot read for a box that is unavailable.
+- **The box decides nothing about people.** Who may send and who may watch is the API's answer, request by request: for a piece before a byte of its body is read, for video through the proxy's question. Knowing the address of a playlist gives nothing.
+- **Nothing of a stream or a chat is kept.** Playlists and segments live in memory and go with the stop; no picture and no sound reaches a disk, in the broadcaster's browser neither. The chat of a live stream is deleted in the transaction that stores its end. What stays is that a live stream took place, the row of `broadcasts`, and the audit rows: of the admins' decisions, and of removed messages with their text, which the usage policy says.
+- **About nine seconds behind.** Segments make the delay. With the values of §9 a viewer is 9.1 to 9.5 seconds behind the camera, 8.3 to 10.5 depending on the moment of joining (measured, `docs/SERVER_INFRASTRUCTURE.md` §12). On screen it reads "Live, a few seconds behind."
+- **One stream at a time.** `BROADCAST_MAX_LIVE=1` because of the VM: one transcode took 0.40 to 0.49 of a vCPU and 155 MiB there, and the memory limits of the stack add up to 7,424 MiB of its 7.6 GiB, without swap. A hundred viewers are about 140 Mbit/s through the portal, which is why `BROADCAST_MAX_VIEWERS` is 100 (the same section).
+- **An end needs no job**, like the close of a market (A.4): a live stream is over from the instant the clock says so, and whoever meets the row first stores that. The media box runs the same two timers by itself, so a live stream whose end no request stores is transcoded no further.
+- **The start asks the box inside its transaction**, as the last step, so that a start which cannot have its place writes nothing. That transaction holds the advisory lock of the live streams for at most `BROADCAST_MEDIA_TIMEOUT_MS`.
+- **Locks.** Every write of a live stream's life takes one advisory lock first, then one row of `broadcasts`, then the advisory lock of the chat when it stores an end. A chat message takes the lock of its chat and no row lock, in a transaction of its own after the rate limits, so that no Redis call runs inside a transaction. Neither locks a market row or an account: the order of §8 is not touched.
+- **No count of viewers** is told to anybody. Places are counted in the one API process, to bound what a live stream takes of the portal, and an API that starts again counts afresh.
+- **A piece the portal refuses reloads nothing.** A reload would end the camera and with it the live stream, so the portal's 401 to a piece counts as no answer: the studio shows a banner to sign in again in another tab and sends the same piece again, and the live stream goes on if that takes less than `BROADCAST_STALL_SECONDS`. Every other request of the studio meets the portal's 401 as A.11 says.

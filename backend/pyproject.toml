@@ -58,7 +58,7 @@ known-first-party = ["app", "scripts", "tests"]
 python_version = "3.14"
 strict = true
 plugins = ["pydantic.mypy"]
-files = ["app", "scripts", "tests", "migrations"]
+files = ["app", "scripts", "tests", "migrations", "mediabox"]
 
 [[tool.mypy.overrides]]
 module = ["cassandra.*", "testcontainers.*"]

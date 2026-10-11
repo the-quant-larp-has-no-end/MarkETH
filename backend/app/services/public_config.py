@@ -16,6 +16,7 @@ from app.core.enums import MarketTier
 from app.core.units import to_cr
 from app.pricing import lmsr
 from app.schemas.admin.code_batches import LABEL_MAX_LENGTH, MAX_CODES_PER_BATCH
+from app.schemas.broadcasts import CAPTURE_MIME_TYPES, BroadcastConfig
 from app.schemas.config import DegreeLevelOption, PublicConfigResponse, TierConfig
 from app.schemas.markets import (
     LONG_TEXT_MAX_LENGTH,
@@ -30,6 +31,9 @@ FIXED_TIERS: Final[tuple[MarketTier, ...]] = (
     MarketTier.MEDIUM,
 )
 """The tiers whose b comes from `.env`. CUSTOM takes a budget instead (A.5)."""
+
+BITS_PER_KBIT: Final[int] = 1000
+"""A recorder is told its rates in bits per second; `.env` states them in kbit/s."""
 
 
 class PublicConfigService:
@@ -65,6 +69,28 @@ class PublicConfigService:
             )
             for tier in FIXED_TIERS
         ]
+        broadcast = settings.broadcast
+        # The camera is asked for the picture the viewers get; what a studio may
+        # record at most is what the media box takes.
+        studio_and_player = BroadcastConfig(
+            chunk_ms=broadcast.chunk_ms,
+            chunk_max_bytes=broadcast.chunk_max_bytes,
+            upload_backlog_bytes=broadcast.upload_backlog_bytes,
+            capture_height=broadcast.video_height,
+            capture_fps=broadcast.video_fps,
+            capture_max_width=broadcast.input_max_width,
+            capture_max_height=broadcast.input_max_height,
+            capture_video_bits_per_second=broadcast.capture_video_kbps * BITS_PER_KBIT,
+            capture_audio_bits_per_second=broadcast.audio_kbps * BITS_PER_KBIT,
+            capture_mime_types=list(CAPTURE_MIME_TYPES),
+            stall_seconds=broadcast.stall_seconds,
+            max_minutes=broadcast.max_minutes,
+            upload_timeout_ms=broadcast.upload_timeout_ms,
+            upload_retry_ms=broadcast.upload_retry_ms,
+            restart_window_ms=broadcast.restart_window_ms,
+            wait_notice_ms=broadcast.wait_notice_ms,
+            player_retry_ms=broadcast.player_retry_ms,
+        )
         return PublicConfigResponse(
             timezone=settings.app.timezone_name,
             signup_grant_cr=to_cr(grants.signup_grant_micro),
@@ -94,6 +120,9 @@ class PublicConfigService:
             question_max_length=QUESTION_MAX_LENGTH,
             short_text_max_length=SHORT_TEXT_MAX_LENGTH,
             long_text_max_length=LONG_TEXT_MAX_LENGTH,
+            chat_message_max_length=settings.chat.message_max_length,
+            chat_backlog_size=settings.chat.backlog_size,
+            broadcast=studio_and_player,
             code_length=codes.length,
             code_min_value_cr=to_cr(codes.min_value_micro),
             code_max_value_cr=to_cr(codes.max_value_micro),
