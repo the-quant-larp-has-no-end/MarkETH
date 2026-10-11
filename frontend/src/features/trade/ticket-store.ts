@@ -7,12 +7,11 @@ import { type ApiError, staleQuote } from "@/lib/api/errors";
 import { keys, type QuoteRequest } from "@/lib/api/keys";
 import { tradeMutation } from "@/lib/api/mutations";
 import type {
-  BuySlider,
+  BuyEntry,
   ErrorCode,
   QuoteResponse,
   SellEntry,
   SellPreset,
-  StakePreset,
   TradeRequest,
   TradeResponse,
 } from "@/lib/api/schema";
@@ -46,14 +45,14 @@ import { receiptHeadline, type TradeIntent } from "./intent";
  * then show what the server recorded.
  */
 
-/** What is entered: an amount when buying, a number of shares when selling. */
+/** The shares fields of a buy and a sale, kept separately (DESIGN.md §13). */
 export type Choice = {
   /**
-   * The text of the amount field: what was typed, the `amount_cr` of a preset or the
+   * The text of the buy shares field: what was typed, the `shares` of a shortcut or the
    * digits of a step of the slider. Empty until something is entered. It stays the string
    * it is, and is sent as it stands.
    */
-  readonly stake: string;
+  readonly buyShares: string;
   /**
    * The text of the shares field of a sell: what was typed, the `shares` of a sell preset
    * or the digits of a step of the slider. Empty until something is entered, and sent as
@@ -66,15 +65,13 @@ export type Choice = {
 export type Order = {
   readonly intent: TradeIntent;
   /**
-   * What the quote was asked for: the text of the amount field as `amount_cr`, or the
-   * text of the shares field as `shares`.
+   * What the quote was asked for. The ticket sends the shares field's text as `shares`.
    */
   readonly request: QuoteRequest;
   /** The quote on screen. It is the guard of the trade. */
   readonly quote: QuoteResponse;
   /** The controls as they stood, so that a trade that waits is shown as it was sent. */
-  readonly stakePresets: readonly StakePreset[];
-  readonly buySlider: BuySlider | null;
+  readonly buy: readonly BuyEntry[];
   readonly sellPresets: readonly SellPreset[];
   readonly sell: readonly SellEntry[];
 };
@@ -115,7 +112,7 @@ type Rest = {
 export type TicketState = SubmissionState<Sent, Rest>;
 
 const UNTOUCHED: Rest = {
-  choice: { stake: "", shares: "" },
+  choice: { buyShares: "", shares: "" },
   refusal: null,
   receipt: null,
 };
@@ -125,7 +122,7 @@ const UNTOUCHED: Rest = {
  * belongs to one of these.
  */
 export function choiceKey(intent: TradeIntent, choice: Choice): string {
-  const entered = intent.side === "BUY" ? choice.stake : choice.shares;
+  const entered = intent.side === "BUY" ? choice.buyShares : choice.shares;
   return [intent.side, intent.outcome, entered].join(":");
 }
 

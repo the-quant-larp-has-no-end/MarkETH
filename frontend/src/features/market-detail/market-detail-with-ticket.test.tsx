@@ -5,6 +5,7 @@ import { sizeCharts } from "@/test/charts";
 import { installFakeEventSource } from "@/test/fake-event-source";
 import {
   history,
+  buyEntries,
   MARKET_ID,
   marketDetail,
   marketViewer,
@@ -103,24 +104,24 @@ describe("on a phone", () => {
     api.on(QUOTE, json(200, quote({ amount_cr: "37.5", shares: "67.4" })));
     await user.click(await screen.findByRole("button", { name: "NO 45.2%" }));
     const dialog = await sheet();
-    const field = within(dialog).getByRole("textbox", { name: "Stake in tokens" });
+    const field = within(dialog).getByRole("textbox", { name: "Number of shares" });
     expect(field).toHaveValue("");
 
-    await user.type(field, "37,50");
+    await user.type(field, "0375");
 
     await waitFor(() =>
       expect(within(dialog).getByRole("button", { name: "Buy NO" })).toBeEnabled(),
     );
-    expect(api.lastCall(QUOTE)?.query.get("amount_cr")).toBe("37.50");
+    expect(api.lastCall(QUOTE)?.query.get("shares")).toBe("0375");
     await user.click(within(dialog).getByRole("button", { name: "Buy NO" }));
 
     await within(dialog).findByRole("heading", { name: /^Bought/ });
     expect(api.lastCall(TRADE)?.rawBody).toBe(
-      '{"side":"BUY","outcome":"NO","amount_cr":"37.50","min_shares":"67.4","quote_version":7}',
+      '{"side":"BUY","outcome":"NO","shares":"0375","max_cost_cr":"37.5","quote_version":7}',
     );
   });
 
-  test("an amount the server refuses is said with the stake entry, and no trade can be sent for it", async () => {
+  test("an amount the server refuses is said with the shares entry, and no trade can be sent for it", async () => {
     const { user, api } = open();
     api.on(
       QUOTE,
@@ -133,11 +134,11 @@ describe("on a phone", () => {
     await user.click(await screen.findByRole("button", { name: "YES 54.8%" }));
     const dialog = await sheet();
 
-    await user.type(within(dialog).getByRole("textbox", { name: "Stake in tokens" }), "250");
+    await user.type(within(dialog).getByRole("textbox", { name: "Number of shares" }), "250");
 
     const refusal = await within(dialog).findByRole("alert");
     expect(refusal).toHaveTextContent("This would exceed a limit.");
-    expect(dialog.querySelector("[data-slot=stake-entry]")).toContainElement(refusal);
+    expect(dialog.querySelector("[data-slot=shares-entry]")).toContainElement(refusal);
     expect(within(dialog).getByRole("button", { name: "Buy YES" })).toBeDisabled();
     expect(api.calls(TRADE)).toHaveLength(0);
   });
@@ -148,7 +149,7 @@ describe("on a phone", () => {
     api.on(TRADE, answer.handler);
     await user.click(await screen.findByRole("button", { name: "YES 54.8%" }));
     const dialog = await sheet();
-    await user.click(within(dialog).getByRole("button", { name: "25 tokens" }));
+    await user.click(within(dialog).getByRole("button", { name: "25 shares" }));
     await waitFor(() =>
       expect(within(dialog).getByRole("button", { name: "Buy YES" })).toBeEnabled(),
     );
@@ -181,7 +182,7 @@ describe("on a phone", () => {
     await user.click(await screen.findByRole("button", { name: /^YES / }));
     await sheet();
     expect(ticket()).toHaveAttribute("data-view", "form");
-    expect(screen.getByRole("textbox", { name: "Stake in tokens" })).toHaveValue("");
+    expect(screen.getByRole("textbox", { name: "Number of shares" })).toHaveValue("");
   });
 
   test("a refusal is read in the sheet that sent the trade, which can then be closed", async () => {
@@ -190,7 +191,7 @@ describe("on a phone", () => {
     api.on(TRADE, answer.handler);
     await user.click(await screen.findByRole("button", { name: "YES 54.8%" }));
     const dialog = await sheet();
-    await user.click(within(dialog).getByRole("button", { name: "25 tokens" }));
+    await user.click(within(dialog).getByRole("button", { name: "25 shares" }));
     await waitFor(() =>
       expect(within(dialog).getByRole("button", { name: "Buy YES" })).toBeEnabled(),
     );
@@ -212,7 +213,7 @@ describe("on a phone", () => {
     await user.click(await screen.findByRole("button", { name: "YES 54.8%" }));
     const dialog = await sheet();
 
-    await user.click(within(dialog).getByRole("button", { name: "25 tokens" }));
+    await user.click(within(dialog).getByRole("button", { name: "25 shares" }));
     await waitFor(() =>
       expect(within(dialog).getByRole("button", { name: "Buy YES" })).toBeEnabled(),
     );
@@ -222,7 +223,7 @@ describe("on a phone", () => {
       await within(dialog).findByRole("heading", { name: "Bought 45.123456 YES shares" }),
     ).toHaveFocus();
     expect(api.lastCall(TRADE)?.rawBody).toBe(
-      '{"side":"BUY","outcome":"YES","amount_cr":"25","min_shares":"45.12","quote_version":7}',
+      '{"side":"BUY","outcome":"YES","shares":"25","max_cost_cr":"25","quote_version":7}',
     );
 
     await user.click(within(dialog).getByRole("button", { name: "Done" }));
@@ -236,7 +237,7 @@ describe("on a phone", () => {
     const again = await sheet();
     expect(ticket()).toHaveAttribute("data-view", "form");
     expect(ticket()).toHaveAttribute("data-outcome", "NO");
-    expect(within(again).getByRole("button", { name: "25 tokens" })).toHaveAttribute(
+    expect(within(again).getByRole("button", { name: "25 shares" })).toHaveAttribute(
       "aria-pressed",
       "false",
     );
@@ -247,7 +248,7 @@ describe("on a phone", () => {
     expect(await screen.findByRole("link", { name: "Wallet, 240 tokens" })).toBeInTheDocument();
     await user.click(await screen.findByRole("button", { name: "YES 54.8%" }));
     const dialog = await sheet();
-    await user.click(within(dialog).getByRole("button", { name: "25 tokens" }));
+    await user.click(within(dialog).getByRole("button", { name: "25 shares" }));
     await waitFor(() =>
       expect(within(dialog).getByRole("button", { name: "Buy YES" })).toBeEnabled(),
     );
@@ -316,7 +317,7 @@ describe("on a phone", () => {
     api.on(TRADE, noAnswer);
     await user.click(await screen.findByRole("button", { name: "YES 54.8%" }));
     let dialog = await sheet();
-    await user.click(within(dialog).getByRole("button", { name: "25 tokens" }));
+    await user.click(within(dialog).getByRole("button", { name: "25 shares" }));
     await waitFor(() =>
       expect(within(dialog).getByRole("button", { name: "Buy YES" })).toBeEnabled(),
     );
@@ -354,7 +355,7 @@ describe("when the close time passes while the sheet is open", () => {
     await user.click(await screen.findByRole("button", { name: "YES 54.8%" }));
     act(() => streams.latest().open());
     const dialog = await sheet();
-    await user.click(within(dialog).getByRole("button", { name: "25 tokens" }));
+    await user.click(within(dialog).getByRole("button", { name: "25 shares" }));
     await waitFor(() =>
       expect(within(dialog).getByRole("button", { name: "Buy YES" })).toBeEnabled(),
     );
@@ -369,12 +370,14 @@ describe("when the close time passes while the sheet is open", () => {
           viewer: marketViewer({
             can_trade: false,
             cannot_trade_reason: "MARKET_NOT_OPEN",
-            stake_presets: [
-              { amount_cr: "25", allowed: false },
-              { amount_cr: "50", allowed: false },
-              { amount_cr: "100", allowed: false },
-            ],
-            buy_slider: null,
+            buy: buyEntries({
+              presets: [
+                { shares: "25", allowed: false },
+                { shares: "50", allowed: false },
+                { shares: "100", allowed: false },
+              ],
+              slider: null,
+            }),
           }),
         }),
       ),
@@ -385,7 +388,7 @@ describe("when the close time passes while the sheet is open", () => {
     await waitFor(() => expect(api.calls(MARKET)).toHaveLength(asked + 1));
     // The sheet stays, so that the user sees what became of what they were doing.
     await waitFor(() =>
-      expect(within(dialog).getByRole("textbox", { name: "Stake in tokens" })).toBeDisabled(),
+      expect(within(dialog).getByRole("textbox", { name: "Number of shares" })).toBeDisabled(),
     );
     expect(within(dialog).getByRole("button", { name: "Buy YES" })).toBeDisabled();
     expect(within(dialog).queryByRole("slider")).not.toBeInTheDocument();
@@ -408,18 +411,16 @@ describe("from 1024 px", () => {
     expect(within(panel).queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
   });
 
-  test("the panel has the stake entry: the slider, the amount field and the presets", async () => {
+  test("the panel has the shares entry: the slider, the amount field and the presets", async () => {
     setViewport("desktop");
     const { user, api } = open();
     const panel = await screen.findByRole("complementary", { name: "Trade" });
 
-    const stake = within(panel).getByRole("group", { name: "Stake" });
-    expect(
-      within(stake).getByRole("slider", { name: "Stake in whole tokens" }),
-    ).toBeInTheDocument();
-    await user.type(within(stake).getByRole("textbox", { name: "Stake in tokens" }), "40");
+    const stake = within(panel).getByRole("group", { name: "Shares" });
+    expect(within(stake).getByRole("slider", { name: "Whole shares" })).toBeInTheDocument();
+    await user.type(within(stake).getByRole("textbox", { name: "Number of shares" }), "40");
 
-    await waitFor(() => expect(api.lastCall(QUOTE)?.query.get("amount_cr")).toBe("40"));
+    await waitFor(() => expect(api.lastCall(QUOTE)?.query.get("shares")).toBe("40"));
     expect(within(stake).getByRole("slider")).toHaveAttribute("aria-valuenow", "40");
   });
 
@@ -431,7 +432,7 @@ describe("from 1024 px", () => {
     expect(panel).toContainElement(ticket());
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 
-    await user.click(within(panel).getByRole("button", { name: "25 tokens" }));
+    await user.click(within(panel).getByRole("button", { name: "25 shares" }));
     await waitFor(() =>
       expect(within(panel).getByRole("button", { name: "Buy YES" })).toBeEnabled(),
     );
@@ -454,21 +455,23 @@ describe("from 1024 px", () => {
         viewer: marketViewer({
           can_trade: false,
           cannot_trade_reason: "MARKET_NOT_OPEN",
-          stake_presets: [
-            { amount_cr: "25", allowed: false },
-            { amount_cr: "50", allowed: false },
-            { amount_cr: "100", allowed: false },
-          ],
-          buy_slider: null,
+          buy: buyEntries({
+            presets: [
+              { shares: "25", allowed: false },
+              { shares: "50", allowed: false },
+              { shares: "100", allowed: false },
+            ],
+            slider: null,
+          }),
         }),
       }),
     );
 
     const panel = await screen.findByRole("complementary", { name: "Trade" });
     for (const amount of ["25", "50", "100"]) {
-      expect(within(panel).getByRole("button", { name: `${amount} tokens` })).toBeDisabled();
+      expect(within(panel).getByRole("button", { name: `${amount} shares` })).toBeDisabled();
     }
-    expect(within(panel).getByRole("textbox", { name: "Stake in tokens" })).toBeDisabled();
+    expect(within(panel).getByRole("textbox", { name: "Number of shares" })).toBeDisabled();
     expect(within(panel).queryByRole("slider")).not.toBeInTheDocument();
     expect(within(panel).getByRole("button", { name: "Buy YES" })).toBeDisabled();
   });
