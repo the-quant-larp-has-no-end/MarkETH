@@ -40,6 +40,23 @@ MarkETH is intended to be a fun and welcoming space for everyone in the ETH comm
 - Admins of VIS settle the markets. After trading closes, an admin resolves a market to YES or NO from its source and states the evidence, which is shown on the market's page. An admin who traded a market does not settle it.
 - An admin may void a market that cannot be decided fairly, for example when its source disappears or its question proves unclear. A voided market pays nobody: every trader gets back their net stake, which is what they paid for shares minus what they received for selling, and never less than zero.
 
+## Live chat
+
+While a market has a live stream, it has a live chat. What you write there is shown at once, with your username, to everyone who can see the market. The chat ends with the stream, and its messages are deleted then.
+
+Each writer in a live chat has a role badge: User, Admin or Barista.
+
+In a live chat:
+
+- write about the market;
+- do not insult, threaten or harass anyone;
+- do not post the private matters of a person, advertising, or the same thing again and again;
+- do not try to mislead other traders about an outcome.
+
+What you write is shown as plain text. Links in it cannot be tapped.
+
+VIS removes messages that break this policy. What is removed disappears for everyone. VIS keeps removed messages on record.
+
 ## Vouchers
 
 Tokens can be turned into a voucher for one product at the bar: a coffee, a drink or a snack. The Wallet lists the products and the tokens each one takes.
@@ -50,11 +67,19 @@ A voucher is valid for 30 days. One that is not used by then expires, and its to
 
 Vouchers are not for sale and cannot be exchanged for money.
 
+## Live streams
+
+Whoever proposed a market can ask VIS to stream it live, from a camera. An admin decides on every request, and VIS can end a live stream at any moment.
+
+A live stream shows what its market is about. Film nobody who has not agreed to it, and show nothing this policy keeps out of markets.
+
+Viewers see a live stream a few seconds late. No picture and no sound is kept; that a stream took place is.
+
 ## What other players can see about you
 
-Other players see your username, your degree programme and your record on the leaderboard: the tokens you hold, the number of your trades, your win rate and your payout ratio.
+Other players see your username, your degree programme and your record on the leaderboard: the tokens you hold, the number of your trades, your win rate and your payout ratio. They also see what you write in a live chat. If you stream a market live, viewers see and hear what your camera shows.
 
-They do not see your name or your email address. Both come from your ETH sign-in and are shown to you and to the admins of VIS only. They do not see which markets you trade or what you hold in them, and a market does not show who proposed it.
+They do not see your name or your email address. Both come from your ETH sign-in and are shown to you and to the admins of VIS only. They are not shown which markets you trade or what you hold in them, and a market does not show who proposed it, unless you stream it live yourself.
 
 VIS keeps a record of every movement of tokens and of every action an admin takes.
 
@@ -64,6 +89,7 @@ VIS runs MarkETH and keeps it fair. To do that, VIS may:
 
 - reject a proposal, or change its wording and its dates before it opens. You see the reason for a rejection;
 - pause trading in a market, close it early or void it;
+- remove a chat message that breaks this policy;
 - correct a balance that is wrong, with the reason on record;
 - suspend an account that breaks this policy. A suspended account is locked out of MarkETH until VIS reinstates it;
 - change this policy. This page shows the policy in force.

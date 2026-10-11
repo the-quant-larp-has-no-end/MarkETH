@@ -8,6 +8,7 @@ import { EmptyState, QueryState } from "@/components/feedback";
 import { MarketCard, MarketCardSkeleton, useAskAtClose } from "@/components/market";
 import { Link, Screen } from "@/components/shell";
 import { Button } from "@/components/ui/button";
+import { LiveNowRow } from "@/features/broadcast";
 import { marketsQuery } from "@/lib/api/queries";
 
 import { DEFAULT_FILTER, STATUS_CHIPS, type StatusFilter, statusesOf } from "./status-filter";
@@ -52,6 +53,10 @@ function MarketsSkeleton() {
  * at the earliest one that is left (`useAskAtClose`). Whether a card keeps its "Yes" and
  * "No" is `trading_open` of the answer.
  *
+ * "Live now" (`LiveNowRow` of `features/broadcast`) stands above the chips while a live
+ * stream is on and is absent otherwise. It reads `GET /broadcasts/live` and follows the
+ * app's event stream by itself: the screen hands it nothing, and no chip touches it.
+ *
  * Nothing here sorts, filters or counts markets, and every figure on a card is the API's.
  */
 export function MarketsScreen() {
@@ -66,6 +71,8 @@ export function MarketsScreen() {
 
   return (
     <Screen top="main" title="Markets">
+      {/* A row per live stream, or nothing at all: no element around it holds its place. */}
+      <LiveNowRow />
       <FilterChips label="Status" value={filter} onChange={setFilter} chips={STATUS_CHIPS} />
 
       <QueryState query={markets} skeleton={<MarketsSkeleton />}>

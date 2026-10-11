@@ -7,7 +7,9 @@ which, that the web app's container gets no answer from the API through the prox
 is handed the owner role's password, that the deployed stack carries nothing of the
 development one, what the proxy and the API write into their logs, that ScyllaDB is
 given a container it starts in, that the proxy and the one API process may hold the
-connections of a full room, and that every value still comes from `.env`.
+connections of a full room, that the media box reaches nothing and is told nothing, that
+no video is served to a caller the API did not admit, and that every value still comes
+from `.env`.
 
 The compose files are read as text, the way they are written: two spaces per level, a
 comment always on a line of its own. The nginx files are parsed into their directives.
@@ -22,6 +24,7 @@ what Compose resolves.
 
 import ipaddress
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -34,8 +37,19 @@ import pytest
 
 from app.api.middleware import ORIGIN_MESSAGE
 from app.core.config import INFRA_ONLY_VARIABLES, REPO_ROOT
-from app.core.errors import ErrorCode, ForbiddenError, RateLimitedError, ServiceUnavailableError
+from app.core.errors import (
+    ErrorCode,
+    ForbiddenError,
+    NotFoundError,
+    RateLimitedError,
+    ServiceUnavailableError,
+    UnauthenticatedError,
+)
+from app.services.broadcasts import NOT_AVAILABLE_MESSAGE
+from mediabox.settings import HLS_ROOT
+from mediabox.settings import Settings as BoxSettings
 from tests.support.containers import POSTGRES_IMAGE, REDIS_IMAGE, SCYLLA_COMMAND, SCYLLA_IMAGE
+from tests.unit.mediabox.environment import BOX_VARIABLES
 
 PROXY_DIRECTORY: Final[Path] = REPO_ROOT / "infra" / "nginx" / "conf.d"
 DEVELOPMENT_DIRECTORY: Final[Path] = REPO_ROOT / "infra" / "nginx" / "dev"
@@ -53,6 +67,9 @@ DEPLOY_WORKFLOW: Final[str] = (REPO_ROOT / ".github" / "workflows" / "deploy.yml
 )
 FRONTEND_PACKAGE: Final[str] = (REPO_ROOT / "frontend" / "package.json").read_text(encoding="utf-8")
 BACKEND_DOCKERFILE: Final[str] = (REPO_ROOT / "backend" / "Dockerfile").read_text(encoding="utf-8")
+MEDIA_DOCKERFILE: Final[str] = (REPO_ROOT / "backend" / "mediabox" / "Dockerfile").read_text(
+    encoding="utf-8"
+)
 PROXY: Final[str] = (PROXY_DIRECTORY / "default.conf.template").read_text(encoding="utf-8")
 IDENTITY: Final[str] = (DEVELOPMENT_DIRECTORY / "identity.conf.template").read_text(
     encoding="utf-8"
@@ -182,16 +199,36 @@ def scalar(service: str, key: str) -> str:
     return found.group(1)
 
 
+STACK_VOLUME: Final[re.Pattern[str]] = re.compile(
+    r"^      - ([a-z][a-z0-9-]*):(/[^:\s]+)(:ro)?$", re.MULTILINE
+)
+"""A volume of the stack as a service mounts it: its name, where, and whether read-only."""
+
+
+def volumes_of(service: str) -> dict[str, tuple[PurePosixPath, bool]]:
+    """Volume name to (container path, read-only) of the volumes of the stack a service
+    mounts. A service without any has none."""
+    found = re.search(r"^    volumes:\n((?:      .*\n)+)", service, re.MULTILINE)
+    if found is None:
+        return {}
+    return {
+        name: (PurePosixPath(target), read_only == ":ro")
+        for name, target, read_only in STACK_VOLUME.findall(found[1])
+    }
+
+
 def mounts_of(service: str) -> dict[str, PurePosixPath]:
-    """Host path to container path of the mounts of a service.
+    """Host path to container path of the bind mounts of a service.
 
     Each of them has to be a read-only bind mount that never creates its source: a path
     that is missing then stops the container instead of mounting an empty directory.
+    Whatever else the service mounts is a volume of the stack (`volumes_of`).
     """
     found = re.search(r"^    volumes:\n((?:      .*\n)+)", service, re.MULTILINE)
     assert found is not None
     mounts = {source: PurePosixPath(target) for source, target in BIND_MOUNT.findall(found[1])}
-    assert len(mounts) == len(re.findall(r"^      - ", found[1], re.MULTILINE)), found[1]
+    mounted = len(mounts) + len(volumes_of(service))
+    assert mounted == len(re.findall(r"^      - ", found[1], re.MULTILINE)), found[1]
     return mounts
 
 
@@ -444,7 +481,16 @@ def set_by_the_server(
 
 
 def answer_of(location: Directive) -> tuple[int, dict[str, object]]:
-    """Status and JSON body a named location of the proxy answers with."""
+    """Status and JSON body a named location of the proxy answers with.
+
+    The body is called JSON whatever the address of the request ends in: nginx takes
+    the type of a body it writes from the extension of the address where its `types`
+    know one, and only then from `default_type`. The address of a playlist ends in
+    `.m3u8` and that of a segment in `.ts`, so each of these locations has `types`
+    with nothing in it.
+    """
+    assert location.inner("types") == [()], location.arguments
+    assert [inside for inside in location.block if inside.name == "types" and inside.block] == []
     assert location.inner("default_type") == [("application/json",)]
     [(status, body)] = location.inner("return")
     parsed: dict[str, object] = json.loads(body)
@@ -452,9 +498,10 @@ def answer_of(location: Directive) -> tuple[int, dict[str, object]]:
 
 
 def upstream_of(location: Directive) -> str:
-    """The upstream a location passes its requests to, as the variable that names it."""
+    """The upstream a location passes its requests to, as the variable that names it,
+    whatever address the location asks there."""
     [(target,)] = location.inner("proxy_pass")
-    return target.removeprefix("http://")
+    return target.removeprefix("http://").partition("/")[0]
 
 
 def proxied_locations(server: Directive) -> list[tuple[Directive, list[tuple[str, ...]]]]:
@@ -506,7 +553,37 @@ API_LOCATIONS: Final[list[Directive]] = [
     for location in SERVER.block
     if location.name == "location" and location.inner("proxy_pass") == [("http://$api_upstream",)]
 ]
-"""The locations that pass requests to the API: the `/api/` prefix and the event streams."""
+"""The locations that pass a request to the API as it arrived: the `/api/` prefix, the
+event streams and the pieces of a live stream on their way up."""
+
+BROADCAST: Final[str] = "9f1c2b7e-4d3a-4c58-8a6f-0b1e2d3c4a5f"
+"""An id as a broadcast has one, for the addresses the tests below ask about."""
+
+
+def regex_location(address: str) -> Directive:
+    """The one regex location of the server block that takes `address`. nginx tries them
+    in the order they stand in and takes the first that matches; the tests below hold
+    that each address of theirs has one."""
+    [found] = [
+        location
+        for location in SERVER.block
+        if location.name == "location"
+        and location.arguments[0] == "~"
+        and re.search(location.arguments[1].replace("(?<", "(?P<"), address)
+    ]
+    return found
+
+
+STREAMS: Final[Directive] = regex_location("/api/markets/0190f1a2/stream")
+CHUNKS: Final[Directive] = regex_location(f"/api/broadcasts/{BROADCAST}/chunks")
+"""Where a broadcaster's browser posts the pieces of its recording."""
+HLS: Final[Directive] = regex_location(f"/api/broadcasts/{BROADCAST}/hls/index.m3u8")
+"""Where the proxy itself serves the playlist and the segments of a live stream."""
+ACCESS: Final[Directive] = location_of(SERVER.block, "=", "/_broadcast_access")
+"""The question the proxy asks the API before it serves either."""
+
+UNDER_API: Final[list[Directive]] = [*API_LOCATIONS, HLS]
+"""Every location a browser reaches under `/api/`."""
 
 
 # --- compose.yaml alone is the deployed stack -----------------------------------------
@@ -537,34 +614,14 @@ def test_every_variable_compose_reads_is_in_the_example_env_and_has_no_default(
         assert rest == ":?", f"${{{name}{rest}}} is not ${{{name}:?}}"
 
 
-READ_BY_NO_FILE: Final[frozenset[str]] = frozenset(
-    {
-        "MEDIA_MEMORY_LIMIT",
-        "MEDIA_CPUS",
-        "MEDIA_PIDS_LIMIT",
-        "MEDIA_HLS_TMPFS_SIZE",
-        "MEDIA_FFMPEG_THREADS",
-        "MEDIA_X264_PRESET",
-        "NGINX_BROADCAST_UPLOADS_PER_CALLER",
-    }
-)
-"""Settings of live video in `.example.env` that are for Compose and nginx alone and that
-no file of the stack reads: the stack has no service that turns what a broadcaster sends
-into video, and the proxy no location that takes it. A name leaves this set with the
-line that reads it; the test below fails for a member that something reads."""
-
-
 def test_every_infra_only_variable_is_read_by_compose_or_by_the_makefile() -> None:
     read_by_compose = {name for name, _ in references(COMPOSE) + references(DEV_COMPOSE)}
 
     def read(name: str) -> bool:
         return name in read_by_compose or re.search(rf"\b{name}\b", MAKEFILE) is not None
 
-    for name in sorted(INFRA_ONLY_VARIABLES - READ_BY_NO_FILE):
+    for name in sorted(INFRA_ONLY_VARIABLES):
         assert read(name), f"{name} is in .example.env and nothing reads it"
-    for name in sorted(READ_BY_NO_FILE):
-        assert name in EXAMPLE, f"{name} is no key of .example.env"
-        assert not read(name), f"{name} is read by a file: it leaves READ_BY_NO_FILE"
 
 
 def test_every_service_has_a_memory_limit_from_the_env() -> None:
@@ -827,6 +884,7 @@ def test_the_web_app_shares_a_network_with_the_proxy_alone() -> None:
     joined = {name: entries(service, "networks") for name, service in STACK.items()}
     assert joined.pop("web") == ["edge"]
     assert joined.pop("nginx") == ["edge", "core"]
+    assert joined.pop("media") == [], "the media box has no network at all"
     assert set(joined) == {"api", "relay", "migrate", "postgres", "redis", "scylla"}
     for name, networks in joined.items():
         assert networks == ["core"], name
@@ -882,10 +940,15 @@ def test_the_gateway_of_the_edge_network_is_a_peer_the_proxy_believes(
 
 def test_nothing_reaches_around_the_two_networks() -> None:
     """No service joins the host's network or another container's, none is linked to
-    another, and the overlay leaves every service on the networks it has."""
+    another, and the overlay leaves every service on the networks it has. The one
+    `network_mode` of the stack takes a network away: the media box has none."""
     for compose in (COMPOSE, DEV_COMPOSE):
-        for word in ("network_mode", "links:", "external", "extra_hosts"):
+        for word in ("links:", "external", "extra_hosts"):
             assert word not in code_of(compose), word
+    without_a_network = {name for name, service in STACK.items() if "network_mode" in service}
+    assert without_a_network == {"media"}
+    assert re.findall(r"network_mode.*", code_of(COMPOSE)) == ["network_mode: none"]
+    assert "network_mode" not in code_of(DEV_COMPOSE)
     assert networks_of(DEV_COMPOSE) == []
     for name, service in OVERLAY.items():
         assert "networks:" not in service, name
@@ -929,6 +992,331 @@ def test_the_suite_runs_the_images_and_the_scylla_flags_of_the_stack() -> None:
     for name, _ in REFERENCE.findall(flags):
         flags = flags.replace(f"${{{name}:?}}", EXAMPLE[name])
     assert flags == SCYLLA_COMMAND
+
+
+# --- The media box ----------------------------------------------------------------------
+
+BOX_USER: Final[int] = 10001
+API_USER: Final[int] = 1000
+"""The users of the two images: the box's (`backend/mediabox/Dockerfile`) and the API's
+(`backend/Dockerfile`). The volumes of the stack name both."""
+
+SOCKET_VOLUME: Final[str] = "media-socket"
+HLS_VOLUME: Final[str] = "media-hls"
+SOCKET_DIRECTORY: Final[PurePosixPath] = PurePosixPath(EXAMPLE["BROADCAST_MEDIA_SOCKET"]).parent
+"""Where `api` and `media` mount the volume on which the box listens."""
+HLS_DIRECTORY: Final[PurePosixPath] = PurePosixPath(HLS_ROOT.as_posix())
+"""Where the box writes playlists and segments: a constant of its code, no variable."""
+
+MEMORY_VOLUME: Final[str] = (
+    '    driver_opts:\n      type: tmpfs\n      device: tmpfs\n      o: "{options}"\n'
+)
+"""What `compose.yaml` holds under a volume that is memory."""
+
+BOX_LIMITS: Final[dict[str, str]] = {
+    "pids_limit": "MEDIA_PIDS_LIMIT",
+    "mem_limit": "MEDIA_MEMORY_LIMIT",
+    "cpus": "MEDIA_CPUS",
+}
+"""The ceilings of the box, each with the variable of `.env` that sets it."""
+
+
+def volume_definitions(compose: str) -> dict[str, str]:
+    """Volume name to the text a compose file holds under it, in its top-level
+    `volumes:` block. A volume that is left to Docker has no text."""
+    found = re.search(r"^volumes:\n((?:  .*\n)+)", code_of(compose), re.MULTILINE)
+    assert found is not None
+    pieces = re.split(r"^  ([a-z][a-z0-9-]*):\n", found.group(1), flags=re.MULTILINE)
+    return dict(zip(pieces[1::2], pieces[2::2], strict=True))
+
+
+def handed_to_the_box(environment: Mapping[str, str]) -> dict[str, str]:
+    """Name to value of the variables `compose.yaml` hands the media box when Compose
+    reads `environment` as its `.env`. Every line under its `environment:` is one."""
+    found = re.search(r"^    environment:\n((?:      .*\n)+)", STACK["media"], re.MULTILINE)
+    assert found is not None
+    lines = found.group(1).splitlines()
+    handed = dict(re.findall(r"^      ([A-Z][A-Z0-9_]*): (.+)$", found.group(1), re.MULTILINE))
+    assert len(handed) == len(lines), lines
+    return {
+        name: REFERENCE.sub(lambda reference: environment[reference.group(1)], value)
+        for name, value in handed.items()
+    }
+
+
+def test_the_media_box_reaches_nothing_and_may_do_nothing() -> None:
+    """ffmpeg reads bytes a person chose, so the box is the container in which somebody
+    may one day run code of their own. It is on no network, not even one of its own;
+    its root is read-only and so is the memory disk a container gets at /dev/shm
+    (`ipc: none`); it has no capability and can gain none; and its processes, its
+    memory and its share of the CPUs have a ceiling from `.env`. It names no user: the
+    one of its image holds, which is not root. The overlay gives it nothing, so the
+    development stack runs the same box."""
+    box = STACK["media"]
+    assert "    build:\n      context: ./backend/mediabox\n" in box
+    assert scalar(box, "network_mode") == "none"
+    assert scalar(box, "read_only") == "true"
+    assert scalar(box, "ipc") == "none"
+    assert entries(box, "cap_drop") == ["ALL"]
+    assert entries(box, "security_opt") == ["no-new-privileges:true"]
+    for variable in BOX_LIMITS.values():
+        assert variable in EXAMPLE, variable
+    for key, variable in BOX_LIMITS.items():
+        assert scalar(box, key) == f"${{{variable}:?}}", key
+    for word in ("networks:", "ports:", "privileged", "cap_add", "devices:", "user:", "pid:"):
+        assert word not in box, word
+    assert "tmpfs:" not in box, "what it may write is its two volumes"
+    assert re.search(r"^USER media$", MEDIA_DOCKERFILE, re.MULTILINE)
+    assert "media" not in OVERLAY
+
+
+def test_the_media_box_is_process_one_and_starts_again_empty() -> None:
+    """The supervisor has to be the first process of its container: the kernel delivers
+    neither SIGKILL nor SIGSTOP to that process from inside, so nothing ffmpeg is made to
+    run can end or freeze it. Hence no `init`, which would take that place. The process
+    ends by itself with its last live stream, and `unless-stopped` starts a container
+    for the next one, whatever status it ended with. Its health check asks the socket."""
+    box = STACK["media"]
+    assert "init:" not in box
+    assert scalar(box, "restart") == "unless-stopped"
+    found = re.search(r"^CMD (\[.+\])$", MEDIA_DOCKERFILE, re.MULTILINE)
+    assert found is not None
+    assert json.loads(found.group(1)) == ["python", "-m", "mediabox"]
+    assert "command:" not in box
+    assert "entrypoint:" not in box
+    assert '      test: ["CMD", "python", "-m", "mediabox.probe"]\n' in box
+    assert (REPO_ROOT / "backend" / "mediabox" / "probe.py").is_file()
+
+
+def test_nobody_waits_for_the_media_box() -> None:
+    """Without the box the stack starts and trades, and a live stream does not start
+    (SPEC §9). No service names it under `depends_on`, the shared block of the backend
+    services included, and the box waits for nobody."""
+    assert "depends_on" not in STACK["media"]
+    assert "media" not in anchor_of(COMPOSE, "needs-schema")
+    assert "media" not in anchor_of(COMPOSE, "backend")
+    for name, service in STACK.items():
+        waits_for = re.search(r"^    depends_on:\n((?:      .*\n)+)", service, re.MULTILINE)
+        if waits_for is not None:
+            assert "media" not in waits_for.group(1), name
+
+
+OPTIONAL_PARTS: Final[tuple[str, ...]] = (
+    "REDIS_TIMEOUT_MS",
+    "SCYLLA_REQUEST_TIMEOUT_MS",
+    "BROADCAST_MEDIA_TIMEOUT_MS",
+)
+"""How long the API waits for each part of the stack it works without, by the variable
+of `.env` that says so."""
+
+
+@pytest.mark.parametrize("environment", [EXAMPLE, DEPLOYED], ids=["example", "production"])
+def test_a_part_the_api_works_without_cannot_make_its_container_unhealthy(
+    environment: Mapping[str, str],
+) -> None:
+    """`GET /api/health` asks Redis, ScyllaDB and the media box with every call, all at
+    once, and each for at most its own timeout. A box that is there and silent
+    takes the whole of `BROADCAST_MEDIA_TIMEOUT_MS`. The health check of the `api`
+    container gives that request a number of seconds of its own; each of the timeouts
+    is below it, so a part that does not answer shows as `down` in an answer that
+    arrives, and Compose never calls the API unhealthy for it. Docker in turn gives the
+    whole check more time than the request inside it takes."""
+    asked = re.search(r'urlopen\("http://127\.0\.0\.1:8000/api/health", timeout=(\d+)\)', COMPOSE)
+    assert asked is not None
+    patience = int(asked.group(1))
+    for variable in OPTIONAL_PARTS:
+        assert int(environment[variable]) < patience * 1000, (
+            f"{variable}={environment[variable]} is not below the {patience} seconds "
+            "the health check of the api container gives GET /api/health"
+        )
+    limit = re.search(r"^      timeout: (\d+)s$", STACK["api"], re.MULTILINE)
+    assert limit is not None
+    assert int(limit.group(1)) > patience
+
+
+def test_if_the_host_runs_out_of_memory_video_goes_first_and_the_balances_last() -> None:
+    """`oom_score_adj`: the kernel ends the media box before ScyllaDB, which holds the
+    price history, and Postgres after everything else."""
+    adjusted = {
+        name: int(scalar(service, "oom_score_adj"))
+        for name, service in STACK.items()
+        if "oom_score_adj" in service
+    }
+    assert set(adjusted) == {"media", "scylla", "postgres"}
+    assert adjusted["media"] > adjusted["scylla"] > 0 > adjusted["postgres"]
+
+
+@pytest.mark.parametrize("environment", [EXAMPLE, DEPLOYED], ids=["example", "production"])
+def test_the_media_box_is_handed_its_own_variables_and_nothing_of_the_env_file(
+    environment: Mapping[str, str],
+) -> None:
+    """The box has no `env_file`: Compose hands it the variables its settings read, each
+    from `.env` without a default, and no other. So no password of a store and no admin
+    is in the environment of the one container that runs ffmpeg on bytes a person chose.
+    What it is handed is what its own settings accept: a value they refuse ends the
+    process, and the restart policy would start it again and again."""
+    box = STACK["media"]
+    assert "env_file" not in box
+    assert "*backend" not in box
+    assert "*stores" not in box
+
+    written = handed_to_the_box({name: f"<{name}>" for name in environment})
+    assert set(written) == set(BOX_VARIABLES)
+    for name, value in written.items():
+        assert value == f"<{name}>", f"{name} is handed the value of another variable"
+        assert f"      {name}: ${{{name}:?}}\n" in box, name
+        assert not name.startswith(("POSTGRES", "REDIS", "SCYLLA")), name
+    assert "ADMIN_EMAILS" not in written
+    read = {name for name, _ in REFERENCE.findall(box)}
+    assert read == set(BOX_VARIABLES) | set(BOX_LIMITS.values())
+
+    accepted = BoxSettings.from_environment(handed_to_the_box(environment))
+    assert PurePosixPath(accepted.socket_path.as_posix()).parent == SOCKET_DIRECTORY
+
+
+def test_the_two_volumes_of_the_media_box_are_memory_and_belong_to_its_user() -> None:
+    """No picture and no sound is written to a disk: both volumes are tmpfs, and gone
+    with their containers. Both belong to the user of the box. The directory of the
+    socket lets the group of the API's image in and nobody else; the box tells a peer
+    of its own user nothing but its status, so the two users have to differ. What the
+    box writes for viewers everybody may read, which is how the proxy serves it. The
+    size of that volume comes from `.env`; a socket needs none to speak of."""
+    assert re.search(rf"^    && adduser -u {BOX_USER} -G media ", MEDIA_DOCKERFILE, re.MULTILINE)
+    assert f"addgroup -g {BOX_USER} media" in MEDIA_DOCKERFILE
+    assert f"groupadd --gid {API_USER} app" in BACKEND_DOCKERFILE
+    assert f"useradd --uid {API_USER} --gid app" in BACKEND_DOCKERFILE
+    assert re.findall(r"^USER (\S+)$", BACKEND_DOCKERFILE, re.MULTILINE) == ["app", "app"]
+    assert BOX_USER != API_USER
+
+    volumes = volume_definitions(COMPOSE)
+    assert set(volumes) == {"postgres-data", "scylla-data", SOCKET_VOLUME, HLS_VOLUME}
+    assert volumes[SOCKET_VOLUME] == MEMORY_VOLUME.format(
+        options=f"size=64k,mode=0750,uid={BOX_USER},gid={API_USER}"
+    )
+    assert volumes[HLS_VOLUME] == MEMORY_VOLUME.format(
+        options=f"size=${{MEDIA_HLS_TMPFS_SIZE:?}},mode=0755,uid={BOX_USER},gid={BOX_USER}"
+    )
+    assert not {SOCKET_VOLUME, HLS_VOLUME} & set(volume_definitions(DEV_COMPOSE))
+
+
+@pytest.mark.parametrize("environment", [EXAMPLE, DEPLOYED], ids=["example", "production"])
+def test_only_the_api_and_the_proxy_share_a_volume_with_the_media_box(
+    environment: Mapping[str, str],
+) -> None:
+    """The API reaches the box through its socket and the proxy reads what it writes,
+    each through a mount that is read-only: connecting to a socket writes nothing to
+    the file system it lies in. Nothing else of the stack mounts either volume: not the
+    relay and `migrate`, which run the API's image, and not the web app. The socket the
+    API is told to connect to (`BROADCAST_MEDIA_SOCKET`) lies in the directory both
+    mount, and the proxy serves from the directory the box writes into."""
+    mounting = {name: volumes_of(service) for name, service in STACK.items()}
+    of_the_socket = {name: v[SOCKET_VOLUME] for name, v in mounting.items() if SOCKET_VOLUME in v}
+    of_the_video = {name: v[HLS_VOLUME] for name, v in mounting.items() if HLS_VOLUME in v}
+    assert of_the_socket == {"media": (SOCKET_DIRECTORY, False), "api": (SOCKET_DIRECTORY, True)}
+    assert of_the_video == {"media": (HLS_DIRECTORY, False), "nginx": (HLS_DIRECTORY, True)}
+    assert set(mounting["media"]) == {SOCKET_VOLUME, HLS_VOLUME}
+    assert "volumes" not in anchor_of(COMPOSE, "backend")
+    for name, service in OVERLAY.items():
+        assert not {SOCKET_VOLUME, HLS_VOLUME} & set(volumes_of(service)), name
+
+    socket = PurePosixPath(environment["BROADCAST_MEDIA_SOCKET"])
+    assert socket.is_absolute()
+    assert socket.parent == SOCKET_DIRECTORY
+    [(served,)] = HLS.inner("alias")
+    assert served.startswith(f"{HLS_DIRECTORY}/")
+
+
+@pytest.mark.parametrize("environment", [EXAMPLE, DEPLOYED], ids=["example", "production"])
+def test_the_media_box_has_room_for_the_live_streams_it_may_run(
+    environment: Mapping[str, str],
+) -> None:
+    """One transcode is given 256 MiB and one CPU. What the box writes into its volume
+    is memory of its own container, so its limit holds that volume as well. A transcode
+    with two threads peaked at 28 processes and threads on the VM; the box may have at
+    least 32 for every live stream.
+
+    A live stream keeps the segments its playlist names, three more (the two the box
+    keeps after they left the playlist and the one it is writing), each of the bit rate
+    people watch for the seconds of a segment, with 15% for the transport stream around
+    it. The volume has four times the room of that for every live stream that may run.
+    """
+    live = int(environment["BROADCAST_MAX_LIVE"])
+    volume = docker_bytes(environment["MEDIA_HLS_TMPFS_SIZE"])
+    memory = docker_bytes(environment["MEDIA_MEMORY_LIMIT"])
+    cpus = float(environment["MEDIA_CPUS"])
+
+    needed = 256 * MIB * live + volume
+    assert memory >= needed, (
+        f"MEDIA_MEMORY_LIMIT={environment['MEDIA_MEMORY_LIMIT']} is below {needed // MIB} MiB: "
+        "256 MiB x BROADCAST_MAX_LIVE + MEDIA_HLS_TMPFS_SIZE"
+    )
+    assert cpus >= live, "MEDIA_CPUS is below BROADCAST_MAX_LIVE"
+    assert 1 <= int(environment["MEDIA_FFMPEG_THREADS"]) <= math.ceil(cpus), (
+        "MEDIA_FFMPEG_THREADS is above MEDIA_CPUS rounded up"
+    )
+    assert int(environment["MEDIA_PIDS_LIMIT"]) >= 32 * live
+
+    kept = int(environment["BROADCAST_HLS_PLAYLIST_SEGMENTS"]) + 3
+    kbps = int(environment["BROADCAST_VIDEO_KBPS"]) + int(environment["BROADCAST_AUDIO_KBPS"])
+    segment = kbps * 125 * int(environment["BROADCAST_HLS_SEGMENT_SECONDS"]) * 1.15
+    held = math.ceil(4 * live * kept * segment)
+    assert volume >= held, (
+        f"MEDIA_HLS_TMPFS_SIZE={environment['MEDIA_HLS_TMPFS_SIZE']} is below {held} bytes: "
+        f"four times {live} x {kept} segments of {math.ceil(segment)} bytes"
+    )
+
+
+VM_MEMORY: Final[int] = 7782 * MIB
+"""The memory of the VM, which has no swap: 7.6 GiB (docs/SERVER_INFRASTRUCTURE.md §5)."""
+
+
+def test_the_memory_limits_of_the_deployed_stack_fit_the_vm() -> None:
+    """A limit is a ceiling and no reservation, but if every container were at its own
+    at once, `migrate` included, the VM still holds them: nothing is promised twice.
+    docs/SERVER_INFRASTRUCTURE.md §12 states the sum; a service that is added and a
+    limit that is raised change it there."""
+    limits: dict[str, int] = {}
+    for name, service in STACK.items():
+        [(variable, _)] = REFERENCE.findall(scalar(service, "mem_limit"))
+        limits[name] = docker_bytes(DEPLOYED[variable])
+    together = sum(limits.values())
+    assert together <= VM_MEMORY, (
+        f"the limits of the deployed stack add up to {together // MIB} MiB, "
+        f"above the {VM_MEMORY // MIB} MiB of the VM: "
+        + ", ".join(f"{name} {limit // MIB}" for name, limit in limits.items())
+    )
+
+
+@pytest.mark.parametrize("environment", [EXAMPLE, DEPLOYED], ids=["example", "production"])
+def test_the_proxy_is_handed_the_figures_of_live_video_the_api_goes_by(
+    environment: Mapping[str, str],
+) -> None:
+    """The largest piece a broadcaster sends and the seconds a yes is remembered are
+    settings of the API. Compose hands the proxy the same two values under names of its
+    own, which are no keys of `.env`: one figure cannot be set to two values. The piece
+    limit is written in bytes, which nginx reads as a size, and lies above the limit of
+    every other body; a yes is remembered for 1 to 60 seconds, never for none. A caller
+    has at least one piece on its way at a time. The proxy relays a piece without
+    holding it, so its memory does not grow with the size of an upload: 64 MiB carry
+    it."""
+    handed = handed_to_nginx(STACK["nginx"], environment)
+    assert handed["NGINX_BROADCAST_CHUNK_MAX_BYTES"] == environment["BROADCAST_CHUNK_MAX_BYTES"]
+    assert (
+        handed["NGINX_BROADCAST_ACCESS_CACHE_SECONDS"]
+        == (environment["BROADCAST_ACCESS_CACHE_SECONDS"])
+    )
+    for name in ("NGINX_BROADCAST_CHUNK_MAX_BYTES", "NGINX_BROADCAST_ACCESS_CACHE_SECONDS"):
+        assert name not in EXAMPLE, name
+        assert name not in INFRA_ONLY_VARIABLES, name
+    assert "NGINX_BROADCAST_UPLOADS_PER_CALLER" in INFRA_ONLY_VARIABLES
+
+    assert re.fullmatch(r"[1-9][0-9]*", handed["NGINX_BROADCAST_CHUNK_MAX_BYTES"])
+    assert int(handed["NGINX_BROADCAST_CHUNK_MAX_BYTES"]) > docker_bytes(
+        handed["NGINX_CLIENT_MAX_BODY_SIZE"]
+    )
+    assert 1 <= int(handed["NGINX_BROADCAST_ACCESS_CACHE_SECONDS"]) <= 60
+    assert int(handed["NGINX_BROADCAST_UPLOADS_PER_CALLER"]) >= 1
+    assert docker_bytes(environment["NGINX_MEMORY_LIMIT"]) >= 64 * MIB
 
 
 # --- The commands of the Makefile ---------------------------------------------------------
@@ -984,6 +1372,27 @@ def test_make_e2e_runs_the_browser_suite_against_the_stack_that_is_up() -> None:
     assert tests == ["test-backend", "test-frontend"]
     for part in tests:
         assert "e2e" not in " ".join(make_target(part)[2]), part
+
+
+def test_make_test_media_runs_the_image_test_of_the_media_box() -> None:
+    """The target runs the tests marked `media` and nothing else: they build the image
+    of the box and run it as `compose.yaml` does, under names of their own, so it needs
+    no other target and no stack. A plain `pytest` leaves the marker out, and with it
+    `make test`. `make` alone lists the target."""
+    needs, says, recipe = make_target("test-media")
+    assert needs == []
+    assert recipe == ["$(BACKEND) uv run pytest -m media"]
+    assert says
+
+    phony = re.search(r"^\.PHONY:((?:.*\\\n)*.*)$", MAKEFILE, re.MULTILINE)
+    assert phony is not None
+    assert "test-media" in phony.group(1).replace("\\", " ").split()
+
+    pyproject = (REPO_ROOT / "backend" / "pyproject.toml").read_text(encoding="utf-8")
+    assert "-m 'not scylla and not media'" in pyproject
+    tests, _, _ = make_target("test")
+    for part in tests:
+        assert "media" not in " ".join(make_target(part)[2]), part
 
 
 def test_the_vm_deploys_itself_without_a_connection_and_without_a_secret() -> None:
@@ -1073,6 +1482,49 @@ def test_the_deployment_check_reads_the_open_files_and_counts_the_processes_of_t
     assert "exit" not in code_of(production_only)
 
 
+def test_the_deployment_check_asks_the_running_stack_about_live_video() -> None:
+    """Checks 11 to 13 of `infra/deploy/check.sh`, between the checks of a production
+    tree and the last one, each listed at the top of the script.
+
+    11 holds the running media box against `compose.yaml`: healthy, no network, a
+    read-only root, no variable of a store or of an admin, and reached by the API. 12
+    asks for a playlist as nobody, as a caller the API refuses, as another site and
+    from the web app's container. 13 sends the body the proxy refuses everywhere else
+    as a piece of a live stream, and one above the limit of a piece."""
+    checks = checks_of(CHECK)
+    assert list(checks) == list(range(1, 15))
+    for number in (11, 12, 13):
+        assert re.search(rf"^# {{1,2}}{number}\. ", CHECK, re.MULTILINE), number
+
+    box = checks[11]
+    assert "ps --quiet media" in box
+    assert "{{ .State.Health.Status }}" in box
+    assert "{{ .HostConfig.NetworkMode }} {{ .HostConfig.ReadonlyRootfs }}" in box
+    assert '[ "$isolation" = "none true" ]' in box
+    assert "(POSTGRES|REDIS|SCYLLA)" in box
+    assert "ADMIN_EMAILS" in box
+    assert """jq -r '.media?'""" in box
+
+    video = checks[12]
+    playlist = re.search(r"^PLAYLIST=(\S+)$", video, re.MULTILINE)
+    assert playlist is not None
+    assert HLS is regex_location(playlist.group(1))
+    assert "expect 401 UNAUTHENTICATED" in video
+    assert video.count("expect 403 FORBIDDEN") == 3
+    assert "Sec-Fetch-Site: cross-site" in video
+    assert 'from_the_web_app "$PLAYLIST"' in video
+
+    piece = checks[13]
+    address = re.search(r'^PIECES="\$BASE(/[^?"]+)\?', piece, re.MULTILINE)
+    assert address is not None
+    assert CHUNKS is regex_location(address.group(1))
+    assert "$(setting BROADCAST_CHUNK_MAX_BYTES)" in piece
+    assert "/api/me/profile" in piece
+    assert '[ "$STATUS" = "413" ]' in piece
+    assert '[ "$STATUS" != "413" ]' in piece
+    assert "expect 413 VALIDATION_ERROR" in piece
+
+
 # --- How the proxy configuration gets into the container ------------------------------
 
 
@@ -1126,14 +1578,18 @@ def test_every_placeholder_of_a_template_is_passed_by_the_compose_file_that_moun
 def test_the_identity_headers_reach_the_api_exactly_as_they_arrived() -> None:
     """Behind the portal the two headers are the sign-in. On the way to the API the
     proxy neither sets, changes nor removes them: a second line of the same name arrives
-    as a second line, and a request without them is refused there."""
-    assert len(API_LOCATIONS) == 2
+    as a second line, and a request without them is refused there. That holds for the
+    question the proxy itself asks about a viewer of a live stream as well: the API
+    judges that caller by the headers the viewer's request came with."""
+    assert len(API_LOCATIONS) == 3
     to_the_api = [
         (location, headers)
         for location, headers in proxied_locations(SERVER)
         if upstream_of(location) == "$api_upstream"
     ]
-    assert [location for location, _ in to_the_api] == API_LOCATIONS
+    assert [location for location, _ in to_the_api] == [*API_LOCATIONS, ACCESS], (
+        "what a browser asks, and what the proxy itself asks before it serves video"
+    )
     for location, headers in to_the_api:
         assert location.inner("proxy_set_header") == [], location.arguments
         assert headers == SERVER.inner("proxy_set_header")
@@ -1150,7 +1606,8 @@ def test_the_web_app_is_told_nothing_about_the_caller() -> None:
         for location, headers in proxied_locations(SERVER)
         if upstream_of(location) == "$web_upstream"
     ]
-    assert len(to_the_web) + len(API_LOCATIONS) == len(named(PROXY_TREE, "proxy_pass"))
+    to_the_api = [*API_LOCATIONS, ACCESS]
+    assert len(to_the_web) + len(to_the_api) == len(named(PROXY_TREE, "proxy_pass"))
     assert {location.arguments for location, _ in to_the_web} == {("/",), ("/_next/",)}
     for location, headers in to_the_web:
         sent = sent_upstream(headers)
@@ -1315,9 +1772,18 @@ def test_a_browser_is_told_to_name_the_origin_alone_in_a_referer() -> None:
     assert policies[0] in SERVER.inner("add_header")
 
 
-def test_the_body_limit_comes_from_the_env_and_holds_for_every_location() -> None:
+def test_the_body_limit_comes_from_the_env_and_one_location_has_its_own() -> None:
+    """The limit of the server holds for every location but one: the pieces of a live
+    stream, which may be as large as the API takes them."""
     assert SERVER.inner("client_max_body_size") == [("${NGINX_CLIENT_MAX_BODY_SIZE}",)]
-    assert len(named(PROXY_TREE, "client_max_body_size")) == 1
+    with_their_own = [
+        location
+        for location in named(PROXY_TREE, "location")
+        if location.inner("client_max_body_size")
+    ]
+    assert with_their_own == [CHUNKS]
+    assert CHUNKS.inner("client_max_body_size") == [("${NGINX_BROADCAST_CHUNK_MAX_BYTES}",)]
+    assert len(named(PROXY_TREE, "client_max_body_size")) == 2
     assert named(IDENTITY_TREE, "client_max_body_size") == []
 
 
@@ -1354,11 +1820,19 @@ def test_address_and_scheme_are_believed_from_the_same_private_peers_only() -> N
     assert upstream_scheme == "$client_scheme"
 
 
+CONNECTION_ZONES: Final[dict[str, str]] = {
+    zone.arguments[1].removeprefix("zone=").split(":")[0]: zone.arguments[0]
+    for zone in named(PROXY_TREE, "limit_conn_zone")
+}
+"""Name to key of the zones in which the proxy counts open connections."""
+
+
 def test_the_outer_limits_count_per_caller_as_the_proxy_names_them() -> None:
-    """Visitors behind one address must not share a bucket, so both limits are keyed on
+    """Visitors behind one address must not share a bucket, so every limit is keyed on
     the caller: `$api_caller`, with the address for a request that names nobody. No map
     of the proxy reads the identity header itself, so nothing is counted by what a
-    request says where the proxy names the caller."""
+    request says where the proxy names the caller. Every location a browser reaches
+    under /api/ counts a request, the one that serves video included."""
     [callers] = [
         directive
         for directive in PROXY_TREE
@@ -1375,12 +1849,13 @@ def test_the_outer_limits_count_per_caller_as_the_proxy_names_them() -> None:
         if directive.name == "map" and directive.arguments[0] == request_variable(ID_HEADER)
     ] == []
     [requests] = named(PROXY_TREE, "limit_req_zone")
-    [streams] = named(PROXY_TREE, "limit_conn_zone")
     assert requests.arguments[0] == caller
     assert requests.arguments[2] == "rate=${NGINX_RATE_LIMIT}"
-    assert streams.arguments[0] == caller
-    assert len(API_LOCATIONS) == 2
-    for location in API_LOCATIONS:
+    assert set(CONNECTION_ZONES) == {"streams_per_caller", "uploads_per_caller"}
+    for name, key in CONNECTION_ZONES.items():
+        assert key == caller, name
+    assert len(UNDER_API) == 4
+    for location in UNDER_API:
         [(zone, burst, _)] = location.inner("limit_req")
         assert zone == requests.arguments[1].split(":")[0], location.arguments
         assert burst == "burst=${NGINX_RATE_LIMIT_BURST}", location.arguments
@@ -1529,11 +2004,12 @@ request."""
 
 
 def test_every_api_location_starts_with_the_two_refusals_of_the_proxy() -> None:
-    """Each location that passes requests to the API, the event stream included, begins
-    with one `if` per flag, and each of them does one thing: `return 403`. No other
-    `if` stands in the file, so nothing else is decided this way."""
-    assert len(API_LOCATIONS) == 2
-    for location in API_LOCATIONS:
+    """Each location a browser reaches under /api/, the event stream and the two of a
+    live stream included, begins with one `if` per flag, and each of them does one
+    thing: `return 403`. No other `if` stands in the file, so nothing else is decided
+    this way."""
+    assert len(UNDER_API) == 4
+    for location in UNDER_API:
         refusals = location.block[: len(REFUSED_UNDER_API)]
         assert [(refusal.name, refusal.arguments) for refusal in refusals] == [
             ("if", (f"({flag})",)) for flag in REFUSED_UNDER_API
@@ -1542,18 +2018,21 @@ def test_every_api_location_starts_with_the_two_refusals_of_the_proxy() -> None:
             assert [(inside.name, inside.arguments) for inside in refusal.block] == [
                 ("return", ("403",))
             ]
-    assert len(named(PROXY_TREE, "if")) == len(REFUSED_UNDER_API) * len(API_LOCATIONS)
+    assert len(named(PROXY_TREE, "if")) == len(REFUSED_UNDER_API) * len(UNDER_API)
 
 
 def test_a_refusal_of_the_proxy_is_answered_before_the_request_is_counted() -> None:
     """Another team's page could otherwise use up the request limit, or the streams, of
     whoever looks at it. `return` belongs to the phase in which nginx rewrites a
     request, which is over before `limit_req` and `limit_conn` see it; the named
-    location that answers has no limit of its own and inherits none."""
-    for location in API_LOCATIONS:
+    location that answers has no limit of its own and inherits none. Where the proxy
+    serves video, the refusal is answered with the sentence of a live stream nobody may
+    watch."""
+    for location in UNDER_API:
         assert location.inner("limit_req"), location.arguments
         answer = answers_of_nginx(location)[403]
-        assert answer.arguments == ("@api_forbidden",)
+        refused_by = "@broadcast_refused" if location is HLS else "@api_forbidden"
+        assert answer.arguments == (refused_by,), location.arguments
         assert named(answer.block, "limit_req") + named(answer.block, "limit_conn") == []
     assert SERVER.inner("limit_req") + SERVER.inner("limit_conn") == []
     assert [d.name for d in PROXY_TREE if d.name in {"limit_req", "limit_conn"}] == []
@@ -1627,15 +2106,21 @@ def test_a_rendered_configuration_has_no_placeholder_left_and_no_empty_value(
 def test_event_streams_are_unbuffered_patient_and_limited_per_caller() -> None:
     """Opening a stream counts against the caller's request limit like any other call,
     and a caller holds a limited number of streams open at once."""
-    [stream] = [d for d in SERVER.block if d.name == "location" and d.arguments[0] == "~"]
+    stream = STREAMS
     assert stream in API_LOCATIONS
     path = re.compile(stream.arguments[1])
     assert path.search("/api/markets/0190f1a2/stream")
     assert not path.search("/api/markets/0190f1a2/history")
     assert not path.search("/markets/0190f1a2/stream")
-    [streams] = named(PROXY_TREE, "limit_conn_zone")
-    zone = streams.arguments[1].removeprefix("zone=").split(":")[0]
+    zone = "streams_per_caller"
+    assert zone in CONNECTION_ZONES
     assert stream.inner("limit_conn") == [(zone, "${NGINX_SSE_STREAMS_PER_CALLER}")]
+    counted_there = [
+        location
+        for location in named(PROXY_TREE, "location")
+        if any(arguments[0] == zone for arguments in location.inner("limit_conn"))
+    ]
+    assert counted_there == [stream], "no other location counts against the streams"
     assert stream.inner("proxy_buffering") == [("off",)]
     assert stream.inner("proxy_read_timeout") == [("${NGINX_SSE_READ_TIMEOUT}",)]
     assert stream.inner("proxy_pass_header") == [("X-Accel-Buffering",)]
@@ -1701,14 +2186,15 @@ def test_the_access_log_says_whether_a_cookie_of_the_portal_arrived_and_no_more(
 
 def test_what_nginx_answers_under_api_has_the_error_shape_of_the_api() -> None:
     """403, 429, 502 and 504, and a body above the limit: `{code, message, details}`
-    with the words the API itself uses (SPEC A.2)."""
+    with the words the API itself uses (SPEC A.2). The location that serves video
+    answers more statuses and has a test of its own below."""
     under_api = [
         location
         for location in SERVER.block
         if location.name == "location" and "/api/" in location.arguments[-1]
     ]
-    assert under_api == API_LOCATIONS
-    for location in under_api:
+    assert under_api == UNDER_API
+    for location in API_LOCATIONS:
         handler = answers_of_nginx(location)
         assert answer_of(handler[403]) == (
             ForbiddenError.status_code,
@@ -1736,6 +2222,312 @@ def test_what_nginx_answers_under_api_has_the_error_shape_of_the_api() -> None:
         assert status == 413
         assert body["code"] == ErrorCode.VALIDATION_ERROR
         assert set(body) == {"code", "message", "details"}
+
+
+# --- Live video -------------------------------------------------------------------------
+
+API_PATHS: Final[dict[str, dict[str, object]]] = json.loads(
+    (REPO_ROOT / "backend" / "openapi.json").read_text(encoding="utf-8")
+)["paths"]
+"""The operations of the API as its exported contract names them."""
+
+SEGMENT: Final[str] = f"/api/broadcasts/{BROADCAST}/hls/seg-000042.ts"
+PLAYLIST: Final[str] = f"/api/broadcasts/{BROADCAST}/hls/index.m3u8"
+
+
+def test_the_broadcast_of_a_request_for_video_is_read_from_its_address() -> None:
+    """One variable says which broadcast a request for video is about. The question to
+    the API and the directory the file is served from both take it, so the broadcast
+    that is asked about is the broadcast that is served, whatever a location captured.
+    It is read from the address as it arrived, and an address that does not begin as a
+    playlist's does names none."""
+    rules = maps_to("$broadcast_of_request")
+    assert rules.arguments[0] == "$request_uri"
+    assert rules.inner("default") == [("",)]
+    [rule] = [rule for rule in rules.block if rule.name != "default"]
+    assert rule.name.startswith("~^"), "a case-sensitive pattern, from the first character on"
+    pattern = re.compile(rule.name.removeprefix("~").replace("(?<", "(?P<"))
+    captured = rule.arguments[0].removeprefix("$")
+
+    def broadcast_of(address: str) -> str:
+        found = pattern.search(address)
+        return "" if found is None else found.group(captured)
+
+    assert broadcast_of(PLAYLIST) == BROADCAST
+    assert broadcast_of(f"{SEGMENT}?again=1") == BROADCAST
+    other = BROADCAST.replace("9", "1")
+    assert broadcast_of(f"/api/broadcasts/{other}/hls/../../{BROADCAST}/hls/index.m3u8") == other
+    for address in (
+        f"/api/broadcasts/{BROADCAST}/chunks",
+        f"/api/broadcasts/{BROADCAST.upper()}/hls/index.m3u8",
+        f"/api/broadcasts/{BROADCAST[:-1]}/hls/index.m3u8",
+        f"/api/broadcasts/{BROADCAST}0/hls/index.m3u8",
+        f"/x/api/broadcasts/{BROADCAST}/hls/index.m3u8",
+        f"//api/broadcasts/{BROADCAST}/hls/index.m3u8",
+        "/api/broadcasts/../hls/index.m3u8",
+        "/api/broadcasts/%2e%2e/hls/index.m3u8",
+    ):
+        assert broadcast_of(address) == "", address
+
+    reading_it = [
+        directive.name
+        for directive in all_of(PROXY_TREE)
+        if any("$broadcast_of_request" in argument for argument in directive.arguments)
+    ]
+    assert sorted(reading_it) == ["alias", "map", "proxy_cache_key", "proxy_pass"]
+
+
+def test_a_piece_of_a_live_stream_is_relayed_as_it_arrives_within_limits_of_its_own() -> None:
+    """The address of a piece is the API's operation and no other address. The location
+    passes the request on like `/api/`, with three things of its own: the body may be
+    as large as the API takes a piece, it is handed on while it arrives and never
+    collected by the proxy (no body buffer is sized anywhere, so nginx holds its
+    default of an upload, whoever sends it), and a caller has a limited number of
+    pieces on their way at once. Sending a piece counts against the request limit like
+    any other call."""
+    kind, pattern = CHUNKS.arguments
+    assert kind == "~", "case-sensitive"
+    address = re.compile(pattern)
+    assert "post" in API_PATHS["/api/broadcasts/{broadcast_id}/chunks"]
+    assert address.search(f"/api/broadcasts/{BROADCAST}/chunks")
+    for elsewhere in (
+        f"/api/broadcasts/{BROADCAST}/chunks/",
+        f"/api/broadcasts/{BROADCAST}/chunks/more",
+        f"/api/broadcasts/{BROADCAST}/start",
+        f"/api/broadcasts/{BROADCAST}/end",
+        f"/api/broadcasts/{BROADCAST.upper()}/chunks",
+        f"/api/broadcasts/{BROADCAST[:-1]}/chunks",
+        f"/x/api/broadcasts/{BROADCAST}/chunks",
+        "/api/broadcasts/live",
+        "/api/broadcasts/chunks",
+        PLAYLIST,
+    ):
+        assert not address.search(elsewhere), elsewhere
+
+    assert CHUNKS in API_LOCATIONS
+    everywhere = location_of(SERVER.block, "/api/")
+    its_own = {"limit_conn", "client_max_body_size", "proxy_request_buffering"}
+    assert [d for d in CHUNKS.block if d.name not in its_own] == list(everywhere.block)
+    assert CHUNKS.inner("limit_conn") == [
+        ("uploads_per_caller", "${NGINX_BROADCAST_UPLOADS_PER_CALLER}")
+    ]
+    assert CHUNKS.inner("client_max_body_size") == [("${NGINX_BROADCAST_CHUNK_MAX_BYTES}",)]
+    assert CHUNKS.inner("proxy_request_buffering") == [("off",)]
+
+    unbuffered = [
+        location
+        for location in named(PROXY_TREE, "location")
+        if location.inner("proxy_request_buffering")
+    ]
+    assert unbuffered == [CHUNKS]
+    counted_there = [
+        location
+        for location in named(PROXY_TREE, "location")
+        if any(arguments[0] == "uploads_per_caller" for arguments in location.inner("limit_conn"))
+    ]
+    assert counted_there == [CHUNKS]
+    assert named(PROXY_TREE, "client_body_buffer_size") == []
+    assert named(PROXY_TREE, "client_body_in_file_only") == []
+
+
+def test_a_request_within_the_limits_is_passed_to_the_api_as_it_was() -> None:
+    """The location of `/api/` holds what it held before live video: the two refusals,
+    the request limit, the four answers of nginx and the upstream, and nothing of a
+    live stream. The addresses of live video that are operations of the API fall to it,
+    all but the piece."""
+    everywhere = location_of(SERVER.block, "/api/")
+    assert [directive.name for directive in everywhere.block] == [
+        "if",
+        "if",
+        "limit_req",
+        "error_page",
+        "error_page",
+        "error_page",
+        "error_page",
+        "proxy_pass",
+    ]
+    regexes = [
+        location.arguments[1].replace("(?<", "(?P<")
+        for location in SERVER.block
+        if location.name == "location" and location.arguments[0] == "~"
+    ]
+    assert len(regexes) == 3
+    for path, operations in API_PATHS.items():
+        if "broadcast" not in path or path.endswith("/chunks"):
+            continue
+        address = path.replace("{broadcast_id}", BROADCAST).replace("{market_id}", BROADCAST)
+        assert not any(re.search(regex, address) for regex in regexes), (path, sorted(operations))
+
+
+def test_video_is_served_from_the_volume_of_the_media_box_and_only_once_the_api_said_yes() -> None:
+    """The address names the playlist or one segment by its number, and nothing else
+    of the volume: no other name, no directory, no way up. The proxy serves the file
+    itself, to GET alone, after the API answered the question of the next test with a
+    yes; the API is no part of serving the bytes. It follows no link out of the volume,
+    gives each file its one content type, tells every cache to keep nothing, counts the
+    request against the caller's limit, and leaves the access log alone: a hundred
+    viewers would otherwise push every other line out of it."""
+    kind, pattern = HLS.arguments
+    assert kind == "~", "case-sensitive"
+    address = re.compile(pattern.replace("(?<", "(?P<"))
+    files = f"/api/broadcasts/{BROADCAST}/hls"
+    for name in ("index.m3u8", "seg-000000.ts", "seg-000042.ts", "seg-999999.ts"):
+        found = address.search(f"{files}/{name}")
+        assert found is not None, name
+        assert found.group("hls_file") == name
+    for elsewhere in (
+        f"{files}/",
+        f"{files}/seg-42.ts",
+        f"{files}/seg-0000042.ts",
+        f"{files}/seg-00004a.ts",
+        f"{files}/seg-000042.ts.tmp",
+        f"{files}/seg-000042.ts/",
+        f"{files}/index.m3u8.tmp",
+        f"{files}/indexXm3u8",
+        f"{files}/other.m3u8",
+        f"{files}/sub/index.m3u8",
+        f"{files}/../index.m3u8",
+        f"{files}/.index.m3u8",
+        f"/api/broadcasts/{BROADCAST.upper()}/hls/index.m3u8",
+        f"/api/broadcasts/{BROADCAST[:-1]}/hls/index.m3u8",
+        f"/x{files}/index.m3u8",
+        f"/api/broadcasts/{BROADCAST}/index.m3u8",
+        "/api/broadcasts/hls/index.m3u8",
+    ):
+        assert not address.search(elsewhere), elsewhere
+    assert not any("{broadcast_id}/hls" in path for path in API_PATHS), "no operation of the API"
+
+    assert HLS.inner("proxy_pass") == []
+    assert HLS.inner("alias") == [(f"{HLS_DIRECTORY}/$broadcast_of_request/$hls_file",)]
+    assert [d.arguments for d in named(PROXY_TREE, "alias")] == HLS.inner("alias")
+    for word in ("root", "autoindex", "try_files", "index", "dav_methods", "proxy_store"):
+        assert named(PROXY_TREE, word) == [], word
+    assert HLS.inner("disable_symlinks") == [("on",)]
+
+    [methods] = [directive for directive in HLS.block if directive.name == "limit_except"]
+    assert methods.arguments == ("GET",)
+    assert [(inside.name, inside.arguments) for inside in methods.block] == [("deny", ("all",))]
+    assert HLS.inner("auth_request") == [("/_broadcast_access",)]
+    assert [d.arguments for d in named(PROXY_TREE, "auth_request")] == [("/_broadcast_access",)]
+    assert named(PROXY_TREE, "satisfy") == [], "the refusal of a method and the API's both hold"
+
+    [types] = [directive for directive in HLS.block if directive.name == "types"]
+    assert {kind.name: kind.arguments for kind in types.block} == {
+        "application/vnd.apple.mpegurl": ("m3u8",),
+        "video/mp2t": ("ts",),
+    }
+    assert HLS.inner("add_header") == [("Cache-Control", "no-store", "always")]
+    assert HLS.inner("limit_req") == location_of(SERVER.block, "/api/").inner("limit_req")
+    assert HLS.inner("limit_conn") == []
+    assert HLS.inner("access_log") == [("off",)]
+    gzipped = {kind for arguments in SERVER.inner("gzip_types") for kind in arguments}
+    assert not gzipped & {"application/vnd.apple.mpegurl", "video/mp2t"}
+
+
+def test_the_proxy_asks_the_api_about_each_caller_and_remembers_only_a_yes() -> None:
+    """Before it serves a playlist or a segment the proxy asks the API's own operation
+    whether this caller may watch this broadcast. No browser reaches the location. It
+    sets no request header and sends no body, so the API judges the caller by the two
+    identity headers the viewer's request came with (a test above holds that), as it
+    judges every call.
+
+    A yes is remembered per broadcast and caller, as the proxy names the caller to the
+    API, for the seconds `.env` says: a viewer costs the API one question in that time,
+    and a remembered yes is never another caller's. Nothing but a 200 is remembered,
+    and nothing overrides what the API's answer says about keeping it."""
+    assert "get" in API_PATHS["/api/broadcasts/{broadcast_id}/access"]
+    assert [(directive.name, directive.arguments) for directive in ACCESS.block] == [
+        ("internal", ()),
+        ("proxy_pass_request_body", ("off",)),
+        ("proxy_cache", ("broadcast_access",)),
+        ("proxy_cache_key", (f"$broadcast_of_request {API_CALLER}",)),
+        ("proxy_cache_valid", ("200", "${NGINX_BROADCAST_ACCESS_CACHE_SECONDS}s")),
+        ("proxy_cache_lock", ("on",)),
+        ("proxy_pass", ("http://$api_upstream/api/broadcasts/$broadcast_of_request/access",)),
+    ]
+    [kept] = [directive for directive in PROXY_TREE if directive.name == "proxy_cache_path"]
+    assert kept.arguments[0].startswith("/var/cache/nginx/")
+    assert "keys_zone=broadcast_access:1m" in kept.arguments
+    assert [d.arguments for d in named(PROXY_TREE, "proxy_cache")] == [("broadcast_access",)]
+    assert [d.arguments[0] for d in named(PROXY_TREE, "proxy_cache_valid")] == ["200"]
+    for word in ("proxy_ignore_headers", "proxy_cache_use_stale", "proxy_cache_methods"):
+        assert named(PROXY_TREE, word) == [], word
+    assert named(IDENTITY_TREE, "proxy_cache") == []
+
+
+def test_what_nginx_answers_for_video_has_the_error_shape_of_the_api() -> None:
+    """The API's answer to the proxy's question reaches the viewer as its status alone,
+    so nginx writes the body: the API's own for a caller nobody named, the one sentence
+    the API has for a live stream a caller may not watch, and "not found" for a file
+    that is not there. A request above the limits and an API that does not answer are
+    answered as everywhere under /api/. None of these locations passes anything on or
+    counts anything."""
+    handler = answers_of_nginx(HLS)
+    assert set(handler) == {401, 403, 404, 413, 429, 500, 502, 503, 504}
+    assert answer_of(handler[401]) == (
+        UnauthenticatedError.status_code,
+        {
+            "code": ErrorCode.UNAUTHENTICATED,
+            "message": UnauthenticatedError.default_message,
+            "details": {},
+        },
+    )
+    assert answer_of(handler[403]) == (
+        ForbiddenError.status_code,
+        {"code": ErrorCode.FORBIDDEN, "message": NOT_AVAILABLE_MESSAGE, "details": {}},
+    )
+    assert answer_of(handler[404]) == (
+        NotFoundError.status_code,
+        {"code": ErrorCode.NOT_FOUND, "message": NotFoundError.default_message, "details": {}},
+    )
+    everywhere = answers_of_nginx(location_of(SERVER.block, "/api/"))
+    assert handler[413] is everywhere[413]
+    assert handler[429] is everywhere[429]
+    for status in (500, 502, 503, 504):
+        assert handler[status] is everywhere[502], status
+    for answer in handler.values():
+        assert [directive.name for directive in answer.block if directive.name != "add_header"] == [
+            "types",
+            "default_type",
+            "return",
+        ], answer.arguments
+        answer_of(answer)
+    of_video_alone = {"@api_unauthenticated", "@api_not_found", "@broadcast_refused"}
+    for location in API_LOCATIONS:
+        answering = {answer.arguments[0] for answer in answers_of_nginx(location).values()}
+        assert not answering & of_video_alone, location.arguments
+
+
+@pytest.mark.parametrize("environment", [EXAMPLE, DEPLOYED], ids=["example", "production"])
+def test_the_content_security_policy_lets_the_app_play_and_send_video_of_its_own_origin(
+    environment: Mapping[str, str],
+) -> None:
+    """A player gets the playlist from this origin, or builds the picture from segments
+    it fetched itself, which is a `blob:` address (`media-src`); the uploader, the event
+    stream and the player fetch from this origin (`connect-src`); the player's script
+    is the app's own (`script-src`). No source of the policy is another host. The proxy
+    sends no `Permissions-Policy`, so camera and microphone are the page's to ask for."""
+    policy = {
+        words[0]: words[1:]
+        for words in (
+            part.split() for part in environment["NGINX_CONTENT_SECURITY_POLICY"].split(";")
+        )
+        if words
+    }
+    assert policy["media-src"] == ["'self'", "blob:"]
+    assert policy["img-src"] == ["'self'", "data:", "blob:"]
+    assert "'self'" in policy["connect-src"]
+    assert policy["script-src"][0] == "'self'"
+    assert policy["default-src"] == ["'self'"]
+    for directive, sources in policy.items():
+        for source in sources:
+            assert source.startswith("'") or source.endswith(":"), f"{directive}: {source}"
+    sent = [
+        directive.arguments[0].lower()
+        for directive in (*all_of(PROXY_TREE), *all_of(IDENTITY_TREE))
+        if directive.name == "add_header"
+    ]
+    assert "permissions-policy" not in sent
 
 
 # --- nginx's own verdict ----------------------------------------------------------------
@@ -1781,6 +2573,9 @@ def test_nginx_accepts_the_configuration_as_the_stack_renders_it(
     nginx then reads the result the way it would at start. A directive it does not know,
     a variable nobody defines, a value it cannot read as an address: each of them would
     otherwise show when the proxy of a deployment fails to come up.
+
+    The volume of the media box is not among the mounts: nginx reads it when a request
+    asks for a file of it, and nothing of it at start.
 
     The container has no network, publishes nothing and is removed when nginx has
     answered. Without Docker the test is skipped.

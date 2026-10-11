@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 
 import { SegmentedControl } from "@/components/controls";
 import { ErrorBanner, InlineError, RetryCountdown } from "@/components/feedback";
-import { OutcomeToggle, QuotePanel, SharesEntry, StakeEntry } from "@/components/market";
+import { OutcomeToggle, QuotePanel, SharesEntry } from "@/components/market";
 import { Amount } from "@/components/money";
 import { SheetBody, SheetFooter } from "@/components/sheet";
 import { Button } from "@/components/ui/button";
@@ -30,7 +30,7 @@ export type TradeFormProps = {
 
 /**
  * What a quote says about the size that was entered (DESIGN.md §13). Of a buy: the stake
- * limit, the balance, the smallest trade, or a text that is no amount. Of a sell: more
+ * limit, the balance, the smallest trade, or a text that is no number of shares. Of a sell: more
  * shares than the viewer holds, the smallest trade, or a text that is no number of shares.
  * It is said with the entry, which is where the size is.
  */
@@ -58,31 +58,24 @@ function placeOfFailure(error: ApiError, side: TradeSide): "entry" | "button" | 
   return ABOUT_THE_MARKET.includes(error.code) ? "button" : "banner";
 }
 
-/** The field of a request that holds the size of a trade of each side. */
-const SIZE_FIELD = { BUY: "amount_cr", SELL: "shares" } as const;
-
 /**
- * The sentence the API has for the size: the one it wrote for the field that holds it,
- * `amount_cr` of a buy and `shares` of a sell, where it names that field, otherwise its
- * `message` (DESIGN.md §14).
+ * The API's sentence for `shares`, or its message when no field is named (DESIGN.md §14).
  */
-function aboutTheSize(error: ApiError, side: TradeSide): string {
-  const field = SIZE_FIELD[side];
-  return placeError(error, [field]).fields[field] ?? messageOf(error);
+function aboutTheSize(error: ApiError): string {
+  return placeError(error, ["shares"]).fields.shares ?? messageOf(error);
 }
 
 /**
  * The form of the trade ticket (DESIGN.md §13), top to bottom: Buy / Sell, the outcome,
- * the stake entry or the shares entry, the quote, the balance and Confirm. The question
+ * the shares entry, the quote, the balance and Confirm. The question
  * stands above it, in the header of the surface the ticket is on.
  *
- * It decides nothing about amounts. The amount of a buy is the text of the amount field
- * and the size of a sell the text of the shares field, each sent as it stands; whether it
+ * The size of a buy or sale is the text of its shares field, sent as it stands; whether it
  * can be traded is the server's answer to the quote. Which preset can be chosen is its
  * `allowed`, whether selling is offered is `allowed` of the sell presets, whether the
- * viewer may trade is `can_trade`, and whether any amount is a buy is `can_buy`: while it
- * is false, at the stake limit or without the balance of the smallest buy, the stake
- * entry takes no amount and no quote is asked. The quote on screen goes along as the
+ * viewer may trade is `can_trade`, and whether anything can be bought is `can_buy`: while
+ * it is false, at the stake limit or without the balance of the smallest buy, the shares
+ * field takes nothing and no quote is asked. The quote on screen goes along as the
  * guard of the trade.
  *
  * While a trade waits for its verdict (DESIGN.md §14) the form shows that trade as it was
@@ -102,14 +95,16 @@ export function TradeForm({
   const waiting = attempt !== null;
   const { side, outcome } = attempt?.intent ?? intent;
   // While a trade waits, the controls are those it was made from.
-  const stakePresets = attempt?.stakePresets ?? viewer.stake_presets;
-  const buySlider = attempt === null ? viewer.buy_slider : attempt.buySlider;
+  const buy = (attempt?.buy ?? viewer.buy).find((entry) => entry.outcome === outcome);
   const sellPresets = attempt?.sellPresets ?? viewer.sell_presets;
   const sellSlider =
     (attempt?.sell ?? viewer.sell).find((entry) => entry.outcome === outcome)?.slider ?? null;
-  const stake =
-    attempt && "amount_cr" in attempt.request ? attempt.request.amount_cr : choice.stake;
-  const shares = attempt?.request.side === "SELL" ? attempt.request.shares : choice.shares;
+  const shares =
+    attempt && "shares" in attempt.request
+      ? attempt.request.shares
+      : side === "BUY"
+        ? choice.buyShares
+        : choice.shares;
 
   const sellable: Record<Outcome, boolean> = {
     YES: viewer.sell_presets.some((preset) => preset.outcome === "YES" && preset.allowed),
@@ -119,20 +114,14 @@ export function TradeForm({
   // What a quote is asked for: the text of the field of the side, as it stands. An empty
   // field asks for nothing, and neither does one that ends in its decimal point: that
   // figure is not finished.
-  const size = side === "BUY" ? stake : shares;
-  const finished = size !== "" && !size.endsWith(".");
-  // The server says that no amount is a buy right now: there is nothing to ask about one.
+  const finished = shares !== "" && !shares.endsWith(".");
+  // The server says that nothing can be bought right now.
   const nothingToBuy = side === "BUY" && !viewer.can_buy;
-  const entered: QuoteRequest | null =
-    !finished || nothingToBuy
-      ? null
-      : side === "BUY"
-        ? { side, outcome, amount_cr: stake }
-        : { side, outcome, shares };
+  const entered: QuoteRequest | null = !finished || nothingToBuy ? null : { side, outcome, shares };
   // A trade that waits was made from a request: that one is what was sent.
   const request = attempt?.request ?? entered;
 
-  const read = useQuote(market.id, request);
+  const read = useQuote(market.id, request, viewer.can_trade && !waiting);
   // A trade that waits keeps the quote it was confirmed with on screen. Otherwise a quote
   // counts for as long as the server lets the viewer trade.
   const quote = attempt?.quote ?? (viewer.can_trade ? read.quote : null);
@@ -159,7 +148,12 @@ export function TradeForm({
   // DESIGN.md §14: such an answer says the market on screen is not the market as it is.
   // So does a sale of more shares than the viewer holds: the holding, and with it the
   // slider and the chips, is read again.
-  const marketBehind = place === "button" || quoteFailure?.code === "INSUFFICIENT_SHARES";
+  const marketBehind =
+    place === "button" ||
+    (quoteFailure !== null &&
+      ["INSUFFICIENT_SHARES", "INSUFFICIENT_BALANCE", "LIMIT_EXCEEDED"].includes(
+        quoteFailure.code ?? "",
+      ));
   useEffect(() => {
     if (marketBehind) onMarketBehind();
   }, [marketBehind, quoteFailure, onMarketBehind]);
@@ -194,8 +188,7 @@ export function TradeForm({
         intent: { side, outcome },
         request,
         quote,
-        stakePresets: viewer.stake_presets,
-        buySlider: viewer.buy_slider,
+        buy: viewer.buy,
         sellPresets: viewer.sell_presets,
         sell: viewer.sell,
       });
@@ -223,24 +216,26 @@ export function TradeForm({
         />
 
         {side === "BUY" ? (
-          <StakeEntry
-            value={stake}
-            onChange={(text) => store.choose(market.id, { stake: text })}
-            slider={buySlider}
-            presets={stakePresets}
+          <SharesEntry
+            side="BUY"
+            value={shares}
+            onChange={(text) => store.choose(market.id, { buyShares: text })}
+            slider={buy?.slider ?? null}
+            presets={buy?.presets ?? []}
             stakeLeftCr={stakeLimit.stake_left_cr}
             stakeLimitCr={stakeLimit.stake_limit_cr}
-            refusal={sizeRefused === null ? null : aboutTheSize(sizeRefused, side)}
+            refusal={sizeRefused === null ? null : aboutTheSize(sizeRefused)}
             disabled={waiting || !viewer.can_trade || !viewer.can_buy}
           />
         ) : (
           <SharesEntry
+            side="SELL"
             value={shares}
             onChange={(text) => store.choose(market.id, { shares: text })}
             outcome={outcome}
             slider={sellSlider}
             presets={sellPresets}
-            refusal={sizeRefused === null ? null : aboutTheSize(sizeRefused, side)}
+            refusal={sizeRefused === null ? null : aboutTheSize(sizeRefused)}
             disabled={waiting || !viewer.can_trade}
           />
         )}

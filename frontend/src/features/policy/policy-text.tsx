@@ -10,7 +10,7 @@ function counted(count: number, one: string, many: string): string {
   return `${formatCount(count)} ${count === 1 ? one : many}`;
 }
 
-/** One section of the policy: a heading in `h3`, 8 px, then its text. */
+/** One section of the policy: an optional heading in `h3`, 8 px, then its text. */
 function Section({ title, children }: { title?: string; children: ReactNode }) {
   const id = useId();
   return (
@@ -31,7 +31,7 @@ function Points({ children }: { children: ReactNode }) {
 }
 
 /**
- * The usage policy (DESIGN.md §13): the rules of MarkETH as plain text, under six
+ * The usage policy (DESIGN.md §13): the rules of MarkETH as plain text, under eight
  * headings. The words follow USAGE_POLICY.md, the source VIS maintains.
  *
  * It asks the API for nothing. Its figures are fields of the `/config` that start-up
@@ -61,8 +61,8 @@ export function PolicyText() {
           Wallet.
         </p>
         <p>
-          Nothing is sold. Tokens, codes and vouchers cannot be bought, from VIS or from anyone else,
-          and none of them can be turned into money. No real money is involved at any point.
+          Nothing is sold. Tokens, codes and vouchers cannot be bought, from VIS or from anyone
+          else, and none of them can be turned into money. No real money is involved at any point.
         </p>
       </Section>
 
@@ -144,6 +144,30 @@ export function PolicyText() {
         </Points>
       </Section>
 
+      <Section title="Live chat">
+        <p>
+          While a market has a live stream, it has a live chat. What you write there is shown at
+          once, with your username, to everyone who can see the market. The chat ends with the
+          stream, and its messages are deleted then.
+        </p>
+        <p>Each writer in a live chat has a role badge: User, Admin or Barista.</p>
+        <p>In a live chat:</p>
+        <Points>
+          <li>write about the market;</li>
+          <li>do not insult, threaten or harass anyone;</li>
+          <li>
+            do not post the private matters of a person, advertising, or the same thing again and
+            again;
+          </li>
+          <li>do not try to mislead other traders about an outcome.</li>
+        </Points>
+        <p>What you write is shown as plain text. Links in it cannot be tapped.</p>
+        <p>
+          VIS removes messages that break this policy. What is removed disappears for everyone. VIS
+          keeps removed messages on record.
+        </p>
+      </Section>
+
       <Section title="Vouchers">
         <p>
           Tokens can be turned into a voucher for one product at the bar: a coffee, a drink or a
@@ -160,15 +184,33 @@ export function PolicyText() {
         <p>Vouchers are not for sale and cannot be exchanged for money.</p>
       </Section>
 
+      <Section title="Live streams">
+        <p>
+          Whoever proposed a market can ask VIS to stream it live, from a camera. An admin decides
+          on every request, and VIS can end a live stream at any moment.
+        </p>
+        <p>
+          A live stream shows what its market is about. Film nobody who has not agreed to it, and
+          show nothing this policy keeps out of markets.
+        </p>
+        <p>
+          Viewers see a live stream a few seconds late. No picture and no sound is kept; that a
+          stream took place is.
+        </p>
+      </Section>
+
       <Section title="What other players can see about you">
         <p>
           Other players see your username, your degree programme and your record on the leaderboard:
-          the tokens you hold, the number of your trades, your win rate and your payout ratio.
+          the tokens you hold, the number of your trades, your win rate and your payout ratio. They
+          also see what you write in a live chat. If you stream a market live, viewers see and hear
+          what your camera shows.
         </p>
         <p>
           They do not see your name or your email address. Both come from your ETH sign-in and are
-          shown to you and to the admins of VIS only. They do not see which markets you trade or
-          what you hold in them, and a market does not show who proposed it.
+          shown to you and to the admins of VIS only. They are not shown which markets you trade or
+          what you hold in them, and a market does not show who proposed it, unless you stream it
+          live yourself.
         </p>
         <p>VIS keeps a record of every movement of tokens and of every action an admin takes.</p>
       </Section>
@@ -181,6 +223,7 @@ export function PolicyText() {
             reason for a rejection;
           </li>
           <li>pause trading in a market, close it early or void it;</li>
+          <li>remove a chat message that breaks this policy;</li>
           <li>correct a balance that is wrong, with the reason on record;</li>
           <li>
             suspend an account that breaks this policy. A suspended account is locked out of MarkETH

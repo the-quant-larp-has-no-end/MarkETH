@@ -17,8 +17,7 @@ const buy: Order = {
   intent: { side: "BUY", outcome: "YES" },
   request: { side: "BUY", outcome: "YES", amount_cr: "25" },
   quote: quote(),
-  stakePresets: viewer.stake_presets,
-  buySlider: viewer.buy_slider,
+  buy: viewer.buy,
   sellPresets: viewer.sell_presets,
   sell: viewer.sell,
 };

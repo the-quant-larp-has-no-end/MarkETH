@@ -4,8 +4,8 @@ This is the only place where classes are wired together. The API, the relay, scr
 and tests all start from `Container.build(settings)` and read what they need from its
 attributes; nothing else constructs a service, a repository factory or an adapter.
 
-Building connects to nothing. Postgres, Redis and ScyllaDB are each reached on first
-use, so a process starts with any of them down (SPEC §9).
+Building connects to nothing. Postgres, Redis, ScyllaDB and the media box are each
+reached on first use, so a process starts with any of them down (SPEC §9).
 """
 
 import logging
@@ -14,6 +14,7 @@ from typing import Self
 from app.core.clock import Clock, SystemClock
 from app.core.config import Settings
 from app.db.database import Database
+from app.integrations.media.client import MediaClient
 from app.integrations.redis.client import RedisClient
 from app.integrations.redis.market_cache import MarketCache
 from app.integrations.redis.quote_bus import QuoteBus
@@ -26,6 +27,10 @@ from app.services.account import AccountService
 from app.services.admin_users import AdminUserService
 from app.services.announcer import Announcer, LeaderboardPace
 from app.services.audit import AuditService
+from app.services.broadcast_audience import BroadcastAudience
+from app.services.broadcast_view import BroadcastLookup, BroadcastView
+from app.services.broadcasts import BroadcastService
+from app.services.chat import ChatService
 from app.services.codes import CodeService
 from app.services.email_policy import EmailPolicy
 from app.services.grants import GrantService
@@ -76,6 +81,7 @@ class Container:
         self.fallback_rate_limiter = InProcessRateLimiter(clock)
         self.scylla = ScyllaClient(settings.scylla)
         self.quote_history = QuoteHistoryStore(self.scylla, settings.scylla)
+        self.media = MediaClient(settings.broadcast)
 
         # The event stream. A unit of work hands what its transaction announced to
         # the announcer once the commit has returned; the hub holds the open
@@ -94,9 +100,27 @@ class Container:
         self.audit = AuditService(clock)
         self.email_policy = EmailPolicy(settings)
         self.public_config = PublicConfigService(settings)
-        self.health = HealthService(self.database, self.redis, self.scylla)
+        self.health = HealthService(self.database, self.redis, self.scylla, self.media)
         self.invariants = InvariantChecker()
         self.notices = NoticeService(uow_factory, clock)
+
+        # The live chat of a market is open while its broadcast is LIVE: it asks the
+        # lookup, and every stored end of a broadcast clears it.
+        self.broadcast_view = BroadcastView(settings)
+        self.broadcast_lookup = BroadcastLookup(self.broadcast_view, clock)
+        self.broadcast_audience = BroadcastAudience(settings, clock)
+        self.chat = ChatService(
+            uow_factory,
+            settings,
+            clock,
+            self.market_access,
+            self.broadcast_lookup,
+            self.audit,
+            self.rate_limiter,
+            self.fallback_rate_limiter,
+            self.live_events,
+            self.email_policy,
+        )
 
         self.grants = GrantService(uow_factory, settings, clock, self.ledger, self.audit)
         self.vouchers = VoucherService(uow_factory, settings, clock, self.ledger)
@@ -107,7 +131,7 @@ class Container:
         )
         self.profile = ProfileService(uow_factory, settings, clock, self.grants, self.account)
         self.admin_users = AdminUserService(
-            uow_factory, settings, clock, self.email_policy, self.ledger, self.audit
+            uow_factory, settings, clock, self.email_policy, self.ledger, self.audit, self.chat
         )
         self.codes = CodeService(
             uow_factory, settings, clock, self.ledger, self.audit, self.rate_limiter
@@ -150,6 +174,19 @@ class Container:
         )
         self.history = HistoryService(
             uow_factory, settings, clock, self.market_view, self.quote_history
+        )
+        self.broadcasts = BroadcastService(
+            uow_factory,
+            settings,
+            clock,
+            self.broadcast_view,
+            self.market_view,
+            self.market_access,
+            self.audit,
+            self.media,
+            self.broadcast_audience,
+            self.live_events,
+            self.chat,
         )
 
     @classmethod

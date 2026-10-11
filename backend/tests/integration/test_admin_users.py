@@ -8,6 +8,9 @@ action here that moves credits: one `ADMIN_ADJUSTMENT` entry between `vis:issuan
 the user, booked once however often the request is sent. It adds at most
 `MAX_ADMIN_ADJUSTMENT_CR` to a balance and takes at most what the balance holds.
 
+A suspension also takes what the account wrote out of the live chats that run. The
+chat does that (`ChatService.remove_of_user`), inside the transaction of the suspension.
+
 Two bootstrap admins are in the test settings (`Factory.admin`). An admin by the row
 alone is `Factory.user(role=UserRole.ADMIN)`. What a suspension and a role mean to the
 user's own requests is `tests/integration/test_identity.py`, through the portal's
@@ -18,7 +21,7 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Final
 from uuid import UUID, uuid7
@@ -28,7 +31,7 @@ import pytest
 from hypothesis import HealthCheck, given
 from hypothesis import settings as hypothesis_settings
 from hypothesis import strategies as st
-from sqlalchemy import event, select
+from sqlalchemy import event, select, text
 
 from app.container import Container
 from app.core.enums import AccountKind, DegreeLevel, JournalKind, UserRole, UserStatus
@@ -47,6 +50,8 @@ from app.core.security import sha256_hex
 from app.core.units import MICRO, format_cr, to_cr
 from app.db.base import Base
 from app.models import AuditLogEntry, IdempotencyKey, JournalEntry, Posting, User
+from app.models.chat import ChatMessage
+from app.repositories.unit_of_work import UnitOfWork
 from app.schemas.admin.users import (
     AdjustBalanceRequest,
     AdminUserItem,
@@ -70,9 +75,12 @@ from app.services.admin_users import (
     adjustment_limit_message,
 )
 from app.services.audit import AuditAction
+from app.services.chat import chat_lock
 from app.services.ledger import LedgerRef, admin_adjustment_key
 from app.services.markets import UNSTORABLE_TEXT_MESSAGE
 from tests.support.books import assert_books_balance, count_rows, system_balance
+from tests.support.chat import broadcast_of, go_live, listening, stored_messages, write_messages
+from tests.support.chat import of as messages_of
 from tests.support.clock import TEST_NOW, FrozenClock
 from tests.support.factories import ActAs, Factory, PortalHeaders, identity_of
 from tests.support.settings import TEST_ADMIN_EMAILS, load_base_settings
@@ -720,6 +728,288 @@ async def test_of_two_admins_who_suspend_one_account_at_once_one_does_and_one_ge
     assert refused[0].message == ALREADY_SUSPENDED_MESSAGE
     assert (await stored(container, user)).status is UserStatus.SUSPENDED
     assert [row.action for row in await audit_rows(container)] == [AuditAction.USER_SUSPEND]
+
+
+# --- A suspension and the live chat ------------------------------------------------------
+
+
+class ChatAsked:
+    """Stands where `ChatService.remove_of_user` is and keeps what a suspension asks of
+    the chat: whose messages, as which admin, and what the transaction of the call and
+    a transaction beside it read of the account at that moment."""
+
+    def __init__(self, container: Container) -> None:
+        self._container = container
+        self.calls: list[tuple[UUID, UUID]] = []
+        self.inside: list[tuple[UserStatus | None, list[str]]] = []
+        self.beside: list[tuple[UserStatus | None, list[str]]] = []
+
+    async def __call__(self, uow: UnitOfWork, user_id: UUID, actor_id: UUID) -> None:
+        self.calls.append((user_id, actor_id))
+        self.inside.append(await self._read(uow, user_id))
+        async with self._container.uow_factory() as other:
+            self.beside.append(await self._read(other, user_id))
+
+    @staticmethod
+    async def _read(uow: UnitOfWork, user_id: UUID) -> tuple[UserStatus | None, list[str]]:
+        """The stored status of the account and the actions of the audit log, as this
+        transaction sees them."""
+        status = await uow.session.scalar(select(User.status).where(User.id == user_id))
+        actions = await uow.session.scalars(select(AuditLogEntry.action).order_by(AuditLogEntry.id))
+        return status, list(actions.all())
+
+
+async def test_a_suspension_asks_the_chat_once_inside_its_own_transaction(
+    container: Container, factory: Factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The chat is handed the unit of work of the suspension, the account and the admin.
+    By then the status and its audit row are written and not committed: the
+    transaction of the call reads them, and one beside it reads the account as it was."""
+    admin = factory.identity(await factory.admin())
+    user = await factory.user()
+    asked = ChatAsked(container)
+    monkeypatch.setattr(container.chat, "remove_of_user", asked)
+
+    await suspend(container, admin, user.id)
+
+    assert asked.calls == [(user.id, admin.id)]
+    assert asked.inside == [(UserStatus.SUSPENDED, [AuditAction.USER_SUSPEND])]
+    assert asked.beside == [(UserStatus.ACTIVE, [])]
+    assert (await stored(container, user)).status is UserStatus.SUSPENDED
+
+
+async def test_a_suspension_whose_chat_messages_cannot_be_deleted_does_not_happen(
+    container: Container, factory: Factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One transaction: what the chat raises ends the suspension with it, the status
+    and the audit row included."""
+    admin = factory.identity(await factory.admin())
+    user = await factory.user()
+
+    async def cannot(uow: UnitOfWork, user_id: UUID, actor_id: UUID) -> None:
+        raise RuntimeError("the chat cannot delete in this test")
+
+    monkeypatch.setattr(container.chat, "remove_of_user", cannot)
+    before = await everything(container)
+
+    with pytest.raises(RuntimeError):
+        await suspend(container, admin, user.id)
+
+    assert await everything(container) == before
+    assert (await stored(container, user)).status is UserStatus.ACTIVE
+
+
+async def test_only_a_suspension_that_goes_through_asks_the_chat(
+    container: Container, factory: Factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refused suspension stops before the chat, and lifting a suspension, a role and
+    an adjustment have nothing to ask of it."""
+    admin = factory.identity(await factory.admin())
+    other_admin = await factory.admin(1)
+    member = await factory.user()
+    suspended = await factory.user(status=UserStatus.SUSPENDED, balance_micro=WALLET)
+    asked = ChatAsked(container)
+    monkeypatch.setattr(container.chat, "remove_of_user", asked)
+
+    refusals: list[tuple[AuthenticatedUser, UUID, type[Exception]]] = [
+        (admin, other_admin.id, ForbiddenError),  # an admin by the configuration
+        (admin, suspended.id, ConflictError),  # suspended already
+        (admin, uuid7(), NotFoundError),  # nobody
+        (admin, admin.id, ForbiddenError),  # their own account
+        (factory.identity(member), suspended.id, ForbiddenError),  # no admin
+    ]
+    for actor, user_id, refusal in refusals:
+        with pytest.raises(refusal):
+            await suspend(container, actor, user_id)
+    for action in ("reinstate", "role", "adjustments"):
+        await ACTIONS[action](container, admin, suspended.id)
+
+    assert asked.calls == []
+
+
+async def test_suspending_takes_what_the_account_wrote_out_of_the_running_chats(
+    container: Container, factory: Factory, clock: FrozenClock
+) -> None:
+    """The account's messages leave every chat that runs and other people's stay. The
+    chat keeps what it deleted in one audit row per broadcast, written as the admin
+    after the row of the suspension, and tells whoever watches those live streams to
+    read again: one `broadcast.changed` per market, and no event per message."""
+    admin = await factory.admin()
+    user = await factory.user()
+    bystander = await factory.user()
+    first = await factory.market(question="Will the first chat lose two messages?")
+    second = await factory.market(question="Will the second chat lose one message?")
+    on_first, on_second = await go_live(container, first), await go_live(container, second)
+    in_first = await write_messages(container, on_first, user, ["One.", "Two."])
+    (kept,) = await write_messages(container, on_first, bystander, ["This one stays."])
+    in_second = await write_messages(container, on_second, user, ["Three."])
+    clock.advance(timedelta(minutes=5))
+
+    topics = (broadcast_of(first), broadcast_of(second), messages_of(first), messages_of(second))
+    async with listening(container.live, factory.identity(bystander), *topics) as heard:
+        answer = await suspend(container, factory.identity(admin), user.id)
+        events = [await heard.next(), await heard.next()]
+        await heard.nothing_more()
+
+    assert isinstance(answer, AdminUserItem)
+    assert answer.status is UserStatus.SUSPENDED
+    assert [message.id for message in await stored_messages(container)] == [kept.id]
+
+    suspension, *removals = await audit_rows(container)
+    assert suspension.action == AuditAction.USER_SUSPEND
+    assert len(removals) == 2
+    for removal in removals:
+        assert (removal.actor_id, removal.action) == (
+            admin.id,
+            AuditAction.CHAT_MESSAGE_REMOVE_OF_USER,
+        )
+        assert (removal.target, removal.after) == (f"user:{user.id}", None)
+        assert removal.created_at == clock.now()
+    deleted = {
+        (row.before["market_id"], row.before["broadcast_id"]): [
+            (message["id"], message["text"]) for message in row.before["messages"]
+        ]
+        for row in removals
+        if row.before is not None
+    }
+    assert deleted == {
+        (str(first.id), str(on_first.id)): [(str(row.id), row.text) for row in in_first],
+        (str(second.id), str(on_second.id)): [(str(row.id), row.text) for row in in_second],
+    }
+
+    assert {(event["type"], event["market_id"]) for event in events} == {
+        ("broadcast.changed", str(first.id)),
+        ("broadcast.changed", str(second.id)),
+    }
+    assert {datetime.fromisoformat(event["ts"]) for event in events} == {clock.now()}
+    await assert_books_balance(container.uow_factory)
+
+
+async def test_suspending_an_account_that_wrote_in_no_chat_leaves_the_chats_alone(
+    container: Container, factory: Factory
+) -> None:
+    """Nothing is deleted, nothing but the suspension is audited, and nobody is told
+    to read again."""
+    admin = factory.identity(await factory.admin())
+    user = await factory.user()
+    bystander = await factory.user()
+    market = await factory.market()
+    live = await go_live(container, market)
+    said = await write_messages(container, live, bystander, ["Hello.", "Anybody here?"])
+
+    topics = (broadcast_of(market), messages_of(market))
+    async with listening(container.live, factory.identity(bystander), *topics) as heard:
+        await suspend(container, admin, user.id)
+        await heard.nothing_more()
+
+    assert [row.id for row in await stored_messages(container)] == [row.id for row in said]
+    assert [row.action for row in await audit_rows(container)] == [AuditAction.USER_SUSPEND]
+
+
+@pytest.mark.parametrize("whose", ["a-suspended-account", "a-bootstrap-admin"])
+async def test_a_refused_suspension_leaves_the_messages_of_the_account_where_they_are(
+    container: Container, factory: Factory, whose: str
+) -> None:
+    """A refusal writes nothing at all: no message is deleted for it and nobody hears
+    of one."""
+    admin = factory.identity(await factory.admin())
+    if whose == "a-suspended-account":
+        user = await factory.user(status=UserStatus.SUSPENDED)
+    else:
+        user = await factory.admin(1)
+    market = await factory.market()
+    live = await go_live(container, market)
+    await write_messages(container, live, user, ["Still here."])
+    before = await everything(container)
+
+    topics = (broadcast_of(market), messages_of(market))
+    async with listening(container.live, admin, *topics) as heard:
+        with pytest.raises((ConflictError, ForbiddenError)):
+            await suspend(container, admin, user.id)
+        await heard.nothing_more()
+
+    assert await everything(container) == before
+    assert len(await stored_messages(container)) == 1
+
+
+async def test_the_suspend_route_takes_the_messages_down_and_reinstating_brings_none_back(
+    client: httpx.AsyncClient, container: Container, factory: Factory, as_user: ActAs
+) -> None:
+    admin = await factory.admin()
+    user = await factory.user()
+    market = await factory.market()
+    live = await go_live(container, market)
+    await write_messages(container, live, user, ["Buy my voucher.", "Really, buy it."])
+    as_user(admin)
+
+    suspended = await call(client, "suspend", user.id)
+
+    assert (suspended.status_code, suspended.json()["status"]) == (200, "SUSPENDED")
+    assert await stored_messages(container) == []
+
+    reinstated = await call(client, "reinstate", user.id)
+
+    assert (reinstated.status_code, reinstated.json()["status"]) == (200, "ACTIVE")
+    assert await stored_messages(container) == []
+    assert [row.action for row in await audit_rows(container)] == [
+        AuditAction.USER_SUSPEND,
+        AuditAction.CHAT_MESSAGE_REMOVE_OF_USER,
+        AuditAction.USER_REINSTATE,
+    ]
+
+
+async def until_a_transaction_waits_for_an_advisory_lock(container: Container) -> None:
+    """Return once Postgres lists an advisory lock somebody asked for and does not have."""
+    waiting = text("SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted")
+    async with asyncio.timeout(5):
+        while True:
+            async with container.uow_factory() as uow:
+                if await uow.session.scalar(waiting):
+                    return
+            await asyncio.sleep(0.01)
+
+
+async def test_a_message_the_account_sends_during_its_suspension_does_not_lock_it_out(
+    container: Container, factory: Factory
+) -> None:
+    """A message that is being stored holds the lock of its chat and writes a row that
+    points at its author. A suspension holds the author's row and then asks for the
+    lock of that chat. The two do not wait for each other in a circle: the row lock of
+    a suspension lets a row that points at the account be written. The message commits,
+    the suspension goes on, and what came in meanwhile is deleted with the rest."""
+    admin = factory.identity(await factory.admin())
+    user = await factory.user()
+    market = await factory.market()
+    live = await go_live(container, market)
+    await write_messages(container, live, user, ["Earlier."])
+
+    async with container.uow_factory() as posting:
+        await posting.advisory_lock(chat_lock(live.id))
+        suspension = asyncio.create_task(suspend(container, admin, user.id))
+        # The suspension has locked the account and written its status by now.
+        await until_a_transaction_waits_for_an_advisory_lock(container)
+        await posting.chat_messages.add(
+            ChatMessage(
+                market_id=market.id,
+                broadcast_id=live.id,
+                user_id=user.id,
+                text="Meanwhile.",
+                from_vis=False,
+                created_at=container.clock.now(),
+            )
+        )
+    answer = await asyncio.wait_for(suspension, timeout=5)
+
+    assert isinstance(answer, AdminUserItem)
+    assert answer.status is UserStatus.SUSPENDED
+    assert await stored_messages(container) == []
+    *_, removal = await audit_rows(container)
+    assert removal.action == AuditAction.CHAT_MESSAGE_REMOVE_OF_USER
+    assert removal.before is not None
+    assert [message["text"] for message in removal.before["messages"]] == [
+        "Earlier.",
+        "Meanwhile.",
+    ]
 
 
 # --- Roles -------------------------------------------------------------------------------
@@ -1460,6 +1750,7 @@ async def test_the_cap_is_the_one_of_the_settings(
         container.email_policy,
         container.ledger,
         container.audit,
+        container.chat,
     )
     admin = factory.identity(await factory.admin())
     user = await factory.user(balance_micro=WALLET)

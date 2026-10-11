@@ -2,20 +2,20 @@ import { fireEvent, screen, within } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, test, vi } from "vitest";
 
-import type { BuySlider, StakePreset } from "@/lib/api/schema";
+import type { BuySlider, BuyPreset } from "@/lib/api/schema";
 import { marketViewer } from "@/test/fixtures";
 import { renderWithProviders } from "@/test/render";
 
-import { StakeEntry } from "./stake-entry";
+import { SharesEntry } from "./shares-entry";
 
 /**
- * The stake entry with a parent that holds the text of its field, as the trade ticket
+ * The shares entry with a parent that holds the text of its field, as the trade ticket
  * does. `onChange` sees every text the entry hands on.
  */
 function Entry({
   start = "",
   slider = { min: 1, max: 100, step: 1 },
-  presets = marketViewer().stake_presets,
+  presets = marketViewer().buy[0]!.presets,
   left = "100",
   limit = "100",
   refusal,
@@ -24,7 +24,7 @@ function Entry({
 }: {
   start?: string;
   slider?: BuySlider | null;
-  presets?: readonly StakePreset[];
+  presets?: readonly BuyPreset[];
   left?: string;
   limit?: string;
   refusal?: string | null;
@@ -33,7 +33,8 @@ function Entry({
 }) {
   const [value, setValue] = useState(start);
   return (
-    <StakeEntry
+    <SharesEntry
+      side="BUY"
       value={value}
       onChange={(next) => {
         setValue(next);
@@ -49,10 +50,10 @@ function Entry({
   );
 }
 
-const group = () => screen.getByRole("group", { name: "Stake" });
-const field = () => screen.getByRole<HTMLInputElement>("textbox", { name: "Stake in tokens" });
-const thumb = () => screen.getByRole("slider", { name: "Stake in whole tokens" });
-const chip = (amount: string) => screen.getByRole("button", { name: `${amount} tokens` });
+const group = () => screen.getByRole("group", { name: "Shares" });
+const field = () => screen.getByRole<HTMLInputElement>("textbox", { name: "Number of shares" });
+const thumb = () => screen.getByRole("slider", { name: "Whole shares" });
+const chip = (amount: string) => screen.getByRole("button", { name: `${amount} shares` });
 const part = (slot: string) => document.querySelector<HTMLElement>(`[data-slot=${slot}]`)!;
 const line = () => part("stake-left");
 
@@ -76,39 +77,34 @@ function expectInOrder(elements: Element[]): void {
   }
 }
 
-describe("StakeEntry", () => {
+describe("SharesEntry", () => {
   describe("what it shows", () => {
-    test("top to bottom: the label, the slider beside the amount field, the presets, the stake-left line", () => {
+    test("top to bottom: the label, the slider beside the shares field, the presets, the stake-left line", () => {
       renderWithProviders(<Entry left="74.123456" />);
 
-      const label = within(group()).getByText("Stake");
+      const label = within(group()).getByText("Shares");
       expect(label).toHaveClass("type-caption", "text-muted-foreground");
       expectInOrder([label, thumb(), field(), chip("25"), chip("100"), line()]);
       expect(line()).toHaveTextContent("74.12 of 100 tokens left in this market");
       // 8 px between its parts.
-      expect(part("stake-entry")).toHaveClass("flex", "flex-col", "gap-2");
+      expect(part("shares-entry")).toHaveClass("flex", "flex-col", "gap-2");
     });
 
     test("the slider and the field share one row, 48 px tall and 12 px apart; the field is 112 px wide", () => {
       renderWithProviders(<Entry />);
 
-      const row = part("stake-field").parentElement!;
+      const row = part("shares-field").parentElement!;
       expect(row).toHaveClass("flex", "h-12", "items-center", "gap-3");
       expect(row).toContainElement(thumb());
-      expect(part("stake-field")).toHaveClass("w-28", "shrink-0");
+      expect(part("shares-field")).toHaveClass("w-28", "shrink-0");
       // The slider takes what the field leaves.
       expect(part("slider").parentElement).toHaveClass("min-w-0", "flex-1");
     });
 
-    test("the field has the token icon inside its left end and its text right aligned, in the number style", () => {
+    test("the shares field has no token icon and its text is right aligned", () => {
       renderWithProviders(<Entry start="40" />);
-
-      const icon = part("stake-field").querySelector("[data-slot=token-icon]")!;
-      expect(icon).toHaveClass("absolute", "left-3", "pointer-events-none");
-      expect(icon).toHaveAttribute("aria-hidden", "true");
-      // Barlow 500 with tabular figures, at the 16 px of every field: the number style.
+      expect(part("shares-field").querySelector("[data-slot=token-icon]")).toBeNull();
       expect(field()).toHaveClass(
-        "pl-9",
         "text-right",
         "font-display",
         "font-medium",
@@ -117,10 +113,10 @@ describe("StakeEntry", () => {
       );
     });
 
-    test("opens the decimal keypad, and is a text field: nothing rounds or steps what it holds", () => {
+    test("opens the numeric keypad, and is a text field: nothing rounds or steps what it holds", () => {
       renderWithProviders(<Entry />);
 
-      expect(field()).toHaveAttribute("inputmode", "decimal");
+      expect(field()).toHaveAttribute("inputmode", "numeric");
       expect(field()).toHaveAttribute("type", "text");
       expect(field()).toHaveAttribute("autocomplete", "off");
       expect(field()).not.toHaveAttribute("min");
@@ -132,8 +128,8 @@ describe("StakeEntry", () => {
       renderWithProviders(<Entry slider={null} />);
 
       expect(screen.queryByRole("slider")).not.toBeInTheDocument();
-      expect(part("stake-field")).toHaveClass("min-w-0", "flex-1");
-      expect(part("stake-field")).not.toHaveClass("w-28");
+      expect(part("shares-field")).toHaveClass("min-w-0", "flex-1");
+      expect(part("shares-field")).not.toHaveClass("w-28");
       // The field and the presets are there as ever.
       expect(field()).toBeEnabled();
       expect(chip("25")).toBeInTheDocument();
@@ -150,14 +146,14 @@ describe("StakeEntry", () => {
   });
 
   describe("the names a screen reader hears (DESIGN.md §15)", () => {
-    test("the three controls form a group named Stake; the presets are a group named Quick amounts", () => {
+    test("the three controls form a group named Shares; the presets are a group named Shortcuts", () => {
       renderWithProviders(<Entry />);
 
       expect(group()).toContainElement(thumb());
       expect(group()).toContainElement(field());
-      const presets = within(group()).getByRole("group", { name: "Quick amounts" });
+      const presets = within(group()).getByRole("group", { name: "Shortcuts" });
       expect(within(presets).getAllByRole("button")).toHaveLength(3);
-      expect(within(presets).getByRole("button", { name: "25 tokens" })).toHaveAttribute(
+      expect(within(presets).getByRole("button", { name: "25 shares" })).toHaveAttribute(
         "aria-pressed",
         "false",
       );
@@ -171,16 +167,16 @@ describe("StakeEntry", () => {
       expect(field()).not.toHaveAttribute("aria-invalid");
     });
 
-    test("the slider says its value in tokens, and the word follows the figure", () => {
+    test("the slider says its value in shares, and the word follows the figure", () => {
       const { unmount } = renderWithProviders(<Entry start="40" />);
-      expect(thumb()).toHaveAttribute("aria-valuetext", "40 tokens");
+      expect(thumb()).toHaveAttribute("aria-valuetext", "40 shares");
       unmount();
 
       renderWithProviders(<Entry start="1" />);
-      expect(thumb()).toHaveAttribute("aria-valuetext", "1 token");
+      expect(thumb()).toHaveAttribute("aria-valuetext", "1 share");
     });
 
-    test("the slider says not set while the field holds an amount it cannot show", () => {
+    test("the slider says not set while the field holds a share count it cannot show", () => {
       renderWithProviders(<Entry start="37.5" />);
 
       expect(thumb()).toHaveAttribute("aria-valuetext", "not set");
@@ -192,18 +188,18 @@ describe("StakeEntry", () => {
       const onChange = vi.fn();
       const { user } = renderWithProviders(<Entry onChange={onChange} />);
 
-      await user.type(field(), "37.5");
+      await user.type(field(), "375");
 
-      expect(field()).toHaveValue("37.5");
-      expect(onChange.mock.calls.map(([text]) => text)).toEqual(["3", "37", "37.", "37.5"]);
+      expect(field()).toHaveValue("375");
+      expect(onChange.mock.calls.map(([text]) => text)).toEqual(["3", "37", "375"]);
     });
 
-    test("a comma becomes a point as it is typed, and any other character is not taken", async () => {
+    test("takes digits alone, removing punctuation and other characters", async () => {
       const { user } = renderWithProviders(<Entry />);
 
       await user.type(field(), "1 2,5 tokens-");
 
-      expect(field()).toHaveValue("12.5");
+      expect(field()).toHaveValue("125");
     });
 
     test("what is pasted goes through the field as what is typed does", async () => {
@@ -213,19 +209,19 @@ describe("StakeEntry", () => {
       await user.click(field());
       await user.paste(" CHF 12,50 ");
 
-      expect(field()).toHaveValue("12.50");
-      expect(onChange).toHaveBeenCalledExactlyOnceWith("12.50");
+      expect(field()).toHaveValue("1250");
+      expect(onChange).toHaveBeenCalledExactlyOnceWith("1250");
     });
 
-    test("takes one decimal point: a second one is not taken", async () => {
+    test("takes no decimal point or comma", async () => {
       const { user } = renderWithProviders(<Entry />);
 
       await user.type(field(), "1.2.3,4");
 
-      expect(field()).toHaveValue("1.234");
+      expect(field()).toHaveValue("1234");
     });
 
-    test.each(["007", ".5", "5.", "0.100000000000000000000000000001", "9007199254740993"])(
+    test.each(["007", "5", "010000000000000000000000000001", "9007199254740993"])(
       "keeps %j as it was typed: nothing is read as a number, completed or rounded",
       async (typed) => {
         const onChange = vi.fn();
@@ -238,7 +234,7 @@ describe("StakeEntry", () => {
       },
     );
 
-    test("measures the amount against nothing: one beyond the slider and the stake that is left is handed on like any other", async () => {
+    test("measures the share count against nothing: one beyond the slider and the stake that is left is handed on like any other", async () => {
       const onChange = vi.fn();
       const { user } = renderWithProviders(
         <Entry slider={{ min: 1, max: 50, step: 1 }} left="50" onChange={onChange} />,
@@ -314,11 +310,11 @@ describe("StakeEntry", () => {
     });
 
     test.each([
-      ["37.5", "an amount between two steps"],
-      ["150", "an amount beyond the slider"],
+      ["375", "a share count beyond the steps"],
+      ["150", "a share count beyond the slider"],
       ["040", "the digits of no step, though the figure is one"],
-      ["40.0", "a step written with decimals"],
-      ["40.", "an amount that is not finished"],
+      ["0040", "a step written with leading zeros"],
+      ["040", "a step written with a leading zero"],
     ])("with %j in the field (%s) the thumb stays where it is, as an outline", async (text) => {
       const { user } = renderWithProviders(<Entry start="40" />);
       expect(part("slider")).toHaveAttribute("data-shown", "true");
@@ -336,9 +332,9 @@ describe("StakeEntry", () => {
     test("stays on the last step it showed while the field holds something else", async () => {
       const { user } = renderWithProviders(<Entry start="40" />);
 
-      await user.type(field(), ".5");
+      await user.type(field(), "5");
 
-      expect(field()).toHaveValue("40.5");
+      expect(field()).toHaveValue("405");
       expect(thumb()).toHaveAttribute("aria-valuenow", "40");
       expect(thumb()).toHaveAttribute("aria-valuetext", "not set");
     });
@@ -355,9 +351,9 @@ describe("StakeEntry", () => {
       expect(thumb()).toHaveAttribute("aria-valuenow", "45");
     });
 
-    test("moving it from an amount it could not show is a choice like any other", async () => {
+    test("moving it from a share count it could not show is a choice like any other", async () => {
       const { user } = renderWithProviders(<Entry start="40" />);
-      await user.type(field(), ".5");
+      await user.type(field(), "5");
 
       thumb().focus();
       await user.keyboard("{ArrowRight}");
@@ -405,7 +401,7 @@ describe("StakeEntry", () => {
     test("a press on the outlined thumb itself chooses the step it rests on", async () => {
       const onChange = vi.fn();
       const { user } = renderWithProviders(<Entry start="40" onChange={onChange} />);
-      await user.type(field(), ".5");
+      await user.type(field(), "5");
       onChange.mockClear();
 
       fireEvent.pointerDown(thumb(), { pointerId: 1 });
@@ -418,7 +414,7 @@ describe("StakeEntry", () => {
     test("a pointer that was pressed elsewhere and is let go over the slider chooses nothing", async () => {
       const onChange = vi.fn();
       const { user } = renderWithProviders(<Entry onChange={onChange} />);
-      await user.type(field(), "37.5");
+      await user.type(field(), "375");
       onChange.mockClear();
 
       // The text of the field is selected with the mouse, which ends up over the slider.
@@ -426,7 +422,7 @@ describe("StakeEntry", () => {
       fireEvent.pointerUp(part("slider-track"), { pointerId: 1 });
 
       expect(onChange).not.toHaveBeenCalled();
-      expect(field()).toHaveValue("37.5");
+      expect(field()).toHaveValue("375");
     });
 
     test("a press that was cancelled chooses nothing when the next pointer is let go there", () => {
@@ -467,7 +463,8 @@ describe("StakeEntry", () => {
 
     test("when its range shrinks under it, the outline rests on the nearest end", () => {
       const { rerender } = renderWithProviders(
-        <StakeEntry
+        <SharesEntry
+          side="BUY"
           value="90"
           onChange={() => {}}
           slider={{ min: 1, max: 100, step: 1 }}
@@ -480,7 +477,8 @@ describe("StakeEntry", () => {
 
       // A trade was made: the stake that is left covers 50 at most.
       rerender(
-        <StakeEntry
+        <SharesEntry
+          side="BUY"
           value="90"
           onChange={() => {}}
           slider={{ min: 1, max: 50, step: 1 }}
@@ -505,11 +503,11 @@ describe("StakeEntry", () => {
   });
 
   describe("the presets", () => {
-    test("a tap writes the preset's amount into the field, as the string that arrived", async () => {
+    test("a tap writes the shortcut's shares into the field, as the string that arrived", async () => {
       const onChange = vi.fn();
       const presets = [
-        { amount_cr: "12.5", allowed: true },
-        { amount_cr: "1250.000001", allowed: true },
+        { shares: "12.5", allowed: true },
+        { shares: "1250.000001", allowed: true },
       ];
       const { user } = renderWithProviders(<Entry presets={presets} onChange={onChange} />);
 
@@ -541,13 +539,13 @@ describe("StakeEntry", () => {
       expect(chip("25")).toHaveAttribute("aria-pressed", "true");
     });
 
-    test("the slider stands on a preset's amount when that is one of its steps", async () => {
+    test("the slider stands on a shortcut's shares when that is one of its steps", async () => {
       const { user } = renderWithProviders(<Entry />);
 
       await user.click(chip("50"));
 
       expect(thumb()).toHaveAttribute("aria-valuenow", "50");
-      expect(thumb()).toHaveAttribute("aria-valuetext", "50 tokens");
+      expect(thumb()).toHaveAttribute("aria-valuetext", "50 shares");
       expect(part("slider")).toHaveAttribute("data-shown", "true");
     });
 
@@ -556,8 +554,8 @@ describe("StakeEntry", () => {
         <Entry
           slider={{ min: 1, max: 100, step: 1 }}
           presets={[
-            { amount_cr: "25", allowed: false },
-            { amount_cr: "50", allowed: true },
+            { shares: "25", allowed: false },
+            { shares: "50", allowed: true },
           ]}
         />,
       );

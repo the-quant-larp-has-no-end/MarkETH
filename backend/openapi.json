@@ -29,6 +29,143 @@
         "title": "AdjustBalanceRequest",
         "type": "object"
       },
+      "AdminBroadcastItem": {
+        "description": "A broadcast as the admin's list shows it, with the question of its market.",
+        "properties": {
+          "end_reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BroadcastEndReason"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null until it has ended."
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "market_id": {
+            "format": "uuid",
+            "title": "Market Id",
+            "type": "string"
+          },
+          "on_air": {
+            "description": "It is LIVE and there is something to play.",
+            "title": "On Air",
+            "type": "boolean"
+          },
+          "playlist_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where its viewers play it, a path on the app's own origin\n(`/api/broadcasts/{id}/hls/index.m3u8`) while it is on air; null otherwise.",
+            "title": "Playlist Url"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "refusal_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why an admin refused it. Sent to its broadcaster and to admins, null for\neveryone else and for a broadcast that was not refused.",
+            "title": "Refusal Reason"
+          },
+          "requested_at": {
+            "description": "When its proposer asked for it, or when an admin started it.",
+            "format": "date-time",
+            "title": "Requested At",
+            "type": "string"
+          },
+          "requested_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BroadcastPerson"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who broadcasts. Sent to admins only, null for everyone else."
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "$ref": "#/components/schemas/BroadcastStatus",
+            "description": "The effective status: a broadcast that ran for `broadcast.max_minutes`, or whose\nstudio sent nothing for `broadcast.stall_seconds` (`GET /config`), is ENDED from\nthat moment on."
+          }
+        },
+        "required": [
+          "id",
+          "market_id",
+          "status",
+          "on_air",
+          "playlist_url",
+          "requested_at",
+          "started_at",
+          "ended_at",
+          "end_reason",
+          "refusal_reason",
+          "requested_by",
+          "question"
+        ],
+        "title": "AdminBroadcastItem",
+        "type": "object"
+      },
+      "AdminBroadcastListResponse": {
+        "description": "`GET /admin/broadcasts`: every broadcast that is requested, approved or live,\nearliest request first.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AdminBroadcastItem"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "AdminBroadcastListResponse",
+        "type": "object"
+      },
       "AdminUserItem": {
         "description": "A user as the admin panel shows them.",
         "properties": {
@@ -366,6 +503,401 @@
         "title": "BeatEvent",
         "type": "object"
       },
+      "BroadcastAccessResponse": {
+        "description": "`GET /broadcasts/{id}/access`: the caller may play this broadcast. The proxy\nasks it for every viewer before it serves a playlist or a segment.",
+        "properties": {
+          "broadcast_id": {
+            "format": "uuid",
+            "title": "Broadcast Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "broadcast_id"
+        ],
+        "title": "BroadcastAccessResponse",
+        "type": "object"
+      },
+      "BroadcastChangedEvent": {
+        "description": "`event: broadcast.changed`. Something about the live stream of a market changed:\nit was asked for, decided on, started, went on air or ended, or messages left its\nchat. It says which market and nothing else; `GET /markets/{id}/broadcast` and the\nchat of that market are read again.",
+        "properties": {
+          "market_id": {
+            "format": "uuid",
+            "title": "Market Id",
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "title": "Ts",
+            "type": "string"
+          },
+          "type": {
+            "const": "broadcast.changed",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "market_id",
+          "ts"
+        ],
+        "title": "BroadcastChangedEvent",
+        "type": "object"
+      },
+      "BroadcastChunkResponse": {
+        "description": "`POST /broadcasts/{id}/chunks`: what became of one piece.",
+        "properties": {
+          "next_seq": {
+            "description": "The `seq` to send next in this part; 0 with `restart`.",
+            "title": "Next Seq",
+            "type": "integer"
+          },
+          "restart": {
+            "description": "False: the piece is taken. True: it is not, and the studio begins another\npart with a recorder of its own.",
+            "title": "Restart",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "restart",
+          "next_seq"
+        ],
+        "title": "BroadcastChunkResponse",
+        "type": "object"
+      },
+      "BroadcastConfig": {
+        "description": "`broadcast` of `GET /config`: what a studio and a player need to know before\nthey start.",
+        "properties": {
+          "capture_audio_bits_per_second": {
+            "description": "What the recorder is asked to spend on picture and on sound.",
+            "title": "Capture Audio Bits Per Second",
+            "type": "integer"
+          },
+          "capture_fps": {
+            "description": "The frames per second the camera is asked for.",
+            "title": "Capture Fps",
+            "type": "integer"
+          },
+          "capture_height": {
+            "description": "The height in pixels the camera is asked for.",
+            "title": "Capture Height",
+            "type": "integer"
+          },
+          "capture_max_height": {
+            "description": "The largest picture, in pixels, a studio records.",
+            "title": "Capture Max Height",
+            "type": "integer"
+          },
+          "capture_max_width": {
+            "title": "Capture Max Width",
+            "type": "integer"
+          },
+          "capture_mime_types": {
+            "description": "What a studio may record as, in the order to try. A browser that supports none\nof them cannot broadcast.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Capture Mime Types",
+            "type": "array"
+          },
+          "capture_video_bits_per_second": {
+            "title": "Capture Video Bits Per Second",
+            "type": "integer"
+          },
+          "chunk_max_bytes": {
+            "description": "The most bytes one upload request may carry. A larger piece is cut.",
+            "title": "Chunk Max Bytes",
+            "type": "integer"
+          },
+          "chunk_ms": {
+            "description": "Milliseconds of recording in one piece: what the recorder is started with.",
+            "title": "Chunk Ms",
+            "type": "integer"
+          },
+          "max_minutes": {
+            "description": "A broadcast ends once it ran for this long.",
+            "title": "Max Minutes",
+            "type": "integer"
+          },
+          "player_retry_ms": {
+            "description": "Milliseconds after which a player that failed is built again.",
+            "title": "Player Retry Ms",
+            "type": "integer"
+          },
+          "restart_window_ms": {
+            "description": "Three parts begun within this many milliseconds pause the studio.",
+            "title": "Restart Window Ms",
+            "type": "integer"
+          },
+          "stall_seconds": {
+            "description": "A broadcast whose studio sends nothing for this long has ended.",
+            "title": "Stall Seconds",
+            "type": "integer"
+          },
+          "upload_backlog_bytes": {
+            "description": "Bytes a studio queues while its connection is slow. Beyond them it drops what\nwaits and begins another part.",
+            "title": "Upload Backlog Bytes",
+            "type": "integer"
+          },
+          "upload_retry_ms": {
+            "description": "Milliseconds a studio waits before it sends a piece again.",
+            "title": "Upload Retry Ms",
+            "type": "integer"
+          },
+          "upload_timeout_ms": {
+            "description": "Milliseconds a studio waits for the answer to one piece.",
+            "title": "Upload Timeout Ms",
+            "type": "integer"
+          },
+          "wait_notice_ms": {
+            "description": "Milliseconds without a picture after which a player says that it is waiting\nand reads the broadcast again.",
+            "title": "Wait Notice Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "chunk_ms",
+          "chunk_max_bytes",
+          "upload_backlog_bytes",
+          "capture_height",
+          "capture_fps",
+          "capture_max_width",
+          "capture_max_height",
+          "capture_video_bits_per_second",
+          "capture_audio_bits_per_second",
+          "capture_mime_types",
+          "stall_seconds",
+          "max_minutes",
+          "upload_timeout_ms",
+          "upload_retry_ms",
+          "restart_window_ms",
+          "wait_notice_ms",
+          "player_retry_ms"
+        ],
+        "title": "BroadcastConfig",
+        "type": "object"
+      },
+      "BroadcastEndReason": {
+        "description": "Why a broadcast ended (`broadcasts.end_reason`).",
+        "enum": [
+          "BROADCASTER",
+          "ADMIN",
+          "STALLED",
+          "TIME_LIMIT"
+        ],
+        "title": "BroadcastEndReason",
+        "type": "string"
+      },
+      "BroadcastItem": {
+        "description": "One broadcast of a market.",
+        "properties": {
+          "end_reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BroadcastEndReason"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null until it has ended."
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "market_id": {
+            "format": "uuid",
+            "title": "Market Id",
+            "type": "string"
+          },
+          "on_air": {
+            "description": "It is LIVE and there is something to play.",
+            "title": "On Air",
+            "type": "boolean"
+          },
+          "playlist_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where its viewers play it, a path on the app's own origin\n(`/api/broadcasts/{id}/hls/index.m3u8`) while it is on air; null otherwise.",
+            "title": "Playlist Url"
+          },
+          "refusal_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why an admin refused it. Sent to its broadcaster and to admins, null for\neveryone else and for a broadcast that was not refused.",
+            "title": "Refusal Reason"
+          },
+          "requested_at": {
+            "description": "When its proposer asked for it, or when an admin started it.",
+            "format": "date-time",
+            "title": "Requested At",
+            "type": "string"
+          },
+          "requested_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BroadcastPerson"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who broadcasts. Sent to admins only, null for everyone else."
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "$ref": "#/components/schemas/BroadcastStatus",
+            "description": "The effective status: a broadcast that ran for `broadcast.max_minutes`, or whose\nstudio sent nothing for `broadcast.stall_seconds` (`GET /config`), is ENDED from\nthat moment on."
+          }
+        },
+        "required": [
+          "id",
+          "market_id",
+          "status",
+          "on_air",
+          "playlist_url",
+          "requested_at",
+          "started_at",
+          "ended_at",
+          "end_reason",
+          "refusal_reason",
+          "requested_by"
+        ],
+        "title": "BroadcastItem",
+        "type": "object"
+      },
+      "BroadcastPerson": {
+        "description": "Who asked for a broadcast, as an admin is told.",
+        "properties": {
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "email"
+        ],
+        "title": "BroadcastPerson",
+        "type": "object"
+      },
+      "BroadcastStatus": {
+        "description": "Where a broadcast stands (`broadcasts.status`). A row holds every one of the five.\n\nA proposer's broadcast is REQUESTED until an admin approves or refuses it; an\nadmin's own starts LIVE. REQUESTED, APPROVED and LIVE are open: a market has at\nmost one open broadcast.",
+        "enum": [
+          "REQUESTED",
+          "APPROVED",
+          "REFUSED",
+          "LIVE",
+          "ENDED"
+        ],
+        "title": "BroadcastStatus",
+        "type": "string"
+      },
+      "BroadcastViewer": {
+        "description": "What the caller may do about the live stream of a market right now. Each flag\nagrees with what the operation would answer about this caller and this market;\nhow many live streams run at once, and how often a person asks in a day, is told\nby the operation alone.",
+        "properties": {
+          "can_approve": {
+            "description": "`POST /admin/broadcasts/{id}/approve` would pass: the caller is an admin, the\nbroadcast waits for a decision, and the market is open, paused or waiting for its\nresult.",
+            "title": "Can Approve",
+            "type": "boolean"
+          },
+          "can_end": {
+            "description": "The broadcast is on and the caller is its broadcaster or an admin.",
+            "title": "Can End",
+            "type": "boolean"
+          },
+          "can_refuse": {
+            "description": "`POST /admin/broadcasts/{id}/refuse` would pass: the caller is an admin, and the\nbroadcast waits for a decision or is approved and not started.",
+            "title": "Can Refuse",
+            "type": "boolean"
+          },
+          "can_request": {
+            "description": "`POST /markets/{id}/broadcast/request` would pass: the caller proposed the\nmarket and is no admin, the market is open, paused or waiting for its result, and\nit has no live stream and no request for one.",
+            "title": "Can Request",
+            "type": "boolean"
+          },
+          "can_start": {
+            "description": "`POST /broadcasts/{id}/start` would pass: the caller's own broadcast is\napproved, or ended by itself and may go on, and the market is open, paused or\nwaiting for its result.",
+            "title": "Can Start",
+            "type": "boolean"
+          },
+          "can_start_as_admin": {
+            "description": "`POST /admin/markets/{id}/broadcast` would pass: the caller is an admin, the\nmarket is open, paused or waiting for its result, and it has no live stream and no\nrequest for one.",
+            "title": "Can Start As Admin",
+            "type": "boolean"
+          },
+          "can_watch": {
+            "description": "It is on air, and a place is free or the caller holds one.",
+            "title": "Can Watch",
+            "type": "boolean"
+          },
+          "full": {
+            "description": "It is on air, and every place is held by somebody else.",
+            "title": "Full",
+            "type": "boolean"
+          },
+          "is_broadcaster": {
+            "description": "The broadcast of the answer is the caller's own.",
+            "title": "Is Broadcaster",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "is_broadcaster",
+          "can_request",
+          "can_start",
+          "can_start_as_admin",
+          "can_approve",
+          "can_refuse",
+          "can_end",
+          "can_watch",
+          "full"
+        ],
+        "title": "BroadcastViewer",
+        "type": "object"
+      },
       "BuyEntry": {
         "description": "What the viewer can buy of one outcome right now (SPEC §4, A.11). The server\nworks it out with the market maker's prices, so the client prices and compares\nnothing.",
         "properties": {
@@ -450,6 +982,164 @@
           "step"
         ],
         "title": "BuySlider",
+        "type": "object"
+      },
+      "ChatMessageEvent": {
+        "description": "`event: chat.message`. Somebody wrote in the live chat of a market. It carries the\nmessage as `GET /markets/{id}/chat` lists it, so a panel that shows the chat of\n`broadcast_id` puts it at the end of what it shows. The stream keeps no message: a\ntab reads the chat whenever its stream opens.",
+        "properties": {
+          "broadcast_id": {
+            "description": "The live stream the chat belongs to: `ChatResponse.broadcast_id`.",
+            "format": "uuid",
+            "title": "Broadcast Id",
+            "type": "string"
+          },
+          "market_id": {
+            "format": "uuid",
+            "title": "Market Id",
+            "type": "string"
+          },
+          "message": {
+            "$ref": "#/components/schemas/ChatMessageItem"
+          },
+          "ts": {
+            "format": "date-time",
+            "title": "Ts",
+            "type": "string"
+          },
+          "type": {
+            "const": "chat.message",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "market_id",
+          "broadcast_id",
+          "message",
+          "ts"
+        ],
+        "title": "ChatMessageEvent",
+        "type": "object"
+      },
+      "ChatMessageItem": {
+        "description": "One message of a chat.",
+        "properties": {
+          "from_vis": {
+            "description": "The author was an admin when the message was stored. This records permissions,\nnot association membership; the display label comes from `role`.",
+            "title": "From Vis",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/UserRole",
+            "description": "The author's effective role when the request is answered, including\nbootstrap admins. Shown as the role label beside the username."
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "username": {
+            "description": "The author's username, as it reads when the request is answered.",
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "username",
+          "role",
+          "text",
+          "from_vis"
+        ],
+        "title": "ChatMessageItem",
+        "type": "object"
+      },
+      "ChatRemovedEvent": {
+        "description": "`event: chat.removed`. An admin removed a message from the live chat of a\nmarket: whoever shows it takes it away. It carries the id and nothing of the\nmessage.",
+        "properties": {
+          "broadcast_id": {
+            "format": "uuid",
+            "title": "Broadcast Id",
+            "type": "string"
+          },
+          "market_id": {
+            "format": "uuid",
+            "title": "Market Id",
+            "type": "string"
+          },
+          "message_id": {
+            "format": "uuid",
+            "title": "Message Id",
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "title": "Ts",
+            "type": "string"
+          },
+          "type": {
+            "const": "chat.removed",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "market_id",
+          "broadcast_id",
+          "message_id",
+          "ts"
+        ],
+        "title": "ChatRemovedEvent",
+        "type": "object"
+      },
+      "ChatResponse": {
+        "description": "`GET /markets/{id}/chat`: the chat of a market as it stands.",
+        "properties": {
+          "broadcast_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The live stream the chat belongs to; null exactly when `open` is false. A\nmessage that is pushed names it, so a client drops one of another live stream.",
+            "title": "Broadcast Id"
+          },
+          "can_remove": {
+            "description": "The caller is an admin.",
+            "title": "Can Remove",
+            "type": "boolean"
+          },
+          "items": {
+            "description": "The latest messages, earliest first, at most `chat_backlog_size` of them\n(`GET /config`). Empty while the chat is closed.",
+            "items": {
+              "$ref": "#/components/schemas/ChatMessageItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "open": {
+            "description": "The market has a live stream that is on: messages can be read and written.",
+            "title": "Open",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "open",
+          "broadcast_id",
+          "can_remove",
+          "items"
+        ],
+        "title": "ChatResponse",
         "type": "object"
       },
       "CloseMarketRequest": {
@@ -781,7 +1471,7 @@
         "type": "string"
       },
       "ErrorResponse": {
-        "description": "The body of every non-2xx response (SPEC §10, Appendix A.2).\n\n`message` is written for the user and can be shown as it is. `details` is an\nobject, empty unless the code is one of these:\n\n* `VALIDATION_ERROR`. A request that does not match its schema: `errors`, a list\n  of `{loc, msg, type}`, one per field, the first 50 at most. `loc` ends with the\n  name of the field, `msg` is a sentence for the person who filled it in, to be\n  shown under the field as it is (\"Use at most 200 characters.\"), and `type`\n  names the rule that was broken. A body that is no JSON has one entry, whose\n  `loc` begins with `body` and whose `type` is `json_invalid`. A rule a service\n  checks: `field`, the name of the offending field, and `message` is the\n  sentence for it. A profile created without `policy_accepted: true` is such a\n  rule, and its `field` is `policy_accepted`; so is a filter of the leaderboard\n  whose `min_…` is above its `max_…`, with the `min_…` as its `field`.\n* `FORBIDDEN`, when the portal's id is not an address MarkETH is open to:\n  `allowed_domains`, a list of the domains it is open to.\n* `PROFILE_REQUIRED`: `name` and `email`, who the portal says is calling. `name`\n  may be an empty string.\n* `USERNAME_TAKEN`: `field`, which is `username`.\n* `RATE_LIMITED`: `retry_after_seconds`, an integer, also sent as the\n  `Retry-After` header.\n* `QUOTE_STALE`: `quote`, a fresh `QuoteResponse` for the same trade.\n* `LIMIT_EXCEEDED`: `limit`, which names the limit: `MAX_STAKE_PER_USER_MARKET`,\n  `MAX_PROPOSALS_PER_USER_PER_DAY`, `MAX_OPEN_MARKETS`, `MAX_MARKET_BUDGET`,\n  `MAX_AGGREGATE_LOSS_BUDGET`, `MAX_CODE_ISSUANCE_PER_MONTH`,\n  `ONE_CODE_PER_USER` or `MAX_ADMIN_ADJUSTMENT_CR`. With\n  `MAX_STAKE_PER_USER_MARKET` also `stake_limit_cr`, `stake_left_cr` and\n  `required_cr`, what the buy costs; with `MAX_CODE_ISSUANCE_PER_MONTH` also\n  `issued_cr`, `requested_cr` and `cap_cr`; with `MAX_ADMIN_ADJUSTMENT_CR` also\n  `requested_cr`, what the adjustment would add, and `cap_cr`, the most one\n  adjustment may add.\n* `INSUFFICIENT_BALANCE`: `balance_cr` and `required_cr`. Where an admin debits\n  somebody's balance, they are what that account holds and what the debit takes.\n* `SERVICE_UNAVAILABLE`, from `GET /health` only: `postgres`, `redis` and\n  `scylla`, each `up` or `down`.\n\nA quote is answered like its trade. `GET /markets/{id}/quote` gives a buy the\ncaller could not make the error the trade would get, with the same message and\ndetails: `LIMIT_EXCEEDED` with `MAX_STAKE_PER_USER_MARKET`, `stake_limit_cr`,\n`stake_left_cr` and `required_cr` above the stake left, `INSUFFICIENT_BALANCE`\nwith `balance_cr` and `required_cr` above the balance.\n\nAmounts in `details` are decimal strings like every `*_cr` field.",
+        "description": "The body of every non-2xx response (SPEC §10, Appendix A.2).\n\n`message` is written for the user and can be shown as it is. `details` is an\nobject, empty unless the code is one of these:\n\n* `VALIDATION_ERROR`. A request that does not match its schema: `errors`, a list\n  of `{loc, msg, type}`, one per field, the first 50 at most. `loc` ends with the\n  name of the field, `msg` is a sentence for the person who filled it in, to be\n  shown under the field as it is (\"Use at most 200 characters.\"), and `type`\n  names the rule that was broken. A body that is no JSON has one entry, whose\n  `loc` begins with `body` and whose `type` is `json_invalid`. A rule a service\n  checks: `field`, the name of the offending field, and `message` is the\n  sentence for it. A profile created without `policy_accepted: true` is such a\n  rule, and its `field` is `policy_accepted`; so is a filter of the leaderboard\n  whose `min_…` is above its `max_…`, with the `min_…` as its `field`.\n* `FORBIDDEN`, when the portal's id is not an address MarkETH is open to:\n  `allowed_domains`, a list of the domains it is open to.\n* `PROFILE_REQUIRED`: `name` and `email`, who the portal says is calling. `name`\n  may be an empty string.\n* `USERNAME_TAKEN`: `field`, which is `username`.\n* `RATE_LIMITED`: `retry_after_seconds`, an integer, also sent as the\n  `Retry-After` header.\n* `QUOTE_STALE`: `quote`, a fresh `QuoteResponse` for the same trade.\n* `LIMIT_EXCEEDED`: `limit`, which names the limit: `MAX_STAKE_PER_USER_MARKET`,\n  `MAX_PROPOSALS_PER_USER_PER_DAY`, `MAX_OPEN_MARKETS`, `MAX_MARKET_BUDGET`,\n  `MAX_AGGREGATE_LOSS_BUDGET`, `MAX_CODE_ISSUANCE_PER_MONTH`,\n  `ONE_CODE_PER_USER`, `MAX_ADMIN_ADJUSTMENT_CR`, `MAX_LIVE_BROADCASTS` or\n  `MAX_BROADCAST_REQUESTS_PER_USER_PER_DAY`. With\n  `MAX_STAKE_PER_USER_MARKET` also `stake_limit_cr`, `stake_left_cr` and\n  `required_cr`, what the buy costs; with `MAX_CODE_ISSUANCE_PER_MONTH` also\n  `issued_cr`, `requested_cr` and `cap_cr`; with `MAX_ADMIN_ADJUSTMENT_CR` also\n  `requested_cr`, what the adjustment would add, and `cap_cr`, the most one\n  adjustment may add. The two limits of a live stream carry `limit` and nothing\n  beside it.\n* `CONFLICT`, where a live stream is not in the state the request needs:\n  `status`, where the broadcast stands, for one that has not started; `status`\n  and `end_reason` for one that has ended.\n* `INSUFFICIENT_BALANCE`: `balance_cr` and `required_cr`. Where an admin debits\n  somebody's balance, they are what that account holds and what the debit takes.\n* `SERVICE_UNAVAILABLE`, from `GET /health` only: `postgres`, `redis`, `scylla`\n  and `media`, each `up` or `down`.\n\nA quote is answered like its trade. `GET /markets/{id}/quote` gives a buy the\ncaller could not make the error the trade would get, with the same message and\ndetails: `LIMIT_EXCEEDED` with `MAX_STAKE_PER_USER_MARKET`, `stake_limit_cr`,\n`stake_left_cr` and `required_cr` above the stake left, `INSUFFICIENT_BALANCE`\nwith `balance_cr` and `required_cr` above the balance.\n\nAmounts in `details` are decimal strings like every `*_cr` field.",
         "properties": {
           "code": {
             "$ref": "#/components/schemas/ErrorCode"
@@ -820,8 +1510,12 @@
         "type": "object"
       },
       "HealthResponse": {
-        "description": "Answered with 200 whenever Postgres is up.\n\nWith Postgres down the endpoint answers 503 `SERVICE_UNAVAILABLE` instead, and\n`details` carries the three `postgres`, `redis` and `scylla` values.",
+        "description": "Answered with 200 whenever Postgres is up.\n\nWith Postgres down the endpoint answers 503 `SERVICE_UNAVAILABLE` instead, and\n`details` carries the four `postgres`, `redis`, `scylla` and `media` values.",
         "properties": {
+          "media": {
+            "$ref": "#/components/schemas/DependencyStatus",
+            "description": "The media box, which turns what a live stream uploads into what its viewers\nplay. While it is down no live stream starts or runs; everything else works."
+          },
           "postgres": {
             "$ref": "#/components/schemas/DependencyStatus"
           },
@@ -839,7 +1533,8 @@
           "status",
           "postgres",
           "redis",
-          "scylla"
+          "scylla",
+          "media"
         ],
         "title": "HealthResponse",
         "type": "object"
@@ -1233,6 +1928,80 @@
           "next_cursor"
         ],
         "title": "LedgerListResponse",
+        "type": "object"
+      },
+      "LiveBroadcastItem": {
+        "description": "A broadcast that is on air, with what a list shows of its market.",
+        "properties": {
+          "broadcast_id": {
+            "format": "uuid",
+            "title": "Broadcast Id",
+            "type": "string"
+          },
+          "market_id": {
+            "format": "uuid",
+            "title": "Market Id",
+            "type": "string"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "broadcast_id",
+          "market_id",
+          "question",
+          "started_at"
+        ],
+        "title": "LiveBroadcastItem",
+        "type": "object"
+      },
+      "LiveBroadcastListResponse": {
+        "description": "`GET /broadcasts/live`: the broadcasts that are on air in markets the caller is\ninside of, earliest start first.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LiveBroadcastItem"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "LiveBroadcastListResponse",
+        "type": "object"
+      },
+      "MarketBroadcastResponse": {
+        "description": "`GET /markets/{id}/broadcast`, and what every action on a broadcast answers.",
+        "properties": {
+          "broadcast": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BroadcastItem"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The market's latest broadcast, to an admin, to its broadcaster, and to\neverybody inside the market while it is LIVE. Null for everyone else, and for a\nmarket that never had one."
+          },
+          "viewer": {
+            "$ref": "#/components/schemas/BroadcastViewer"
+          }
+        },
+        "required": [
+          "broadcast",
+          "viewer"
+        ],
+        "title": "MarketBroadcastResponse",
         "type": "object"
       },
       "MarketDetailResponse": {
@@ -2316,6 +3085,24 @@
         "title": "PortfolioResponse",
         "type": "object"
       },
+      "PostChatMessageRequest": {
+        "additionalProperties": false,
+        "description": "Body of `POST /markets/{id}/chat`.",
+        "properties": {
+          "text": {
+            "description": "One line of at most `chat_message_max_length` characters (`GET /config`),\ncounted once the text is cleaned: every run of whitespace is one space.",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "PostChatMessageRequest",
+        "type": "object"
+      },
       "ProfileSavedResponse": {
         "description": "The profile as it is after the save, with everything `GET /me` returns.",
         "properties": {
@@ -2592,6 +3379,20 @@
       },
       "PublicConfigResponse": {
         "properties": {
+          "broadcast": {
+            "$ref": "#/components/schemas/BroadcastConfig",
+            "description": "What the studio and the player of a live stream go by."
+          },
+          "chat_backlog_size": {
+            "description": "How many messages one read of a live chat returns at most: what a panel shows\nat most.",
+            "title": "Chat Backlog Size",
+            "type": "integer"
+          },
+          "chat_message_max_length": {
+            "description": "Characters a message of a live chat may have at most, counted once the text is\ncleaned.",
+            "title": "Chat Message Max Length",
+            "type": "integer"
+          },
           "code_batch_max_count": {
             "description": "The most codes one batch may have: the upper bound of `count` in\n`POST /admin/code-batches`.",
             "title": "Code Batch Max Count",
@@ -2855,6 +3656,9 @@
           "question_max_length",
           "short_text_max_length",
           "long_text_max_length",
+          "chat_message_max_length",
+          "chat_backlog_size",
+          "broadcast",
           "code_length",
           "code_min_value_cr",
           "code_max_value_cr",
@@ -3102,6 +3906,24 @@
         "title": "RedeemVoucherRequest",
         "type": "object"
       },
+      "RefuseBroadcastRequest": {
+        "additionalProperties": false,
+        "description": "Body of `POST /admin/broadcasts/{id}/refuse`.",
+        "properties": {
+          "reason": {
+            "description": "Why, for the person who asked: 1 to `short_text_max_length` characters\n(`GET /config`).",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "RefuseBroadcastRequest",
+        "type": "object"
+      },
       "ReinstateUserRequest": {
         "additionalProperties": false,
         "description": "`POST /admin/users/{id}/reinstate`. The reason goes to the audit log.",
@@ -3134,6 +3956,44 @@
           "reason"
         ],
         "title": "RejectMarketRequest",
+        "type": "object"
+      },
+      "RemovedResponse": {
+        "description": "What an admin removed, and when.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "removed_at": {
+            "format": "date-time",
+            "title": "Removed At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "removed_at"
+        ],
+        "title": "RemovedResponse",
+        "type": "object"
+      },
+      "RequestBroadcastRequest": {
+        "additionalProperties": false,
+        "description": "Body of `POST /markets/{id}/broadcast/request`.",
+        "properties": {
+          "policy_accepted": {
+            "const": true,
+            "description": "The proposer accepts the usage policy for this live stream, as for a proposal:\n`true`, or the request is rejected on this field.",
+            "title": "Policy Accepted",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "policy_accepted"
+        ],
+        "title": "RequestBroadcastRequest",
         "type": "object"
       },
       "ResolutionOutcome": {
@@ -4519,6 +5379,157 @@
         ]
       }
     },
+    "/api/admin/broadcasts": {
+      "get": {
+        "description": "Access: role ADMIN.",
+        "operationId": "list_admin_broadcasts",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminBroadcastListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "ADMIN"
+            ]
+          }
+        ],
+        "summary": "Every live stream that is requested, approved or on, earliest request first",
+        "tags": [
+          "admin-broadcasts"
+        ]
+      }
+    },
+    "/api/admin/broadcasts/{broadcast_id}/approve": {
+      "post": {
+        "description": "Access: role ADMIN.",
+        "operationId": "approve_broadcast",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "broadcast_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Broadcast Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketBroadcastResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "ADMIN"
+            ]
+          }
+        ],
+        "summary": "Approve a proposer's request for a live stream",
+        "tags": [
+          "admin-broadcasts"
+        ]
+      }
+    },
+    "/api/admin/broadcasts/{broadcast_id}/refuse": {
+      "post": {
+        "description": "Access: role ADMIN.",
+        "operationId": "refuse_broadcast",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "broadcast_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Broadcast Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefuseBroadcastRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketBroadcastResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "ADMIN"
+            ]
+          }
+        ],
+        "summary": "Refuse a request for a live stream, or take an approval back",
+        "tags": [
+          "admin-broadcasts"
+        ]
+      }
+    },
     "/api/admin/code-batches": {
       "get": {
         "description": "Access: role ADMIN.",
@@ -4814,6 +5825,118 @@
         "summary": "Approve a proposal and open the market",
         "tags": [
           "admin-markets"
+        ]
+      }
+    },
+    "/api/admin/markets/{market_id}/broadcast": {
+      "post": {
+        "description": "Access: role ADMIN.",
+        "operationId": "start_broadcast_as_admin",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "market_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Market Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketBroadcastResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "ADMIN"
+            ]
+          }
+        ],
+        "summary": "Go live on a market as an admin, without a request",
+        "tags": [
+          "admin-broadcasts"
+        ]
+      }
+    },
+    "/api/admin/markets/{market_id}/chat/{message_id}/remove": {
+      "post": {
+        "description": "Access: role ADMIN.",
+        "operationId": "remove_chat_message",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "market_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Market Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "message_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Message Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemovedResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "ADMIN"
+            ]
+          }
+        ],
+        "summary": "Remove a message from the live chat of a market",
+        "tags": [
+          "admin-chat"
         ]
       }
     },
@@ -5659,6 +6782,286 @@
         ]
       }
     },
+    "/api/broadcasts/live": {
+      "get": {
+        "description": "Access: any registered user whose account is active.",
+        "operationId": "list_live_broadcasts",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveBroadcastListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "REGISTERED"
+            ]
+          }
+        ],
+        "summary": "The live streams that are on air in markets the caller is inside of",
+        "tags": [
+          "broadcasts"
+        ]
+      }
+    },
+    "/api/broadcasts/{broadcast_id}/access": {
+      "get": {
+        "description": "Access: any registered user whose account is active.",
+        "operationId": "admit_broadcast_viewer",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "broadcast_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Broadcast Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BroadcastAccessResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "REGISTERED"
+            ]
+          }
+        ],
+        "summary": "Whether the caller may play a live stream: asked by the proxy, not by a screen",
+        "tags": [
+          "broadcasts"
+        ]
+      }
+    },
+    "/api/broadcasts/{broadcast_id}/chunks": {
+      "post": {
+        "description": "Access: any registered user whose account is active.",
+        "operationId": "upload_broadcast_chunk",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "broadcast_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Broadcast Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The part the piece belongs to: an id the studio makes whenever its recorder\nstarts. The pieces of one part are one recording, cut in the order they were\nmade.",
+            "in": "query",
+            "name": "part",
+            "required": true,
+            "schema": {
+              "description": "The part the piece belongs to: an id the studio makes whenever its recorder\nstarts. The pieces of one part are one recording, cut in the order they were\nmade.",
+              "pattern": "^[A-Za-z0-9_-]{8,36}$",
+              "title": "Part",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The place of the piece in its part, counted from 0. A piece that is sent again\ncarries the same number and the same bytes.",
+            "in": "query",
+            "name": "seq",
+            "required": true,
+            "schema": {
+              "description": "The place of the piece in its part, counted from 0. A piece that is sent again\ncarries the same number and the same bytes.",
+              "exclusiveMaximum": 1000000000,
+              "minimum": 0,
+              "title": "Seq",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "description": "One piece of the studio's recording, as the recorder hands it over: bytes, at most `broadcast.chunk_max_bytes` of `GET /config`.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BroadcastChunkResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "REGISTERED"
+            ]
+          }
+        ],
+        "summary": "Send one piece of a live stream's recording",
+        "tags": [
+          "broadcasts"
+        ]
+      }
+    },
+    "/api/broadcasts/{broadcast_id}/end": {
+      "post": {
+        "description": "Access: any registered user whose account is active.",
+        "operationId": "end_broadcast",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "broadcast_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Broadcast Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketBroadcastResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "REGISTERED"
+            ]
+          }
+        ],
+        "summary": "End a live stream, as its broadcaster or as an admin",
+        "tags": [
+          "broadcasts"
+        ]
+      }
+    },
+    "/api/broadcasts/{broadcast_id}/start": {
+      "post": {
+        "description": "Access: any registered user whose account is active.",
+        "operationId": "start_broadcast",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "broadcast_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Broadcast Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketBroadcastResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "REGISTERED"
+            ]
+          }
+        ],
+        "summary": "Go live, as the broadcaster of an approved live stream",
+        "tags": [
+          "broadcasts"
+        ]
+      }
+    },
     "/api/codes/redeem": {
       "post": {
         "description": "Access: any registered user whose account is active.",
@@ -5766,7 +7169,7 @@
             "description": "Any error: `code` says which, `message` is for the user."
           }
         },
-        "summary": "Report Postgres, Redis and ScyllaDB separately",
+        "summary": "Report Postgres, Redis, ScyllaDB and the media box separately",
         "tags": [
           "health"
         ]
@@ -6214,6 +7617,228 @@
         "summary": "Details, rules and price, with the viewer's stake",
         "tags": [
           "markets"
+        ]
+      }
+    },
+    "/api/markets/{market_id}/broadcast": {
+      "get": {
+        "description": "Access: any registered user whose account is active.",
+        "operationId": "get_market_broadcast",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "market_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Market Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketBroadcastResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "REGISTERED"
+            ]
+          }
+        ],
+        "summary": "The live stream of a market, and what the caller may do about it",
+        "tags": [
+          "broadcasts"
+        ]
+      }
+    },
+    "/api/markets/{market_id}/broadcast/request": {
+      "post": {
+        "description": "Access: any registered user whose account is active.",
+        "operationId": "request_broadcast",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "market_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Market Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestBroadcastRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketBroadcastResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "REGISTERED"
+            ]
+          }
+        ],
+        "summary": "Ask for a live stream of a market, as its proposer",
+        "tags": [
+          "broadcasts"
+        ]
+      }
+    },
+    "/api/markets/{market_id}/chat": {
+      "get": {
+        "description": "Access: any registered user whose account is active.",
+        "operationId": "get_chat",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "market_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Market Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "REGISTERED"
+            ]
+          }
+        ],
+        "summary": "The live chat of a market: whether it is open, and its latest messages",
+        "tags": [
+          "chat"
+        ]
+      },
+      "post": {
+        "description": "Access: any registered user whose account is active.",
+        "operationId": "post_chat_message",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "market_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Market Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostChatMessageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatMessageItem"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Any error: `code` says which, `message` is for the user."
+          }
+        },
+        "security": [
+          {
+            "portal": [
+              "REGISTERED"
+            ]
+          }
+        ],
+        "summary": "Write a message in the live chat of a market",
+        "tags": [
+          "chat"
         ]
       }
     },
@@ -6985,6 +8610,15 @@
                     },
                     {
                       "$ref": "#/components/schemas/MeChangedEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatMessageEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatRemovedEvent"
+                    },
+                    {
+                      "$ref": "#/components/schemas/BroadcastChangedEvent"
                     }
                   ],
                   "title": "Response 200 Stream Live"

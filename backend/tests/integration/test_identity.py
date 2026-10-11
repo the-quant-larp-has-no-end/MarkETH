@@ -95,6 +95,8 @@ PATH_VALUES: Final[dict[str, str]] = {
     "batch_id": str(uuid7()),
     "user_id": str(uuid7()),
     "alert_id": "1",
+    "message_id": str(uuid7()),
+    "broadcast_id": str(uuid7()),
 }
 """A value for every path parameter of an admin route."""
 
@@ -392,7 +394,7 @@ async def test_admin_routes_answer_403_to_a_user_and_to_a_barista(
 ) -> None:
     student, barista = await factory.user(), await factory.barista()
     routes = admin_operations(app)
-    assert len(routes) == 19
+    assert len(routes) == 24
 
     for method, path in routes:
         for outsider in (student, barista):

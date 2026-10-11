@@ -1,5 +1,5 @@
 import { screen, waitFor, within } from "@testing-library/react";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import type { MarketDetailResponse, MarketStatus } from "@/lib/api/schema";
 import { adminMarketDetail, MARKET_ID, marketViewer, me } from "@/test/fixtures";
@@ -7,6 +7,11 @@ import { apiError, deferred, json, mockApi, type Route } from "@/test/http";
 import { renderWithProviders } from "@/test/render";
 
 import { AdminMarketScreen } from "./admin-market-screen";
+
+// The block "Live stream" reads the API by itself, and these tests are about the rest of
+// the screen: nothing stands in its place here. The screen with the real block is tested
+// in `admin-market-screen-with-broadcast.test.tsx`.
+vi.mock("./broadcast-panel", () => ({ BroadcastPanel: () => null }));
 
 const MARKET: Route = "GET /api/markets/{market_id}";
 const TRADED = "You traded this market, so another admin has to settle it.";

@@ -28,6 +28,7 @@ FRONTEND := cd frontend && { cmp -s package-lock.json node_modules/.installed-lo
 	|| { npm ci && cp package-lock.json node_modules/.installed-lock; }; } &&
 
 .PHONY: help up down logs migrate revision seed test test-backend test-frontend test-scylla e2e \
+        test-media \
         lint fmt api-client psql redis-cli cqlsh reset \
         deploy deploy-guard deploy-backup deploy-sync deploy-env deploy-build deploy-pull \
         deploy-migrate deploy-stop-template deploy-up deploy-check deploy-smoke deploy-wipe \
@@ -75,6 +76,11 @@ test-backend: ## Unit and integration tests (needs Docker for Testcontainers)
 
 test-scylla: ## The slow ScyllaDB tests
 	$(BACKEND) uv run pytest -m scylla
+
+# No part of `make test`: it builds the image of the media box (backend/mediabox) and
+# runs it as compose.yaml does, under names of its own beside whatever stack is up.
+test-media: ## The image test of the media box (builds its image; needs Docker)
+	$(BACKEND) uv run pytest -m media
 
 test-frontend: ## Frontend tests
 	$(FRONTEND) npm test

@@ -254,7 +254,9 @@ describe("the usage policy, for a caller without a profile", () => {
     expect(
       await screen.findByRole("heading", { level: 1, name: "Usage policy" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "What MarkETH is" })).toBeInTheDocument();
+    expect(
+      screen.getByText(/MarkETH is a prediction game for people at ETH Zurich/),
+    ).toBeInTheDocument();
     // Its figures are those of /config.
     expect(screen.getByText(/You get 750 welcome tokens/)).toBeInTheDocument();
     // The frame of the boot screen: the logo, nothing on its right, no tab bar.

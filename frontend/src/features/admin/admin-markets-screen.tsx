@@ -15,6 +15,7 @@ import { marketsQuery } from "@/lib/api/queries";
 import type { MarketListResponse, MarketStatus, MarketSummary } from "@/lib/api/schema";
 
 import { AdminTabs } from "./admin-tabs";
+import { BroadcastQueue } from "./broadcast-queue";
 import { Chance, type Column, DataTable, DataTableSkeleton, EmptyLine } from "./data-table";
 import { ALL_STATUSES } from "./words";
 
@@ -104,6 +105,10 @@ function Section({
  * read again at the earliest close time among the rows they show as PROPOSED, and after
  * the answer at the earliest one that is left (`useAskAtClose`): the proposal leaves the
  * queue, and the table shows it as the API reports it.
+ *
+ * Above the proposals stands the table of the live streams that wait for an admin or are
+ * on (`BroadcastQueue`), while there is one. It reads its list and follows it by itself:
+ * the screen hands it nothing.
  */
 export function AdminMarketsScreen() {
   const [status, setStatus] = useState<MarketStatus | typeof ALL>(ALL);
@@ -123,6 +128,8 @@ export function AdminMarketsScreen() {
   return (
     <Screen top="main" title="Admin">
       <AdminTabs />
+      {/* It brings its own section and heading, and is absent while it has no row. */}
+      <BroadcastQueue />
       <Section title="Proposals">
         <Markets query={proposals} label="Proposals" empty="No proposals waiting." />
       </Section>

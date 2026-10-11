@@ -8,6 +8,11 @@ import { renderWithProviders } from "@/test/render";
 
 import { AdminMarketsScreen } from "./admin-markets-screen";
 
+// The table "Live streams" reads the API by itself, and these tests are about the rest of
+// the screen: nothing stands in its place here. The screen with the real table is tested
+// in `admin-markets-screen-with-broadcasts.test.tsx`.
+vi.mock("./broadcast-queue", () => ({ BroadcastQueue: () => null }));
+
 const MARKETS: Route = "GET /api/markets";
 /** Every status a market is reported with: the seven its row keeps, and EXPIRED. */
 const EVERY_STATUS = [

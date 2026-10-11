@@ -5,7 +5,7 @@ import { config, marketViewer, marketViewerWithPosition, quote } from "@/test/fi
 import { renderWithProviders } from "@/test/render";
 
 import { OutcomeButtons, OutcomeToggle } from "./outcome-buttons";
-import { SellPresets, StakeLeftLine, StakePresets } from "./presets";
+import { SellPresets, SharePresets, StakeLeftLine } from "./presets";
 import { QuotePanel } from "./quote-panel";
 
 describe("OutcomeButtons", () => {
@@ -92,21 +92,21 @@ describe("OutcomeToggle", () => {
   });
 });
 
-describe("StakePresets", () => {
-  const chips = () => within(screen.getByRole("group", { name: "Quick amounts" }));
+describe("SharePresets", () => {
+  const chips = () => within(screen.getByRole("group", { name: "Shortcuts" }));
 
   test("show one chip per preset of the market, each with its amount as sent", () => {
     renderWithProviders(
-      <StakePresets presets={marketViewer().stake_presets} value="" onChange={() => {}} />,
+      <SharePresets presets={marketViewer().buy[0]!.presets} value="" onChange={() => {}} />,
     );
 
     expect(
       chips()
         .getAllByRole("button")
         .map((chip) => chip.textContent),
-    ).toEqual(["2525 tokens", "5050 tokens", "100100 tokens"]);
+    ).toEqual(["25shares", "50shares", "100shares"]);
     // Each is named by its amount.
-    expect(chips().getByRole("button", { name: "25 tokens" })).toBeInTheDocument();
+    expect(chips().getByRole("button", { name: "25 shares" })).toBeInTheDocument();
     for (const chip of chips().getAllByRole("button")) {
       expect(chip).toHaveAttribute("aria-pressed", "false");
     }
@@ -116,12 +116,12 @@ describe("StakePresets", () => {
     const onChange = vi.fn();
     const presets = [
       // The server says no to the smallest and yes to the largest: that is what counts.
-      { amount_cr: "25", allowed: false },
-      { amount_cr: "50", allowed: true },
-      { amount_cr: "100", allowed: true },
+      { shares: "25", allowed: false },
+      { shares: "50", allowed: true },
+      { shares: "100", allowed: true },
     ];
     const { user } = renderWithProviders(
-      <StakePresets presets={presets} value="" onChange={onChange} />,
+      <SharePresets presets={presets} value="" onChange={onChange} />,
     );
     const [small, , large] = screen.getAllByRole("button");
 
@@ -137,11 +137,7 @@ describe("StakePresets", () => {
     // More digits than a float keeps: a detour through a number would change them.
     const amount = "0.100000000000000000000000000001";
     const { user } = renderWithProviders(
-      <StakePresets
-        presets={[{ amount_cr: amount, allowed: true }]}
-        value=""
-        onChange={onChange}
-      />,
+      <SharePresets presets={[{ shares: amount, allowed: true }]} value="" onChange={onChange} />,
     );
 
     await user.click(screen.getByRole("button"));
@@ -151,10 +147,10 @@ describe("StakePresets", () => {
 
   test("a chip that cannot be chosen looks it: figure and outline in subtle, the token icon dimmed", () => {
     renderWithProviders(
-      <StakePresets
+      <SharePresets
         presets={[
-          { amount_cr: "25", allowed: false },
-          { amount_cr: "50", allowed: true },
+          { shares: "25", allowed: false },
+          { shares: "50", allowed: true },
         ]}
         value=""
         onChange={() => {}}
@@ -173,7 +169,7 @@ describe("StakePresets", () => {
 
   test("the chip whose amount the field holds is pressed and filled white", () => {
     renderWithProviders(
-      <StakePresets presets={marketViewer().stake_presets} value="50" onChange={() => {}} />,
+      <SharePresets presets={marketViewer().buy[0]!.presets} value="50" onChange={() => {}} />,
     );
 
     const [small, chosen, large] = screen.getAllByRole("button");
@@ -187,7 +183,7 @@ describe("StakePresets", () => {
     "selects by the characters alone: a field that holds %j selects no chip",
     (text) => {
       renderWithProviders(
-        <StakePresets presets={marketViewer().stake_presets} value={text} onChange={() => {}} />,
+        <SharePresets presets={marketViewer().buy[0]!.presets} value={text} onChange={() => {}} />,
       );
 
       for (const chip of screen.getAllByRole("button")) {
@@ -199,13 +195,13 @@ describe("StakePresets", () => {
   test("tapping the chip that is selected changes nothing and leaves it selected", async () => {
     const onChange = vi.fn();
     const { user } = renderWithProviders(
-      <StakePresets presets={marketViewer().stake_presets} value="50" onChange={onChange} />,
+      <SharePresets presets={marketViewer().buy[0]!.presets} value="50" onChange={onChange} />,
     );
 
-    await user.click(screen.getByRole("button", { name: "50 tokens" }));
+    await user.click(screen.getByRole("button", { name: "50 shares" }));
 
     expect(onChange).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: "50 tokens" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "50 shares" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
@@ -213,8 +209,8 @@ describe("StakePresets", () => {
 
   test("the whole row can be switched off while a trade waits for its answer", () => {
     renderWithProviders(
-      <StakePresets
-        presets={marketViewer().stake_presets}
+      <SharePresets
+        presets={marketViewer().buy[0]!.presets}
         value="50"
         onChange={() => {}}
         disabled

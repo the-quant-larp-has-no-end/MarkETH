@@ -28,6 +28,8 @@ from app.api.deps import authenticate_request
 from app.container import Container
 from app.core.config import Settings
 from app.core.enums import (
+    BroadcastEndReason,
+    BroadcastStatus,
     DegreeLevel,
     MarketStatus,
     MarketTier,
@@ -46,6 +48,7 @@ from app.core.live import (
     TopicKind,
 )
 from app.core.live import LiveEvent as AnnouncedEvent
+from app.core.text import CHAT_MESSAGE_STORED_MAX_LENGTH
 from app.core.units import MICRO, format_cr, to_cr
 from app.main import create_app
 from app.pricing import lmsr
@@ -60,6 +63,15 @@ from app.schemas.admin.markets import (
     ApproveMarketRequest,
 )
 from app.schemas.admin.users import AdjustBalanceRequest, AdminUserListQuery
+from app.schemas.broadcasts import (
+    CAPTURE_MIME_TYPES,
+    PART_PATTERN,
+    SEQ_LIMIT,
+    BroadcastChunkQuery,
+    RefuseBroadcastRequest,
+    RequestBroadcastRequest,
+)
+from app.schemas.chat import ChatMessageItem, PostChatMessageRequest
 from app.schemas.common import (
     MAX_ERRORS_LISTED,
     CreditAmount,
@@ -74,6 +86,9 @@ from app.schemas.live import (
     LIVE_EVENTS,
     TAB_PATTERN,
     BeatEvent,
+    BroadcastChangedEvent,
+    ChatMessageEvent,
+    ChatRemovedEvent,
     LeaderboardChangedEvent,
     LiveStreamQuery,
     MarketQuoteEvent,
@@ -151,17 +166,34 @@ APPENDIX_A2: Final[frozenset[Operation]] = frozenset(
         ("POST", "/api/admin/users/{user_id}/reinstate"),
         ("POST", "/api/admin/users/{user_id}/role"),
         ("POST", "/api/admin/users/{user_id}/adjustments"),
+        ("GET", "/api/markets/{market_id}/chat"),
+        ("POST", "/api/markets/{market_id}/chat"),
+        ("POST", "/api/admin/markets/{market_id}/chat/{message_id}/remove"),
+        ("GET", "/api/markets/{market_id}/broadcast"),
+        ("POST", "/api/markets/{market_id}/broadcast/request"),
+        ("POST", "/api/broadcasts/{broadcast_id}/start"),
+        ("POST", "/api/broadcasts/{broadcast_id}/chunks"),
+        ("POST", "/api/broadcasts/{broadcast_id}/end"),
+        ("GET", "/api/broadcasts/live"),
+        ("GET", "/api/broadcasts/{broadcast_id}/access"),
+        ("GET", "/api/admin/broadcasts"),
+        ("POST", "/api/admin/broadcasts/{broadcast_id}/approve"),
+        ("POST", "/api/admin/broadcasts/{broadcast_id}/refuse"),
+        ("POST", "/api/admin/markets/{market_id}/broadcast"),
     }
 )
 
 SUCCESS_STATUS: Final[dict[Operation, str]] = {
     ("POST", "/api/markets"): "201",
     ("POST", "/api/markets/{market_id}/trades"): "201",
+    ("POST", "/api/markets/{market_id}/chat"): "201",
+    ("POST", "/api/markets/{market_id}/broadcast/request"): "201",
     ("POST", "/api/vouchers"): "201",
     ("POST", "/api/admin/code-batches"): "201",
     ("POST", "/api/admin/users/{user_id}/adjustments"): "201",
+    ("POST", "/api/admin/markets/{market_id}/broadcast"): "201",
 }
-"""Operations that do not answer 200: the five that create something."""
+"""Operations that do not answer 200: the eight that create something."""
 
 ERROR_REF: Final[dict[str, str]] = {"$ref": "#/components/schemas/ErrorResponse"}
 
@@ -185,11 +217,11 @@ IDENTITY_ACCESS: Final[frozenset[Operation]] = frozenset({("PUT", "/api/me/profi
 OPERATIONS_PER_ACCESS: Final[dict[str, int]] = {
     "public": 2,
     "identity": 1,
-    "member": 20,
+    "member": 29,
     "staff": 1,
-    "admin": 19,
+    "admin": 24,
 }
-"""How the 43 operations fall into the five access levels of A.2."""
+"""How the 57 operations fall into the five access levels of A.2."""
 
 VOUCHER_FIELDS: Final[frozenset[str]] = frozenset(
     {
@@ -260,6 +292,9 @@ CONFIG_FIELDS: Final[frozenset[str]] = frozenset(
         "question_max_length",
         "short_text_max_length",
         "long_text_max_length",
+        "chat_message_max_length",
+        "chat_backlog_size",
+        "broadcast",
         "code_length",
         "code_min_value_cr",
         "code_max_value_cr",
@@ -381,7 +416,7 @@ def test_every_endpoint_of_the_spec_is_served_and_nothing_else(document: dict[st
     expected = SPEC_SECTION_10 | APPENDIX_A2
     assert expected - served == set(), "in SPEC §10 or A.2 but not served"
     assert served - expected == set(), "served but in neither SPEC §10 nor A.2"
-    assert len(served) == 43
+    assert len(served) == 57
 
 
 def test_the_document_names_the_api_and_lives_under_api(document: dict[str, Any]) -> None:
@@ -458,8 +493,8 @@ def test_every_operation_says_who_may_call_it(document: dict[str, Any]) -> None:
 
 
 def test_the_operations_fall_into_the_five_access_levels(document: dict[str, Any]) -> None:
-    """Two need nobody, one needs a name, twenty a profile, one a barista, nineteen
-    an admin: a route that moved to another level shows here."""
+    """Two need nobody, one needs a name, twenty-nine a profile, one a barista,
+    twenty-four an admin: a route that moved to another level shows here."""
     levels = {
         json.dumps(NO_IDENTITY): "public",
         json.dumps(IDENTITY): "identity",
@@ -472,7 +507,7 @@ def test_the_operations_fall_into_the_five_access_levels(document: dict[str, Any
         counted[levels[json.dumps(spec.get("security", NO_IDENTITY))]] += 1
 
     assert counted == OPERATIONS_PER_ACCESS
-    assert sum(counted.values()) == 43
+    assert sum(counted.values()) == 57
 
 
 def test_the_one_security_scheme_is_the_header_in_which_the_portal_names_the_caller(
@@ -1126,8 +1161,6 @@ LIMITS_NO_OPERATION_REFUSES_WITH: Final[frozenset[Limit]] = frozenset(
         Limit.PROGRAMME_CHANGE_COOLDOWN_DAYS,
         Limit.DISCUSSION_MAX_WAITING_PER_USER,
         Limit.DISCUSSION_MAX_QUESTIONS_PER_MARKET,
-        Limit.MAX_LIVE_BROADCASTS,
-        Limit.MAX_BROADCAST_REQUESTS_PER_USER_PER_DAY,
     }
 )
 """Members of `Limit` that no operation answers with, so `ErrorResponse` does not describe
@@ -1146,6 +1179,7 @@ def test_the_error_schema_says_what_details_carries(schemas: dict[str, dict[str,
         ErrorCode.RATE_LIMITED,
         ErrorCode.QUOTE_STALE,
         ErrorCode.LIMIT_EXCEEDED,
+        ErrorCode.CONFLICT,
         ErrorCode.INSUFFICIENT_BALANCE,
         ErrorCode.SERVICE_UNAVAILABLE,
     ):
@@ -1174,12 +1208,20 @@ def test_the_error_schema_says_what_details_carries(schemas: dict[str, dict[str,
         "cap_cr",
         "balance_cr",
         "required_cr",
+        "status",
+        "end_reason",
+        "media",
     ):
         assert f"`{key}`" in description, key
     # A limit is named exactly if an operation refuses with it.
     for limit in Limit:
         named = f"`{limit.value}`" in description
         assert named == (limit not in LIMITS_NO_OPERATION_REFUSES_WITH), limit
+    # A live stream that runs into one of its two limits is told which, and no figure;
+    # one that is in no state for the request says where it stands.
+    assert "The two limits of a live stream carry `limit` and nothing beside it" in as_one_line
+    assert "`status` and `end_reason` for one that has ended" in as_one_line
+    assert "`postgres`, `redis`, `scylla` and `media`, each `up` or `down`" in as_one_line
 
 
 def test_the_redeem_request_says_that_the_client_sends_the_bare_code(
@@ -1947,6 +1989,9 @@ LIVE_EVENT_NAMES: Final[tuple[str, ...]] = (
     "market.status",
     "leaderboard.changed",
     "me.changed",
+    "chat.message",
+    "chat.removed",
+    "broadcast.changed",
 )
 """The events the API pushes, in the order `LIVE_EVENTS` lists their models."""
 
@@ -1961,7 +2006,7 @@ BARE_EVENTS: Final[tuple[type[BaseModel], ...]] = (
 TAB: Final[str] = "tab-0123"
 
 
-def test_the_event_models_are_these_six_and_each_is_named_by_its_type() -> None:
+def test_the_event_models_are_these_nine_and_each_is_named_by_its_type() -> None:
     assert list(LIVE_EVENTS) == [
         ReadyEvent,
         BeatEvent,
@@ -1969,6 +2014,9 @@ def test_the_event_models_are_these_six_and_each_is_named_by_its_type() -> None:
         MarketStatusEvent,
         LeaderboardChangedEvent,
         MeChangedEvent,
+        ChatMessageEvent,
+        ChatRemovedEvent,
+        BroadcastChangedEvent,
     ]
     named = [model.model_json_schema()["properties"]["type"]["const"] for model in LIVE_EVENTS]
     assert named == list(LIVE_EVENT_NAMES)
@@ -2000,6 +2048,27 @@ def test_an_event_carries_what_its_name_promises_and_nothing_about_who_it_is_for
         "trading_open",
         "ts",
     }
+    # A chat message is for everybody inside its market, and its event carries it.
+    assert set(ChatMessageEvent.model_fields) == {
+        "type",
+        "market_id",
+        "broadcast_id",
+        "message",
+        "ts",
+    }
+    assert ChatMessageEvent.model_fields["message"].annotation is ChatMessageItem
+    assert set(ChatRemovedEvent.model_fields) == {
+        "type",
+        "market_id",
+        "broadcast_id",
+        "message_id",
+        "ts",
+    }
+    # What a live stream is at that moment depends on who asks: its event names the
+    # market and nothing else.
+    assert set(BroadcastChangedEvent.model_fields) == {"type", "market_id", "ts"}
+    for model in LIVE_EVENTS:
+        assert {"audience", "audience_programme"}.isdisjoint(model.model_fields)
 
 
 def test_a_price_event_travels_with_its_amount_as_a_string_and_fits_an_announcement() -> None:
@@ -2288,3 +2357,552 @@ def test_the_tag_live_holds_the_event_stream_the_chart_and_the_stream_of_one_mar
 ) -> None:
     live = {spec["operationId"] for _, spec in each_operation(document) if spec["tags"] == ["live"]}
     assert live == {"stream_live", "get_market_history", "stream_market"}
+
+
+# --- Live chat and live stream ---------------------------------------------------------
+
+REF: Final[str] = "#/components/schemas/"
+
+CHAT: Final[str] = "/api/markets/{market_id}/chat"
+REMOVE_MESSAGE: Final[str] = "/api/admin/markets/{market_id}/chat/{message_id}/remove"
+BROADCAST: Final[str] = "/api/markets/{market_id}/broadcast"
+REQUEST_BROADCAST: Final[str] = "/api/markets/{market_id}/broadcast/request"
+START: Final[str] = "/api/broadcasts/{broadcast_id}/start"
+CHUNKS: Final[str] = "/api/broadcasts/{broadcast_id}/chunks"
+END: Final[str] = "/api/broadcasts/{broadcast_id}/end"
+LIVE_NOW: Final[str] = "/api/broadcasts/live"
+ACCESS: Final[str] = "/api/broadcasts/{broadcast_id}/access"
+ADMIN_BROADCASTS: Final[str] = "/api/admin/broadcasts"
+APPROVE_BROADCAST: Final[str] = "/api/admin/broadcasts/{broadcast_id}/approve"
+REFUSE_BROADCAST: Final[str] = "/api/admin/broadcasts/{broadcast_id}/refuse"
+START_AS_ADMIN: Final[str] = "/api/admin/markets/{market_id}/broadcast"
+
+BROADCAST_ITEM_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "id",
+        "market_id",
+        "status",
+        "on_air",
+        "playlist_url",
+        "requested_at",
+        "started_at",
+        "ended_at",
+        "end_reason",
+        "refusal_reason",
+        "requested_by",
+    }
+)
+
+BROADCAST_FLAGS: Final[frozenset[str]] = frozenset(
+    {
+        "is_broadcaster",
+        "can_request",
+        "can_start",
+        "can_start_as_admin",
+        "can_approve",
+        "can_refuse",
+        "can_end",
+        "can_watch",
+        "full",
+    }
+)
+"""What a caller may do about the live stream of a market: nine answers of the server."""
+
+BROADCAST_CONFIG_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "chunk_ms",
+        "chunk_max_bytes",
+        "upload_backlog_bytes",
+        "capture_height",
+        "capture_fps",
+        "capture_max_width",
+        "capture_max_height",
+        "capture_video_bits_per_second",
+        "capture_audio_bits_per_second",
+        "capture_mime_types",
+        "stall_seconds",
+        "max_minutes",
+        "upload_timeout_ms",
+        "upload_retry_ms",
+        "restart_window_ms",
+        "wait_notice_ms",
+        "player_retry_ms",
+    }
+)
+
+
+def nullable(name: str) -> list[dict[str, str]]:
+    """How the document writes a field that holds the schema `name` or null."""
+    return [{"$ref": f"{REF}{name}"}, {"type": "null"}]
+
+
+def answered_with(operation: dict[str, Any], status: str = "200") -> dict[str, Any]:
+    schema: dict[str, Any] = operation["responses"][status]["content"]["application/json"]["schema"]
+    return schema
+
+
+def in_the_path(operation: dict[str, Any]) -> list[str]:
+    return [parameter["name"] for parameter in operation["parameters"] if parameter["in"] == "path"]
+
+
+def test_chat_and_live_stream_are_fourteen_operations_under_four_tags(
+    document: dict[str, Any],
+) -> None:
+    by_tag: dict[str, set[str]] = {
+        "chat": set(),
+        "admin-chat": set(),
+        "broadcasts": set(),
+        "admin-broadcasts": set(),
+    }
+    for _, spec in each_operation(document):
+        (tag,) = spec["tags"]
+        if tag in by_tag:
+            by_tag[tag].add(spec["operationId"])
+
+    assert by_tag == {
+        "chat": {"get_chat", "post_chat_message"},
+        "admin-chat": {"remove_chat_message"},
+        "broadcasts": {
+            "get_market_broadcast",
+            "request_broadcast",
+            "start_broadcast",
+            "upload_broadcast_chunk",
+            "end_broadcast",
+            "list_live_broadcasts",
+            "admit_broadcast_viewer",
+        },
+        "admin-broadcasts": {
+            "list_admin_broadcasts",
+            "approve_broadcast",
+            "refuse_broadcast",
+            "start_broadcast_as_admin",
+        },
+    }
+    paths = document["paths"]
+    assert set(paths[CHAT]) == {"get", "post"}
+    for path, method in (
+        (BROADCAST, "get"),
+        (REQUEST_BROADCAST, "post"),
+        (START, "post"),
+        (CHUNKS, "post"),
+        (END, "post"),
+        (LIVE_NOW, "get"),
+        (ACCESS, "get"),
+    ):
+        assert set(paths[path]) == {method}, path
+        assert paths[path][method]["security"] == MEMBER, path
+    for path, method in (
+        (REMOVE_MESSAGE, "post"),
+        (ADMIN_BROADCASTS, "get"),
+        (APPROVE_BROADCAST, "post"),
+        (REFUSE_BROADCAST, "post"),
+        (START_AS_ADMIN, "post"),
+    ):
+        assert set(paths[path]) == {method}, path
+        assert paths[path][method]["security"] == ADMIN, path
+
+
+def test_a_chat_is_read_in_one_answer_and_a_message_carries_the_authors_role(
+    document: dict[str, Any], schemas: dict[str, dict[str, Any]]
+) -> None:
+    reading = document["paths"][CHAT]["get"]
+    assert in_the_path(reading) == ["market_id"]
+    assert [p for p in reading["parameters"] if p["in"] != "path"] == [], "no pages"
+    assert answered_with(reading) == {"$ref": f"{REF}ChatResponse"}
+
+    chat = schemas["ChatResponse"]
+    assert set(chat["required"]) == set(chat["properties"])
+    assert set(chat["properties"]) == {"open", "broadcast_id", "can_remove", "items"}
+    assert (chat["properties"]["open"]["type"], chat["properties"]["can_remove"]["type"]) == (
+        "boolean",
+        "boolean",
+    )
+    assert chat["properties"]["broadcast_id"]["anyOf"] == [
+        {"type": "string", "format": "uuid"},
+        {"type": "null"},
+    ]
+    assert chat["properties"]["items"]["items"] == {"$ref": f"{REF}ChatMessageItem"}
+
+    message = schemas["ChatMessageItem"]
+    assert set(message["required"]) == set(message["properties"])
+    assert set(message["properties"]) == {"id", "username", "role", "text", "from_vis"}
+    assert message["properties"]["from_vis"]["type"] == "boolean"
+    assert message["properties"]["role"]["$ref"] == f"{REF}UserRole"
+    assert "format" not in message["properties"]["username"], "a username, not an id"
+    # A message names its author by username and nothing else: no id, no address.
+    assert not {"user_id", "email", "created_at"} & set(message["properties"])
+
+
+def test_a_chat_message_is_one_text_as_long_as_the_database_takes(
+    document: dict[str, Any], schemas: dict[str, dict[str, Any]]
+) -> None:
+    writing = document["paths"][CHAT]["post"]
+    assert in_the_path(writing) == ["market_id"]
+    assert writing["requestBody"]["content"]["application/json"]["schema"] == {
+        "$ref": f"{REF}PostChatMessageRequest"
+    }
+    assert answered_with(writing, "201") == {"$ref": f"{REF}ChatMessageItem"}
+
+    body = schemas["PostChatMessageRequest"]
+    assert set(body["required"]) == set(body["properties"]) == {"text"}
+    text = body["properties"]["text"]
+    assert (text["type"], text["minLength"], text["maxLength"]) == (
+        "string",
+        1,
+        CHAT_MESSAGE_STORED_MAX_LENGTH,
+    )
+    stored = check_constraint("chat_messages", "ck_chat_messages_text_length")
+    assert f"BETWEEN 1 AND {CHAT_MESSAGE_STORED_MAX_LENGTH}" in str(stored.sqltext)
+    assert CHAT_MESSAGE_STORED_MAX_LENGTH == 500
+    assert PostChatMessageRequest.model_validate({"text": "  Goal!  "}).text == "Goal!"
+    for refused in (
+        {"text": "   "},
+        {"text": "Goal!", "from_vis": True},
+        {"text": "Goal!", "role": "ADMIN"},
+        {},
+    ):
+        with pytest.raises(ValidationError):
+            PostChatMessageRequest.model_validate(refused)
+
+    config = schemas["PublicConfigResponse"]
+    for told in ("chat_message_max_length", "chat_backlog_size"):
+        assert config["properties"][told]["type"] == "integer", told
+        assert told in config["required"], told
+
+
+def test_an_admin_removes_a_chat_message_without_a_body_and_learns_when(
+    document: dict[str, Any], schemas: dict[str, dict[str, Any]]
+) -> None:
+    removing = document["paths"][REMOVE_MESSAGE]["post"]
+    assert in_the_path(removing) == ["market_id", "message_id"]
+    assert "requestBody" not in removing
+    assert answered_with(removing) == {"$ref": f"{REF}RemovedResponse"}
+
+    removed = schemas["RemovedResponse"]
+    assert set(removed["required"]) == set(removed["properties"]) == {"id", "removed_at"}
+    assert removed["properties"]["id"]["format"] == "uuid"
+    assert removed["properties"]["removed_at"]["format"] == "date-time"
+
+
+def test_every_action_on_a_live_stream_answers_with_the_broadcast_and_the_callers_side(
+    document: dict[str, Any], schemas: dict[str, dict[str, Any]]
+) -> None:
+    paths = document["paths"]
+    for path, method, status, named in (
+        (BROADCAST, "get", "200", ["market_id"]),
+        (REQUEST_BROADCAST, "post", "201", ["market_id"]),
+        (START, "post", "200", ["broadcast_id"]),
+        (END, "post", "200", ["broadcast_id"]),
+        (APPROVE_BROADCAST, "post", "200", ["broadcast_id"]),
+        (REFUSE_BROADCAST, "post", "200", ["broadcast_id"]),
+        (START_AS_ADMIN, "post", "201", ["market_id"]),
+    ):
+        operation = paths[path][method]
+        assert in_the_path(operation) == named, path
+        assert answered_with(operation, status) == {"$ref": f"{REF}MarketBroadcastResponse"}, path
+    # Two of the seven take a body: the proposer's acceptance of the policy and an
+    # admin's reason.
+    with_a_body = {
+        path
+        for path in (
+            BROADCAST,
+            REQUEST_BROADCAST,
+            START,
+            END,
+            APPROVE_BROADCAST,
+            REFUSE_BROADCAST,
+            START_AS_ADMIN,
+        )
+        for spec in paths[path].values()
+        if "requestBody" in spec
+    }
+    assert with_a_body == {REQUEST_BROADCAST, REFUSE_BROADCAST}
+    assert paths[REQUEST_BROADCAST]["post"]["requestBody"]["content"]["application/json"][
+        "schema"
+    ] == {"$ref": f"{REF}RequestBroadcastRequest"}
+    assert paths[REFUSE_BROADCAST]["post"]["requestBody"]["content"]["application/json"][
+        "schema"
+    ] == {"$ref": f"{REF}RefuseBroadcastRequest"}
+
+    answer = schemas["MarketBroadcastResponse"]
+    assert set(answer["required"]) == set(answer["properties"]) == {"broadcast", "viewer"}
+    assert answer["properties"]["broadcast"]["anyOf"] == nullable("BroadcastItem")
+    assert answer["properties"]["viewer"]["$ref"] == f"{REF}BroadcastViewer"
+
+    flags = schemas["BroadcastViewer"]
+    assert set(flags["required"]) == set(flags["properties"]) == BROADCAST_FLAGS
+    for flag in sorted(BROADCAST_FLAGS):
+        assert flags["properties"][flag]["type"] == "boolean", flag
+
+
+def test_a_broadcast_says_where_it_stands_and_nobody_is_told_how_many_watch(
+    schemas: dict[str, dict[str, Any]],
+) -> None:
+    item = schemas["BroadcastItem"]
+    assert set(item["required"]) == set(item["properties"]) == BROADCAST_ITEM_FIELDS
+    fields = item["properties"]
+    assert fields["status"]["$ref"] == f"{REF}BroadcastStatus"
+    assert fields["on_air"]["type"] == "boolean"
+    assert fields["playlist_url"]["anyOf"] == [{"type": "string"}, {"type": "null"}]
+    assert "/hls/index.m3u8" in fields["playlist_url"]["description"]
+    assert (fields["requested_at"]["type"], fields["requested_at"]["format"]) == (
+        "string",
+        "date-time",
+    )
+    for instant in ("started_at", "ended_at"):
+        assert fields[instant]["anyOf"] == [
+            {"type": "string", "format": "date-time"},
+            {"type": "null"},
+        ], instant
+    assert fields["end_reason"]["anyOf"] == nullable("BroadcastEndReason")
+    assert fields["refusal_reason"]["anyOf"] == [{"type": "string"}, {"type": "null"}]
+    assert fields["requested_by"]["anyOf"] == nullable("BroadcastPerson")
+    assert "admins only" in fields["requested_by"]["description"]
+    assert set(schemas["BroadcastPerson"]["properties"]) == {"username", "email"}
+
+    assert schemas["BroadcastStatus"]["enum"] == [
+        "REQUESTED",
+        "APPROVED",
+        "REFUSED",
+        "LIVE",
+        "ENDED",
+    ]
+    assert [status.value for status in BroadcastStatus] == schemas["BroadcastStatus"]["enum"]
+    assert schemas["BroadcastEndReason"]["enum"] == [
+        "BROADCASTER",
+        "ADMIN",
+        "STALLED",
+        "TIME_LIMIT",
+    ]
+    assert [why.value for why in BroadcastEndReason] == schemas["BroadcastEndReason"]["enum"]
+
+    # No count of viewers, in no shape: a place is free or it is not.
+    counting = sorted(
+        f"{name}.{field}"
+        for name, schema in schemas.items()
+        for field in schema.get("properties", {})
+        if "viewers" in field or field in ("watching", "seats", "places")
+    )
+    assert counting == []
+
+
+def test_a_piece_of_a_recording_is_sent_as_bytes_with_its_part_and_its_place(
+    document: dict[str, Any], schemas: dict[str, dict[str, Any]]
+) -> None:
+    """The one operation whose body is no JSON: the document says binary, and what is
+    read of it is the route's to bound."""
+    upload = document["paths"][CHUNKS]["post"]
+    assert upload["operationId"] == "upload_broadcast_chunk"
+    body = upload["requestBody"]
+    assert body["required"] is True
+    assert body["content"] == {
+        "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
+    }
+    parameters = {parameter["name"]: parameter for parameter in upload["parameters"]}
+    assert set(parameters) == {"broadcast_id", "part", "seq"}
+    assert (parameters["part"]["in"], parameters["part"]["required"]) == ("query", True)
+    assert (parameters["seq"]["in"], parameters["seq"]["required"]) == ("query", True)
+    assert parameters["part"]["schema"]["pattern"] == PART_PATTERN == "^[A-Za-z0-9_-]{8,36}$"
+    seq = parameters["seq"]["schema"]
+    assert (seq["type"], seq["minimum"], seq["exclusiveMaximum"]) == ("integer", 0, SEQ_LIMIT)
+    assert SEQ_LIMIT == 10**9
+    assert answered_with(upload) == {"$ref": f"{REF}BroadcastChunkResponse"}
+
+    taken = schemas["BroadcastChunkResponse"]
+    assert set(taken["required"]) == set(taken["properties"]) == {"restart", "next_seq"}
+    assert (taken["properties"]["restart"]["type"], taken["properties"]["next_seq"]["type"]) == (
+        "boolean",
+        "integer",
+    )
+    # It is the only operation with a body that is no JSON.
+    binary = {
+        operation
+        for operation, spec in each_operation(document)
+        if "requestBody" in spec and "application/json" not in spec["requestBody"]["content"]
+    }
+    assert binary == {("POST", CHUNKS)}
+
+    assert BroadcastChunkQuery.model_validate({"part": str(uuid7()), "seq": "0"}).seq == 0
+    for refused in (
+        {"part": "short", "seq": 0},
+        {"part": "x" * 37, "seq": 0},
+        {"part": "part 0001", "seq": 0},
+        {"part": "part-0001", "seq": -1},
+        {"part": "part-0001", "seq": SEQ_LIMIT},
+        {"part": "part-0001"},
+        {"seq": 0},
+        {"part": "part-0001", "seq": 0, "size": 1},
+    ):
+        with pytest.raises(ValidationError):
+            BroadcastChunkQuery.model_validate(refused)
+
+
+def test_the_two_bodies_of_a_live_stream_are_an_acceptance_and_a_reason(
+    schemas: dict[str, dict[str, Any]],
+) -> None:
+    asking = schemas["RequestBroadcastRequest"]
+    assert set(asking["required"]) == set(asking["properties"]) == {"policy_accepted"}
+    policy = asking["properties"]["policy_accepted"]
+    assert (policy["type"], policy["const"]) == ("boolean", True)
+    # The acceptance a proposal states, held to the same rule.
+    of_a_proposal = schemas["ProposeMarketRequest"]["properties"]["policy_accepted"]
+    assert {key: value for key, value in policy.items() if key != "description"} == {
+        key: value for key, value in of_a_proposal.items() if key != "description"
+    }
+    assert RequestBroadcastRequest.model_validate({"policy_accepted": True})
+    for declined in (False, "true", 1, None):
+        with pytest.raises(ValidationError):
+            RequestBroadcastRequest.model_validate({"policy_accepted": declined})
+
+    refusing = schemas["RefuseBroadcastRequest"]
+    assert set(refusing["required"]) == set(refusing["properties"]) == {"reason"}
+    reason = refusing["properties"]["reason"]
+    assert (reason["type"], reason["minLength"], reason["maxLength"]) == ("string", 1, 500)
+    assert (
+        reason["maxLength"] == schemas["RejectMarketRequest"]["properties"]["reason"]["maxLength"]
+    )
+    assert RefuseBroadcastRequest.model_validate({"reason": "  Not now.  "}).reason == "Not now."
+
+
+def test_the_lists_of_live_streams_show_each_with_the_question_of_its_market(
+    document: dict[str, Any], schemas: dict[str, dict[str, Any]]
+) -> None:
+    live = document["paths"][LIVE_NOW]["get"]
+    assert "parameters" not in live
+    assert answered_with(live) == {"$ref": f"{REF}LiveBroadcastListResponse"}
+    assert schemas["LiveBroadcastListResponse"]["properties"]["items"]["items"] == {
+        "$ref": f"{REF}LiveBroadcastItem"
+    }
+    row = schemas["LiveBroadcastItem"]
+    assert set(row["required"]) == set(row["properties"])
+    assert set(row["properties"]) == {"broadcast_id", "market_id", "question", "started_at"}
+    assert (row["properties"]["started_at"]["type"], row["properties"]["started_at"]["format"]) == (
+        "string",
+        "date-time",
+    )
+
+    queue = document["paths"][ADMIN_BROADCASTS]["get"]
+    assert "parameters" not in queue
+    assert answered_with(queue) == {"$ref": f"{REF}AdminBroadcastListResponse"}
+    assert schemas["AdminBroadcastListResponse"]["properties"]["items"]["items"] == {
+        "$ref": f"{REF}AdminBroadcastItem"
+    }
+    waiting = schemas["AdminBroadcastItem"]
+    assert set(waiting["required"]) == set(waiting["properties"])
+    assert set(waiting["properties"]) == BROADCAST_ITEM_FIELDS | {"question"}
+
+
+def test_the_proxy_asks_for_each_viewer_whether_they_may_play(
+    document: dict[str, Any], schemas: dict[str, dict[str, Any]]
+) -> None:
+    """One operation no screen calls. A playlist and a segment are served by the proxy
+    and are no operations of this document."""
+    asking = document["paths"][ACCESS]["get"]
+    assert asking["operationId"] == "admit_broadcast_viewer"
+    assert in_the_path(asking) == ["broadcast_id"]
+    assert [p for p in asking["parameters"] if p["in"] != "path"] == []
+    assert "requestBody" not in asking
+    assert "proxy" in asking["summary"]
+    assert answered_with(asking) == {"$ref": f"{REF}BroadcastAccessResponse"}
+    admitted = schemas["BroadcastAccessResponse"]
+    assert set(admitted["required"]) == set(admitted["properties"]) == {"broadcast_id"}
+    assert not [path for path in document["paths"] if "/hls" in path or path.endswith(".m3u8")]
+
+
+def test_config_tells_the_studio_and_the_player_what_they_go_by(
+    schemas: dict[str, dict[str, Any]],
+) -> None:
+    """Sizes, rates and paces come from the server: the studio and the player hold no
+    figure of their own."""
+    config = schemas["PublicConfigResponse"]
+    assert "broadcast" in config["required"]
+    assert config["properties"]["broadcast"]["$ref"] == f"{REF}BroadcastConfig"
+
+    told = schemas["BroadcastConfig"]
+    assert set(told["required"]) == set(told["properties"]) == BROADCAST_CONFIG_FIELDS
+    for field in sorted(BROADCAST_CONFIG_FIELDS - {"capture_mime_types"}):
+        assert told["properties"][field]["type"] == "integer", field
+    kinds = told["properties"]["capture_mime_types"]
+    assert (kinds["type"], kinds["items"]) == ("array", {"type": "string"})
+    assert CAPTURE_MIME_TYPES == (
+        "video/webm;codecs=vp8,opus",
+        "video/webm",
+        "video/mp4;codecs=avc1.42E01F,mp4a.40.2",
+        "video/mp4",
+    )
+    # A studio records its camera: nothing here is about a screen.
+    assert not [field for field in told["properties"] if "screen" in field or "display" in field]
+
+
+def test_health_reports_the_media_box_beside_the_three_stores(
+    schemas: dict[str, dict[str, Any]],
+) -> None:
+    health = schemas["HealthResponse"]
+    assert set(health["required"]) == set(health["properties"])
+    assert set(health["properties"]) == {"status", "postgres", "redis", "scylla", "media"}
+    for store in ("postgres", "redis", "scylla", "media"):
+        assert health["properties"][store]["$ref"] == f"{REF}DependencyStatus", store
+    assert schemas["DependencyStatus"]["enum"] == ["up", "down"]
+    assert schemas["HealthStatus"]["enum"] == ["ok", "degraded"]
+
+
+def test_a_chat_message_and_its_removal_and_a_change_of_a_live_stream_are_pushed() -> None:
+    market_id, broadcast_id, message_id = uuid7(), uuid7(), uuid7()
+    now = json.loads(ReadyEvent(type="ready", ts=TEST_NOW).model_dump_json())["ts"]
+    message = ChatMessageItem(
+        id=message_id, username="ada", role=UserRole.ADMIN, text="Goal!", from_vis=True
+    )
+    written = ChatMessageEvent(
+        type="chat.message",
+        market_id=market_id,
+        broadcast_id=broadcast_id,
+        message=message,
+        ts=TEST_NOW,
+    )
+    removed = ChatRemovedEvent(
+        type="chat.removed",
+        market_id=market_id,
+        broadcast_id=broadcast_id,
+        message_id=message_id,
+        ts=TEST_NOW,
+    )
+    changed = BroadcastChangedEvent(type="broadcast.changed", market_id=market_id, ts=TEST_NOW)
+
+    assert json.loads(written.model_dump_json()) == {
+        "type": "chat.message",
+        "market_id": str(market_id),
+        "broadcast_id": str(broadcast_id),
+        "message": {
+            "id": str(message_id),
+            "username": "ada",
+            "role": "ADMIN",
+            "text": "Goal!",
+            "from_vis": True,
+        },
+        "ts": now,
+    }
+    assert json.loads(removed.model_dump_json()) == {
+        "type": "chat.removed",
+        "market_id": str(market_id),
+        "broadcast_id": str(broadcast_id),
+        "message_id": str(message_id),
+        "ts": now,
+    }
+    assert json.loads(changed.model_dump_json()) == {
+        "type": "broadcast.changed",
+        "market_id": str(market_id),
+        "ts": now,
+    }
+    # Each is a payload of `uow.announce`: the two of a chat on the topic of their
+    # market, the one of a live stream on the topic of its broadcast.
+    for payload, topic in (
+        (written, Topic(TopicKind.MARKET, market_id)),
+        (removed, Topic(TopicKind.MARKET, market_id)),
+        (changed, Topic(TopicKind.BROADCAST, market_id)),
+    ):
+        announced = AnnouncedEvent(topics=(topic,), audience=Audience.everyone(), payload=payload)
+        assert announced.payload.type == payload.type
+    with pytest.raises(ValidationError):
+        BroadcastChangedEvent.model_validate(
+            {"type": "stream.changed", "market_id": market_id, "ts": TEST_NOW}
+        )
