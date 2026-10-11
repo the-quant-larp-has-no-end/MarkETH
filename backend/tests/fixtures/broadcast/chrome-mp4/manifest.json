@@ -1,0 +1,27 @@
+{
+  "fixture": "chrome-mp4",
+  "browser": "chrome 154.0.8037.98",
+  "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36",
+  "asked": "video/mp4;codecs=avc1.42E01F,mp4a.40.2",
+  "recorded": "video/mp4;codecs=avc1.42E01F,mp4a.40.2",
+  "source": "camera",
+  "width": 320,
+  "height": 180,
+  "frame_rate": 20,
+  "sound": true,
+  "timeslice_ms": 1000,
+  "video_bits_per_second": 250000,
+  "audio_bits_per_second": 64000,
+  "pieces": [
+    {
+      "file": "000.bin",
+      "bytes": 1247,
+      "at_ms": 5119
+    },
+    {
+      "file": "001.bin",
+      "bytes": 150813,
+      "at_ms": 10006
+    }
+  ]
+}

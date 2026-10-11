@@ -26,6 +26,11 @@ be lifted and its balance adjusted like anybody's.
 
 Nothing here tells the user's open requests. `IdentityService` reads the row with every
 request, so a suspension, its end and a role all hold from the user's next request on.
+
+A suspension also takes down what the account wrote in the live chats that run
+(`ChatService.remove_of_user`, SPEC §6). That is the chat's work inside the transaction
+of the suspension: the audit rows of the deleted messages and the event that tells the
+open chats are the chat's own.
 """
 
 import json
@@ -63,6 +68,7 @@ from app.schemas.admin.users import (
 from app.schemas.common import Limit
 from app.services import UowFactory
 from app.services.audit import AuditAction, AuditService, AuditTarget
+from app.services.chat import ChatService
 from app.services.email_policy import EmailPolicy
 from app.services.ledger import LedgerRef, LedgerService, PostingLine, admin_adjustment_key
 from app.services.markets import refuse_nul
@@ -114,6 +120,7 @@ class AdminUserService:
         email_policy: EmailPolicy,
         ledger: LedgerService,
         audit: AuditService,
+        chat: ChatService,
     ) -> None:
         self._uow_factory = uow_factory
         self._max_adjustment_micro = settings.risk.max_admin_adjustment_micro
@@ -121,6 +128,7 @@ class AdminUserService:
         self._email_policy = email_policy
         self._ledger = ledger
         self._audit = audit
+        self._chat = chat
 
     async def list_users(self, query: AdminUserListQuery) -> AdminUserListResponse:
         """One page of the users, newest profile first (`GET /admin/users`).
@@ -187,11 +195,27 @@ class AdminUserService:
            the first on the row and gets this.
         4. Set `status = SUSPENDED`. Audit `USER_SUSPEND` with `before = {"status":
            "ACTIVE"}` and `after = {"status": "SUSPENDED", "reason": ...}`.
+        5. `chat.remove_of_user(uow, user.id, actor.id)`: the chat deletes what the
+           account wrote in the live chats that run. It keeps the deleted messages in
+           audit rows of its own, `CHAT_MESSAGE_REMOVE_OF_USER` with `actor_id=actor.id`
+           and one row per broadcast, and announces `broadcast.changed` to each of
+           those markets, so an open chat reads again. An account that wrote in no
+           running chat: nothing is deleted, audited or announced.
 
         Returns the user as the list shows them. From their next request on every
         guard refuses the account (`app/api/deps.py`). Its balance, positions and
         vouchers stay as they are; a suspended account is booked no monthly grant and
         is still refunded an expired voucher (`UserUpkeepService.run`).
+
+        Step 5 is part of the transaction: a suspension whose chat messages cannot be
+        deleted does not happen. A message the account sends in the instant of its
+        suspension can be stored after step 5 and stay; an admin removes it
+        (`ChatService.remove`). Lifting a suspension brings no message back.
+
+        Locks: the user's row, then inside step 5 the advisory locks of those chats. A
+        message that is being stored holds the lock of its chat and writes a row that
+        points at its author; the row lock of step 1 lets it (`FOR NO KEY UPDATE`), so
+        the two never wait for each other in a circle.
         """
         self._check_actor(actor, user_id)
         refuse_nul(request)
@@ -202,6 +226,7 @@ class AdminUserService:
             if user.status is UserStatus.SUSPENDED:
                 raise ConflictError(ALREADY_SUSPENDED_MESSAGE)
             await self._set_status(uow, actor, user, UserStatus.SUSPENDED, request.reason)
+            await self._chat.remove_of_user(uow, user.id, actor.id)
             return self._item(user, (await _account_of(uow, user.id)).balance_micro)
 
     async def reinstate(

@@ -26,6 +26,9 @@ const NAMES: { readonly [Name in LiveEventName]: Name } = {
   "market.status": "market.status",
   "leaderboard.changed": "leaderboard.changed",
   "me.changed": "me.changed",
+  "chat.message": "chat.message",
+  "chat.removed": "chat.removed",
+  "broadcast.changed": "broadcast.changed",
 };
 
 /** Every name the stream sends, in the contract's order. The live client listens for each. */

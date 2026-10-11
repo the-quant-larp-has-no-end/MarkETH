@@ -16,6 +16,7 @@ A mobile-first prediction market for ETH Zurich students. Users trade YES/NO sha
 | `infra/deploy/` | What the deployed stack sets differently, and the backup, check and smoke scripts |
 | `.github/workflows/` | `ci.yml`, the checks of every update of main, and `deploy.yml`, which has the VM deploy itself. Both run on the team's runner, which is the VM, and hold no secret |
 | `backend/` | FastAPI API, the outbox relay and the scripts. Rules in `backend/CLAUDE.md` |
+| `backend/mediabox/` | The media box: the supervisor in front of ffmpeg that turns what a broadcaster sends into the live stream people watch. An image of its own, the service `media` of `compose.yaml`; standard library only, and nothing of `backend/app` |
 | `frontend/` | Next.js app. Rules in `frontend/CLAUDE.md`, design system in `frontend/DESIGN.md` |
 | `Makefile` | The commands below |
 
@@ -29,6 +30,7 @@ Run from the repository root. `make` alone lists them.
 | `make migrate` / `make seed` | Take the database to the schema of this code and check it / load demo data |
 | `make revision NAME="..."` | Write the file of a new schema revision, after the models are edited |
 | `make test` | Backend and frontend tests (`make test-backend`, `make test-frontend`, `make test-scylla`) |
+| `make test-media` | The image test of the media box: builds its image and runs it as the stack does (needs Docker). No part of `make test` |
 | `make e2e` | The browser suite of `frontend/e2e/`, in Chrome against the stack that is up and seeded |
 | `make lint` / `make fmt` | Check / fix style, types and architecture rules |
 | `make api-client` | Export `backend/openapi.json` and regenerate the frontend's API types |
@@ -59,6 +61,12 @@ Two things follow from where the app runs (SPEC §3):
 - **A credit is a "token" on screen** and a credit (`*_cr`, µCR) in the code, the API and the database.
 - **The portal is the sign-in.** The API believes the two request headers in which the portal names the caller, and reads them in one place, `authenticate_request`. Do not add a sign-in or a development bypass to the backend: on a laptop the proxy names the caller (`infra/nginx/dev/`).
 
+The live stream of a market and the live chat beside it (SPEC §6, §9, A.12) keep to all of these, and to three things of their own:
+
+- **Only HTTP reaches the app.** The portal carries HTTP alone, without WebSockets, and the firewall lets in nothing beside it and SSH. So video goes up as requests of about a second and comes down as files a browser downloads (HLS).
+- **The media box makes video and decides nothing.** Who may send and who may watch is the API's answer. The box is isolated (no network, no secret, a read-only root); if it is down, trades still commit and a live stream does not start.
+- **Nothing of a stream or a chat is kept.** No picture and no sound reaches a disk, and the chat of a live stream is deleted when the stream ends. No credit moves in either.
+
 ## Where does this go?
 
 | I need to... | Put it in |
@@ -74,6 +82,8 @@ Two things follow from where the app runs (SPEC §3):
 | Change what the deployed stack sets differently | `infra/deploy/env.production` |
 | Add a screen | `frontend/DESIGN.md` first, then a thin page in `frontend/src/app/`, logic in `frontend/src/features/` |
 | Change a colour, font or radius | `frontend/DESIGN.md` and the tokens in `frontend/src/app/globals.css` |
+| Change what a live stream or its chat may do | `backend/app/services/broadcasts.py` and `chat.py`; the screens are `frontend/src/features/broadcast`, `broadcast-studio` and `chat` |
+| Change how video is made | `backend/mediabox/`, and the `BROADCAST_*` and `MEDIA_*` settings; then `make test-media` |
 
 ## Working agreements
 

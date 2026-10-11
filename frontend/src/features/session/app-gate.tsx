@@ -8,6 +8,7 @@ import { PolicyForVisitor } from "@/features/policy";
 import { portalIdentity } from "@/lib/api/errors";
 import { configQuery, meQuery } from "@/lib/api/queries";
 import type { ProfileSavedResponse } from "@/lib/api/schema";
+import { LiveProvider } from "@/lib/live";
 import { confirmPortalSession } from "@/lib/session-recovery";
 
 import { BootScreen } from "./boot-screen";
@@ -73,6 +74,9 @@ function WithoutProfile(props: Parameters<typeof ProfileSetupScreen>[0]) {
  * Everything inside `children` may call `useMe()` and `useConfig()`: nobody is signed
  * out, and nobody past this gate is without a profile.
  *
+ * `children` stand inside `LiveProvider`: whoever has a profile holds the app's one event
+ * stream (DESIGN.md §14). A caller without a profile, and one the API refuses, holds none.
+ *
  * `/me` also lists what its user has not been told yet (`notices`): each is shown once as
  * a toast over whatever route is open, and marked seen (`Notices`).
  */
@@ -121,7 +125,7 @@ export function AppGate({ children }: { children: ReactNode }) {
   if (me.data !== undefined) {
     return (
       <WelcomeContext.Provider value={welcome?.open ?? false}>
-        {children}
+        <LiveProvider>{children}</LiveProvider>
         <Notices notices={me.data.notices} />
         <WelcomeDialog
           saved={welcome?.saved ?? null}

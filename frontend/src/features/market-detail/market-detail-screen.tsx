@@ -17,6 +17,7 @@ import { Amount } from "@/components/money";
 import { ResponsiveSheet, sheetHeaderClasses } from "@/components/sheet";
 import { NotFoundScreen, Screen, useHideTabBar } from "@/components/shell";
 import { Skeleton } from "@/components/ui/skeleton";
+import { MarketBroadcast } from "@/features/broadcast";
 import { TradeTicket } from "@/features/trade";
 import type { ApiError } from "@/lib/api/errors";
 import { keys } from "@/lib/api/keys";
@@ -66,6 +67,14 @@ const isMissing = (error: ApiError | null) =>
 const WITH_PANEL = "grid grid-cols-[minmax(0,1fr)_22.5rem] items-start gap-6";
 const PANEL =
   "sticky top-[calc(var(--top-bar-space)+1rem)] flex max-h-[calc(100dvh-var(--top-bar-space)-2rem)] flex-col overflow-hidden rounded-lg border bg-card text-card-foreground";
+
+/**
+ * While the viewer watches the live stream on a phone the tab bar is hidden, and what keeps
+ * clear of it takes its room: the pinned outcome buttons stand on the lower edge of the
+ * screen, and the chat above them is as tall as DESIGN.md §13 counts it. The safe area of
+ * the device stays free.
+ */
+const WITHOUT_TAB_BAR = "[--tab-bar-space:env(safe-area-inset-bottom)]";
 
 /**
  * The first line of the trade ticket's surface (DESIGN.md §13): the question, on one line.
@@ -128,7 +137,8 @@ function StatusBanner({ market }: { market: MarketDetailResponse }) {
 
 /**
  * Market detail (`/markets/[id]`): DESIGN.md §13. Top to bottom: the question and its
- * badge, the Price with the volume and the deadline, the probability chart, the outcome
+ * badge, the Price with the volume and the deadline, the live stream of the market with
+ * its chat while there is one (`MarketBroadcast`), the probability chart, the outcome
  * buttons, the viewer's position, the rules, the void rule and the resolution.
  *
  * The screen owns the trade ticket's surroundings. The address says which trade is asked
@@ -193,10 +203,15 @@ function MarketDetail({ marketId }: MarketDetailScreenProps) {
   useHideTabBar(surface.sheetOpen);
 
   // On a phone the outcome buttons move to the bottom of the screen once the place they
-  // stand in has been scrolled past.
+  // stand in has been scrolled past. While the viewer watches the live stream there, the
+  // buttons are on screen at every scroll position: they move down whenever their place
+  // is out of view, above or below, and they give way to the keyboard while the composer
+  // of the chat has the focus (DESIGN.md §13, "Watching on a phone").
+  const [watching, setWatching] = useState(false);
+  const [typing, setTyping] = useState(false);
   const [buttonsPlace, setButtonsPlace] = useState<HTMLDivElement | null>(null);
-  const scrolledPast = useScrolledPast(buttonsPlace);
-  const pinned = trading && !wide && scrolledPast;
+  const away = useScrolledPast(buttonsPlace, { orBelow: watching && !wide });
+  const pinned = trading && !wide && away && !(watching && typing);
 
   if (market === undefined && isMissing(query.error)) return <NotFoundScreen />;
 
@@ -214,7 +229,12 @@ function MarketDetail({ marketId }: MarketDetailScreenProps) {
   const beside = desktop && (market === undefined ? query.error === null : trading);
 
   return (
-    <Screen top="inner" width={beside ? "default" : "narrow"} pinned={pinned ? buttons : null}>
+    <Screen
+      top="inner"
+      width={beside ? "default" : "narrow"}
+      pinned={pinned ? buttons : null}
+      className={watching && !wide ? WITHOUT_TAB_BAR : undefined}
+    >
       {market === undefined && <h1 className="sr-only">Market</h1>}
 
       <div className={cn(beside ? WITH_PANEL : "flex flex-col")}>
@@ -238,6 +258,17 @@ function MarketDetail({ marketId }: MarketDetailScreenProps) {
                     </div>
                   )}
                 </header>
+
+                {/* A proposal has no live stream. The section stands in this column
+                    without an element around it: its video box sticks in it. */}
+                {isListed(data.status) && (
+                  <MarketBroadcast
+                    marketId={marketId}
+                    pinnedButtons={isTrading(data.status)}
+                    onWatchingChange={setWatching}
+                    onTypingChange={setTyping}
+                  />
+                )}
 
                 <StatusBanner market={data} />
 

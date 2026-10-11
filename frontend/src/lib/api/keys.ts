@@ -74,6 +74,14 @@ export const keys = {
     quotes: (marketId: string) => ["markets", "quote", marketId] as const,
     quote: (marketId: string, request: QuoteRequest) =>
       ["markets", "quote", marketId, request] as const,
+    /** The live stream of one market, with the viewer's side of it. */
+    broadcast: (marketId: string) => ["markets", "broadcast", marketId] as const,
+    /** The live chat of one market: the messages of the live stream that is on. */
+    chat: (marketId: string) => ["markets", "chat", marketId] as const,
+  },
+  broadcasts: {
+    /** The live streams that are on air, in the markets the caller sees. */
+    live: ["broadcasts", "live"],
   },
   leaderboard: {
     all: ["leaderboard"],
@@ -88,6 +96,8 @@ export const keys = {
      */
     batchCodes: (batchId: string) => ["admin", "batch-codes", batchId] as const,
     risk: ["admin", "risk"],
+    /** Every live stream that is asked for, approved or on air. */
+    broadcasts: ["admin", "broadcasts"],
     users: {
       /** Every list of users, whatever its search and filters. */
       all: ["admin", "users"],

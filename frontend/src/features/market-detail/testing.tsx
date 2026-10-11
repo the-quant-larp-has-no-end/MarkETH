@@ -1,5 +1,6 @@
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 
+import type { MarketBroadcastProps } from "@/features/broadcast";
 import type { TradeTicketProps } from "@/features/trade";
 import { history, MARKET_ID, marketDetail } from "@/test/fixtures";
 import { json, mockApi, type Route } from "@/test/http";
@@ -87,3 +88,57 @@ function useTradeOutStandIn(_marketId: string, shown: boolean): boolean {
 }
 
 export const tradeFeature = { TradeTicket: TicketStandIn, useTradeOut: useTradeOutStandIn };
+
+/** What the screen gave the stand-in of the live stream's section to tell it things with. */
+const section: {
+  told: Pick<MarketBroadcastProps, "onWatchingChange" | "onTypingChange"> | null;
+} = { told: null };
+
+/**
+ * The live stream of a market is another feature's (`MarketBroadcast`). In its place stands
+ * this: an element that shows nothing, as the section shows nothing on a market without a
+ * live stream, and that carries what the screen gave it. A test says with `liveStream` what
+ * the section would tell the screen:
+ *
+ *     vi.mock("@/features/broadcast", async () => (await import("./testing")).broadcastFeature);
+ *     ...
+ *     act(() => liveStream.watching(true));    // "Watch live"
+ *     act(() => liveStream.typing(true));      // the composer of the chat has the focus
+ *
+ * With it no test of the screen needs a route of the live stream.
+ */
+function MarketBroadcastStandIn({
+  marketId,
+  pinnedButtons,
+  onWatchingChange,
+  onTypingChange,
+}: MarketBroadcastProps) {
+  useEffect(() => {
+    section.told = { onWatchingChange, onTypingChange };
+    return () => {
+      section.told = null;
+    };
+  }, [onWatchingChange, onTypingChange]);
+
+  return (
+    <div
+      data-testid="live-stream"
+      data-market={marketId}
+      data-pinned-buttons={pinnedButtons === true ? "yes" : "no"}
+    />
+  );
+}
+
+function told() {
+  if (section.told === null) throw new Error("The section of the live stream is not mounted.");
+  return section.told;
+}
+
+export const liveStream = {
+  /** True is "Watch live"; false is "Stop watching", and the end of the live stream. */
+  watching: (watching: boolean) => told().onWatchingChange?.(watching),
+  /** Whether the composer of the chat has the focus. */
+  typing: (typing: boolean) => told().onTypingChange?.(typing),
+};
+
+export const broadcastFeature = { MarketBroadcast: MarketBroadcastStandIn, LiveNowRow: () => null };

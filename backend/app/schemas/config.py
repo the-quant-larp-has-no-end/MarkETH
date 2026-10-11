@@ -4,6 +4,7 @@ Everything here is public. Nothing in it is a secret or an address of a person.
 """
 
 from app.core.enums import DegreeLevel, MarketTier
+from app.schemas.broadcasts import BroadcastConfig
 from app.schemas.common import CreditAmount, ResponseModel, ShareAmount
 
 
@@ -98,6 +99,17 @@ class PublicConfigResponse(ResponseModel):
     long_text_max_length: int
     """The longest `resolution_criteria` of a proposal, and the longest evidence or
     reason an admin gives when resolving or voiding a market."""
+
+    chat_message_max_length: int
+    """Characters a message of a live chat may have at most, counted once the text is
+    cleaned."""
+
+    chat_backlog_size: int
+    """How many messages one read of a live chat returns at most: what a panel shows
+    at most."""
+
+    broadcast: BroadcastConfig
+    """What the studio and the player of a live stream go by."""
 
     code_length: int
     code_min_value_cr: CreditAmount

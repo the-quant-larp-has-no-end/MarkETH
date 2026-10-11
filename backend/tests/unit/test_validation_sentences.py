@@ -66,6 +66,12 @@ from app.schemas.admin.users import (
     SuspendUserRequest,
 )
 from app.schemas.barista import RedeemVoucherRequest
+from app.schemas.broadcasts import (
+    BroadcastChunkQuery,
+    RefuseBroadcastRequest,
+    RequestBroadcastRequest,
+)
+from app.schemas.chat import PostChatMessageRequest
 from app.schemas.codes import RedeemCodeRequest
 from app.schemas.common import (
     ACCEPT_THE_POLICY_MESSAGE,
@@ -854,6 +860,10 @@ VALID: Final[dict[type[RequestModel], dict[str, Any]]] = {
     ReinstateUserRequest: {"reason": "Sorted out."},
     SetUserRoleRequest: {"role": "BARISTA"},
     AdjustBalanceRequest: {"amount_cr": "5", "reason": "Won the quiz."},
+    PostChatMessageRequest: {"text": "It is on the menu!"},
+    RequestBroadcastRequest: {"policy_accepted": True},
+    RefuseBroadcastRequest: {"reason": "The canteen does not allow a camera."},
+    BroadcastChunkQuery: {"part": "part-0001", "seq": "0"},
 }
 """A request each model takes: what a wrong value is put into, one field at a time."""
 
@@ -915,6 +925,8 @@ PATH_VALUES: Final[dict[str, str]] = {
     "{batch_id}": str(uuid7()),
     "{voucher_id}": str(uuid7()),
     "{alert_id}": "1",
+    "{message_id}": str(uuid7()),
+    "{broadcast_id}": str(uuid7()),
 }
 
 
@@ -936,6 +948,14 @@ class Use:
         return url
 
 
+JSON: Final[str] = "application/json"
+
+BYTES_FOR_A_BODY: Final[frozenset[tuple[str, str]]] = frozenset(
+    {("POST", "/api/broadcasts/{broadcast_id}/chunks")}
+)
+"""Operations whose body is no JSON and so no request model: a piece of a recording."""
+
+
 def request_models() -> set[type[RequestModel]]:
     """Every request model the application defines."""
     found: set[type[RequestModel]] = set()
@@ -952,7 +972,7 @@ def request_models() -> set[type[RequestModel]]:
 
 def uses() -> list[Use]:
     """Where the operations of the API take a request model, read from its document:
-    the model a body refers to by name, and the model whose fields are exactly the
+    the model a JSON body refers to by name, and the model whose fields are exactly the
     query parameters of an operation."""
     by_name = {model.__name__: model for model in request_models()}
     document = create_app().openapi()
@@ -960,8 +980,10 @@ def uses() -> list[Use]:
     for path, item in sorted(document["paths"].items()):
         for method, operation in sorted(item.items()):
             body = operation.get("requestBody")
-            if body is not None:
-                name = body["content"]["application/json"]["schema"]["$ref"].rsplit("/", 1)[1]
+            if body is not None and JSON not in body["content"]:
+                assert (method.upper(), path) in BYTES_FOR_A_BODY, (method, path)
+            elif body is not None:
+                name = body["content"][JSON]["schema"]["$ref"].rsplit("/", 1)[1]
                 found.append(Use(method.upper(), path, "body", by_name[name]))
             asked = {p["name"] for p in operation.get("parameters", []) if p["in"] == "query"}
             fitting = [model for model in by_name.values() if set(model.model_fields) == asked]
@@ -989,8 +1011,8 @@ def test_every_request_model_is_taken_by_an_operation_and_has_a_request_to_start
 
     assert request_models() - used == BASES_ONLY
     assert used == set(VALID)
-    assert len(USES) >= 25, "six query models and nineteen bodies"
-    assert len(FIELDS) >= 79
+    assert len(USES) >= 29, "seven query models and twenty-two bodies"
+    assert len(FIELDS) >= 84
     assert {use.where for use in USES} == {"body", "query"}
 
 
@@ -1106,6 +1128,7 @@ async def test_what_is_wrong_in_the_address_or_a_header_is_answered_with_a_sente
         headers={"Idempotency-Key": "tap-1"},
     )
     no_status = await api.get("/api/markets", params={"status": "SOMEDAY"})
+    no_broadcast = await api.post("/api/broadcasts/first/start")
 
     assert refusals(no_market, "a path") == [
         {"loc": ["path", "market_id"], "msg": "This is not a valid id.", "type": "uuid_parsing"}
@@ -1125,6 +1148,9 @@ async def test_what_is_wrong_in_the_address_or_a_header_is_answered_with_a_sente
     ]
     assert refusals(no_status, "a query") == [
         {"loc": ["query", "status", 0], "msg": "Choose one of the options.", "type": "enum"}
+    ]
+    assert refusals(no_broadcast, "a path") == [
+        {"loc": ["path", "broadcast_id"], "msg": "This is not a valid id.", "type": "uuid_parsing"}
     ]
 
 

@@ -22,6 +22,8 @@ from fastapi import APIRouter, Depends
 from app.api.deps import require_admin, require_staff, require_user
 from app.api.routes import (
     barista,
+    broadcasts,
+    chat,
     codes,
     config,
     health,
@@ -33,6 +35,8 @@ from app.api.routes import (
     trading,
     vouchers,
 )
+from app.api.routes.admin import broadcasts as admin_broadcasts
+from app.api.routes.admin import chat as admin_chat
 from app.api.routes.admin import code_batches as admin_code_batches
 from app.api.routes.admin import grants as admin_grants
 from app.api.routes.admin import markets as admin_markets
@@ -51,6 +55,8 @@ ERROR_RESPONSES: Final[dict[int | str, dict[str, Any]]] = {
 
 admin_router = APIRouter(prefix="/admin", dependencies=[Depends(require_admin)])
 admin_router.include_router(admin_markets.router)
+admin_router.include_router(admin_chat.router)
+admin_router.include_router(admin_broadcasts.router)
 admin_router.include_router(admin_code_batches.router)
 admin_router.include_router(admin_risk.router)
 admin_router.include_router(admin_grants.router)
@@ -61,6 +67,8 @@ member_router.include_router(me.router)
 member_router.include_router(markets.router)
 member_router.include_router(trading.router)
 member_router.include_router(live.router)
+member_router.include_router(chat.router)
+member_router.include_router(broadcasts.router)
 member_router.include_router(codes.router)
 member_router.include_router(vouchers.router)
 member_router.include_router(leaderboard.router)
