@@ -24,15 +24,19 @@ import {
 
 const FIELDS = [...TERM_FIELDS, "policy_accepted"] as const;
 
-/** What is entered before it is sent. The box is empty whenever the form is. */
-const EMPTY = { terms: EMPTY_TERMS, accepted: false };
+/** A fresh proposal starts with YES / NO options and the policy unticked. */
+const EMPTY = {
+  terms: { ...EMPTY_TERMS, yes_definition: "YES", no_definition: "NO" },
+  accepted: false,
+};
 
 /** What the toast says once a proposal is in. The proposal itself stands in the list below. */
 const PROPOSAL_SENT = "Proposal sent. VIS reviews it before it opens.";
 
 /**
- * The propose form (DESIGN.md §13): one field per row, in the order "Question", "YES
- * means", "NO means", "How it is decided", "Source", "Trading closes", "Decided by",
+ * The propose form (DESIGN.md §13): one field per row, in the order "Question", "Option
+ * 1", "Option 2", "How it is decided", "Source", "Trading closes",
+ * "Decided by",
  * then the two notes, the checkbox "I accept the usage policy" and "Submit for review",
  * which sends `POST /markets` with the seven fields and `policy_accepted: true`.
  *
@@ -69,7 +73,11 @@ export function ProposeForm({ onSent }: { onSent?: () => void }) {
   }, [propose.error]);
 
   const placed = propose.error ? placeError(propose.error, FIELDS) : null;
-  const stated = statedTerms(terms);
+  const stated = statedTerms({
+    ...terms,
+    yes_definition: terms.yes_definition.trim() || "YES",
+    no_definition: terms.no_definition.trim() || "NO",
+  });
   const filled = stated !== null && accepted;
 
   /** An answer is about what was sent: it holds until the input changes. */
@@ -102,6 +110,7 @@ export function ProposeForm({ onSent }: { onSent?: () => void }) {
       data-slot="propose-form"
     >
       <MarketTermsFields
+        optionalOptions
         value={terms}
         onChange={(next) => {
           keep({ terms: next, accepted });

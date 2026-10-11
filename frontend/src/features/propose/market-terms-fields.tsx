@@ -68,8 +68,9 @@ function days(count: number): string {
 
 /**
  * The seven fields of a market's terms, one per row, in the order of DESIGN.md §13:
- * "Question", "YES means", "NO means", "How it is decided", "Source", "Trading closes"
- * and "Decided by". The propose form and the approval of a proposal show the same ones.
+ * "Question", the two options, "How it is decided", "Source", "Trading closes"
+ * and "Decided by". Creation labels the options as optional; approval states what
+ * YES and NO mean.
  *
  * Every limit comes from `/config`: the lengths of the texts, which each field counts
  * down, and the days the two times may lie ahead, which their help text states. The times
@@ -81,16 +82,22 @@ export function MarketTermsFields({
   onChange,
   errors,
   disabled = false,
+  optionalOptions = false,
 }: {
   value: MarketTerms;
   onChange: (terms: MarketTerms) => void;
   /** The API's message for each field it refused (`placeError`). */
   errors?: Partial<Record<TermField, string>>;
   disabled?: boolean;
+  /** Creation offers YES / NO defaults that typing replaces. */
+  optionalOptions?: boolean;
 }) {
   const config = useConfig();
   const set = <Field extends TermField>(field: Field, next: MarketTerms[Field]) =>
     onChange({ ...value, [field]: next });
+  const selectDefault = (field: HTMLTextAreaElement, defaultValue: string) => {
+    if (optionalOptions && field.value === defaultValue) field.select();
+  };
 
   return (
     <>
@@ -106,22 +113,28 @@ export function MarketTermsFields({
         disabled={disabled}
       />
       <TextAreaField
-        label="YES means"
+        label={optionalOptions ? "Option 1" : "YES means"}
         name="yes_definition"
         value={value.yes_definition}
         onChange={(event) => set("yes_definition", event.target.value)}
+        onFocus={(event) => selectDefault(event.currentTarget, "YES")}
+        onClick={(event) => selectDefault(event.currentTarget, "YES")}
         maxLength={config.short_text_max_length}
         showCount
+        help={optionalOptions ? "Defaults to YES if left empty." : undefined}
         error={errors?.yes_definition}
         disabled={disabled}
       />
       <TextAreaField
-        label="NO means"
+        label={optionalOptions ? "Option 2" : "NO means"}
         name="no_definition"
         value={value.no_definition}
         onChange={(event) => set("no_definition", event.target.value)}
+        onFocus={(event) => selectDefault(event.currentTarget, "NO")}
+        onClick={(event) => selectDefault(event.currentTarget, "NO")}
         maxLength={config.short_text_max_length}
         showCount
+        help={optionalOptions ? "Defaults to NO if left empty." : undefined}
         error={errors?.no_definition}
         disabled={disabled}
       />
