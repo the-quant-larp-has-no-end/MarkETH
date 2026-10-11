@@ -25,8 +25,8 @@ const listed = () =>
 async function fillIn(user: User) {
   for (const [label, text] of [
     ["Question", QUESTION],
-    ["YES means", "The Mensa announces Saturday opening hours."],
-    ["NO means", "No Saturday opening hours are announced."],
+    ["Option 1", "The Mensa announces Saturday opening hours."],
+    ["Option 2", "No Saturday opening hours are announced."],
     ["How it is decided", "Decided from the opening hours on the Mensa's website."],
     ["Source", "ethz.ch gastronomy"],
   ] as const) {
@@ -86,7 +86,8 @@ describe("Propose market", () => {
       expect(listed()).toEqual([`${QUESTION} In review`, `${earlier.question} In review`]),
     );
     expect(field("Question")).toHaveValue("");
-    expect(field("YES means")).toHaveValue("");
+    expect(field("Option 1")).toHaveValue("YES");
+    expect(field("Option 2")).toHaveValue("NO");
     expect(field("Trading closes")).toHaveValue("");
     // The policy is accepted anew with every proposal: the box is empty whenever the form is.
     expect(policy()).not.toBeChecked();
