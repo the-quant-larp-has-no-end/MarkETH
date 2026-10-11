@@ -11,10 +11,10 @@ const SELL_YES = { side: "SELL", outcome: "YES" } as const;
 const SELL_NO = { side: "SELL", outcome: "NO" } as const;
 
 const presets = (yes: boolean, no: boolean): SellPreset[] => [
-  { outcome: "YES", portion: "HALF", shares: "45.8225", allowed: yes },
-  { outcome: "YES", portion: "ALL", shares: "91.645", allowed: yes },
-  { outcome: "NO", portion: "HALF", shares: "10", allowed: no },
-  { outcome: "NO", portion: "ALL", shares: "20", allowed: no },
+  { outcome: "YES", portion: "HALF", shares: "45.8225", proceeds_cr: "24.850327", allowed: yes },
+  { outcome: "YES", portion: "ALL", shares: "91.645", proceeds_cr: "49.17859", allowed: yes },
+  { outcome: "NO", portion: "HALF", shares: "10", proceeds_cr: "5.366205", allowed: no },
+  { outcome: "NO", portion: "ALL", shares: "20", proceeds_cr: "10.73241", allowed: no },
 ];
 
 const blocked = marketViewer({ can_trade: false, cannot_trade_reason: "MARKET_NOT_OPEN" });
@@ -36,10 +36,16 @@ describe("canSell", () => {
     const viewer = marketViewer({
       sell_presets: [
         // Half of a small holding is below the minimum trade; all of it is not.
-        { outcome: "YES", portion: "HALF", shares: "0.75", allowed: false },
-        { outcome: "YES", portion: "ALL", shares: "1.5", allowed: true },
-        { outcome: "NO", portion: "HALF", shares: "0", allowed: false },
-        { outcome: "NO", portion: "ALL", shares: "0", allowed: false },
+        {
+          outcome: "YES",
+          portion: "HALF",
+          shares: "0.75",
+          proceeds_cr: "0.402465",
+          allowed: false,
+        },
+        { outcome: "YES", portion: "ALL", shares: "1.5", proceeds_cr: "0.80493", allowed: true },
+        { outcome: "NO", portion: "HALF", shares: "0", proceeds_cr: "0", allowed: false },
+        { outcome: "NO", portion: "ALL", shares: "0", proceeds_cr: "0", allowed: false },
       ],
     });
 

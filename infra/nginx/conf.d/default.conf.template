@@ -250,7 +250,7 @@ server {
     # laptop, which sets it again to the caller that file names.
     set $api_caller $http_x_user_id;
 
-    # On a laptop nobody signs in. compose.override.yaml mounts infra/nginx/dev, which is
+    # On a laptop nobody signs in. compose.dev.yaml mounts infra/nginx/dev, which is
     # rendered into the directory below and names the caller instead. compose.yaml
     # mounts nothing there, so in the deployed stack this line includes no file.
     include /etc/nginx/dev/*.conf;

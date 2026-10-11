@@ -11,7 +11,7 @@
 #
 # `make deploy-check` runs the first form on the VM, then the other two to probe the VM
 # from the laptop. The first form is for a stack started from compose.yaml alone: with
-# compose.override.yaml merged in, the proxy names a caller itself and check 2 fails.
+# compose.dev.yaml merged in, the proxy names a caller itself and check 2 fails.
 #
 # What the first form proves, in this order. It stops at the first check that fails.
 #
@@ -317,6 +317,8 @@ passed "another caller from the same address is not limited"
 # 10. Production only ----------------------------------------------------------------
 
 if [ "$APP_ENV" = "production" ]; then
+    [ ! -e compose.dev.yaml ] || fail "compose.dev.yaml exists in a production tree"
+    # The one name Compose merges over compose.yaml without being told to.
     [ ! -e compose.override.yaml ] || fail "compose.override.yaml exists in a production tree"
     [ ! -e infra/nginx/dev ] || fail "infra/nginx/dev exists in a production tree"
     passed "the development overlay and its identity files are absent"

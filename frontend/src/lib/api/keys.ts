@@ -1,11 +1,13 @@
 import type { MarketStatus, operations, Outcome, TradeSide, UserRole, UserStatus } from "./schema";
 
 /**
- * What a quote is asked for: a number of shares, on both sides. A buy sends the text of
- * the shares field and a sell the `shares` of its shortcut, each with the characters it
+ * What a quote is asked for: a buy by the credits to spend or by a number of shares, a
+ * sell by a number of shares. Each sends the text of its field with the characters it
  * has: the server judges the size.
  */
-export type QuoteRequest = { side: TradeSide; outcome: Outcome; shares: string };
+export type QuoteRequest =
+  | { side: "BUY"; outcome: Outcome; amount_cr: string }
+  | { side: TradeSide; outcome: Outcome; shares: string };
 
 /** The query of `GET /leaderboard`, as the contract types it. */
 export type LeaderboardQuery = NonNullable<operations["get_leaderboard"]["parameters"]["query"]>;

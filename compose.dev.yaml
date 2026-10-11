@@ -1,5 +1,10 @@
-# Development overlay (SPEC A.10). A plain `docker compose up` merges this file over
-# compose.yaml: dev images, the source mounted into the containers with hot reload, and
+# Development overlay (SPEC A.10). `make up` merges this file over compose.yaml, and so
+# does every other target of the Makefile that works on the stack of this machine:
+#
+#   docker compose -f compose.yaml -f compose.dev.yaml up --build
+#
+# Compose merges it only where it is named: a plain `docker compose up` is the deployed
+# stack. It adds dev images, the source mounted into the containers with hot reload, and
 # every service published on the host at the port .env names, so a process started on
 # the host (pytest, alembic, uvicorn, next dev) reaches the stores with the same .env.
 # The proxy also names the caller, because nobody signs in on a laptop.
@@ -73,7 +78,7 @@ services:
     ports:
       - "127.0.0.1:${API_HOST_PORT:?}:8000"
 
-  # No reloader of its own: `docker compose restart relay` picks up a change.
+  # No reloader of its own: restarting the container picks up a change.
   relay:
     <<: *backend-dev
     image: ${COMPOSE_PROJECT_NAME}-relay-dev

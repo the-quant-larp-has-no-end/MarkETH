@@ -1,7 +1,8 @@
 # MarkETH developer commands, the ones listed in CLAUDE.md. Run them from the repository
 # root; `make` alone prints this list.
 #
-# The stack runs in Docker (compose.yaml plus compose.override.yaml, both fed by .env).
+# The stack runs in Docker (compose.yaml plus compose.dev.yaml, both fed by .env). The
+# overlay is named here, in COMPOSE: Compose merges it for no other reason.
 # Tests, linters and the API client generator run on the host through uv and npm; the
 # integration tests start their own databases with Testcontainers. The browser suite
 # (`make e2e`) starts nothing: it drives Chrome against the stack that is up.
@@ -15,7 +16,7 @@
 
 .DEFAULT_GOAL := help
 
-COMPOSE := docker compose
+COMPOSE := docker compose -f compose.yaml -f compose.dev.yaml
 BACKEND := cd backend &&
 # How many processes share the backend tests. Each one that reaches an integration test
 # starts a Postgres and a Redis of its own, so none shares a database with another.
@@ -174,7 +175,7 @@ deploy-backup: deploy-guard ## Dump the VM's database beside the tree, if there 
 deploy-sync: deploy-guard ## Make ~/DEPLOY_PATH on the VM a mirror of this tree
 	@echo "==> $(VM): make ~/$(DEPLOY_PATH) a mirror of this tree; whatever else is in it is deleted"
 	rsync --archive --compress --delete --exclude-from=infra/deploy/rsync-exclude ./ $(MIRROR)
-	$(ON_VM) 'rm -rf $(DEPLOY_PATH)/compose.override.yaml $(DEPLOY_PATH)/infra/nginx/dev'
+	$(ON_VM) 'rm -rf $(DEPLOY_PATH)/compose.dev.yaml $(DEPLOY_PATH)/infra/nginx/dev'
 
 deploy-env: deploy-guard ## Render the VM's .env there: [ADMIN_EMAILS=<id>,<id>] names the bootstrap admins
 	@echo "==> $(VM): render ~/$(DEPLOY_PATH)/.env from .example.env, infra/deploy/env.production and ~/$(DEPLOY_PATH).env"
