@@ -412,10 +412,22 @@ describe("an unanswered trade survives the sheet", () => {
           viewer: marketViewerWithPosition({
             balance_cr: "213.874512",
             sell_presets: [
-              { outcome: "YES", portion: "HALF", shares: "22.91125", allowed: true },
-              { outcome: "YES", portion: "ALL", shares: "45.8225", allowed: true },
-              { outcome: "NO", portion: "HALF", shares: "0", allowed: false },
-              { outcome: "NO", portion: "ALL", shares: "0", allowed: false },
+              {
+                outcome: "YES",
+                portion: "HALF",
+                shares: "22.91125",
+                proceeds_cr: "12.294647",
+                allowed: true,
+              },
+              {
+                outcome: "YES",
+                portion: "ALL",
+                shares: "45.8225",
+                proceeds_cr: "24.850327",
+                allowed: true,
+              },
+              { outcome: "NO", portion: "HALF", shares: "0", proceeds_cr: "0", allowed: false },
+              { outcome: "NO", portion: "ALL", shares: "0", proceeds_cr: "0", allowed: false },
             ],
           }),
         }),
@@ -845,10 +857,10 @@ describe("a refusal", () => {
     const after = marketDetail({
       viewer: marketViewerWithPosition({
         sell_presets: [
-          { outcome: "YES", portion: "HALF", shares: "20", allowed: true },
-          { outcome: "YES", portion: "ALL", shares: "40", allowed: true },
-          { outcome: "NO", portion: "HALF", shares: "0", allowed: false },
-          { outcome: "NO", portion: "ALL", shares: "0", allowed: false },
+          { outcome: "YES", portion: "HALF", shares: "20", proceeds_cr: "10.73241", allowed: true },
+          { outcome: "YES", portion: "ALL", shares: "40", proceeds_cr: "21.464821", allowed: true },
+          { outcome: "NO", portion: "HALF", shares: "0", proceeds_cr: "0", allowed: false },
+          { outcome: "NO", portion: "ALL", shares: "0", proceeds_cr: "0", allowed: false },
         ],
       }),
     });

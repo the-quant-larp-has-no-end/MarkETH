@@ -9,6 +9,7 @@ import type { MeResponse } from "@/lib/api/schema";
 import { config, me } from "@/test/fixtures";
 import { apiError, json, mockApi } from "@/test/http";
 import { navigation } from "@/test/navigation";
+import { choosePicker } from "@/test/picker";
 import { createTestQueryClient } from "@/test/render";
 
 import { WalletScreen } from "./wallet-screen";
@@ -59,8 +60,8 @@ test("a first visit through a code card: set-up, the welcome dialog, then the re
 
   // The set-up screen stands in for the Wallet; the address keeps the code meanwhile.
   await user.type(await screen.findByLabelText("Username"), "anna_m");
-  await user.selectOptions(screen.getByLabelText("Level"), "BACHELOR");
-  await user.selectOptions(screen.getByLabelText("Programme"), "BSc Computer Science");
+  await choosePicker(user, "Level", "Bachelor");
+  await choosePicker(user, "Programme", "BSc Computer Science");
   await user.click(screen.getByRole("checkbox", { name: "I accept the usage policy" }));
   expect(address()).toBe("/wallet?code=4F7KQ2M9XAB3");
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();

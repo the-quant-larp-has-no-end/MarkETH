@@ -61,10 +61,10 @@ const holdingNo = () =>
   marketViewerWithPosition({
     holdings: holdings({}, { shares: "20", value_cr: "9.04" }),
     sell_presets: [
-      { outcome: "YES", portion: "HALF", shares: "0", allowed: false },
-      { outcome: "YES", portion: "ALL", shares: "0", allowed: false },
-      { outcome: "NO", portion: "HALF", shares: "10", allowed: true },
-      { outcome: "NO", portion: "ALL", shares: "20", allowed: true },
+      { outcome: "YES", portion: "HALF", shares: "0", proceeds_cr: "0", allowed: false },
+      { outcome: "YES", portion: "ALL", shares: "0", proceeds_cr: "0", allowed: false },
+      { outcome: "NO", portion: "HALF", shares: "10", proceeds_cr: "5.366205", allowed: true },
+      { outcome: "NO", portion: "ALL", shares: "20", proceeds_cr: "10.73241", allowed: true },
     ],
   });
 

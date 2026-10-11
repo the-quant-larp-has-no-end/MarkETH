@@ -289,10 +289,16 @@ describe("selling", () => {
     const viewer = marketViewerWithPosition({
       sell_presets: [
         // Half of this holding is under the minimum trade; all of it is not.
-        { outcome: "YES", portion: "HALF", shares: "0.75", allowed: false },
-        { outcome: "YES", portion: "ALL", shares: "1.5", allowed: true },
-        { outcome: "NO", portion: "HALF", shares: "0", allowed: false },
-        { outcome: "NO", portion: "ALL", shares: "0", allowed: false },
+        {
+          outcome: "YES",
+          portion: "HALF",
+          shares: "0.75",
+          proceeds_cr: "0.402465",
+          allowed: false,
+        },
+        { outcome: "YES", portion: "ALL", shares: "1.5", proceeds_cr: "0.80493", allowed: true },
+        { outcome: "NO", portion: "HALF", shares: "0", proceeds_cr: "0", allowed: false },
+        { outcome: "NO", portion: "ALL", shares: "0", proceeds_cr: "0", allowed: false },
       ],
     });
     openTicket({ market: marketDetail({ viewer }), start: SELL_YES });
@@ -306,10 +312,16 @@ describe("selling", () => {
       cost_cr: "30",
       holdings: holdings({}, { shares: "60.5", value_cr: "27.3" }),
       sell_presets: [
-        { outcome: "YES", portion: "HALF", shares: "0", allowed: false },
-        { outcome: "YES", portion: "ALL", shares: "0", allowed: false },
-        { outcome: "NO", portion: "HALF", shares: "30.25", allowed: true },
-        { outcome: "NO", portion: "ALL", shares: "60.5", allowed: true },
+        { outcome: "YES", portion: "HALF", shares: "0", proceeds_cr: "0", allowed: false },
+        { outcome: "YES", portion: "ALL", shares: "0", proceeds_cr: "0", allowed: false },
+        {
+          outcome: "NO",
+          portion: "HALF",
+          shares: "30.25",
+          proceeds_cr: "16.232771",
+          allowed: true,
+        },
+        { outcome: "NO", portion: "ALL", shares: "60.5", proceeds_cr: "32.465543", allowed: true },
       ],
     });
     const { user, changes } = openTicket({ market: marketDetail({ viewer }) });
@@ -324,10 +336,22 @@ describe("selling", () => {
   test("a portion is chosen for one outcome: changing the outcome asks to choose again", async () => {
     const viewer = marketViewerWithPosition({
       sell_presets: [
-        { outcome: "YES", portion: "HALF", shares: "45.8225", allowed: true },
-        { outcome: "YES", portion: "ALL", shares: "91.645", allowed: true },
-        { outcome: "NO", portion: "HALF", shares: "10", allowed: true },
-        { outcome: "NO", portion: "ALL", shares: "20", allowed: true },
+        {
+          outcome: "YES",
+          portion: "HALF",
+          shares: "45.8225",
+          proceeds_cr: "24.850327",
+          allowed: true,
+        },
+        {
+          outcome: "YES",
+          portion: "ALL",
+          shares: "91.645",
+          proceeds_cr: "49.17859",
+          allowed: true,
+        },
+        { outcome: "NO", portion: "HALF", shares: "10", proceeds_cr: "5.366205", allowed: true },
+        { outcome: "NO", portion: "ALL", shares: "20", proceeds_cr: "10.73241", allowed: true },
       ],
     });
     const { user, api } = openTicket({
@@ -817,10 +841,22 @@ describe("the quote", () => {
       const after = marketDetail({
         viewer: marketViewerWithPosition({
           sell_presets: [
-            { outcome: "YES", portion: "HALF", shares: "20", allowed: true },
-            { outcome: "YES", portion: "ALL", shares: "40", allowed: true },
-            { outcome: "NO", portion: "HALF", shares: "0", allowed: false },
-            { outcome: "NO", portion: "ALL", shares: "0", allowed: false },
+            {
+              outcome: "YES",
+              portion: "HALF",
+              shares: "20",
+              proceeds_cr: "10.73241",
+              allowed: true,
+            },
+            {
+              outcome: "YES",
+              portion: "ALL",
+              shares: "40",
+              proceeds_cr: "21.464821",
+              allowed: true,
+            },
+            { outcome: "NO", portion: "HALF", shares: "0", proceeds_cr: "0", allowed: false },
+            { outcome: "NO", portion: "ALL", shares: "0", proceeds_cr: "0", allowed: false },
           ],
         }),
       });
@@ -1553,10 +1589,10 @@ describe("amounts are strings from the input to the request to the receipt", () 
   test("a sale sends the preset's shares and the quote's amount untouched, and the receipt shows the answer's", async () => {
     const viewer = marketViewerWithPosition({
       sell_presets: [
-        { outcome: "YES", portion: "HALF", shares: "1", allowed: true },
-        { outcome: "YES", portion: "ALL", shares: held, allowed: true },
-        { outcome: "NO", portion: "HALF", shares: "0", allowed: false },
-        { outcome: "NO", portion: "ALL", shares: "0", allowed: false },
+        { outcome: "YES", portion: "HALF", shares: "1", proceeds_cr: "0.53662", allowed: true },
+        { outcome: "YES", portion: "ALL", shares: held, proceeds_cr: proceeds, allowed: true },
+        { outcome: "NO", portion: "HALF", shares: "0", proceeds_cr: "0", allowed: false },
+        { outcome: "NO", portion: "ALL", shares: "0", proceeds_cr: "0", allowed: false },
       ],
     });
     const { user, api } = openTicket({
