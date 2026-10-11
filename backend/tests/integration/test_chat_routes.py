@@ -18,7 +18,7 @@ import pytest
 
 from app.api.validation import sentence_of
 from app.container import Container
-from app.core.enums import MarketStatus
+from app.core.enums import MarketStatus, UserRole
 from app.core.errors import ForbiddenError, NotFoundError, RateLimitedError
 from app.core.text import CHAT_MESSAGE_STORED_MAX_LENGTH
 from app.schemas.chat import RemovedResponse
@@ -115,12 +115,14 @@ async def test_a_message_is_answered_201_with_its_item_and_everybody_inside_read
     assert written.json() == {
         "id": str(first.id),
         "username": alice.username,
+        "role": "USER",
         "text": "Kick-off!",
         "from_vis": False,
     }
     assert from_vis.json() == {
         "id": str(second.id),
         "username": admin.username,
+        "role": "ADMIN",
         "text": "Welcome from VIS.",
         "from_vis": True,
     }
@@ -138,13 +140,18 @@ async def test_a_message_is_answered_201_with_its_item_and_everybody_inside_read
         )
 
 
+@pytest.mark.parametrize("role", list(UserRole))
 async def test_the_message_that_is_pushed_is_the_body_the_post_answered(
-    client: httpx.AsyncClient, container: Container, factory: Factory, as_user: ActAs
+    client: httpx.AsyncClient,
+    container: Container,
+    factory: Factory,
+    as_user: ActAs,
+    role: UserRole,
 ) -> None:
     market = await factory.market()
     broadcast = await go_live(container, market)
     watcher = factory.identity(await factory.user())
-    as_user(await factory.user())
+    as_user(await factory.user(role=role))
 
     async with listening(container.live, watcher, of(market)) as heard:
         written = await client.post(chat_path(market.id), json={"text": "Did you see that?"})
@@ -152,6 +159,7 @@ async def test_the_message_that_is_pushed_is_the_body_the_post_answered(
         await heard.nothing_more()
 
     assert written.status_code == 201, written.text
+    assert written.json()["role"] == role.value
     assert pushed["message"] == written.json()
     assert (pushed["type"], pushed["market_id"], pushed["broadcast_id"]) == (
         "chat.message",

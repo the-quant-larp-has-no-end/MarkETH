@@ -119,6 +119,7 @@ class Container:
             self.rate_limiter,
             self.fallback_rate_limiter,
             self.live_events,
+            self.email_policy,
         )
 
         self.grants = GrantService(uow_factory, settings, clock, self.ledger, self.audit)

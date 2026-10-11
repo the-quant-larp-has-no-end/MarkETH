@@ -11,9 +11,12 @@ import { cn } from "@/lib/utils";
 const EMPTY = "No messages yet.";
 const CLOSED = "The live chat is closed.";
 
+/** The role labels of DESIGN.md §13, "Live chat". */
+const ROLE_LABELS = { USER: "User", ADMIN: "Admin", BARISTA: "Barista" } as const;
+
 /**
- * One line of a chat (DESIGN.md §13, "Live chat"): the username, the badge "VIS" where
- * the server says that an admin of VIS wrote it, and the text. It is one line that
+ * One line of a chat (DESIGN.md §13, "Live chat"): the username, the role badge
+ * supplied by the server, and the text. It is one line that
  * wraps, a string without a space included, and it clips what would leave it.
  *
  * What a user wrote is text: it is shown character for character, as a text node.
@@ -22,18 +25,13 @@ const CLOSED = "The live chat is closed.";
 export function ChatLine({ message, className }: { message: ChatMessageItem; className?: string }) {
   return (
     <p data-slot="chat-line" className={cn("min-w-0 type-body-sm wrap-anywhere", className)}>
-      <span className="type-caption text-muted-foreground">{message.username}</span>
-      {message.from_vis && (
-        <>
-          {" "}
-          <span
-            data-slot="vis-badge"
-            className="rounded-sm bg-raised px-1 type-caption text-foreground"
-          >
-            VIS
-          </span>
-        </>
-      )}{" "}
+      <span className="type-caption text-muted-foreground">{message.username}</span>{" "}
+      <span
+        data-slot="chat-role-badge"
+        className="rounded-sm bg-raised px-1 type-caption text-foreground"
+      >
+        {ROLE_LABELS[message.role]}
+      </span>{" "}
       {message.text}
     </p>
   );

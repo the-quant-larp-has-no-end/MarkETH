@@ -54,18 +54,18 @@ class ChatMessageRepository(BaseRepository[ChatMessage]):
 
     async def list_latest(
         self, broadcast_id: UUID, limit: int
-    ) -> Sequence[tuple[ChatMessage, str]]:
+    ) -> Sequence[tuple[ChatMessage, User]]:
         """The latest `limit` messages of a broadcast, earliest first, each with its
-        author's username as it reads now."""
+        author's current profile."""
         statement = (
-            select(ChatMessage, User.username)
+            select(ChatMessage, User)
             .join(User, User.id == ChatMessage.user_id)
             .where(ChatMessage.broadcast_id == broadcast_id)
             .order_by(ChatMessage.id.desc())
             .limit(limit)
         )
         rows = (await self._session.execute(statement)).all()
-        return [(message, username) for message, username in reversed(rows)]
+        return [(message, author) for message, author in reversed(rows)]
 
     async def broadcast_ids_of_user(self, user_id: UUID) -> Sequence[UUID]:
         """The broadcasts in whose chats a user has a message, in ascending order."""

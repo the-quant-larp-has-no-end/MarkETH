@@ -179,7 +179,7 @@ async def test_whoever_is_inside_the_market_reads_what_the_others_wrote_earliest
     third = await chat.post(factory.identity(proposer), market.id, said("Welcome, everybody."))
 
     assert first == ChatMessageItem(
-        id=first.id, username=alice.username, text="Kick-off!", from_vis=False
+        id=first.id, username=alice.username, role=UserRole.USER, text="Kick-off!", from_vis=False
     )
     assert [second.username, third.username] == [bob.username, proposer.username]
     assert first.id < second.id < third.id
@@ -214,11 +214,15 @@ async def test_a_read_holds_the_latest_messages_up_to_the_backlog(
     assert len(read.items) == backlog
     assert [item.id for item in read.items] == [row.id for row in rows[5:]]
     assert read.items[-1] == ChatMessageItem(
-        id=rows[-1].id, username=author.username, text=rows[-1].text, from_vis=False
+        id=rows[-1].id,
+        username=author.username,
+        role=UserRole.USER,
+        text=rows[-1].text,
+        from_vis=False,
     )
 
 
-async def test_a_message_names_its_author_as_the_username_reads_now(
+async def test_a_message_names_its_author_with_the_current_username_and_role(
     container: Container, factory: Factory, chat: ChatService
 ) -> None:
     market = await factory.market()
@@ -230,12 +234,14 @@ async def test_a_message_names_its_author_as_the_username_reads_now(
         row = await uow.users.get(author.id, for_update=True)
         assert row is not None
         row.username = "renamed"
+        row.role = UserRole.BARISTA
 
     [item] = (await chat.read(factory.identity(await factory.user()), market.id)).items
     assert item.username == "renamed"
+    assert item.role is UserRole.BARISTA
 
 
-async def test_a_message_of_an_admin_is_marked_as_from_vis_by_the_server(
+async def test_messages_carry_effective_roles_including_bootstrap_admins_and_baristas(
     container: Container, factory: Factory, chat: ChatService
 ) -> None:
     """`from_vis` is the author's role in effect when the message is stored: a
@@ -245,15 +251,25 @@ async def test_a_message_of_an_admin_is_marked_as_from_vis_by_the_server(
     await go_live(container, market)
     by_address = await factory.admin()
     by_row = await factory.user(role=UserRole.ADMIN)
+    barista = await factory.barista()
     member = await factory.user()
+
+    # A bootstrap admin remains an admin even when the stored role says USER.
+    assert by_address.role is UserRole.USER
 
     items = [
         await chat.post(factory.identity(author), market.id, said("Hello."))
-        for author in (by_address, by_row, member)
+        for author in (by_address, by_row, barista, member)
     ]
 
-    assert [item.from_vis for item in items] == [True, True, False]
-    assert [row.from_vis for row in await stored_messages(container)] == [True, True, False]
+    assert [item.role for item in items] == [
+        UserRole.ADMIN,
+        UserRole.ADMIN,
+        UserRole.BARISTA,
+        UserRole.USER,
+    ]
+    assert [item.from_vis for item in items] == [True, True, False, False]
+    assert [row.from_vis for row in await stored_messages(container)] == [True, True, False, False]
     read = await chat.read(factory.identity(member), market.id)
     assert read.items == items
     assert not read.can_remove
@@ -750,6 +766,7 @@ async def test_the_message_that_is_pushed_is_the_item_the_post_answered(
     assert pushed["message"] == {
         "id": str(item.id),
         "username": author.username,
+        "role": author.role.value,
         "text": "What a goal!",
         "from_vis": False,
     }

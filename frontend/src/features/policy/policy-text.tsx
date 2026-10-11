@@ -137,7 +137,7 @@ export function PolicyText() {
           once, with your username, to everyone who can see the market. The chat ends with the
           stream, and its messages are deleted then.
         </p>
-        <p>An admin of VIS writes in a live chat with the badge VIS.</p>
+        <p>Each writer in a live chat has a role badge: User, Admin or Barista.</p>
         <p>In a live chat:</p>
         <Points>
           <li>write about the market;</li>

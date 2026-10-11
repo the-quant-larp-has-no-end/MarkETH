@@ -1034,6 +1034,7 @@ export function chatMessage(overrides: Partial<ChatMessageItem> = {}): ChatMessa
     username: "cab_coffee",
     text: "Is that the upper station?",
     from_vis: false,
+    role: "USER",
     ...overrides,
   };
 }
@@ -1055,6 +1056,7 @@ export function chat(overrides: Partial<ChatResponse> = {}): ChatResponse {
         username: "vis_moritz",
         text: "Yes, and the cabin leaves in a minute.",
         from_vis: true,
+        role: "ADMIN",
       }),
     ],
     ...overrides,

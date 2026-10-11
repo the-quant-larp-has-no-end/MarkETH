@@ -2502,7 +2502,7 @@ def test_chat_and_live_stream_are_fourteen_operations_under_four_tags(
         assert paths[path][method]["security"] == ADMIN, path
 
 
-def test_a_chat_is_read_in_one_answer_and_a_message_says_whether_vis_wrote_it(
+def test_a_chat_is_read_in_one_answer_and_a_message_carries_the_authors_role(
     document: dict[str, Any], schemas: dict[str, dict[str, Any]]
 ) -> None:
     reading = document["paths"][CHAT]["get"]
@@ -2525,8 +2525,9 @@ def test_a_chat_is_read_in_one_answer_and_a_message_says_whether_vis_wrote_it(
 
     message = schemas["ChatMessageItem"]
     assert set(message["required"]) == set(message["properties"])
-    assert set(message["properties"]) == {"id", "username", "text", "from_vis"}
+    assert set(message["properties"]) == {"id", "username", "role", "text", "from_vis"}
     assert message["properties"]["from_vis"]["type"] == "boolean"
+    assert message["properties"]["role"]["$ref"] == f"{REF}UserRole"
     assert "format" not in message["properties"]["username"], "a username, not an id"
     # A message names its author by username and nothing else: no id, no address.
     assert not {"user_id", "email", "created_at"} & set(message["properties"])
@@ -2554,7 +2555,12 @@ def test_a_chat_message_is_one_text_as_long_as_the_database_takes(
     assert f"BETWEEN 1 AND {CHAT_MESSAGE_STORED_MAX_LENGTH}" in str(stored.sqltext)
     assert CHAT_MESSAGE_STORED_MAX_LENGTH == 500
     assert PostChatMessageRequest.model_validate({"text": "  Goal!  "}).text == "Goal!"
-    for refused in ({"text": "   "}, {"text": "Goal!", "from_vis": True}, {}):
+    for refused in (
+        {"text": "   "},
+        {"text": "Goal!", "from_vis": True},
+        {"text": "Goal!", "role": "ADMIN"},
+        {},
+    ):
         with pytest.raises(ValidationError):
             PostChatMessageRequest.model_validate(refused)
 
@@ -2843,7 +2849,9 @@ def test_health_reports_the_media_box_beside_the_three_stores(
 def test_a_chat_message_and_its_removal_and_a_change_of_a_live_stream_are_pushed() -> None:
     market_id, broadcast_id, message_id = uuid7(), uuid7(), uuid7()
     now = json.loads(ReadyEvent(type="ready", ts=TEST_NOW).model_dump_json())["ts"]
-    message = ChatMessageItem(id=message_id, username="ada", text="Goal!", from_vis=True)
+    message = ChatMessageItem(
+        id=message_id, username="ada", role=UserRole.ADMIN, text="Goal!", from_vis=True
+    )
     written = ChatMessageEvent(
         type="chat.message",
         market_id=market_id,
@@ -2864,7 +2872,13 @@ def test_a_chat_message_and_its_removal_and_a_change_of_a_live_stream_are_pushed
         "type": "chat.message",
         "market_id": str(market_id),
         "broadcast_id": str(broadcast_id),
-        "message": {"id": str(message_id), "username": "ada", "text": "Goal!", "from_vis": True},
+        "message": {
+            "id": str(message_id),
+            "username": "ada",
+            "role": "ADMIN",
+            "text": "Goal!",
+            "from_vis": True,
+        },
         "ts": now,
     }
     assert json.loads(removed.model_dump_json()) == {
