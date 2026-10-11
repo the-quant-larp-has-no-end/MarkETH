@@ -25,9 +25,33 @@ function Pending() {
  * progress line of the top bar (DESIGN.md §3, the Polybahn loader). Every link inside
  * the app is this one; the lint rules do not let `next/link` in anywhere else.
  */
-export function Link({ children, ...props }: ComponentProps<typeof NextLink>) {
+export function Link({ children, onNavigate, ...props }: ComponentProps<typeof NextLink>) {
+  const store = useShellStore();
   return (
-    <NextLink {...props}>
+    <NextLink
+      {...props}
+      onNavigate={(event) => {
+        let prevented = false;
+        onNavigate?.({
+          preventDefault: () => {
+            prevented = true;
+            event.preventDefault();
+          },
+        });
+        if (prevented) return;
+        // Scrolling within this page leaves the stream running.
+        if (typeof props.href === "string") {
+          const destination = new URL(props.href, window.location.href);
+          if (
+            destination.pathname === window.location.pathname &&
+            destination.search === window.location.search
+          ) {
+            return;
+          }
+        }
+        if (!store.confirmLeaving()) event.preventDefault();
+      }}
+    >
       {children}
       <Pending />
     </NextLink>
