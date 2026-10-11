@@ -5,10 +5,13 @@
 # only published port. `make deploy` runs exactly this on the VM, behind the VIScon
 # portal, which signs every visitor in (docs/SERVER_INFRASTRUCTURE.md).
 #
-#   docker compose -f compose.yaml up --build     as deployed
-#   docker compose up --build                     development: compose.override.yaml is
-#                                                 merged in and adds hot reload, ports
-#                                                 and a stand-in for the portal's sign-in
+#   docker compose up --build     as deployed
+#   make up                       development: compose.dev.yaml is merged in and adds
+#                                 hot reload, ports and a stand-in for the portal's
+#                                 sign-in
+#
+# No file here has a name Compose merges by itself, so the development overlay is part
+# of a stack only where a command names it.
 #
 # Every value comes from .env (copy .example.env). Compose reads it to fill the ${...}
 # below, and the Python services receive the whole file through env_file. A variable

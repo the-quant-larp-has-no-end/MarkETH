@@ -11,7 +11,7 @@ A mobile-first prediction market for ETH Zurich students. Users trade YES/NO sha
 | `docs/SPEC.md` | The engineering spec (§1 to §12) and Appendix A (build decisions) |
 | `docs/SERVER_INFRASTRUCTURE.md` | The VM, the portal and the firewall in front of it, and how to deploy |
 | `.env`, `.example.env` | Every tunable of the system. Identical keys; `.env` is gitignored |
-| `compose.yaml`, `compose.override.yaml` | The whole stack. `compose.yaml` alone is what is deployed; the override adds hot reload, published ports and the development identity |
+| `compose.yaml`, `compose.dev.yaml` | The whole stack. `compose.yaml` alone is what is deployed; the overlay, which `make` merges in, adds hot reload, published ports and the development identity |
 | `infra/nginx/` | Reverse proxy template, and in `infra/nginx/dev/` the stand-in for the portal's sign-in |
 | `infra/deploy/` | What the deployed stack sets differently, and the backup, check and smoke scripts |
 | `.github/workflows/` | `ci.yml`, the checks of every update of main, and `deploy.yml`, which has the VM deploy itself. Both run on the team's runner, which is the VM, and hold no secret |

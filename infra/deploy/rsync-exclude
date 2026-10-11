@@ -9,7 +9,7 @@
 .env
 
 # The development stand-in for the portal's sign-in must not exist on the VM.
-/compose.override.yaml
+/compose.dev.yaml
 /infra/nginx/dev/
 
 # Version control, CI and editors

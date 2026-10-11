@@ -4,7 +4,7 @@
 #
 #   sh infra/deploy/smoke.sh        on the machine the stack runs on, from its tree
 #
-# It is for a stack started from compose.yaml alone. With compose.override.yaml merged
+# It is for a stack started from compose.yaml alone. With compose.dev.yaml merged
 # in, the proxy names the caller itself, whatever a request says, and the walk stops at
 # its first step.
 #

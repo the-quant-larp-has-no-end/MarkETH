@@ -1,7 +1,7 @@
 # Development stand-in for the portal's sign-in (SPEC A.10). Nobody signs in on a laptop,
 # so this file tells the API who is calling.
 #
-# Only compose.override.yaml mounts this directory. The nginx image renders this template
+# Only compose.dev.yaml mounts this directory. The nginx image renders this template
 # to /etc/nginx/dev/identity.conf, and the server block of conf.d/default.conf includes
 # what it finds there. The deployed stack runs compose.yaml alone, which mounts no such
 # directory, and `make deploy` keeps this one off the VM.
