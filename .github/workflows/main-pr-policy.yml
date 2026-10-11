@@ -1,0 +1,102 @@
+# The required status is published on each PR's test merge commit, using trusted
+# workflow code from main. No pull request code is checked out or executed.
+name: Main PR policy
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited, ready_for_review, closed]
+  push:
+    branches: [main]
+
+concurrency:
+  group: main-pr-policy
+  cancel-in-progress: false
+
+permissions:
+  pull-requests: read
+  statuses: write
+
+jobs:
+  source:
+    name: Validate PR sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Only this repository's dev branch targets main
+        env:
+          POLICY_TOKEN: ${{ github.token }}
+          POLICY_API_URL: ${{ github.api_url }}
+          POLICY_REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.request
+
+          repository = os.environ["POLICY_REPOSITORY"]
+          api_url = os.environ["POLICY_API_URL"]
+          status_context = "Main PR source (dev only)"
+
+          def api(path, payload=None):
+              request = urllib.request.Request(
+                  f"{api_url}/repos/{repository}/{path}",
+                  data=json.dumps(payload).encode() if payload is not None else None,
+                  headers={
+                      "Authorization": f"Bearer {os.environ['POLICY_TOKEN']}",
+                      "Accept": "application/vnd.github+json",
+                      "Content-Type": "application/json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+          pulls = []
+          page = 1
+          while True:
+              batch = api(f"pulls?state=open&base=main&per_page=100&page={page}")
+              pulls.extend(batch)
+              if len(batch) < 100:
+                  break
+              page += 1
+
+          # Checks belong to commits. Group shared merge commits so a fork or a
+          # differently named branch cannot reuse dev's successful status.
+          merge_commits = {}
+          for summary in pulls:
+              for attempt in range(10):
+                  pull = api(f"pulls/{summary['number']}")
+                  if pull["state"] != "open" or pull["base"]["ref"] != "main":
+                      break
+                  if pull["mergeable"] is not None:
+                      break
+                  time.sleep(2)
+              if pull["state"] != "open" or pull["base"]["ref"] != "main":
+                  continue
+              if pull["mergeable"] is not True or not pull["merge_commit_sha"]:
+                  print(f"PR #{pull['number']}: no mergeable commit; no passing status")
+                  continue
+              merge_commits.setdefault(pull["merge_commit_sha"], []).append(pull)
+
+          rejected = False
+          for sha, related_pulls in merge_commits.items():
+              allowed = all(
+                  pull["head"]["ref"] == "dev"
+                  and (pull["head"]["repo"] or {}).get("full_name") == repository
+                  for pull in related_pulls
+              )
+              api(f"statuses/{sha}", {
+                  "state": "success" if allowed else "failure",
+                  "context": status_context,
+                  "description": "Only PRs from this repository's dev branch may update main.",
+                  "target_url": related_pulls[0]["html_url"],
+              })
+              for pull in related_pulls:
+                  print(f"PR #{pull['number']}: {'allowed' if allowed else 'rejected'}")
+              rejected |= not allowed
+          if rejected:
+              raise SystemExit("A PR targeting main has an unauthorized source branch.")
+          PY
