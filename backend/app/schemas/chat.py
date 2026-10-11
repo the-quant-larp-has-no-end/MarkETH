@@ -18,6 +18,7 @@ from uuid import UUID
 
 from pydantic import Field
 
+from app.core.enums import UserRole
 from app.core.text import CHAT_MESSAGE_STORED_MAX_LENGTH
 from app.schemas.common import RequestModel, ResponseModel
 
@@ -40,10 +41,14 @@ class ChatMessageItem(ResponseModel):
     username: str
     """The author's username, as it reads when the request is answered."""
 
+    role: UserRole
+    """The author's effective role when the request is answered, including
+    bootstrap admins. Shown as the role label beside the username."""
+
     text: str
     from_vis: bool
-    """The author was an admin when the message was stored. The server says so; a
-    client shows it and decides nothing from a name."""
+    """The author was an admin when the message was stored. This records permissions,
+    not association membership; the display label comes from `role`."""
 
 
 class ChatResponse(ResponseModel):

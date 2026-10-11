@@ -80,6 +80,7 @@ def chat_of(container: Container) -> ChatService:
         container.rate_limiter,
         container.fallback_rate_limiter,
         container.live_events,
+        container.email_policy,
     )
     container.chat = chat
     return chat

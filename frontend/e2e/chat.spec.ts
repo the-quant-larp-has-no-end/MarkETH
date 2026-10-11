@@ -241,7 +241,7 @@ async function say(page: Page, text: string): Promise<void> {
   await expect(chat.getByRole("textbox", { name: "Message" })).toHaveValue("");
 }
 
-test("two people write in the live chat, an admin's line carries VIS, a removed message leaves every screen, and the chat goes with the stream", async ({
+test("two people write in the live chat, each line carries its role, a removed message leaves every screen, and the chat goes with the stream", async ({
   people,
 }, testInfo) => {
   test.setTimeout(WALK_MS);
@@ -283,14 +283,16 @@ test("two people write in the live chat, an admin's line carries VIS, a removed 
     await expect(lineOf(one, answer)).toBeVisible({ timeout: ARRIVES_MS });
     await expect(authorOf(lineOf(one, answer))).toHaveText(second.username);
 
-    // An admin's line carries "VIS", and nobody else's does.
+    // Each line carries the role supplied by the server.
     const word = "A word from the desk: keep it friendly.";
     await say(desk, word);
     for (const page of [one, two, desk]) {
       await expect(lineOf(page, word)).toBeVisible({ timeout: ARRIVES_MS });
-      await expect(lineOf(page, word).locator('[data-slot="vis-badge"]')).toHaveText("VIS");
-      await expect(lineOf(page, hello).locator('[data-slot="vis-badge"]')).toHaveCount(0);
-      await expect(lineOf(page, answer).locator('[data-slot="vis-badge"]')).toHaveCount(0);
+      await expect(lineOf(page, word).locator('[data-slot="chat-role-badge"]')).toHaveText("Admin");
+      await expect(lineOf(page, hello).locator('[data-slot="chat-role-badge"]')).toHaveText("User");
+      await expect(lineOf(page, answer).locator('[data-slot="chat-role-badge"]')).toHaveText(
+        "User",
+      );
     }
     await looks.at(one, "market-chat", ON_MARKET_DETAIL);
 

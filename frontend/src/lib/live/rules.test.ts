@@ -35,7 +35,13 @@ const CHAT_MESSAGE: LiveEventOf<"chat.message"> = {
   type: "chat.message",
   market_id: MARKET_ID,
   broadcast_id: BROADCAST_ID,
-  message: { id: MESSAGE_ID, username: "anna_m", text: "Hello from the back row", from_vis: false },
+  message: {
+    id: MESSAGE_ID,
+    username: "anna_m",
+    text: "Hello from the back row",
+    from_vis: false,
+    role: "USER",
+  },
   ts: "2026-10-04T10:00:01Z",
 };
 

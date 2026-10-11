@@ -1026,7 +1026,7 @@
         "description": "One message of a chat.",
         "properties": {
           "from_vis": {
-            "description": "The author was an admin when the message was stored. The server says so; a\nclient shows it and decides nothing from a name.",
+            "description": "The author was an admin when the message was stored. This records permissions,\nnot association membership; the display label comes from `role`.",
             "title": "From Vis",
             "type": "boolean"
           },
@@ -1034,6 +1034,10 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/UserRole",
+            "description": "The author's effective role when the request is answered, including\nbootstrap admins. Shown as the role label beside the username."
           },
           "text": {
             "title": "Text",
@@ -1048,6 +1052,7 @@
         "required": [
           "id",
           "username",
+          "role",
           "text",
           "from_vis"
         ],

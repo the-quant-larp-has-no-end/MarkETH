@@ -154,7 +154,7 @@ describe("Usage policy", () => {
 
     expect(lines("Live chat")).toEqual([
       "While a market has a live stream, it has a live chat. What you write there is shown at once, with your username, to everyone who can see the market. The chat ends with the stream, and its messages are deleted then.",
-      "An admin of VIS writes in a live chat with the badge VIS.",
+      "Each writer in a live chat has a role badge: User, Admin or Barista.",
       "In a live chat:",
       "write about the market;",
       "do not insult, threaten or harass anyone;",
