@@ -953,12 +953,10 @@ The rules of MarkETH on one page of plain text. Whoever creates a profile accept
 
 The page asks the API for nothing: its figures are fields of the `/config` that start-up read, written below as placeholders. A noun after a placeholder follows its number, as "tokens" does (§10). There is no illustration, no campus line and no button on the page. It is read, and left with the back arrow.
 
-**Decision:** the policy is copy of this file, like every other sentence of the app. VIS changes it here.
+**Decision:** `frontend/USAGE_POLICY.md` is the authoritative policy copy. This section records the page wording, with live configuration values shown as placeholders.
 
-The text of the page:
+The text of the page (with configuration values shown as placeholders):
 
-> **What MarkETH is**
->
 > MarkETH is a prediction game for people at ETH Zurich, run by VIS. You trade YES and NO shares on questions about campus life. When a market is decided, a share of the outcome that came true pays one token and a share of the other outcome pays nothing.
 >
 > Tokens are free. You get {signup_grant_cr} welcome tokens when you create your profile and {monthly_grant_cr} monthly tokens every month, counted from that day. VIS also hands out codes, which you redeem for tokens in the Wallet.
@@ -969,27 +967,29 @@ The text of the page:
 >
 > Anyone with a profile can propose a market. VIS reads every proposal and opens the ones that fit this policy. A market you may propose:
 >
-> - asks a question with two outcomes, YES and NO, that facts will decide and opinions will not;
-> - says what counts as YES and what counts as NO, so that no case is left open;
-> - names its source: a public page, an official announcement or a count that anyone can check;
-> - has its dates: when trading closes, and by when the result is known. Trading runs for at most {max_market_lifetime_days} days, and the result has to be known at most {max_resolution_delay_days} days after trading closes.
+> - asks a question with two outcomes, YES and NO, which must be clearly defined so that every possible result can be resolved;
+> - names a verifiable source, such as a public page, an official announcement or a count that anyone can check;
+> - has a clear trading deadline and resolution date. Trading runs for at most {max_market_lifetime_days} days, and the result must be known within {max_resolution_delay_days} days after trading closes.
 >
-> You can propose {max_proposals_per_day} markets a day.
+> You can propose up to {max_proposals_per_day} markets a day.
 >
 > **Markets you may not propose**
 >
 > VIS opens no market about:
 >
-> - the private matters of a person who is named or can be identified: their health, their relationships, their money, their conduct;
-> - anyone's grades or exam results, your own included;
-> - an outcome that one trader can decide alone, or bring about by what they do;
-> - party politics, elections and votes;
+> - the private matters of a person who is named or can be identified: their health, their relationships, or sensitive personal information;
+> - anyone's grades or exam results, your own included, or other confidential academic information;
+> - an outcome that one trader can decide alone or deliberately influence;
+> - political events, including elections and votes;
 > - religion.
 >
 > VIS is a student association within VSETH and takes no side in politics or religion.
 >
 > **Fair play**
 >
+> MarkETH is intended to be a fun and welcoming space for everyone in the ETH community. By participating, you agree to the following rules:
+>
+> - Treat others with respect and consideration, regardless of their background, identity, beliefs or opinions. Discrimination, harassment, intimidation and behaviour that undermines the dignity or privacy of others are not tolerated.
 > - One account per person. Your account belongs to your ETH sign-in: do not trade through another person's account, and do not let anyone trade through yours.
 > - You cannot trade a market you proposed.
 > - Do not manipulate an outcome. Do not trade a market whose result you can decide or influence, and do nothing to make a market end your way.
