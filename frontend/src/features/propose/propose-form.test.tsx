@@ -46,12 +46,8 @@ describe("the form", () => {
 
     expect(field("Option 1")).toHaveValue("YES");
     expect(field("Option 2")).toHaveValue("NO");
-    expect(field("Option 1")).toHaveAccessibleDescription(
-      "Defaults to YES if left empty.",
-    );
-    expect(field("Option 2")).toHaveAccessibleDescription(
-      "Defaults to NO if left empty.",
-    );
+    expect(field("Option 1")).toHaveAccessibleDescription("Defaults to YES if left empty.");
+    expect(field("Option 2")).toHaveAccessibleDescription("Defaults to NO if left empty.");
   });
 
   test("the first typed character replaces the default, while custom text is edited normally", async () => {
