@@ -1446,6 +1446,36 @@
         "title": "DependencyStatus",
         "type": "string"
       },
+      "EquityPoint": {
+        "description": "A historical total equity, with an approximate coordinate used only for plotting.",
+        "properties": {
+          "plot_value": {
+            "description": "Chart coordinate in tokens. Labels and all arithmetic use the exact amount.",
+            "title": "Plot Value",
+            "type": "number"
+          },
+          "t": {
+            "format": "date-time",
+            "title": "T",
+            "type": "string"
+          },
+          "total_equity_cr": {
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Total Equity Cr",
+            "type": "string"
+          }
+        },
+        "required": [
+          "t",
+          "total_equity_cr",
+          "plot_value"
+        ],
+        "title": "EquityPoint",
+        "type": "object"
+      },
       "ErrorCode": {
         "enum": [
           "INSUFFICIENT_BALANCE",
@@ -3061,12 +3091,38 @@
       "PortfolioResponse": {
         "description": "`GET /me/positions`: unsettled markets first (soonest `close_at` first), then\nsettled ones (latest `close_at` first).",
         "properties": {
+          "balance_cr": {
+            "description": "Remaining tokens in the user's ledger account.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Balance Cr",
+            "type": "string"
+          },
+          "equity_history": {
+            "description": "Oldest first, bounded by HISTORY_MAX_POINTS. Includes all equity-changing events.",
+            "items": {
+              "$ref": "#/components/schemas/EquityPoint"
+            },
+            "title": "Equity History",
+            "type": "array"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/PortfolioEntry"
             },
             "title": "Items",
             "type": "array"
+          },
+          "total_equity_cr": {
+            "description": "`total_value_cr` plus `balance_cr`; settled holdings are excluded.",
+            "examples": [
+              "0.25"
+            ],
+            "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
+            "title": "Total Equity Cr",
+            "type": "string"
           },
           "total_value_cr": {
             "description": "Sum of `value_cr` over the markets that are not yet RESOLVED or VOID.",
@@ -3076,11 +3132,21 @@
             "pattern": "^[0-9]{1,12}(\\.[0-9]{1,6})?$",
             "title": "Total Value Cr",
             "type": "string"
+          },
+          "until": {
+            "description": "The server's now, the right edge of the equity chart.",
+            "format": "date-time",
+            "title": "Until",
+            "type": "string"
           }
         },
         "required": [
           "items",
-          "total_value_cr"
+          "total_value_cr",
+          "balance_cr",
+          "total_equity_cr",
+          "equity_history",
+          "until"
         ],
         "title": "PortfolioResponse",
         "type": "object"

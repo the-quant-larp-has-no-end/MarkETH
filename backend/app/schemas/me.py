@@ -109,6 +109,15 @@ class PortfolioEntry(ResponseModel):
     """What the user got back when the market was VOID; null in any other status."""
 
 
+class EquityPoint(ResponseModel):
+    """A historical total equity, with an approximate coordinate used only for plotting."""
+
+    t: datetime
+    total_equity_cr: CreditAmount
+    plot_value: float
+    """Chart coordinate in tokens. Labels and all arithmetic use the exact amount."""
+
+
 class PortfolioResponse(ResponseModel):
     """`GET /me/positions`: unsettled markets first (soonest `close_at` first), then
     settled ones (latest `close_at` first)."""
@@ -116,6 +125,18 @@ class PortfolioResponse(ResponseModel):
     items: list[PortfolioEntry]
     total_value_cr: CreditAmount
     """Sum of `value_cr` over the markets that are not yet RESOLVED or VOID."""
+
+    balance_cr: CreditAmount
+    """Remaining tokens in the user's ledger account."""
+
+    total_equity_cr: CreditAmount
+    """`total_value_cr` plus `balance_cr`; settled holdings are excluded."""
+
+    equity_history: list[EquityPoint]
+    """Oldest first, bounded by HISTORY_MAX_POINTS. Includes all equity-changing events."""
+
+    until: datetime
+    """The server's now, the right edge of the equity chart."""
 
 
 class TradeItem(ResponseModel):

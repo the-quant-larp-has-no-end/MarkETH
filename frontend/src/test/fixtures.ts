@@ -459,7 +459,18 @@ export function portfolioEntry(overrides: Partial<PortfolioEntry> = {}): Portfol
 }
 
 export function portfolio(overrides: Partial<PortfolioResponse> = {}): PortfolioResponse {
-  return { total_value_cr: "50.221461", items: [portfolioEntry()], ...overrides };
+  return {
+    total_value_cr: "50.221461",
+    balance_cr: "150",
+    total_equity_cr: "200.221461",
+    equity_history: [
+      { t: "2026-10-01T12:00:00Z", total_equity_cr: "200", plot_value: 200 },
+      { t: "2026-10-09T12:00:00Z", total_equity_cr: "200.221461", plot_value: 200.221461 },
+    ],
+    until: "2026-10-11T12:00:00Z",
+    items: [portfolioEntry()],
+    ...overrides,
+  };
 }
 
 export function ledgerItem(overrides: Partial<LedgerItem> = {}): LedgerItem {
