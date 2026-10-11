@@ -12,7 +12,6 @@ import { PolicyCheckbox } from "./policy-checkbox";
 import { PolicyForVisitor, PolicyScreen } from "./policy-screen";
 
 const HEADINGS = [
-  "What MarkETH is",
   "Markets you may propose",
   "Markets you may not propose",
   "Fair play",
@@ -82,9 +81,9 @@ describe("Usage policy", () => {
       "You get 750 welcome tokens when you create your profile and 150 monthly tokens every month, counted from that day.",
     );
     expect(text()).toHaveTextContent(
-      "Trading runs for at most 60 days, and the result has to be known at most 10 days after trading closes.",
+      "Trading runs for at most 60 days, and the result must be known within 10 days after trading closes.",
     );
-    expect(text()).toHaveTextContent("You can propose 5 markets a day.");
+    expect(text()).toHaveTextContent("You can propose up to 5 markets a day.");
     expect(text()).toHaveTextContent(
       "You can have at most 80 tokens at stake in one market, so that no single trader sets a price.",
     );
@@ -109,9 +108,9 @@ describe("Usage policy", () => {
       "You get 1 welcome token when you create your profile and 1 monthly token every month",
     );
     expect(text()).toHaveTextContent(
-      "Trading runs for at most 1 day, and the result has to be known at most 1 day after trading closes.",
+      "Trading runs for at most 1 day, and the result must be known within 1 day after trading closes.",
     );
-    expect(text()).toHaveTextContent("You can propose 1 market a day.");
+    expect(text()).toHaveTextContent("You can propose up to 1 market a day.");
     expect(text()).toHaveTextContent("You can have at most 1 token at stake in one market");
     expect(text()).toHaveTextContent("A voucher is valid for 1 day.");
   });
@@ -136,10 +135,13 @@ describe("Usage policy", () => {
       "They do not see your name or your email address. Both come from your ETH sign-in and are shown to you and to the admins of VIS only.",
     );
     expect(text()).toHaveTextContent("change this policy. This page shows the policy in force.");
-    // The lists are plain bulleted lists: 4, 5, 6 and 5 points.
+    expect(text()).toHaveTextContent(
+      "Discrimination, harassment, intimidation and behaviour that undermines the dignity or privacy of others are not tolerated.",
+    );
+    // The lists are plain bulleted lists: 3, 5, 7 and 5 points.
     expect(
       screen.getAllByRole("list").map((list) => within(list).getAllByRole("listitem").length),
-    ).toEqual([4, 5, 6, 5]);
+    ).toEqual([3, 5, 7, 5]);
   });
 
   test("is read, and left with the back arrow: no illustration, no campus line, no button of its own", () => {
