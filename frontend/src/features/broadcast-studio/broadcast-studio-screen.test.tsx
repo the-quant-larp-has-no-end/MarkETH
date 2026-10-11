@@ -27,6 +27,10 @@ import {
   broadcastConfig,
   broadcastIn,
   broadcastViewer,
+  chat,
+  chatMessage,
+  chatMessageEvent,
+  chatRemovedEvent,
   config,
   MARKET_ID,
   marketBroadcast,
@@ -56,6 +60,8 @@ const START: Route = "POST /api/broadcasts/{broadcast_id}/start";
 const START_AS_ADMIN: Route = "POST /api/admin/markets/{market_id}/broadcast";
 const UPLOAD: Route = "POST /api/broadcasts/{broadcast_id}/chunks";
 const END: Route = "POST /api/broadcasts/{broadcast_id}/end";
+const CHAT: Route = "GET /api/markets/{market_id}/chat";
+const POST_CHAT: Route = "POST /api/markets/{market_id}/chat";
 
 /** The id of the live stream a start answers with, where it is another one than was started. */
 const NEXT_BROADCAST_ID = "0f9e8d7c-6b5a-4c3d-9e2f-1a0b9c8d7e6f";
@@ -106,6 +112,7 @@ function renderStudio({ answer, routes = {}, capture: options, broadcast, live }
     [BROADCAST]:
       answer instanceof Response || typeof answer === "function" ? answer : json(200, answer),
     [MARKET]: json(200, marketDetail()),
+    [CHAT]: json(200, chat()),
     [UPLOAD]: taken,
     ...routes,
   });
@@ -517,6 +524,115 @@ describe("live", () => {
   });
 });
 
+describe("chat in the studio", () => {
+  test("shows the market's chat with the preview and stream controls, and sends a message", async () => {
+    const stored = chatMessageEvent().message;
+    const { api, user } = await goLiveAsAdmin({
+      routes: { [POST_CHAT]: json(201, stored) },
+    });
+
+    const panel = await screen.findByRole("region", { name: "Live chat" });
+    expect(await within(panel).findByText(chatMessage().text)).toBeInTheDocument();
+    expect(preview()).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "End stream" })).toBeEnabled();
+    expect(api.lastCall(CHAT)?.path).toBe(`/api/markets/${MARKET_ID}/chat`);
+
+    await user.type(within(panel).getByRole("textbox", { name: "Message" }), stored.text);
+    await user.click(within(panel).getByRole("button", { name: "Send" }));
+
+    expect(api.lastCall(POST_CHAT)?.body).toEqual({ text: stored.text });
+    expect(await within(panel).findByText(stored.text)).toBeInTheDocument();
+    expect(within(panel).getByRole("textbox", { name: "Message" })).toHaveValue("");
+  });
+
+  test("follows new messages and removals while the camera continues broadcasting", async () => {
+    const streams = installFakeEventSource();
+    const { api, capture } = await goLiveAsAdmin({ live: true });
+    await screen.findByText(chatMessage().text);
+    await waitFor(() =>
+      expect(streams.latest().topics).toEqual([`broadcast:${MARKET_ID}`, `market:${MARKET_ID}`]),
+    );
+    const reads = api.calls(CHAT).length;
+    const event = chatMessageEvent();
+
+    act(() => streams.latest().send(event));
+    expect(await screen.findByText(event.message.text)).toBeInTheDocument();
+    act(() => streams.latest().send(chatRemovedEvent()));
+    await waitFor(() => expect(screen.queryByText(chatMessage().text)).not.toBeInTheDocument());
+    expect(api.calls(CHAT)).toHaveLength(reads);
+    expect(capture.recorder().state).toBe("recording");
+  });
+
+  test("keeps the same chat and draft when the camera pauses and resumes", async () => {
+    const { capture, user } = await goLiveAsAdmin();
+    const panel = await screen.findByRole("region", { name: "Live chat" });
+    const field = within(panel).getByRole("textbox", { name: "Message" });
+    await waitFor(() => expect(field).toBeEnabled());
+    await user.type(field, "I'll be right back.");
+
+    act(() => capture.stream().video.end());
+    await screen.findByRole("heading", { name: "Your live stream is paused." });
+    expect(screen.getByRole("region", { name: "Live chat" })).toBe(panel);
+    expect(field).toHaveValue("I'll be right back.");
+    expect(screen.getByRole("button", { name: "End stream" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "Resume" }));
+    await screen.findByRole("heading", { name: "You are live" });
+    expect(screen.getByRole("region", { name: "Live chat" })).toBe(panel);
+    expect(field).toHaveValue("I'll be right back.");
+  });
+
+  test("ending the stream removes its chat and a new stream has its own messages and draft", async () => {
+    const { api, capture, user } = renderStudio({
+      answer: own("APPROVED", {}, { can_start: true }),
+      routes: {
+        [START]: json(200, onAir()),
+        [UPLOAD]: apiError(409, "CONFLICT", "This live stream has ended."),
+      },
+    });
+    await tapGoLive(user);
+    const field = await screen.findByRole("textbox", { name: "Message" });
+    await waitFor(() => expect(field).toBeEnabled());
+    await user.type(field, "Draft for this stream");
+    expect(screen.getByText(chatMessage().text)).toBeInTheDocument();
+
+    api.on(BROADCAST, json(200, own("ENDED", { end_reason: "STALLED" }, { can_start: true })));
+    hand(capture, piece("one"));
+    await screen.findByRole("heading", { name: "The live stream has ended." });
+    expect(screen.queryByRole("region", { name: "Live chat" })).not.toBeInTheDocument();
+    expect(screen.queryByText(chatMessage().text)).not.toBeInTheDocument();
+
+    api.on(START, json(200, onAir({ id: NEXT_BROADCAST_ID })));
+    api.on(CHAT, json(200, chat({ broadcast_id: NEXT_BROADCAST_ID, items: [] })));
+    api.on(UPLOAD, taken);
+    await user.click(await screen.findByRole("button", { name: "Go live again" }));
+
+    expect(await screen.findByText("No messages yet.")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("");
+    expect(screen.queryByText(chatMessage().text)).not.toBeInTheDocument();
+  });
+
+  test("a chat error stays in its panel and leaves the stream controls available", async () => {
+    const { capture } = await goLiveAsAdmin({
+      routes: { [CHAT]: apiError(503, "SERVICE_UNAVAILABLE", "Chat is temporarily unavailable.") },
+    });
+
+    const panel = await screen.findByRole("region", { name: "Live chat" });
+    expect(await within(panel).findByRole("alert")).toHaveTextContent(
+      "Chat is temporarily unavailable.",
+    );
+    expect(screen.getByRole("button", { name: "End stream" })).toBeEnabled();
+    expect(capture.recorder().state).toBe("recording");
+  });
+
+  test("setting up does not read or show chat", async () => {
+    const { api } = renderStudio({ answer: adminMayStart() });
+    await screen.findByLabelText("Preview");
+    expect(screen.queryByRole("region", { name: "Live chat" })).not.toBeInTheDocument();
+    expect(api.calls(CHAT)).toHaveLength(0);
+  });
+});
+
 describe("the portal's sign-in ends while the studio is live", () => {
   test("the sign-in banner with a link into another tab; the page stays and the same piece goes up again", async () => {
     const reload = vi.spyOn(page, "reload").mockImplementation(() => {});
@@ -560,15 +676,22 @@ describe("the portal's sign-in ends while the studio is live", () => {
       live: true,
       routes: { [UPLOAD]: (request) => (signedIn ? taken(request) : portal401()) },
     });
-    expect(streams.latest().topics).toEqual([`broadcast:${MARKET_ID}`]);
+    await screen.findByText(chatMessage().text);
+    await waitFor(() =>
+      expect(streams.latest().topics).toEqual([`broadcast:${MARKET_ID}`, `market:${MARKET_ID}`]),
+    );
 
     hand(capture, piece("one"));
     await screen.findByText(/Your ETH sign-in has ended/);
 
     await waitFor(() => expect(streams.latest().topics).toEqual([]));
+    expect(screen.queryByRole("region", { name: "Live chat" })).not.toBeInTheDocument();
 
     signedIn = true;
-    await waitFor(() => expect(streams.latest().topics).toEqual([`broadcast:${MARKET_ID}`]));
+    await waitFor(() =>
+      expect(streams.latest().topics).toEqual([`broadcast:${MARKET_ID}`, `market:${MARKET_ID}`]),
+    );
+    expect(await screen.findByText(chatMessage().text)).toBeInTheDocument();
   });
 });
 

@@ -1726,8 +1726,8 @@ export interface components {
         ChatMessageItem: {
             /**
              * From Vis
-             * @description The author was an admin when the message was stored. The server says so; a
-             *     client shows it and decides nothing from a name.
+             * @description The author was an admin when the message was stored. This records permissions,
+             *     not association membership; the display label comes from `role`.
              */
             from_vis: boolean;
             /**
@@ -1735,6 +1735,11 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /**
+             * @description The author's effective role when the request is answered, including
+             *     bootstrap admins. Shown as the role label beside the username.
+             */
+            role: components["schemas"]["UserRole"];
             /** Text */
             text: string;
             /**

@@ -37,6 +37,7 @@ const chatMessage = (text: string): LiveEventOf<"chat.message"> => ({
     username: "anna_m",
     text,
     from_vis: false,
+    role: "USER",
   },
   ts: "2026-10-04T10:00:01Z",
 });

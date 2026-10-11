@@ -42,8 +42,8 @@ export type ChatPanelProps = {
 
 /**
  * The live chat of a market (DESIGN.md §13, "Live chat"): a header, the log and the
- * composer. The section "Live stream" mounts it directly under itself while the status
- * of the live stream is LIVE and takes it away when it is not.
+ * composer. Market detail and the broadcaster's studio mount it while the status of the
+ * live stream is LIVE and take it away when it is not.
  *
  * It reads `GET /markets/{market_id}/chat` and follows the event stream (`useChat`). Who
  * may do what is the server's answer: `open` says whether there is a chat, `can_remove`

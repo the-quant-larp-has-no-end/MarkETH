@@ -35,6 +35,7 @@ from uuid import UUID
 
 from app.core.clock import Clock
 from app.core.config import Settings
+from app.core.enums import UserRole
 from app.core.errors import (
     ConflictError,
     ForbiddenError,
@@ -60,6 +61,7 @@ from app.schemas.live import BroadcastChangedEvent, ChatMessageEvent, ChatRemove
 from app.services import UowFactory
 from app.services.audit import AuditAction, AuditService, AuditTarget
 from app.services.broadcast_view import BroadcastLookup
+from app.services.email_policy import EmailPolicy
 from app.services.live_events import LiveEvents
 from app.services.market_access import MarketAccess
 
@@ -111,6 +113,7 @@ class ChatService:
         rate_limiter: RateLimiter,
         fallback_rate_limiter: RateLimiter,
         events: LiveEvents,
+        email_policy: EmailPolicy,
     ) -> None:
         self._uow_factory = uow_factory
         self._limits = settings.chat
@@ -121,6 +124,7 @@ class ChatService:
         self._rate_limiter = rate_limiter
         self._fallback_rate_limiter = fallback_rate_limiter
         self._events = events
+        self._email_policy = email_policy
         self._user_rate = RateLimit(
             USER_RATE,
             self._limits.message_limit_per_user,
@@ -153,7 +157,14 @@ class ChatService:
                 open=True,
                 broadcast_id=broadcast_id,
                 can_remove=viewer.is_admin,
-                items=[_item(message, username) for message, username in latest],
+                items=[
+                    _item(
+                        message,
+                        author.username,
+                        self._email_policy.effective_role(author.email, author.role),
+                    )
+                    for message, author in latest
+                ],
             )
 
     async def post(
@@ -219,7 +230,7 @@ class ChatService:
                     created_at=now,
                 )
             )
-            item = _item(message, user.username)
+            item = _item(message, user.username, user.role)
             uow.announce(
                 self._events.about(
                     market,
@@ -372,7 +383,7 @@ class ChatService:
             raise RateLimitedError(refusal, retry_after_seconds=decision.retry_after_seconds)
 
 
-def _item(message: ChatMessage, username: str) -> ChatMessageItem:
+def _item(message: ChatMessage, username: str, role: UserRole) -> ChatMessageItem:
     return ChatMessageItem(
-        id=message.id, username=username, text=message.text, from_vis=message.from_vis
+        id=message.id, username=username, role=role, text=message.text, from_vis=message.from_vis
     )

@@ -118,7 +118,7 @@ describe("the five states of the panel", () => {
 
     await screen.findByText(FIRST);
     expect(panel()).toHaveAttribute("data-state", "open");
-    expect(texts()).toEqual([`cab_coffee ${FIRST}`, `vis_moritz VIS ${SECOND}`]);
+    expect(texts()).toEqual([`cab_coffee User ${FIRST}`, `vis_moritz Admin ${SECOND}`]);
   });
 
   test("a market the viewer cannot see: the panel is absent", async () => {
@@ -146,24 +146,29 @@ describe("what the panel is for a screen reader", () => {
 });
 
 describe("a row", () => {
-  test("carries the badge VIS where the server says an admin wrote it, and nowhere else", async () => {
+  test("shows the server's role labels on player and admin messages", async () => {
     mockApi({ [CHAT]: json(200, chat()) });
     renderPanel();
 
     await screen.findByText(FIRST);
     const [player, admin] = rows();
-    expect(within(player!).queryByText("VIS")).not.toBeInTheDocument();
-    expect(within(admin!).getByText("VIS")).toHaveAttribute("data-slot", "vis-badge");
+    expect(within(player!).getByText("User")).toHaveAttribute("data-slot", "chat-role-badge");
+    expect(within(admin!).getByText("Admin")).toHaveAttribute("data-slot", "chat-role-badge");
+    expect(panel().querySelector('[data-slot="vis-badge"]')).toBeNull();
   });
 
-  test("a name that looks like VIS's gets no badge: nothing is read from a username", async () => {
+  test("the role label comes from neither the username nor the from_vis flag", async () => {
     mockApi({
-      [CHAT]: json(200, chat({ items: [chatMessage({ username: "VIS", from_vis: false })] })),
+      [CHAT]: json(
+        200,
+        chat({ items: [chatMessage({ username: "admin", role: "BARISTA", from_vis: true })] }),
+      ),
     });
     renderPanel();
 
     await screen.findByText(FIRST);
-    expect(panel().querySelector('[data-slot="vis-badge"]')).toBeNull();
+    expect(within(rows()[0]!).getByText("Barista")).toHaveAttribute("data-slot", "chat-role-badge");
+    expect(within(rows()[0]!).queryByText("Admin")).not.toBeInTheDocument();
   });
 
   test("shows what was written as text: no markup, no picture and no link", async () => {
@@ -172,7 +177,7 @@ describe("a row", () => {
     renderPanel();
 
     const line = (await screen.findByText(text, { exact: false })).closest("p")!;
-    expect(line).toHaveTextContent(`cab_coffee ${text}`);
+    expect(line).toHaveTextContent(`cab_coffee User ${text}`);
     expect(panel().querySelector("img, a, b")).toBeNull();
     // It wraps a string without a space, and its row clips what would leave it.
     expect(line).toHaveClass("wrap-anywhere", "min-w-0");
@@ -210,7 +215,7 @@ describe("sending a message", () => {
     expect(api.lastCall(POST)?.body).toEqual({ text: `  ${TYPED}` });
     expect(api.lastCall(POST)?.path).toBe(`/api/markets/${MARKET_ID}/chat`);
     expect(field()).toHaveValue("");
-    expect(texts().at(-1)).toBe(`anna_m ${TYPED}`);
+    expect(texts().at(-1)).toBe(`anna_m User ${TYPED}`);
     // The answer is the message: the chat is not read for it.
     expect(api.calls(CHAT)).toHaveLength(1);
   });
@@ -264,7 +269,11 @@ describe("sending a message", () => {
 
     answer.resolve(json(201, stored));
     await waitFor(() => expect(field()).toHaveValue(""));
-    expect(texts()).toEqual([`cab_coffee ${FIRST}`, `vis_moritz VIS ${SECOND}`, `anna_m ${TYPED}`]);
+    expect(texts()).toEqual([
+      `cab_coffee User ${FIRST}`,
+      `vis_moritz Admin ${SECOND}`,
+      `anna_m User ${TYPED}`,
+    ]);
   });
 
   test("a message whose answer arrives before its event shows once", async () => {
@@ -278,7 +287,7 @@ describe("sending a message", () => {
     act(() => streams.latest().send(chatMessageEvent({ message: stored })));
 
     await waitFor(() => expect(rows()).toHaveLength(3));
-    expect(texts().at(-1)).toBe(`anna_m ${TYPED}`);
+    expect(texts().at(-1)).toBe(`anna_m User ${TYPED}`);
   });
 
   test("RATE_LIMITED: the API's sentence under the field, and sending is off for the countdown", async () => {
@@ -375,7 +384,7 @@ describe("sending a message", () => {
     expect(api.calls(CHAT)).toHaveLength(2);
     expect(field()).toHaveValue(TYPED);
     expect(sendButton()).toBeEnabled();
-    expect(texts().at(-1)).toBe(`anna_m ${TYPED}`);
+    expect(texts().at(-1)).toBe(`anna_m User ${TYPED}`);
   });
 });
 
@@ -414,7 +423,7 @@ describe("removing a message", () => {
     const dialog = await screen.findByRole("alertdialog", { name: "Remove this message?" });
     expect(dialog).toHaveTextContent("It disappears for everyone. This cannot be taken back.");
     expect(within(dialog).getByText(FIRST, { exact: false })).toHaveTextContent(
-      `cab_coffee ${FIRST}`,
+      `cab_coffee User ${FIRST}`,
     );
     expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Close" })).toBeInTheDocument();
@@ -427,7 +436,7 @@ describe("removing a message", () => {
       `/api/admin/markets/${MARKET_ID}/chat/${CHAT_MESSAGE_ID}/remove`,
     );
     await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
-    expect(texts()).toEqual([`vis_moritz VIS ${SECOND}`]);
+    expect(texts()).toEqual([`vis_moritz Admin ${SECOND}`]);
     // The row went with its button: the heading of the panel has the focus.
     await waitFor(() => expect(screen.getByRole("heading", { name: "Live chat" })).toHaveFocus());
   });
@@ -485,7 +494,7 @@ describe("removing a message", () => {
       "This message does not exist.",
     );
     await waitFor(() => expect(api.calls(CHAT)).toHaveLength(2));
-    await waitFor(() => expect(texts()).toEqual([`vis_moritz VIS ${SECOND}`]));
+    await waitFor(() => expect(texts()).toEqual([`vis_moritz Admin ${SECOND}`]));
     expect(screen.queryByText("Message removed")).not.toBeInTheDocument();
   });
 });
@@ -517,7 +526,11 @@ describe("following the event stream", () => {
     act(() => streams.latest().send(chatMessageEvent()));
 
     expect(await screen.findByText(TYPED, { exact: false })).toBeInTheDocument();
-    expect(texts()).toEqual([`cab_coffee ${FIRST}`, `vis_moritz VIS ${SECOND}`, `anna_m ${TYPED}`]);
+    expect(texts()).toEqual([
+      `cab_coffee User ${FIRST}`,
+      `vis_moritz Admin ${SECOND}`,
+      `anna_m User ${TYPED}`,
+    ]);
     expect(api.calls(CHAT)).toHaveLength(1);
   });
 
@@ -549,7 +562,7 @@ describe("following the event stream", () => {
     act(() => streams.latest().send(chatRemovedEvent({ market_id: OTHER_MARKET_ID })));
     act(() => streams.latest().send(chatRemovedEvent()));
 
-    await waitFor(() => expect(texts()).toEqual([`vis_moritz VIS ${SECOND}`]));
+    await waitFor(() => expect(texts()).toEqual([`vis_moritz Admin ${SECOND}`]));
     expect(api.calls(CHAT)).toHaveLength(1);
   });
 
@@ -566,9 +579,9 @@ describe("following the event stream", () => {
     act(() => streams.latest().send(sent[0]!));
     await waitFor(() =>
       expect(texts()).toEqual([
-        `cab_coffee ${FIRST}`,
-        `vis_moritz VIS ${SECOND}`,
-        "cab_coffee One.",
+        `cab_coffee User ${FIRST}`,
+        `vis_moritz Admin ${SECOND}`,
+        "cab_coffee User One.",
       ]),
     );
 
@@ -577,7 +590,11 @@ describe("following the event stream", () => {
       streams.latest().send(sent[2]!);
     });
     await waitFor(() =>
-      expect(texts()).toEqual(["cab_coffee One.", "cab_coffee Two.", "cab_coffee Three."]),
+      expect(texts()).toEqual([
+        "cab_coffee User One.",
+        "cab_coffee User Two.",
+        "cab_coffee User Three.",
+      ]),
     );
   });
 
@@ -698,10 +715,10 @@ describe("following the event stream", () => {
 
       await waitFor(() =>
         expect(texts()).toEqual([
-          `cab_coffee ${FIRST}`,
-          `vis_moritz VIS ${SECOND}`,
-          "cab_coffee Missed.",
-          `anna_m ${TYPED}`,
+          `cab_coffee User ${FIRST}`,
+          `vis_moritz Admin ${SECOND}`,
+          "cab_coffee User Missed.",
+          `anna_m User ${TYPED}`,
         ]),
       );
       expect(client.getQueryData<ChatResponse>(keys.markets.chat(MARKET_ID))?.items).toHaveLength(
@@ -730,7 +747,7 @@ describe("following the event stream", () => {
       // The answer is taken, and the removed row does not come back with it.
       await waitFor(() => expect(sendButton()).toBeInTheDocument());
       await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
-      expect(texts()).toEqual([`vis_moritz VIS ${SECOND}`]);
+      expect(texts()).toEqual([`vis_moritz Admin ${SECOND}`]);
     });
 
     test("the viewer's own message is kept too when a read answers without it", async () => {
@@ -743,9 +760,9 @@ describe("following the event stream", () => {
 
       await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
       expect(texts()).toEqual([
-        `cab_coffee ${FIRST}`,
-        `vis_moritz VIS ${SECOND}`,
-        `anna_m ${TYPED}`,
+        `cab_coffee User ${FIRST}`,
+        `vis_moritz Admin ${SECOND}`,
+        `anna_m User ${TYPED}`,
       ]);
     });
 
@@ -770,7 +787,7 @@ describe("following the event stream", () => {
 
       await waitFor(() => expect(api.calls(CHAT)).toHaveLength(3));
       await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
-      expect(texts()).toEqual([`cab_coffee ${FIRST}`, `vis_moritz VIS ${SECOND}`]);
+      expect(texts()).toEqual([`cab_coffee User ${FIRST}`, `vis_moritz Admin ${SECOND}`]);
     });
 
     test("what arrived before a read began is not put again: the read has seen it", async () => {
